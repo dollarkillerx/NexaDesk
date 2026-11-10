@@ -82,6 +82,44 @@ public class ProtoTests
         Assert.Equal(new Permissions(true, true, false), e.Perms);
     }
 
+    /// <summary>Golden bytes from crates/nexa-agent/src/ipc/proto.rs (golden_encodings).</summary>
+    [Fact]
+    public void Status_carries_the_device_id_and_signal_state()
+    {
+        var bytes = Bytes("0a15 0801 120161 4a09313233343536373839 5002 5a016e");
+        var s = Assert.IsType<AgentMessage.Status>(AgentMessage.Decode(bytes));
+        Assert.Equal("123456789", s.ShortId);
+        Assert.Equal(SignalState.Online, s.Signal);
+        Assert.Equal("n", s.SignalDetail);
+        // An unknown state from a newer agent reads as off.
+        var future = Assert.IsType<AgentMessage.Status>(AgentMessage.Decode(Bytes("0a02 5009")));
+        Assert.Equal(SignalState.Off, future.Signal);
+    }
+
+    [Fact]
+    public void Connect_request_carries_the_signal_server_in_field_8_only_when_set()
+    {
+        var byId = new ConnectRequest("123456789", 1, StreamMode.Balanced, 0, new ConnectAuth.Code("ABCD2345"), "wss://s.example");
+        Assert.EndsWith("420f" + Hex(System.Text.Encoding.UTF8.GetBytes("wss://s.example")), Hex(byId.Encode()));
+        var byAddress = new ConnectRequest("h:1", 1, StreamMode.Office, 60, new ConnectAuth.KnownHost("ab"));
+        Assert.DoesNotContain("42", Hex(byAddress.Encode()));
+    }
+
+    [Fact]
+    public void Stats_carry_the_path_and_connecting_the_stage()
+    {
+        // path = relay (12: 3), detail (13: "r"), path rtt (14: 5000).
+        var bytes = Bytes("4208 6003 6a0172 7088 27");
+        var s = Assert.IsType<StatsEvent>(ClientCodec.DecodeEvent(bytes)).Stats;
+        Assert.Equal(PathKind.Relay, s.Path);
+        Assert.Equal("r", s.PathDetail);
+        Assert.Equal(5000ul, s.PathRttUs);
+        Assert.Equal(PathKind.Unknown, Assert.IsType<StatsEvent>(ClientCodec.DecodeEvent(Bytes("4202 6009"))).Stats.Path);
+        var c = Assert.IsType<ConnectingEvent>(ClientCodec.DecodeEvent(Bytes("1202 0803")));
+        Assert.Equal(ConnectStage.Checking, c.Stage);
+        Assert.Equal(ConnectStage.Quic, Assert.IsType<ConnectingEvent>(ClientCodec.DecodeEvent(Bytes("1200"))).Stage);
+    }
+
     [Fact]
     public void Stats_include_received_bytes()
     {

@@ -162,6 +162,23 @@ pub struct Status {
     pub session: Option<SessionInfo>,
     #[prost(bool, tag = "8")]
     pub input_available: bool,
+    /// This device's ID on the signaling server, nine digits; empty when not registered.
+    #[prost(string, tag = "9")]
+    pub short_id: String,
+    #[prost(enumeration = "SignalState", tag = "10")]
+    pub signal: i32,
+    /// Why the last attempt failed, or why NAT detection is degraded.
+    #[prost(string, tag = "11")]
+    pub signal_detail: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Enumeration)]
+#[repr(i32)]
+pub enum SignalState {
+    Off = 0,
+    Connecting = 1,
+    Online = 2,
+    Error = 3,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Enumeration)]
@@ -362,6 +379,23 @@ mod tests {
             timeout_ms: 60_000,
             input_available: true,
         }));
+        let status = AgentToUi::from(AgentBody::Status(Status {
+            version: 1,
+            listen: "a".into(),
+            code: String::new(),
+            device_name: String::new(),
+            device_id: String::new(),
+            device_key: String::new(),
+            session: None,
+            input_available: false,
+            short_id: "123456789".into(),
+            signal: SignalState::Online as i32,
+            signal_detail: "n".into(),
+        }));
+        assert_eq!(
+            hex(&status.encode_to_vec()),
+            "0a15 0801 120161 4a09313233343536373839 5002 5a016e".replace(' ', "")
+        );
         assert_eq!(
             hex(&incoming.encode_to_vec()),
             "12290807 1203e78e8b 1a0164 22026162 2a09312e322e332e343a35 3002 3a020801 4001 5801 60e0d403 6801"

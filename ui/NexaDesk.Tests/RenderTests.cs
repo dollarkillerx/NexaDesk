@@ -219,4 +219,78 @@ public class RenderTests
                 v.Close();
             });
     }
+
+    /// <summary>Reachable by ID: the hosting card shows the ID, the connect box takes one.</summary>
+    [AvaloniaFact]
+    public async Task Main_window_hosting_by_device_id()
+    {
+        foreach (var theme in Themes())
+        {
+            var client = new FakeClient();
+            var link = new FakeLink();
+            link.ConnectResults.Enqueue(null);
+            var now = Samples.T0;
+            var recent = new MemoryRecent(
+                new RecentDevice("314159265", "家里的 iMac", Samples.HostKey, now.AddHours(-1).ToUnixTimeSeconds()),
+                new RecentDevice("192.168.1.20:47800", "工作室 Mac mini", "bb", now.AddDays(-2).ToUnixTimeSeconds()));
+            var vm = new MainViewModel(client, recent, link, new FakeProcess(), new FakePermissions(), new RecordingWindows(),
+                new FakeAddresses("192.168.1.35", "127.0.0.1"), "王小明的 MacBook Pro", () => now,
+                new MemorySettings(new AppSettings("wss://signal.example.com")));
+            client.Raise(new ReadyEvent(0, Samples.ViewerKey, [new KnownHost(Samples.HostKey, "家里的 iMac", 0)], ""));
+            await vm.Host.StartCommand.ExecuteAsync(null);
+            link.Raise(Samples.Status(shortId: "271828182", signal: SignalState.Online));
+            vm.Connect.Address = "314 159 265";
+            vm.Connect.Code = "ABCD2345";
+            vm.Connect.ConnectCommand.Execute(null);
+            client.Raise(new ConnectingEvent(client.Requests[0].Tag, ConnectStage.Checking));
+            WithTheme(theme, () =>
+            {
+                var w = new MainWindow { DataContext = vm };
+                w.Show();
+                Save(w, "main-hosting-id", theme);
+                w.Close();
+            });
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task Main_window_signal_server_unreachable()
+    {
+        foreach (var theme in Themes())
+        {
+            var link = new FakeLink();
+            link.ConnectResults.Enqueue(null);
+            var vm = SampleMain(new FakeClient(), link, new RecordingWindows());
+            vm.Settings.ServerInput = "http://bad";
+            await vm.Host.StartCommand.ExecuteAsync(null);
+            link.Raise(Samples.Status(signal: SignalState.Error, detail: "cannot reach the server: Connection refused"));
+            WithTheme(theme, () =>
+            {
+                var w = new MainWindow { DataContext = vm };
+                w.Show();
+                Save(w, "main-signal-error", theme);
+                w.Close();
+            });
+        }
+    }
+
+    [AvaloniaFact]
+    public void Diagnostics_show_the_path_type()
+    {
+        foreach (var theme in Themes())
+            WithTheme(theme, () =>
+            {
+                var d = new DiagnosticsViewModel("ID 314 159 265");
+                StreamStats S(ulong n, PathKind kind, string detail, ulong rtt) =>
+                    new(n, 0, 0, n, 0, n, 21_500, 0, 0, 0, n * 20_000, kind, detail, rtt);
+                d.Update(S(100, PathKind.Relay, "relay 203.0.113.10:3480", 48_000), Samples.T0);
+                d.Update(S(160, PathKind.Relay, "relay 203.0.113.10:3480", 48_000), Samples.T0.AddSeconds(1));
+                var w = new DiagnosticsWindow { DataContext = d };
+                w.Show();
+                Save(w, "diagnostics-relay", theme);
+                d.Update(S(220, PathKind.Punched, "198.51.100.7:40211", 21_000), Samples.T0.AddSeconds(2));
+                Save(w, "diagnostics-punched", theme);
+                w.Close();
+            });
+    }
 }

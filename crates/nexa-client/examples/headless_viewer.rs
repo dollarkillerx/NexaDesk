@@ -64,6 +64,7 @@ fn main() {
         mode: Mode::Balanced as i32,
         fps: 0,
         auth: Some(auth),
+        signal_server: String::new(),
     }
     .encode_to_vec();
     let mut session = std::ptr::null_mut();

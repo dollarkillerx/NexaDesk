@@ -9,6 +9,7 @@
 mod agent;
 pub mod ipc;
 mod session;
+pub mod signal;
 mod ui_host;
 
 use std::net::SocketAddr;
@@ -23,6 +24,7 @@ use nexa_session::{
 use nexa_wire::control::Permissions;
 
 pub use agent::{Agent, AgentConfig, AgentError, start};
+pub use signal::{SignalSetup, SignalState, SignalStatus};
 pub use ui_host::{UiChain, UiHost, UiHostError, start_with_ui};
 
 /// The display being shared. Wire coordinates are in stream pixels of this display;
@@ -63,6 +65,7 @@ pub struct SessionInfo {
     pub device_id: String,
     /// The peer's public key, hex: the fingerprint shown to the person at the host.
     pub device_key: String,
+    /// The real network peer: the viewer's address, or the relay's when relayed.
     pub remote: SocketAddr,
     pub perms: Permissions,
 }
@@ -86,6 +89,8 @@ pub enum AgentEvent {
     },
     ClipboardNotice(ClipNotice),
     Warning(String),
+    /// Reachability by ID changed (§4.3).
+    Signal(SignalStatus),
 }
 
 /// The person at the host. §9.3's "always shows who is connected" lives here.

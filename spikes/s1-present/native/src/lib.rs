@@ -282,6 +282,57 @@ pub unsafe extern "C" fn s1_get_stats(out: *mut S1Stats) -> i32 {
     0
 }
 
+unsafe extern "C" {
+    fn CGEventCreateScrollWheelEvent2(source: *const c_void, units: u32, count: u32, w1: i32, w2: i32, w3: i32) -> *mut c_void;
+    fn CGEventSetLocation(e: *mut c_void, p: objc2_core_foundation::CGPoint);
+    fn CGEventSetIntegerValueField(e: *mut c_void, field: u32, v: i64);
+    fn CFRelease(p: *const c_void);
+}
+
+/// Test-only: builds an event inside this process and hands it to the window, so
+/// AppKit hit-tests it exactly like a real one. Nothing outside the process sees it.
+/// `kind`: 0 move, 1 left down, 2 left up, 3 wheel. `x`/`y` are content points from the top-left.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn s1_post_mouse(window: *mut c_void, x: f64, y: f64, kind: u32) -> i32 {
+    use objc2::{msg_send, runtime::AnyObject};
+    use objc2_core_foundation::{CGPoint, CGRect};
+    let w = Unsafe(window);
+    guarded(move || unsafe {
+        let w = w;
+        let win = w.0 as *mut AnyObject;
+        let content: *mut AnyObject = msg_send![win, contentView];
+        let cframe: CGRect = msg_send![content, frame];
+        let local = CGPoint::new(x, cframe.size.height - y);
+        let num: isize = msg_send![win, windowNumber];
+        let ev: *mut AnyObject = if kind == 3 {
+            let wframe: CGRect = msg_send![win, frame];
+            let screen: *mut AnyObject = msg_send![win, screen];
+            let sframe: CGRect = msg_send![screen, frame];
+            let global = CGPoint::new(wframe.origin.x + local.x, sframe.size.height - (wframe.origin.y + local.y));
+            let cg = CGEventCreateScrollWheelEvent2(std::ptr::null(), 0, 1, -30, 0, 0);
+            CGEventSetLocation(cg, global);
+            CGEventSetIntegerValueField(cg, 91, num as i64);
+            CGEventSetIntegerValueField(cg, 92, num as i64);
+            let e: *mut AnyObject = msg_send![objc2::class!(NSEvent), eventWithCGEvent: cg];
+            CFRelease(cg);
+            e
+        } else {
+            let ty: usize = match kind {
+                0 => 5, // NSEventTypeMouseMoved
+                1 => 1, // LeftMouseDown
+                _ => 2, // LeftMouseUp
+            };
+            let null: *mut AnyObject = std::ptr::null_mut();
+            msg_send![objc2::class!(NSEvent), mouseEventWithType: ty, location: local, modifierFlags: 0usize, timestamp: 0.0f64, windowNumber: num, context: null, eventNumber: 0isize, clickCount: 1isize, pressure: 1.0f32]
+        };
+        if ev.is_null() {
+            return -2;
+        }
+        let _: () = msg_send![win, sendEvent: ev];
+        0
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn s1_detach() {
     if let Some(r) = STATE.lock().unwrap().take() {

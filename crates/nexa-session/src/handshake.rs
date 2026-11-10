@@ -301,6 +301,7 @@ async fn authenticate(
     cfg: &HostConfig,
     peer: DevicePublicKey,
     control: &mut ControlChannel,
+    remote: SocketAddr,
 ) -> Result<Authenticated, Refusal> {
     let hello = match map_stage(control.recv().await)? {
         Some(ControlBody::Hello(h)) => h,
@@ -330,7 +331,7 @@ async fn authenticate(
             })
         }
         HelloAuth::Code | HelloAuth::Password => {
-            if !cfg.limiter.allow(conn.remote_address().ip().to_canonical()) {
+            if !cfg.limiter.allow(remote.ip().to_canonical()) {
                 return Err((
                     RejectReason::RateLimited,
                     "too many attempts, try again later",
@@ -413,6 +414,18 @@ pub async fn host_handshake(
     cfg: &HostConfig,
     session_active: &(dyn Fn() -> bool + Send + Sync),
 ) -> Result<HostAccepted, SessionError> {
+    host_handshake_from(conn, cfg, session_active, conn.remote_address()).await
+}
+
+/// [`host_handshake`] for a connection whose QUIC peer address is the virtual
+/// one (§4.1): `remote` is the real path, shown to the person and used for the
+/// pairing rate limit. Nothing else differs.
+pub async fn host_handshake_from(
+    conn: &Connection,
+    cfg: &HostConfig,
+    session_active: &(dyn Fn() -> bool + Send + Sync),
+    remote: SocketAddr,
+) -> Result<HostAccepted, SessionError> {
     let accept = async {
         let (kind, send, recv) = accept_bi(conn).await?;
         if kind != StreamType::Control {
@@ -431,7 +444,7 @@ pub async fn host_handshake(
 
     let authenticated = match tokio::time::timeout(
         cfg.timeouts.handshake,
-        authenticate(conn, cfg, peer, &mut control),
+        authenticate(conn, cfg, peer, &mut control, remote),
     )
     .await
     {
@@ -490,7 +503,7 @@ pub async fn host_handshake(
             ConsentRequest {
                 peer,
                 device_name: device_name.clone(),
-                remote: conn.remote_address(),
+                remote,
                 auth,
                 prompt,
                 takeover,

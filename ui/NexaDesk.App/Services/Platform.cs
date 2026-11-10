@@ -53,7 +53,7 @@ public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
         return null;
     }
 
-    public string? Start(string listen, string deviceName)
+    public string? Start(string listen, string deviceName, string signalServer)
     {
         var path = Locate();
         if (path == null) return "找不到 nexa-agent。请使用打包好的 NexaDesk.app。";
@@ -70,6 +70,11 @@ public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
         info.ArgumentList.Add(deviceName);
         info.ArgumentList.Add("--consent");
         info.ArgumentList.Add("ui");
+        if (!string.IsNullOrEmpty(signalServer))
+        {
+            info.ArgumentList.Add("--signal");
+            info.ArgumentList.Add(signalServer);
+        }
         Process process;
         try
         {
@@ -168,6 +173,45 @@ public sealed partial class MacPermissions : IPermissionProbe
                 [$"x-apple.systempreferences:com.apple.preference.security?{anchor}"]) { UseShellExecute = false });
         }
         catch (Exception)
+        {
+        }
+    }
+}
+
+[JsonSerializable(typeof(AppSettings))]
+[JsonSourceGenerationOptions(WriteIndented = true, PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+internal sealed partial class SettingsJson : JsonSerializerContext;
+
+/// <summary>settings.json in the data directory. A damaged file reads as defaults.</summary>
+public sealed class SettingsStore(string path) : ISettingsStore
+{
+    public AppSettings Load()
+    {
+        try
+        {
+            if (!File.Exists(path)) return new AppSettings();
+            using var f = File.OpenRead(path);
+            if (f.Length > 1 << 16) return new AppSettings();
+            var s = JsonSerializer.Deserialize(f, SettingsJson.Default.AppSettings) ?? new AppSettings();
+            // Only what the app itself would have written is honoured.
+            return new AppSettings(ViewModels.Texts.NormalizeServer(s.SignalServer) ?? "");
+        }
+        catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException)
+        {
+            return new AppSettings();
+        }
+    }
+
+    public void Save(AppSettings settings)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            var tmp = path + ".tmp";
+            File.WriteAllText(tmp, JsonSerializer.Serialize(settings, SettingsJson.Default.AppSettings));
+            File.Move(tmp, path, overwrite: true);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
         }
     }

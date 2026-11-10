@@ -7,6 +7,7 @@ using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform;
@@ -31,6 +32,7 @@ static unsafe partial class Native
     [LibraryImport(L)] public static partial void s1_reset_stats();
     [LibraryImport(L)] public static partial int s1_get_stats(S1Stats* s);
     [LibraryImport(L)] public static partial void s1_detach();
+    [LibraryImport(L)] public static partial int s1_post_mouse(nint window, double x, double y, uint kind);
     [LibraryImport(L)] public static partial void s1_set_event_cb(delegate* unmanaged[Cdecl]<ulong, void> cb);
 }
 
@@ -76,10 +78,26 @@ sealed class App : Application
     {
         var life = (IClassicDesktopStyleApplicationLifetime)ApplicationLifetime!;
         var host = new VideoHost();
-        var main = new Window { Title = "NexaDesk S1", Width = 960, Height = 600, Content = host, Background = Brushes.Black };
-        life.MainWindow = main;
-        var t = new TestRun(main, host, life);
-        main.Opened += async (_, _) => await t.Execute();
+        if (Environment.GetEnvironmentVariable("S1_MOUSE") == "1")
+        {
+            // Mouse-routing check: an Avalonia strip above the native video view.
+            var strip = new Border { Height = MouseRun.Strip, Background = Brushes.DarkSlateGray };
+            var dock = new DockPanel();
+            DockPanel.SetDock(strip, Dock.Top);
+            dock.Children.Add(strip);
+            dock.Children.Add(host);
+            var w = new Window { Title = "NexaDesk S1 mouse", Width = 960, Height = 600, Content = dock, Background = Brushes.Black };
+            life.MainWindow = w;
+            var m = new MouseRun(w, life);
+            w.Opened += async (_, _) => await m.Execute();
+        }
+        else
+        {
+            var main = new Window { Title = "NexaDesk S1", Width = 960, Height = 600, Content = host, Background = Brushes.Black };
+            life.MainWindow = main;
+            var t = new TestRun(main, host, life);
+            main.Opened += async (_, _) => await t.Execute();
+        }
         base.OnFrameworkInitializationCompleted();
     }
 }
@@ -212,6 +230,43 @@ sealed class TestRun(Window main, VideoHost host, IClassicDesktopStyleApplicatio
         R("done");
         toolbar?.Close();
         life.Shutdown(failed ? 1 : 0);
+    }
+}
+
+/// Posts synthetic mouse events to this process only (never the real cursor) and
+/// records which region Avalonia saw them in.
+sealed class MouseRun(Window w, IClassicDesktopStyleApplicationLifetime life)
+{
+    public const double Strip = 80;
+    readonly string outDir = Environment.GetEnvironmentVariable("S1_OUT") ?? "/tmp";
+    int stripPress, videoPress, stripMove, videoMove, stripWheel, videoWheel;
+
+    bool InStrip(PointerEventArgs e) => e.GetPosition(w).Y < Strip;
+
+    public async Task Execute()
+    {
+        w.AddHandler(InputElement.PointerPressedEvent, (_, e) => { if (InStrip(e)) stripPress++; else videoPress++; }, Avalonia.Interactivity.RoutingStrategies.Tunnel | Avalonia.Interactivity.RoutingStrategies.Bubble, true);
+        w.AddHandler(InputElement.PointerMovedEvent, (_, e) => { if (InStrip(e)) stripMove++; else videoMove++; }, Avalonia.Interactivity.RoutingStrategies.Tunnel | Avalonia.Interactivity.RoutingStrategies.Bubble, true);
+        w.AddHandler(InputElement.PointerWheelChangedEvent, (_, e) => { if (InStrip(e)) stripWheel++; else videoWheel++; }, Avalonia.Interactivity.RoutingStrategies.Tunnel | Avalonia.Interactivity.RoutingStrategies.Bubble, true);
+        await Task.Delay(1500);
+        var clientH = w.ClientSize.Height;
+        var handle = w.TryGetPlatformHandle();
+        Console.WriteLine($"RESULT window handle: {handle?.HandleDescriptor}");
+        foreach (var region in new[] { "strip", "video" })
+        {
+            var y = region == "strip" ? Strip / 2 : Strip + (clientH - Strip) / 2;
+            var codes = new List<int>();
+            foreach (var kind in new uint[] { 0, 1, 2, 3 })
+            {
+                codes.Add(Native.s1_post_mouse(handle!.Handle, 300, y, kind));
+                await Task.Delay(50);
+            }
+            Console.WriteLine($"RESULT posted to {region}: rc={string.Join(",", codes)}");
+            await Task.Delay(300);
+        }
+        Console.WriteLine($"RESULT strip: press={stripPress} move={stripMove} wheel={stripWheel}");
+        Console.WriteLine($"RESULT video: press={videoPress} move={videoMove} wheel={videoWheel}");
+        life.Shutdown(0);
     }
 }
 

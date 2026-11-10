@@ -56,6 +56,7 @@ async fn main() {
             os: Os::Macos,
             caps: caps(),
             timeouts,
+            signal: None,
         },
         identity,
         store,

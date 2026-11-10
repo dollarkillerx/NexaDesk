@@ -13,7 +13,8 @@ enum Mode { MODE_OFFICE = 0; MODE_BALANCED = 1; MODE_GAME = 2; }
 
 // nexa_connect(req). `tag` is echoed on every event of this session.
 message ConnectRequest {
-  string address = 1;                 // "host:port"; IPv4, IPv6, or a resolvable name
+  string address = 1;                 // "host:port" (IPv4, IPv6, or a resolvable name), or a 9-digit device ID
+  string signal_server = 8;           // wss://server[:port]; needed when address is an ID
   uint64 tag = 2;
   Mode mode = 3;
   uint32 fps = 7;                     // 0 = host's choice
@@ -68,7 +69,8 @@ message Event {
 
 // The device identity loaded. Sent after nexa_init and after a new pairing.
 message Ready { string this_device_key = 1; repeated KnownHost hosts = 2; string error = 3; }
-message Connecting {}
+enum ConnectStage { STAGE_QUIC = 0; STAGE_RESOLVING = 1; STAGE_GATHERING = 2; STAGE_CHECKING = 3; }
+message Connecting { ConnectStage stage = 1; }
 message Connected {
   string host_key = 1;
   string host_name = 2;
@@ -91,7 +93,11 @@ message Stats {
   uint64 decode_errors = 5; uint64 presented = 6; uint64 rtt_us = 7; uint32 gate_pastes = 8;
   uint32 gate_held = 9; uint32 gate_timeouts = 10;
   uint64 rx_bytes = 11;        // UDP bytes received so far; the UI derives a bitrate
+  PathKind path = 12;
+  string path_detail = 13;     // "203.0.113.5:4000" or "relay 198.51.100.1:3480"
+  uint64 path_rtt_us = 14;     // from connectivity probes; 0 when unknown
 }
+enum PathKind { PATH_UNKNOWN = 0; PATH_DIRECT = 1; PATH_PUNCHED = 2; PATH_RELAY = 3; PATH_TAILSCALE = 4; }
 enum DisconnectReason {
   DISCONNECT_UNSPECIFIED = 0;
   DISCONNECT_CLOSED_LOCALLY = 1;
@@ -109,6 +115,9 @@ enum DisconnectReason {
   DISCONNECT_TIMED_OUT = 13;
   DISCONNECT_INVALID_REQUEST = 14;
   DISCONNECT_INTERNAL = 15;
+  DISCONNECT_OFFLINE = 16;         // the device ID is not online
+  DISCONNECT_NO_PATH = 17;         // no network path worked, relay included
+  DISCONNECT_SIGNAL_SERVER = 18;   // the signaling server is unreachable or refused
 }
 message Disconnected { DisconnectReason reason = 1; string message = 2; }
 message HostKeyPressed {}

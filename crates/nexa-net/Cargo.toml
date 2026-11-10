@@ -14,8 +14,14 @@ arc-swap = "1"
 hmac = "0.12"
 sha2 = "0.10"
 socket2 = "0.6"
+if-addrs = "0.15"
+# Only for the `sim` feature: the in-process NAT simulator schedules deliveries.
+tokio = { version = "1", features = ["time", "rt"], optional = true }
+
+[features]
+sim = ["dep:tokio"]
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "test-util"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rcgen = "0.14"

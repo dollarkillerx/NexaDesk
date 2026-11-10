@@ -6,6 +6,7 @@
 pub mod control;
 pub mod datagram;
 pub mod framing;
+pub mod signal;
 
 use thiserror::Error;
 

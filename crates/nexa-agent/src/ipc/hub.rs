@@ -314,7 +314,9 @@ impl Consent for IpcHub {
 impl AgentUi for IpcHub {
     fn event(&self, event: AgentEvent) {
         let out = match event {
-            AgentEvent::Listening(_) | AgentEvent::CodeChanged(_) => Outgoing::StatusChanged,
+            AgentEvent::Listening(_) | AgentEvent::CodeChanged(_) | AgentEvent::Signal(_) => {
+                Outgoing::StatusChanged
+            }
             AgentEvent::SessionStarted(info) => {
                 self.send(message(AgentBody::SessionStarted(pb::SessionStarted {
                     session: Some((&info).into()),

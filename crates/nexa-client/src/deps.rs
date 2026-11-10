@@ -51,4 +51,8 @@ pub trait Deps: Send + Sync + 'static {
     fn thread_init(&self) -> Option<fn()> {
         None
     }
+    /// Sockets for connections by device ID (§4.1). Tests keep them on loopback.
+    fn link_options(&self) -> nexa_session::rendezvous::link::LinkOptions {
+        nexa_session::rendezvous::link::LinkOptions::default()
+    }
 }

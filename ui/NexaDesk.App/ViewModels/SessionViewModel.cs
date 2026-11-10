@@ -243,7 +243,14 @@ public sealed partial class DiagnosticsViewModel(string address) : ObservableObj
     StreamStats? _last;
     DateTimeOffset _lastAt;
 
-    public string PathText { get; } = Texts.PathOf(address);
+    /// <summary>
+    /// From the address until the first Stats says how packets really travel:
+    /// 直连 / 打洞 / 中继 / Tailscale (§11).
+    /// </summary>
+    [ObservableProperty]
+    private string _pathText = Texts.NormalizeDeviceId(address) != null || address.StartsWith("ID ")
+        ? "正在建立…"
+        : Texts.PathOf(address);
 
     [ObservableProperty] private string _rttText = "—";
     [ObservableProperty] private string _lossText = "—";
@@ -259,6 +266,11 @@ public sealed partial class DiagnosticsViewModel(string address) : ObservableObj
     public void Update(StreamStats s, DateTimeOffset now)
     {
         RttText = s.RttUs == 0 ? "—" : $"{s.RttUs / 1000.0:F1} ms";
+        if (s.Path != PathKind.Unknown)
+        {
+            var path = Texts.Path(s.Path, s.PathDetail);
+            PathText = s.PathRttUs == 0 ? path : $"{path} · 探测 {s.PathRttUs / 1000.0:F0} ms";
+        }
         RecoveryText = $"FEC 恢复 {s.FecRecovered} 帧 · 解码错误 {s.DecodeErrors}";
         PasteText = $"{s.GatePastes} 次粘贴 · {s.GateHeld} 次等待剪贴板 · {s.GateTimeouts} 次超时";
         var last = _last;

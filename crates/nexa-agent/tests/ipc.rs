@@ -105,6 +105,7 @@ async fn rig_with(fallback: Option<Arc<FakeUi>>, tweak: impl FnOnce(&mut IpcConf
             os: Os::Macos,
             caps: caps(),
             timeouts: timeouts(),
+            signal: None,
         },
         identity,
         store,

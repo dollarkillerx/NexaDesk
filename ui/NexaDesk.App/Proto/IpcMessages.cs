@@ -81,11 +81,15 @@ public sealed record HostSession(ulong Id, string DeviceName, string DeviceId, s
 
 public sealed record PairedDevice(string DeviceKey, string DeviceId, string Name, Permissions Perms, ulong AddedAt, ulong LastSeen, bool Unattended);
 
+/// <summary>Reachability by device ID (Status.signal).</summary>
+public enum SignalState { Off = 0, Connecting = 1, Online = 2, Error = 3 }
+
 /// <summary>Agent → UI.</summary>
 public abstract record AgentMessage
 {
     public sealed record Status(uint Version, string Listen, string Code, string DeviceName, string DeviceId,
-        string DeviceKey, HostSession? Session, bool InputAvailable) : AgentMessage;
+        string DeviceKey, HostSession? Session, bool InputAvailable,
+        string ShortId = "", SignalState Signal = SignalState.Off, string SignalDetail = "") : AgentMessage;
 
     public sealed record IncomingRequest(ulong ReqId, string DeviceName, string DeviceId, string DeviceKey,
         string Remote, AuthKind Auth, Permissions Perms, bool OfferSave, bool SaveDefault, bool OfferSkipNextTime,
@@ -163,6 +167,8 @@ public abstract record AgentMessage
         string listen = "", code = "", name = "", did = "", key = "";
         HostSession? session = null;
         var input = false;
+        string shortId = "", detail = "";
+        var signal = SignalState.Off;
         var r = new ProtoReader(data);
         while (r.Next(out var f))
         {
@@ -176,10 +182,14 @@ public abstract record AgentMessage
                 case 6: key = r.String(); break;
                 case 7: session = DecodeSession(r.Bytes()); break;
                 case 8: input = r.Bool(); break;
+                case 9: shortId = r.String(); break;
+                case 10: signal = (SignalState)r.Int32(); break;
+                case 11: detail = r.String(); break;
                 default: r.Skip(); break;
             }
         }
-        return new Status(version, listen, code, name, did, key, session, input);
+        if (!Enum.IsDefined(signal)) signal = SignalState.Off;
+        return new Status(version, listen, code, name, did, key, session, input, shortId, signal, detail);
     }
 
     static IncomingRequest DecodeIncoming(ReadOnlySpan<byte> data)

@@ -24,6 +24,10 @@ pub const MAX_USERNAME_PARSE: usize = 763;
 const ATTR_USERNAME: u16 = 0x0006;
 const ATTR_MESSAGE_INTEGRITY_SHA256: u16 = 0x001C;
 const ATTR_XOR_MAPPED_ADDRESS: u16 = 0x0020;
+/// Private, comprehension-optional: the responder's label for the path the
+/// request arrived on, so the viewer can name it in `PathSwitch` (§4.5).
+/// It is only a label; nothing switches because of a STUN message.
+const ATTR_NEXA_PATH_TAG: u16 = 0xC0A1;
 /// Attribute types below this must be understood by the receiver.
 const COMPREHENSION_OPTIONAL_FROM: u16 = 0x8000;
 
@@ -82,6 +86,8 @@ pub struct StunMessage<'a> {
     pub txid: TransactionId,
     pub username: Option<&'a str>,
     pub mapped: Option<SocketAddr>,
+    /// The responder's label for this path ([`encode_binding_success_tagged`]).
+    pub path_tag: Option<u32>,
     /// First comprehension-required attribute this subset does not implement.
     /// RFC 8489 requires a response carrying one to be discarded.
     pub unknown_required: Option<u16>,
@@ -121,6 +127,7 @@ impl<'a> StunMessage<'a> {
             txid: TransactionId(txid),
             username: None,
             mapped: None,
+            path_tag: None,
             unknown_required: None,
             raw: buf,
             integrity: None,
@@ -173,7 +180,13 @@ impl<'a> StunMessage<'a> {
                 }
                 self.integrity = Some((attr_offset, value.len()));
             }
-            ATTR_USERNAME | ATTR_XOR_MAPPED_ADDRESS => {}
+            ATTR_NEXA_PATH_TAG if self.path_tag.is_none() => {
+                let v: [u8; 4] = value
+                    .try_into()
+                    .map_err(|_| StunError::BadAttribute("path tag length"))?;
+                self.path_tag = Some(u32::from_be_bytes(v));
+            }
+            ATTR_USERNAME | ATTR_XOR_MAPPED_ADDRESS | ATTR_NEXA_PATH_TAG => {}
             other if other < COMPREHENSION_OPTIONAL_FROM && self.unknown_required.is_none() => {
                 self.unknown_required = Some(other);
             }
@@ -298,6 +311,16 @@ pub fn encode_binding_success(
     mapped: SocketAddr,
     key: Option<&[u8]>,
 ) -> Result<Vec<u8>, StunError> {
+    encode_binding_success_tagged(txid, mapped, None, key)
+}
+
+/// [`encode_binding_success`] plus the responder's path label, covered by the tag.
+pub fn encode_binding_success_tagged(
+    txid: &TransactionId,
+    mapped: SocketAddr,
+    path_tag: Option<u32>,
+    key: Option<&[u8]>,
+) -> Result<Vec<u8>, StunError> {
     let mut out = start_message(TYPE_BINDING_SUCCESS, txid);
     let port = (mapped.port() ^ COOKIE_HIGH).to_be_bytes();
     let mut value = vec![0, 0, port[0], port[1]];
@@ -312,6 +335,9 @@ pub fn encode_binding_success(
         }
     }
     push_attribute(&mut out, ATTR_XOR_MAPPED_ADDRESS, &value);
+    if let Some(tag) = path_tag {
+        push_attribute(&mut out, ATTR_NEXA_PATH_TAG, &tag.to_be_bytes());
+    }
     finish_message(out, key)
 }
 
@@ -530,6 +556,32 @@ mod tests {
 
         let resp = encode_binding_success(&RFC_TXID, good, Some(b"k")).unwrap();
         assert_eq!(StunMessage::parse(&resp).unwrap().mapped, Some(good));
+    }
+
+    #[test]
+    fn path_tag_round_trips_under_integrity() {
+        let addr: SocketAddr = "203.0.113.7:4000".parse().unwrap();
+        let raw =
+            encode_binding_success_tagged(&RFC_TXID, addr, Some(0xDEAD_BEEF), Some(b"k")).unwrap();
+        let m = StunMessage::parse(&raw).unwrap();
+        m.verify_integrity(b"k").unwrap();
+        assert_eq!(m.path_tag, Some(0xDEAD_BEEF));
+        assert_eq!(m.mapped, Some(addr));
+        assert_eq!(
+            m.unknown_required, None,
+            "the tag is comprehension-optional"
+        );
+        let plain = encode_binding_success(&RFC_TXID, addr, Some(b"k")).unwrap();
+        assert_eq!(StunMessage::parse(&plain).unwrap().path_tag, None);
+        // A tag appended after the integrity attribute is ignored.
+        let mut forged = plain;
+        forged.extend_from_slice(&[0xC0, 0xA1, 0, 4, 0, 0, 0, 9]);
+        let len = (forged.len() - HEADER_LEN) as u16;
+        forged[2..4].copy_from_slice(&len.to_be_bytes());
+        let m = StunMessage::parse(&forged).unwrap();
+        m.verify_integrity(b"k").unwrap();
+        assert_eq!(m.path_tag, None);
+        assert!(StunMessage::parse(&with_body(&[0xC0, 0xA1, 0, 2, 1, 2, 0, 0])).is_err());
     }
 
     #[test]

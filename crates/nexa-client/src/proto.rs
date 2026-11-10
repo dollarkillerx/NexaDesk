@@ -33,6 +33,9 @@ pub struct ConnectRequest {
     pub fps: u32,
     #[prost(oneof = "ConnectAuth", tags = "4, 5, 6")]
     pub auth: Option<ConnectAuth>,
+    /// The nexa-signal server, used when `address` is a device ID.
+    #[prost(string, tag = "8")]
+    pub signal_server: String,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -138,7 +141,33 @@ pub struct Ready {
 }
 
 #[derive(Clone, PartialEq, Message)]
-pub struct Connecting {}
+pub struct Connecting {
+    #[prost(enumeration = "ConnectStage", tag = "1")]
+    pub stage: i32,
+}
+
+/// §4.4's states up to the QUIC handshake. ip:port connections only report Quic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Enumeration)]
+#[repr(i32)]
+pub enum ConnectStage {
+    Quic = 0,
+    Resolving = 1,
+    Gathering = 2,
+    Checking = 3,
+}
+
+/// How the session's packets travel (§11 diagnostics).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Enumeration)]
+#[repr(i32)]
+pub enum PathKind {
+    Unknown = 0,
+    /// To the host's own address: LAN, public IP or ip:port.
+    Direct = 1,
+    /// Through both NATs by hole punching.
+    Punched = 2,
+    Relay = 3,
+    Tailscale = 4,
+}
 
 #[derive(Clone, PartialEq, Message)]
 pub struct Connected {
@@ -222,6 +251,14 @@ pub struct Stats {
     /// UDP bytes received on the connection so far, for a bitrate readout.
     #[prost(uint64, tag = "11")]
     pub rx_bytes: u64,
+    #[prost(enumeration = "PathKind", tag = "12")]
+    pub path: i32,
+    /// The remote end of the path, e.g. "203.0.113.5:4000" or "relay 198.51.100.1:3480".
+    #[prost(string, tag = "13")]
+    pub path_detail: String,
+    /// Smoothed path RTT from connectivity probes, when known.
+    #[prost(uint64, tag = "14")]
+    pub path_rtt_us: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Enumeration)]
@@ -243,6 +280,12 @@ pub enum DisconnectReason {
     TimedOut = 13,
     InvalidRequest = 14,
     Internal = 15,
+    /// The ID is not registered with the server right now.
+    Offline = 16,
+    /// Every path failed connectivity checks, relay included.
+    NoPath = 17,
+    /// The signaling server could not be reached or refused us.
+    SignalServer = 18,
 }
 
 #[derive(Clone, PartialEq, Message)]

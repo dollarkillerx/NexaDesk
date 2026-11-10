@@ -73,6 +73,7 @@ public sealed partial class HostViewModel : ObservableObject
     readonly IWindowService _windows;
     readonly Func<DateTimeOffset> _now;
     readonly string _deviceName;
+    readonly Func<string> _signalServer;
     BannerViewModel? _banner;
     ConsentViewModel? _consent;
     CancellationTokenSource? _starting;
@@ -84,7 +85,7 @@ public sealed partial class HostViewModel : ObservableObject
     public BannerViewModel? Banner => _banner;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsStopped), nameof(IsStarting), nameof(IsHosting), nameof(StateText))]
+    [NotifyPropertyChangedFor(nameof(IsStopped), nameof(IsStarting), nameof(IsHosting), nameof(StateText), nameof(RestartNeeded))]
     [NotifyCanExecuteChangedFor(nameof(StartCommand), nameof(StopCommand), nameof(RotateCodeCommand))]
     private HostState _state = HostState.Stopped;
 
@@ -97,6 +98,29 @@ public sealed partial class HostViewModel : ObservableObject
     private string _code = "";
 
     [ObservableProperty] private string _activeListen = "";
+
+    /// <summary>This Mac's device ID while registered with the signaling server, else empty.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(DeviceIdDisplay), nameof(HasDeviceId))]
+    private string _deviceId = "";
+
+    [ObservableProperty] private string _signalText = "";
+    [ObservableProperty] private bool _signalProblem;
+
+    public bool HasDeviceId => DeviceId.Length > 0;
+    public string DeviceIdDisplay => HasDeviceId ? Texts.GroupDeviceId(DeviceId) : "—";
+
+    /// <summary>
+    /// The server the running agent was started with, or null for an agent this app
+    /// did not start (it cannot tell). A changed setting applies on the next start.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(RestartNeeded))]
+    private string? _startedWithServer;
+
+    public bool RestartNeeded => IsHosting && StartedWithServer != null && StartedWithServer != _signalServer();
+
+    public void OnServerChanged() => OnPropertyChanged(nameof(RestartNeeded));
     [ObservableProperty] private string _hostFingerprint = "—";
     [ObservableProperty] private bool _inputAvailable = true;
 
@@ -107,8 +131,9 @@ public sealed partial class HostViewModel : ObservableObject
     [ObservableProperty] private string? _notice;
 
     public HostViewModel(IAgentLink link, IAgentProcess process, IPermissionProbe permissions, IWindowService windows,
-        ILocalAddresses addresses, string deviceName, Func<DateTimeOffset>? now = null)
+        ILocalAddresses addresses, string deviceName, Func<DateTimeOffset>? now = null, Func<string>? signalServer = null)
     {
+        _signalServer = signalServer ?? (() => "");
         _link = link;
         _process = process;
         _permissions = permissions;
@@ -131,7 +156,7 @@ public sealed partial class HostViewModel : ObservableObject
     public string StateText => State switch
     {
         HostState.Starting => "正在启动…",
-        HostState.Hosting => "已开启：别人可以用下面的代码请求连接，每次都需要你确认",
+        HostState.Hosting => "已开启：别人可以用下面的 ID 或地址加一次性码请求连接，每次都需要你确认",
         _ => "未开启：别人无法连接本机",
     };
 
@@ -169,7 +194,9 @@ public sealed partial class HostViewModel : ObservableObject
                 Attached();
                 return;
             }
-            var why = _process.Start(listen, _deviceName);
+            var server = _signalServer();
+            StartedWithServer = server;
+            var why = _process.Start(listen, _deviceName, server);
             if (why != null)
             {
                 State = HostState.Stopped;
@@ -257,6 +284,9 @@ public sealed partial class HostViewModel : ObservableObject
                 ActiveListen = s.Listen;
                 InputAvailable = s.InputAvailable;
                 HostFingerprint = Texts.Fingerprint(s.DeviceKey);
+                DeviceId = s.Signal == SignalState.Online ? s.ShortId : "";
+                SignalText = Texts.Signal(s.Signal, s.ShortId, s.SignalDetail);
+                SignalProblem = s.Signal == SignalState.Error;
                 if (s.Session != null) ShowBanner(s.Session);
                 else HideBanner();
                 break;
@@ -326,6 +356,10 @@ public sealed partial class HostViewModel : ObservableObject
         State = HostState.Stopped;
         Code = "";
         ActiveListen = "";
+        StartedWithServer = null;
+        DeviceId = "";
+        SignalText = "";
+        SignalProblem = false;
         Paired.Clear();
         // With no UI the agent itself ends the session and denies the open question.
         _consent?.Expire("被控服务已停止");
@@ -442,15 +476,22 @@ public sealed partial class MainViewModel : ObservableObject
 
     public ConnectViewModel Connect { get; }
     public HostViewModel Host { get; }
+    public SettingsViewModel Settings { get; }
 
     public MainViewModel(IClientCore core, IRecentStore recent, IAgentLink link, IAgentProcess process,
         IPermissionProbe permissions, IWindowService windows, ILocalAddresses addresses, string deviceName,
-        Func<DateTimeOffset>? now = null)
+        Func<DateTimeOffset>? now = null, ISettingsStore? settings = null)
     {
         _core = core;
         DeviceName = deviceName;
-        Connect = new ConnectViewModel(core, recent, windows, now);
-        Host = new HostViewModel(link, process, permissions, windows, addresses, deviceName, now);
+        Settings = new SettingsViewModel(settings ?? new MemorySettings());
+        Connect = new ConnectViewModel(core, recent, windows, now, () => Settings.SavedServer);
+        Host = new HostViewModel(link, process, permissions, windows, addresses, deviceName, now, () => Settings.SavedServer);
+        Settings.ServerChanged += _ =>
+        {
+            Connect.OnServerChanged();
+            Host.OnServerChanged();
+        };
         _permissions = permissions;
         _windows = windows;
     }

@@ -72,7 +72,12 @@ message Status {
   string device_key = 6;         // this host's public key, hex
   SessionInfo session = 7;       // absent when no session is running
   bool input_available = 8;      // Accessibility is granted, so input can be allowed
+  string short_id = 9;           // this device's ID on the signaling server; empty when not registered
+  SignalState signal = 10;
+  string signal_detail = 11;     // why the last attempt failed, or why NAT detection is degraded
 }
+
+enum SignalState { SIGNAL_OFF = 0; SIGNAL_CONNECTING = 1; SIGNAL_ONLINE = 2; SIGNAL_ERROR = 3; }
 
 enum AuthKind { AUTH_UNSPECIFIED = 0; AUTH_PAIRED = 1; AUTH_CODE = 2; AUTH_PASSWORD = 3; }
 

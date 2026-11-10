@@ -11,6 +11,7 @@ use std::{
 
 use nexa_media::{CaptureConfig, Capturer, Encoder, EncoderConfig, MediaError};
 use nexa_net::rate::RateConfig;
+use nexa_session::rendezvous::link::Link;
 use nexa_session::{
     SessionError,
     clip::{ClipCallbacks, ClipChannel, ClipSession, PromiseMode},
@@ -239,13 +240,40 @@ async fn control_writer(mut send: FramedSend, mut rx: mpsc::UnboundedReceiver<Co
     send.finish_and_flush(FLUSH_TIMEOUT).await;
 }
 
+/// §4.5 on the host: follow the viewer's `PathSwitch`, which only ever arrives on
+/// this authenticated stream. Sessions on the listening address have no link and
+/// ignore it.
+struct PathFollower {
+    link: Option<Arc<Link>>,
+    last: Option<u32>,
+}
+
+impl PathFollower {
+    /// True when the path really changed (not the initial choice).
+    fn apply(&mut self, path_id: u32) -> bool {
+        let Some(link) = &self.link else { return false };
+        link.apply_remote_switch(path_id);
+        let changed = self.last.is_some_and(|l| l != path_id);
+        self.last = Some(path_id);
+        changed
+    }
+}
+
 /// What the viewer asked for before streaming starts.
-async fn first_request(recv: &mut FramedRecv) -> Result<StreamRequest, &'static str> {
+async fn first_request(
+    recv: &mut FramedRecv,
+    path: &mut PathFollower,
+) -> Result<StreamRequest, &'static str> {
     loop {
         match recv.next::<ControlMsg>().await {
             Ok(Some(ControlMsg {
                 body: Some(ControlBody::Request(r)),
             })) => return Ok(r),
+            Ok(Some(ControlMsg {
+                body: Some(ControlBody::PathSwitch(p)),
+            })) => {
+                path.apply(p.path_id);
+            }
             Ok(Some(ControlMsg {
                 body: Some(ControlBody::Bye(_)),
             })) => return Err("the viewer left"),
@@ -266,6 +294,7 @@ pub(crate) async fn run(
     env: Arc<SessionEnv>,
     mut stop: watch::Receiver<Option<CloseReason>>,
     info: SessionInfo,
+    link: Option<Arc<Link>>,
 ) -> String {
     let HostAccepted {
         control,
@@ -281,17 +310,19 @@ pub(crate) async fn run(
         conn.close(close::for_reason(reason).into(), message.as_bytes());
     };
 
-    let request = match tokio::time::timeout(HANDSHAKE_TIMEOUT, first_request(&mut recv)).await {
-        Ok(Ok(r)) => r,
-        Ok(Err(why)) => {
-            finish(&conn, CloseReason::Unspecified, why);
-            return why.to_owned();
-        }
-        Err(_) => {
-            finish(&conn, CloseReason::Unspecified, "no stream request");
-            return "the viewer sent no stream request".to_owned();
-        }
-    };
+    let mut path = PathFollower { link, last: None };
+    let request =
+        match tokio::time::timeout(HANDSHAKE_TIMEOUT, first_request(&mut recv, &mut path)).await {
+            Ok(Ok(r)) => r,
+            Ok(Err(why)) => {
+                finish(&conn, CloseReason::Unspecified, why);
+                return why.to_owned();
+            }
+            Err(_) => {
+                finish(&conn, CloseReason::Unspecified, "no stream request");
+                return "the viewer sent no stream request".to_owned();
+            }
+        };
 
     let screen = match env.platform.screen() {
         Ok(s) => s,
@@ -405,6 +436,11 @@ pub(crate) async fn run(
                 }
                 Ok(Some(ControlMsg { body: Some(ControlBody::Bye(_)) })) => {
                     break (CloseReason::Unspecified, "the viewer ended the session".to_owned());
+                }
+                Ok(Some(ControlMsg { body: Some(ControlBody::PathSwitch(p)) })) => {
+                    if path.apply(p.path_id) {
+                        media.path_switched();
+                    }
                 }
                 Ok(Some(_)) => {}
                 Ok(None) | Err(_) => break (CloseReason::Unspecified, "the control stream ended".to_owned()),

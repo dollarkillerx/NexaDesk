@@ -33,6 +33,7 @@ csbindgen = "1.9"
 
 [dev-dependencies]
 nexa-agent = { path = "../nexa-agent" }
+nexa-signal = { path = "../nexa-signal" }
 tempfile = "3"
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]

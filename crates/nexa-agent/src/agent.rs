@@ -15,8 +15,11 @@ use nexa_auth::{
 };
 use nexa_net::vsock::bind_media_socket;
 use nexa_session::{
-    handshake::{HostAccepted, HostConfig, HostSecrets, PairLimiter, Timeouts, host_handshake},
+    handshake::{
+        HostAccepted, HostConfig, HostSecrets, PairLimiter, Timeouts, host_handshake_from,
+    },
     proto::CloseReason,
+    rendezvous::{link::Link, seal::SignalKeys},
 };
 use nexa_wire::control::{Caps, Display, FocusContext, Os};
 use quinn::{Connection, Endpoint, EndpointConfig, TokioRuntime};
@@ -27,6 +30,7 @@ use zeroize::Zeroizing;
 use crate::{
     AgentEvent, AgentUi, Platform, SessionInfo,
     session::{self, SessionEnv},
+    signal::{SignalSetup, SignalStatus},
 };
 
 /// Connections being authenticated at once. Beyond this new ones are refused outright.
@@ -40,6 +44,8 @@ pub struct AgentConfig {
     pub os: Os,
     pub caps: Caps,
     pub timeouts: Timeouts,
+    /// Also be reachable by device ID through this signaling server (§4.3).
+    pub signal: Option<SignalSetup>,
 }
 
 #[derive(Debug, Error)]
@@ -62,17 +68,20 @@ struct ActiveSession {
     done: watch::Receiver<bool>,
 }
 
-struct Shared {
+pub(crate) struct Shared {
     env: Arc<SessionEnv>,
-    host: HostConfig,
-    ui: Arc<dyn AgentUi>,
+    pub(crate) host: HostConfig,
+    pub(crate) server_config: quinn::ServerConfig,
+    pub(crate) signal_status: Mutex<SignalStatus>,
+    handshakes: Arc<Semaphore>,
+    pub(crate) ui: Arc<dyn AgentUi>,
     code: OneTimeCode,
     shown_code: Mutex<String>,
     slot: Mutex<Option<ActiveSession>>,
     /// Keeps two accepted connections from replacing the old session at once.
     replacing: tokio::sync::Mutex<()>,
     next_id: AtomicU64,
-    shutdown: watch::Sender<bool>,
+    pub(crate) shutdown: watch::Sender<bool>,
 }
 
 impl Shared {
@@ -165,6 +174,15 @@ impl Agent {
 
     pub fn public_key(&self) -> DevicePublicKey {
         self.shared.host.me
+    }
+
+    /// Reachability by ID: state, and this device's ID while registered.
+    pub fn signal_status(&self) -> SignalStatus {
+        self.shared
+            .signal_status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn session_active(&self) -> bool {
@@ -288,13 +306,14 @@ pub async fn start(
 ) -> Result<Agent, AgentError> {
     // §9.2: anyone may complete the TLS handshake; nothing is granted by doing so.
     let server = server_config(&identity, PeerPolicy::AcceptUnknown)?;
+    let identity = Arc::new(identity);
     let socket = bind_media_socket(config.listen).map_err(|source| AgentError::Bind {
         addr: config.listen,
         source,
     })?;
     let endpoint = Endpoint::new(
         EndpointConfig::default(),
-        Some(server),
+        Some(server.clone()),
         socket,
         Arc::new(TokioRuntime),
     )
@@ -318,8 +337,12 @@ pub async fn start(
         caps: config.caps.clone(),
         device: nexa_clip::DeviceId(*identity.device_id().as_bytes()),
     });
+    let signal_setup = config.signal.clone();
     let shared = Arc::new(Shared {
         env,
+        server_config: server,
+        signal_status: Mutex::new(SignalStatus::default()),
+        handshakes: Arc::new(Semaphore::new(MAX_HANDSHAKES)),
         host: HostConfig {
             me: identity.public_key(),
             store: Arc::new(Mutex::new(store)),
@@ -362,6 +385,10 @@ pub async fn start(
     shared.report_code();
     let (done_tx, done) = watch::channel(false);
     tokio::spawn(accept_loop(endpoint, shared.clone(), done_tx));
+    if let Some(setup) = signal_setup {
+        let keys = Arc::new(SignalKeys::new(identity.clone()));
+        tokio::spawn(crate::signal::run(shared.clone(), setup, keys));
+    }
     Ok(Agent {
         shared,
         name: config.device_name,
@@ -372,7 +399,7 @@ pub async fn start(
 }
 
 async fn accept_loop(endpoint: Endpoint, shared: Arc<Shared>, done: watch::Sender<bool>) {
-    let limit = Arc::new(Semaphore::new(MAX_HANDSHAKES));
+    let limit = shared.handshakes.clone();
     let mut shutdown = shared.shutdown.subscribe();
     loop {
         let incoming = tokio::select! {
@@ -397,7 +424,8 @@ async fn accept_loop(endpoint: Endpoint, shared: Arc<Shared>, done: watch::Sende
                     return;
                 }
             };
-            handle_connection(conn, shared, permit).await;
+            let remote = conn.remote_address();
+            handle_connection(conn, shared, permit, remote, None).await;
         });
     }
     endpoint.close(0u32.into(), b"agent stopped");
@@ -409,16 +437,32 @@ async fn accept_loop(endpoint: Endpoint, shared: Arc<Shared>, done: watch::Sende
     let _ = done.send(true);
 }
 
+/// A connection that came through the rendezvous (§4.3). From here on it is
+/// treated exactly like one accepted on the listening address.
+pub(crate) async fn serve_connection(
+    conn: Connection,
+    shared: Arc<Shared>,
+    remote: SocketAddr,
+    link: Option<Arc<Link>>,
+) {
+    let Ok(permit) = shared.handshakes.clone().try_acquire_owned() else {
+        conn.close(1u32.into(), b"busy");
+        return;
+    };
+    handle_connection(conn, shared, permit, remote, link).await;
+}
+
 async fn handle_connection(
     conn: Connection,
     shared: Arc<Shared>,
     permit: tokio::sync::OwnedSemaphorePermit,
+    remote: SocketAddr,
+    link: Option<Arc<Link>>,
 ) {
-    let remote = conn.remote_address();
     let result = {
         let probe = shared.clone();
         let active = move || probe.session_active();
-        host_handshake(&conn, &shared.host, &active).await
+        host_handshake_from(&conn, &shared.host, &active, remote).await
     };
     shared.report_code();
     let accepted = match result {
@@ -437,10 +481,16 @@ async fn handle_connection(
         conn.close(1u32.into(), b"shutting down");
         return;
     }
-    run_session(conn, accepted, shared).await;
+    run_session(conn, accepted, shared, remote, link).await;
 }
 
-async fn run_session(conn: Connection, accepted: HostAccepted, shared: Arc<Shared>) {
+async fn run_session(
+    conn: Connection,
+    accepted: HostAccepted,
+    shared: Arc<Shared>,
+    remote: SocketAddr,
+    link: Option<Arc<Link>>,
+) {
     let id = shared.next_id.fetch_add(1, Relaxed);
     let (stop_tx, stop_rx) = watch::channel(None);
     let info = SessionInfo {
@@ -448,7 +498,7 @@ async fn run_session(conn: Connection, accepted: HostAccepted, shared: Arc<Share
         device_name: accepted.device_name.clone(),
         device_id: accepted.peer.device_id().to_string(),
         device_key: accepted.peer.to_hex(),
-        remote: conn.remote_address(),
+        remote,
         perms: accepted.perms.clone(),
     };
     let done = shared.take_slot(info.clone(), stop_tx).await;
@@ -458,7 +508,7 @@ async fn run_session(conn: Connection, accepted: HostAccepted, shared: Arc<Share
         )));
     }
     let device_name = info.device_name.clone();
-    let reason = session::run(conn, accepted, shared.env.clone(), stop_rx, info).await;
+    let reason = session::run(conn, accepted, shared.env.clone(), stop_rx, info, link).await;
     shared.clear_slot(id);
     let _ = done.send(true);
     shared.ui.event(AgentEvent::SessionEnded {

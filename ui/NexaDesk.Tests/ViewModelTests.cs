@@ -691,3 +691,188 @@ public class AgentLinkTests
         Assert.True(f());
     }
 }
+
+public class DeviceIdTests
+{
+    [Fact]
+    public void Ids_servers_and_paths_are_parsed_and_shown()
+    {
+        Assert.Equal("123456789", Texts.NormalizeDeviceId("123 456-789"));
+        Assert.Null(Texts.NormalizeDeviceId("12345678"));
+        Assert.Equal("123 456 789", Texts.GroupDeviceId("123456789"));
+        Assert.Equal("123456789", Texts.NormalizeTarget(" 123 456 789 "));
+        Assert.Equal("10.0.0.2:47800", Texts.NormalizeTarget("10.0.0.2"));
+        Assert.Equal("12345:47800", Texts.NormalizeTarget("12345")); // a host name, as before
+
+        Assert.Equal("wss://signal.example.com", Texts.NormalizeServer("signal.example.com"));
+        Assert.Equal("wss://signal.example.com:8443", Texts.NormalizeServer("wss://signal.example.com:8443/ws"));
+        Assert.Equal("ws://127.0.0.1:9000", Texts.NormalizeServer("ws://127.0.0.1:9000"));
+        Assert.Equal("wss://[::1]:9000", Texts.NormalizeServer("wss://[::1]:9000"));
+        Assert.Null(Texts.NormalizeServer("ws://signal.example.com:80"));
+        Assert.Null(Texts.NormalizeServer("https://signal.example.com"));
+        Assert.Null(Texts.NormalizeServer("wss://a b"));
+        Assert.Null(Texts.NormalizeServer("wss://host:99999"));
+
+        Assert.Equal("中继 · relay 1.2.3.4:5", Texts.Path(PathKind.Relay, "relay 1.2.3.4:5"));
+        Assert.Equal("打洞", Texts.Path(PathKind.Punched, ""));
+        Assert.Equal("Tailscale · 100.64.0.1:1", Texts.Path(PathKind.Tailscale, "100.64.0.1:1"));
+        Assert.Equal("直连 · 10.0.0.2:1", Texts.Path(PathKind.Direct, "10.0.0.2:1"));
+    }
+
+    [Fact]
+    public void Settings_save_only_valid_servers()
+    {
+        var store = new MemorySettings();
+        var s = new SettingsViewModel(store);
+        Assert.False(s.HasServer);
+        s.ServerInput = "http://x";
+        Assert.NotNull(s.ServerHint);
+        Assert.False(s.SaveCommand.CanExecute(null));
+        string? changed = null;
+        s.ServerChanged += v => changed = v;
+        s.ServerInput = "signal.example.com";
+        Assert.True(s.SaveCommand.CanExecute(null));
+        s.SaveCommand.Execute(null);
+        Assert.Equal("wss://signal.example.com", store.Current.SignalServer);
+        Assert.Equal("wss://signal.example.com", changed);
+        Assert.False(s.IsDirty);
+        s.ServerInput = "";
+        s.SaveCommand.Execute(null);
+        Assert.Equal("", store.Current.SignalServer);
+    }
+
+    [Fact]
+    public void Settings_files_that_were_tampered_with_read_as_defaults()
+    {
+        var dir = Directory.CreateTempSubdirectory();
+        var path = Path.Combine(dir.FullName, "settings.json");
+        var store = new SettingsStore(path);
+        Assert.Equal("", store.Load().SignalServer);
+        store.Save(new AppSettings("wss://a.example"));
+        Assert.Equal("wss://a.example", store.Load().SignalServer);
+        File.WriteAllText(path, "{\"signalServer\": \"ws://evil.example:80\"}");
+        Assert.Equal("", store.Load().SignalServer);
+        File.WriteAllText(path, "not json");
+        Assert.Equal("", store.Load().SignalServer);
+        dir.Delete(true);
+    }
+
+    static MainViewModel Main(FakeClient client, FakeLink link, FakeProcess process, MemoryRecent recent, string server) =>
+        new(client, recent, link, process, new FakePermissions(), new RecordingWindows(), new FakeAddresses(),
+            "王小明的 MacBook Pro", () => Samples.T0, new MemorySettings(new AppSettings(server)));
+
+    [Fact]
+    public void Connecting_by_id_sends_the_server_and_reports_each_stage()
+    {
+        var client = new FakeClient();
+        var recent = new MemoryRecent();
+        var vm = Main(client, new FakeLink(), new FakeProcess(), recent, "wss://signal.example.com").Connect;
+        vm.Address = "314 159 265";
+        Assert.Null(vm.AddressHint);
+        vm.Code = "ABCD2345";
+        vm.ConnectCommand.Execute(null);
+        var req = Assert.Single(client.Requests);
+        Assert.Equal(("314159265", "wss://signal.example.com"), (req.Address, req.SignalServer));
+        Assert.Contains("信令服务器", vm.ProgressText);
+        client.Raise(new ConnectingEvent(req.Tag, ConnectStage.Checking));
+        Assert.Contains("打洞", vm.ProgressText);
+        client.Raise(new ConnectingEvent(req.Tag, ConnectStage.Quic));
+        Assert.Contains("等待对方确认", vm.ProgressText);
+        client.Raise(Samples.Connected(req.Tag));
+        var saved = Assert.Single(recent.Saved);
+        Assert.Equal("314159265", saved.Address);
+        Assert.Equal("ID 314 159 265", Assert.Single(vm.Recent).Address);
+    }
+
+    [Fact]
+    public void An_address_never_carries_the_server_and_an_id_needs_one()
+    {
+        var client = new FakeClient();
+        var main = Main(client, new FakeLink(), new FakeProcess(), new MemoryRecent(), "");
+        var vm = main.Connect;
+        vm.Address = "123456789";
+        vm.Code = "ABCD2345";
+        Assert.Contains("信令服务器", vm.AddressHint);
+        vm.ConnectCommand.Execute(null);
+        Assert.Empty(client.Requests);
+        Assert.Equal("未设置信令服务器", vm.Error!.Title);
+
+        main.Settings.ServerInput = "wss://s.example";
+        main.Settings.SaveCommand.Execute(null);
+        Assert.Null(vm.AddressHint);
+        vm.Address = "10.0.0.2:47800";
+        vm.ConnectCommand.Execute(null);
+        Assert.Equal("", Assert.Single(client.Requests).SignalServer);
+    }
+
+    [Fact]
+    public void A_paired_recent_id_reconnects_with_its_pin()
+    {
+        var client = new FakeClient();
+        var recent = new MemoryRecent(new RecentDevice("314159265", "家里的 iMac", Samples.HostKey, 1));
+        var vm = Main(client, new FakeLink(), new FakeProcess(), recent, "wss://s.example").Connect;
+        client.Raise(new ReadyEvent(0, Samples.ViewerKey, [new KnownHost(Samples.HostKey, "家里的 iMac", 0)], ""));
+        Assert.Single(vm.Recent).ConnectCommand.Execute(null);
+        var req = Assert.Single(client.Requests);
+        Assert.Equal(new ConnectAuth.KnownHost(Samples.HostKey), req.Auth);
+        Assert.Equal(("314159265", "wss://s.example"), (req.Address, req.SignalServer));
+    }
+
+    [Fact]
+    public void Id_disconnect_reasons_are_explained()
+    {
+        foreach (var r in new[] { DisconnectReason.Offline, DisconnectReason.NoPath, DisconnectReason.SignalServer })
+            Assert.NotEqual("连接已断开", Texts.Disconnect(r).Title);
+    }
+
+    [Fact]
+    public async Task The_hosting_card_shows_the_device_id_and_the_server_goes_to_the_agent()
+    {
+        var link = new FakeLink();
+        link.ConnectResults.Enqueue("no socket");
+        link.ConnectResults.Enqueue(null);
+        var process = new FakeProcess();
+        var main = Main(new FakeClient(), link, process, new MemoryRecent(), "wss://s.example");
+        var host = main.Host;
+        await host.StartCommand.ExecuteAsync(null);
+        Assert.Equal("wss://s.example", Assert.Single(process.Servers));
+        Assert.False(host.HasDeviceId);
+        link.Raise(Samples.Status(signal: SignalState.Connecting));
+        Assert.Contains("正在连接", host.SignalText);
+        link.Raise(Samples.Status(shortId: "271828182", signal: SignalState.Online));
+        Assert.Equal("271 828 182", host.DeviceIdDisplay);
+        Assert.True(host.HasDeviceId);
+        link.Raise(Samples.Status(shortId: "271828182", signal: SignalState.Error, detail: "refused"));
+        Assert.False(host.HasDeviceId, "a stale ID is not shown");
+        Assert.True(host.SignalProblem);
+        Assert.False(host.RestartNeeded);
+        main.Settings.ServerInput = "wss://other.example";
+        main.Settings.SaveCommand.Execute(null);
+        Assert.True(host.RestartNeeded);
+    }
+
+    [Fact]
+    public async Task An_agent_left_running_is_not_second_guessed_about_its_server()
+    {
+        var link = new FakeLink();
+        link.ConnectResults.Enqueue(null);
+        var main = Main(new FakeClient(), link, new FakeProcess(), new MemoryRecent(), "wss://s.example");
+        await main.Host.StartCommand.ExecuteAsync(null);
+        Assert.True(main.Host.IsHosting);
+        Assert.False(main.Host.RestartNeeded);
+    }
+
+    [Fact]
+    public void Diagnostics_follow_the_real_path()
+    {
+        var d = new DiagnosticsViewModel("ID 314 159 265");
+        Assert.Equal("正在建立…", d.PathText);
+        d.Update(new StreamStats(1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1, PathKind.Relay, "relay 203.0.113.1:3480", 48_000), Samples.T0);
+        Assert.Equal("中继 · relay 203.0.113.1:3480 · 探测 48 ms", d.PathText);
+        d.Update(new StreamStats(2, 0, 0, 2, 0, 2, 0, 0, 0, 0, 2, PathKind.Punched, "198.51.100.7:4000"), Samples.T0.AddSeconds(1));
+        Assert.Equal("打洞 · 198.51.100.7:4000", d.PathText);
+        var direct = new DiagnosticsViewModel("192.168.1.20:47800");
+        direct.Update(new StreamStats(1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1), Samples.T0);
+        Assert.Contains("局域网", direct.PathText);
+    }
+}

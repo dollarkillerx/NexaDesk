@@ -99,6 +99,20 @@ impl Deps for FakeDeps {
         self.probe.views_attached.fetch_add(1, SeqCst);
         Ok(Box::new(NullPresenter))
     }
+    fn link_options(&self) -> nexa_session::rendezvous::link::LinkOptions {
+        loopback_link()
+    }
+}
+
+/// Session sockets on loopback, so tests never touch a real interface.
+fn loopback_link() -> nexa_session::rendezvous::link::LinkOptions {
+    nexa_session::rendezvous::link::LinkOptions {
+        bind: "127.0.0.1:0".parse().unwrap(),
+        interfaces: nexa_session::rendezvous::link::Interfaces::Fixed(vec![
+            "127.0.0.1".parse().unwrap(),
+        ]),
+        ..Default::default()
+    }
 }
 
 #[derive(Default)]
@@ -177,6 +191,7 @@ impl Viewer {
             mode: Mode::Balanced as i32,
             fps: 0,
             auth: Some(ConnectAuth::Code(h.agent.current_code().to_string())),
+            signal_server: String::new(),
         })
     }
 
@@ -313,6 +328,7 @@ async fn a_paired_viewer_reconnects_with_its_pin_and_a_wrong_pin_is_named() {
         mode: Mode::Office as i32,
         fps: 0,
         auth: Some(ConnectAuth::KnownHost(key)),
+        signal_server: String::new(),
     });
     until("second Connected", WAIT, || {
         lock(&viewer.events.0)
@@ -332,6 +348,7 @@ async fn a_paired_viewer_reconnects_with_its_pin_and_a_wrong_pin_is_named() {
         mode: Mode::Office as i32,
         fps: 0,
         auth: Some(ConnectAuth::KnownHost(other)),
+        signal_server: String::new(),
     });
     let ended = viewer
         .wait_event("refused", |b| matches!(b, EventBody::Disconnected(_)))
@@ -359,6 +376,7 @@ async fn a_host_with_a_different_key_is_reported_as_a_pin_mismatch() {
         mode: Mode::Office as i32,
         fps: 0,
         auth: Some(ConnectAuth::KnownHost(pinned)),
+        signal_server: String::new(),
     });
     let ended = viewer
         .wait_event("refused", |b| matches!(b, EventBody::Disconnected(d) if d.reason != DisconnectReason::ClosedLocally as i32))
@@ -731,6 +749,7 @@ async fn garbage_and_stale_handles_return_errors() {
         mode: 0,
         fps: 0,
         auth: None,
+        signal_server: String::new(),
     });
     viewer
         .wait_event("invalid", |b| {
@@ -767,4 +786,254 @@ async fn a_panic_in_the_session_ends_it_and_releases_capture() {
         unsafe { abi::nexa_last_error(std::ptr::null_mut(), 0, &mut written) },
         abi::NEXA_OK
     );
+}
+
+// ---------------------------------------------------------------------------------
+// By device ID, through a signaling server on 127.0.0.1 (§4.3)
+// ---------------------------------------------------------------------------------
+
+/// A plain-ws signaling server, STUN and relay, all on 127.0.0.1.
+async fn signal_server() -> nexa_signal::Server {
+    let ws = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let stun = nexa_net::udp::UdpIo::bind_tokio("127.0.0.1:0".parse().unwrap()).unwrap();
+    let relay = nexa_net::udp::UdpIo::bind_tokio("127.0.0.1:0".parse().unwrap()).unwrap();
+    let (stun_addr, relay_addr) = (stun.local_addr(), relay.local_addr());
+    nexa_signal::start(
+        nexa_signal::Settings {
+            tls: None,
+            server_names: vec!["127.0.0.1".into()],
+            stun_advertise: vec![stun_addr],
+            relay_advertise: Some(relay_addr),
+            relay: nexa_signal::relay::RelayLimits {
+                bandwidth_bps: 100_000_000,
+                max_sessions: 16,
+            },
+            relay_token_ttl_secs: 600,
+            limits: nexa_signal::config::Limits {
+                register_per_ip: (100.0, 100.0),
+                lookup_per_ip: (100.0, 100.0),
+                connect_per_ip: (100.0, 100.0),
+                ..Default::default()
+            },
+        },
+        nexa_signal::Sockets {
+            ws,
+            stun: vec![std::sync::Arc::new(stun)],
+            relay: Some(std::sync::Arc::new(relay)),
+        },
+    )
+    .await
+    .unwrap()
+}
+
+fn signal_url(s: &nexa_signal::Server) -> String {
+    format!("ws://127.0.0.1:{}", s.ws_addr.port())
+}
+
+async fn host_by_id(
+    server: &nexa_signal::Server,
+    p: nexa_wire::control::Permissions,
+    relay_only: bool,
+) -> (Host, String) {
+    let setup = nexa_agent::SignalSetup {
+        server: nexa_session::rendezvous::signal::SignalConfig::new(signal_url(server)),
+        bind_ip: "127.0.0.1".parse().unwrap(),
+        interfaces: None,
+        paired_only: false,
+        relay_only,
+    };
+    let h = common::host_with(FakeUi::allowing(p, true), Timeouts::default(), Some(setup)).await;
+    until("registered", WAIT, || {
+        h.agent.signal_status().short_id.is_some()
+    })
+    .await;
+    let id = h.agent.signal_status().short_id.unwrap();
+    assert_eq!(
+        h.agent.signal_status().state,
+        nexa_agent::SignalState::Online
+    );
+    (h, id)
+}
+
+fn by_id(id: &str, server: &nexa_signal::Server, tag: u64, auth: ConnectAuth) -> ConnectRequest {
+    ConnectRequest {
+        // As typed by a person, with spaces.
+        address: nexa_wire::signal::group_short_id(id),
+        tag,
+        mode: Mode::Balanced as i32,
+        fps: 0,
+        auth: Some(auth),
+        signal_server: signal_url(server),
+    }
+}
+
+fn last_path(v: &Viewer, tag: u64) -> Option<(i32, String)> {
+    lock(&v.events.0).iter().rev().find_map(|e| match &e.body {
+        Some(EventBody::Stats(s)) if e.tag == tag => Some((s.path, s.path_detail.clone())),
+        _ => None,
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn connects_by_id_with_pairing_and_consent_unchanged() {
+    let server = signal_server().await;
+    let (h, id) = host_by_id(&server, perms(true, false, false), false).await;
+    let viewer = Viewer::new();
+    let session = viewer.connect(by_id(
+        &id,
+        &server,
+        1,
+        ConnectAuth::Code(h.agent.current_code().to_string()),
+    ));
+    let c = viewer.wait_connected().await;
+    assert_eq!(c.host_key, h.agent.public_key().to_hex());
+    assert!(c.paired_now);
+    // Consent was asked exactly as for ip:port, and the remote shown is the real path.
+    assert_eq!(h.ui.prompts(), 1);
+    let info = h.agent.active_session().unwrap();
+    assert!(info.remote.ip().is_loopback(), "{}", info.remote);
+    assert_ne!(info.remote, nexa_net::vsock::VIRTUAL_PEER);
+    until("frames decoded", WAIT, || {
+        viewer.probe.decoded.load(SeqCst) > 5
+    })
+    .await;
+    until("path stats", WAIT, || {
+        last_path(&viewer, 1).is_some_and(|(k, _)| k != 0)
+    })
+    .await;
+    let (kind, detail) = last_path(&viewer, 1).unwrap();
+    assert_eq!(
+        kind,
+        nexa_client::proto::PathKind::Direct as i32,
+        "{detail}"
+    );
+    let stages: Vec<i32> = lock(&viewer.events.0)
+        .iter()
+        .filter_map(|e| match &e.body {
+            Some(EventBody::Connecting(c)) => Some(c.stage),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        stages,
+        vec![1, 1, 2, 3, 0],
+        "resolving, gathering, checking, QUIC"
+    );
+    // SAFETY: handles are registry ids.
+    unsafe { abi::nexa_session_close(session) };
+    until("first session gone", WAIT, || !h.agent.session_active()).await;
+
+    // Paired now: by ID with the pin, and the host's paired-device rules apply.
+    let session = viewer.connect(by_id(
+        &id,
+        &server,
+        2,
+        ConnectAuth::KnownHost(h.agent.public_key().to_hex()),
+    ));
+    until("second Connected", WAIT, || {
+        lock(&viewer.events.0)
+            .iter()
+            .any(|e| e.tag == 2 && matches!(e.body, Some(EventBody::Connected(_))))
+    })
+    .await;
+    // SAFETY: handles are registry ids.
+    unsafe { abi::nexa_session_close(session) };
+    until("second session gone", WAIT, || !h.agent.session_active()).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_wrong_code_by_id_is_refused_like_by_address() {
+    let server = signal_server().await;
+    let (h, id) = host_by_id(&server, perms(true, true, false), false).await;
+    let viewer = Viewer::new();
+    let _s = viewer.connect(by_id(&id, &server, 1, ConnectAuth::Code("AAAA2222".into())));
+    let d = viewer
+        .wait_event("Disconnected", |b| matches!(b, EventBody::Disconnected(_)))
+        .await;
+    let EventBody::Disconnected(d) = d else {
+        unreachable!()
+    };
+    assert_eq!(
+        d.reason,
+        DisconnectReason::AuthFailed as i32,
+        "{}",
+        d.message
+    );
+    assert_eq!(h.ui.prompts(), 0, "nobody was asked");
+    assert!(!h.agent.session_active());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relay_only_host_is_reached_through_the_relay() {
+    let server = signal_server().await;
+    let (h, id) = host_by_id(&server, perms(true, false, false), true).await;
+    let viewer = Viewer::new();
+    let _s = viewer.connect(by_id(
+        &id,
+        &server,
+        1,
+        ConnectAuth::Code(h.agent.current_code().to_string()),
+    ));
+    viewer.wait_connected().await;
+    until("frames decoded", WAIT, || {
+        viewer.probe.decoded.load(SeqCst) > 5
+    })
+    .await;
+    until("path stats", WAIT, || {
+        last_path(&viewer, 1).is_some_and(|(k, _)| k != 0)
+    })
+    .await;
+    let (kind, detail) = last_path(&viewer, 1).unwrap();
+    assert_eq!(kind, nexa_client::proto::PathKind::Relay as i32, "{detail}");
+    // QUIC, not just the relay check, went through it (fake frames are tiny).
+    assert!(
+        server.relay_stats().forwarded > 20,
+        "{:?}",
+        server.relay_stats()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unknown_ids_and_missing_servers_are_named() {
+    let server = signal_server().await;
+    let viewer = Viewer::new();
+    let _s = viewer.connect(by_id(
+        "123456789",
+        &server,
+        1,
+        ConnectAuth::Code("AAAA2222".into()),
+    ));
+    let d = viewer
+        .wait_event("Disconnected", |b| matches!(b, EventBody::Disconnected(_)))
+        .await;
+    let EventBody::Disconnected(d) = d else {
+        unreachable!()
+    };
+    assert_eq!(d.reason, DisconnectReason::Offline as i32, "{}", d.message);
+
+    let mut req = by_id(
+        "123456789",
+        &server,
+        2,
+        ConnectAuth::Code("AAAA2222".into()),
+    );
+    req.signal_server.clear();
+    let _s = viewer.connect(req);
+    until("second Disconnected", WAIT, || {
+        lock(&viewer.events.0).iter().any(|e| {
+            e.tag == 2
+                && matches!(&e.body, Some(EventBody::Disconnected(d)) if d.reason == DisconnectReason::InvalidRequest as i32)
+        })
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_direct_address_mode_still_reports_its_path() {
+    let h = make_host(perms(true, false, false)).await;
+    let (viewer, _session) = connected(&h, 3).await;
+    until("path stats", WAIT, || last_path(&viewer, 3).is_some()).await;
+    let (kind, detail) = last_path(&viewer, 3).unwrap();
+    assert_eq!(kind, nexa_client::proto::PathKind::Direct as i32);
+    assert_eq!(detail, h.addr.to_string());
 }

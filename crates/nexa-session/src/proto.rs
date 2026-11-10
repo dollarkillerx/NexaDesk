@@ -12,7 +12,7 @@
 //! message ControlMsg { oneof body {
 //!   ClientHello hello = 1;  AuthStep auth = 2;  SessionAccept accept = 3;
 //!   SessionReject reject = 4;  StreamRequest request = 5;  StreamConfig config = 6;
-//!   FocusContext focus = 7;  Goodbye bye = 8;
+//!   FocusContext focus = 7;  Goodbye bye = 8;  PathSwitch path_switch = 9;
 //! } }
 //! message InputMsg { oneof body {
 //!   KeyEvent key = 1;  ButtonEvent button = 2;  TextInput text = 3;  KeyStateSync sync = 4;
@@ -20,8 +20,8 @@
 //! ```
 
 use nexa_wire::control::{
-    AuthStep, ButtonEvent, ClientHello, FocusContext, KeyEvent, KeyStateSync, SessionAccept,
-    StreamConfig, TextInput,
+    AuthStep, ButtonEvent, ClientHello, FocusContext, KeyEvent, KeyStateSync, PathSwitch,
+    SessionAccept, StreamConfig, TextInput,
 };
 use prost::{Enumeration, Message, Oneof};
 
@@ -99,11 +99,15 @@ pub enum ControlBody {
     Focus(FocusContext),
     #[prost(message, tag = "8")]
     Bye(Goodbye),
+    /// Viewer → host (§4.5): follow the path the host labelled `path_id`. Only
+    /// meaningful on sessions that came through the rendezvous.
+    #[prost(message, tag = "9")]
+    PathSwitch(PathSwitch),
 }
 
 #[derive(Clone, PartialEq, Message)]
 pub struct ControlMsg {
-    #[prost(oneof = "ControlBody", tags = "1, 2, 3, 4, 5, 6, 7, 8")]
+    #[prost(oneof = "ControlBody", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9")]
     pub body: Option<ControlBody>,
 }
 

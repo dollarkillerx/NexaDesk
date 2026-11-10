@@ -366,6 +366,15 @@ pub struct Host {
 }
 
 pub async fn host(ui: Arc<FakeUi>, timeouts: Timeouts) -> Host {
+    host_with(ui, timeouts, None).await
+}
+
+/// An agent that is also reachable by ID through `signal`.
+pub async fn host_with(
+    ui: Arc<FakeUi>,
+    timeouts: Timeouts,
+    signal: Option<nexa_agent::SignalSetup>,
+) -> Host {
     let dir = tempfile::tempdir().unwrap();
     let identity = DeviceIdentity::generate();
     let store =
@@ -378,6 +387,7 @@ pub async fn host(ui: Arc<FakeUi>, timeouts: Timeouts) -> Host {
             os: Os::Macos,
             caps: caps(),
             timeouts,
+            signal,
         },
         identity,
         store,

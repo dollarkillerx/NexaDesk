@@ -25,7 +25,16 @@ public enum DisconnectReason
     TimedOut = 13,
     InvalidRequest = 14,
     Internal = 15,
+    Offline = 16,
+    NoPath = 17,
+    SignalServer = 18,
 }
+
+/// <summary>How a session's packets travel (Stats.path).</summary>
+public enum PathKind { Unknown = 0, Direct = 1, Punched = 2, Relay = 3, Tailscale = 4 }
+
+/// <summary>Where a connection attempt is (Connecting.stage).</summary>
+public enum ConnectStage { Quic = 0, Resolving = 1, Gathering = 2, Checking = 3 }
 
 public sealed record Permissions(bool View, bool Input, bool Clipboard, bool File = false, bool Audio = false)
 {
@@ -65,7 +74,9 @@ public abstract record ConnectAuth
     public sealed record Code(string Value) : ConnectAuth;
 }
 
-public sealed record ConnectRequest(string Address, ulong Tag, StreamMode Mode, uint Fps, ConnectAuth Auth)
+/// <summary>Address is "ip:port" or a 9-digit device ID; SignalServer is used for IDs.</summary>
+public sealed record ConnectRequest(string Address, ulong Tag, StreamMode Mode, uint Fps, ConnectAuth Auth,
+    string SignalServer = "")
 {
     public byte[] Encode()
     {
@@ -75,6 +86,7 @@ public sealed record ConnectRequest(string Address, ulong Tag, StreamMode Mode, 
             case ConnectAuth.KnownHost k: w.String(4, k.Key); break;
             case ConnectAuth.Code c: w.String(5, c.Value); break;
         }
+        w.String(8, SignalServer);
         return w.ToArray();
     }
 
@@ -118,13 +130,14 @@ public sealed record KnownHost(string Key, string Name, ulong LastSeen);
 
 public sealed record StreamStats(
     ulong Complete, ulong Lost, ulong FecRecovered, ulong Decoded, ulong DecodeErrors,
-    ulong Presented, ulong RttUs, uint GatePastes, uint GateHeld, uint GateTimeouts, ulong RxBytes);
+    ulong Presented, ulong RttUs, uint GatePastes, uint GateHeld, uint GateTimeouts, ulong RxBytes,
+    PathKind Path = PathKind.Unknown, string PathDetail = "", ulong PathRttUs = 0);
 
 /// <summary>Everything the library sends to the callback. Tag 0 is not tied to a session.</summary>
 public abstract record ClientEvent(ulong Tag);
 
 public sealed record ReadyEvent(ulong Tag, string ThisDeviceKey, IReadOnlyList<KnownHost> Hosts, string Error) : ClientEvent(Tag);
-public sealed record ConnectingEvent(ulong Tag) : ClientEvent(Tag);
+public sealed record ConnectingEvent(ulong Tag, ConnectStage Stage = ConnectStage.Quic) : ClientEvent(Tag);
 public sealed record ConnectedEvent(ulong Tag, string HostKey, string HostName, Permissions Perms, uint HostOs, bool PairedNow) : ClientEvent(Tag);
 public sealed record StreamChangedEvent(ulong Tag, uint Codec, StreamMode Mode, uint Width, uint Height, uint Fps) : ClientEvent(Tag);
 public sealed record InputCaptureEvent(ulong Tag, CaptureState State) : ClientEvent(Tag);
@@ -153,7 +166,7 @@ public static class ClientCodec
         return body switch
         {
             1 => Ready(tag, payload),
-            2 => new ConnectingEvent(tag),
+            2 => new ConnectingEvent(tag, Stage(FirstVarint(payload, 1))),
             3 => Connected(tag, payload),
             4 => Stream(tag, payload),
             5 => new InputCaptureEvent(tag, (CaptureState)FirstVarint(payload, 1)),
@@ -166,6 +179,9 @@ public static class ClientCodec
             _ => new UnknownEvent(tag),
         };
     }
+
+    static ConnectStage Stage(ulong v) =>
+        v <= 3 ? (ConnectStage)(int)v : ConnectStage.Quic;
 
     static ulong FirstVarint(ReadOnlySpan<byte> data, int want)
     {
@@ -286,15 +302,18 @@ public static class ClientCodec
 
     static StatsEvent Stats(ulong tag, ReadOnlySpan<byte> data)
     {
-        var v = new ulong[12];
+        var v = new ulong[15];
+        var detail = "";
         var r = new ProtoReader(data);
         while (r.Next(out var f))
         {
-            if (f is >= 1 and <= 11) v[f] = r.UInt64();
+            if (f is >= 1 and <= 12 or 14) v[f] = r.UInt64();
+            else if (f == 13) detail = r.String();
             else r.Skip();
         }
+        var path = v[12] <= 4 ? (PathKind)(int)v[12] : PathKind.Unknown;
         return new StatsEvent(tag, new StreamStats(v[1], v[2], v[3], v[4], v[5], v[6], v[7],
-            (uint)v[8], (uint)v[9], (uint)v[10], v[11]));
+            (uint)v[8], (uint)v[9], (uint)v[10], v[11], path, detail, v[14]));
     }
 
     static DisconnectedEvent Disconnected(ulong tag, ReadOnlySpan<byte> data)

@@ -68,6 +68,11 @@ impl DevicePublicKey {
         }
     }
 
+    /// Verifies a [`DeviceIdentity::sign_for`] signature. Strict, like [`Self::verify`].
+    pub fn verify_for(&self, purpose: &str, message: &[u8], signature: &[u8; 64]) -> bool {
+        self.verify(&purposed(purpose, message), signature)
+    }
+
     pub fn to_hex(&self) -> String {
         HEXLOWER.encode(&self.0)
     }
@@ -100,6 +105,18 @@ impl<'de> Deserialize<'de> for DevicePublicKey {
         let s = String::deserialize(d)?;
         Self::from_hex(&s).map_err(de::Error::custom)
     }
+}
+
+/// Domain separation for [`DeviceIdentity::sign_for`]: a signature made for one
+/// purpose never verifies for another, and never as a TLS handshake signature
+/// (those sign a fixed 64-byte 0x20 prefix, which cannot start with "nexa/1 sig").
+fn purposed(purpose: &str, message: &[u8]) -> Vec<u8> {
+    let mut m = Vec::with_capacity(16 + purpose.len() + message.len());
+    m.extend_from_slice(b"nexa/1 sig\0");
+    m.extend_from_slice(&(purpose.len() as u32).to_be_bytes());
+    m.extend_from_slice(purpose.as_bytes());
+    m.extend_from_slice(message);
+    m
 }
 
 /// A short name for a device: the first 128 bits of a domain-separated SHA-256 of the
@@ -178,6 +195,13 @@ impl DeviceIdentity {
         self.public_key().device_id()
     }
 
+    /// Signs `message` for one named `purpose`, e.g. a signaling registration. Used
+    /// only for statements to untrusted infrastructure; authorization never rests on it.
+    pub fn sign_for(&self, purpose: &str, message: &[u8]) -> [u8; 64] {
+        use ed25519_dalek::Signer;
+        self.signing.sign(&purposed(purpose, message)).to_bytes()
+    }
+
     /// Key for the `pairings.json` HMAC, derived so it needs no storage of its own.
     pub fn store_mac_key(&self) -> Zeroizing<[u8; 32]> {
         let seed = Zeroizing::new(self.signing.to_bytes());
@@ -210,6 +234,21 @@ mod tests {
         let mut not_a_point = [0xFFu8; 32];
         not_a_point[0] = 0xED;
         assert!(DevicePublicKey::from_bytes(not_a_point).is_err());
+    }
+
+    #[test]
+    fn purpose_signatures_are_domain_separated() {
+        let id = DeviceIdentity::generate();
+        let key = id.public_key();
+        let sig = id.sign_for("a", b"message");
+        assert!(key.verify_for("a", b"message", &sig));
+        assert!(!key.verify_for("b", b"message", &sig));
+        assert!(!key.verify_for("a", b"messagf", &sig));
+        assert!(!key.verify(b"message", &sig));
+        // The length prefix keeps purpose and message from sliding into each other.
+        assert!(!key.verify_for("am", b"essage", &sig));
+        let other = DeviceIdentity::generate().public_key();
+        assert!(!other.verify_for("a", b"message", &sig));
     }
 
     #[test]

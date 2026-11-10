@@ -141,14 +141,16 @@ public sealed class FakeLink : IAgentLink
 public sealed class FakeProcess : IAgentProcess
 {
     public List<(string Listen, string Name)> Starts { get; } = new();
+    public List<string> Servers { get; } = new();
     public string? StartResult { get; set; }
     public bool IsRunning { get; set; }
     public int Kills { get; private set; }
     public event Action<AgentExit>? Exited;
 
-    public string? Start(string listen, string deviceName)
+    public string? Start(string listen, string deviceName, string signalServer)
     {
         Starts.Add((listen, deviceName));
+        Servers.Add(signalServer);
         IsRunning = StartResult == null;
         return StartResult;
     }
@@ -232,8 +234,10 @@ public static class Samples
         new(id, "王小明的 MacBook Pro", "6f1c2d3e4a5b6c7d8e9f0a1b2c3d4e5f", ViewerKey, "192.168.1.35:53122",
             new Permissions(true, input, true));
 
-    public static AgentMessage.Status Status(HostSession? session = null, string code = "K7QM2XPA", bool input = true) =>
-        new(1, "192.168.1.20:47800", code, "工作室 Mac mini", "0123456789abcdef0123456789abcdef", HostKey, session, input);
+    public static AgentMessage.Status Status(HostSession? session = null, string code = "K7QM2XPA", bool input = true,
+        string shortId = "", SignalState signal = SignalState.Off, string detail = "") =>
+        new(1, "192.168.1.20:47800", code, "工作室 Mac mini", "0123456789abcdef0123456789abcdef", HostKey, session, input,
+            shortId, signal, detail);
 
     public static ConnectedEvent Connected(ulong tag, bool input = true, bool clipboard = true) =>
         new(tag, HostKey, "工作室 Mac mini", new Permissions(true, input, clipboard), 2, true);

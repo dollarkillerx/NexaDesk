@@ -309,6 +309,18 @@ impl AgentUi for TerminalUi {
             }
             AgentEvent::ClipboardNotice(n) => t.say(&format!("Clipboard: {n:?}")),
             AgentEvent::Warning(w) => t.say(&format!("Warning: {w}")),
+            AgentEvent::Signal(s) => match (&s.state, s.grouped_id()) {
+                (nexa_agent::SignalState::Online, Some(id)) => {
+                    t.say(&format!("Reachable by ID: {id}"));
+                    if let Some(note) = &s.note {
+                        t.say(&format!("Note from the server: {note}"));
+                    }
+                }
+                (nexa_agent::SignalState::Error(e), _) => {
+                    t.say(&format!("Signaling server: {e} (retrying)"))
+                }
+                _ => {}
+            },
         }
     }
 }

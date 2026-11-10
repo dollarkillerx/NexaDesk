@@ -14,12 +14,15 @@ use std::{
 
 use nexa_auth::{
     DeviceIdentity, DevicePublicKey, PairingStore, PeerPolicy, Perms, client_config,
-    store::unix_now, tls::SERVER_NAME,
+    peer_public_key, store::unix_now, tls::SERVER_NAME,
 };
 use nexa_clip::{ClipPolicy, GateStats};
 use nexa_input::{FocusClass, Keymap, Rewriter};
 use nexa_media::PresentMode;
-use nexa_net::vsock::bind_media_socket;
+use nexa_net::{
+    check::{PathClass, is_tailnet},
+    vsock::{VIRTUAL_PEER, bind_media_socket},
+};
 use nexa_session::{
     SessionError,
     clip::{ClipCallbacks, ClipChannel, ClipHandle, ClipSession, PromiseMode},
@@ -29,8 +32,15 @@ use nexa_session::{
         viewer_handshake,
     },
     proto::{CloseReason, ControlBody, ControlMsg, Goodbye, InputMsg, RejectReason, StreamRequest},
+    rendezvous::{
+        self, DialError, Stage,
+        link::{Link, describe},
+        seal::SignalKeys,
+        signal::SignalConfig,
+    },
     viewer::{ViewerMedia, ViewerParams},
 };
+use nexa_wire::signal::normalize_short_id;
 use nexa_wire::{
     control::{Caps, Codec, Mode, Os, StreamConfig},
     framing::StreamType,
@@ -47,8 +57,8 @@ use crate::{
     input::{self, InputCmd, InputThreadConfig, ViewGeometry},
     presenter::PresenterSlot,
     proto::{
-        ClipboardNotice, Command, ConnectAuth, ConnectRequest, Connected, Connecting,
-        DisconnectReason, Disconnected, Event, EventBody, KnownHost, Permissions, Ready,
+        ClipboardNotice, Command, ConnectAuth, ConnectRequest, ConnectStage, Connected, Connecting,
+        DisconnectReason, Disconnected, Event, EventBody, KnownHost, PathKind, Permissions, Ready,
         SessionCommand, Stats, StreamChanged, Warning,
     },
 };
@@ -83,8 +93,18 @@ impl EventTx {
 }
 
 struct Device {
-    identity: DeviceIdentity,
+    identity: Arc<DeviceIdentity>,
     store: Mutex<PairingStore>,
+    /// Signaling keys, made on first use of an ID (§4.3).
+    keys: OnceLock<Arc<SignalKeys>>,
+}
+
+impl Device {
+    fn signal_keys(&self) -> Arc<SignalKeys> {
+        self.keys
+            .get_or_init(|| Arc::new(SignalKeys::new(self.identity.clone())))
+            .clone()
+    }
 }
 
 pub struct Core {
@@ -163,8 +183,9 @@ impl Core {
                         PairingStore::open(dir.join("known_hosts.json"), identity.store_mac_key())
                             .map_err(|e| format!("known hosts: {e}"))?;
                     Ok(Arc::new(Device {
-                        identity,
+                        identity: Arc::new(identity),
                         store: Mutex::new(store),
+                        keys: OnceLock::new(),
                     }))
                 })
                 .await
@@ -558,6 +579,129 @@ struct Accepted {
     endpoint: Endpoint,
     conn: Connection,
     accepted: ViewerAccepted,
+    /// Present for connections by ID: the path layer under QUIC.
+    link: Option<Arc<Link>>,
+    _trickle: Option<TrickleGuard>,
+}
+
+/// Stops the rendezvous' trickle pump with the session.
+struct TrickleGuard(tokio::task::JoinHandle<()>);
+
+impl Drop for TrickleGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// §4.4 QuicHandshake: 3 s per path, then the next validated one.
+const QUIC_PATH_TIMEOUT: Duration = Duration::from_secs(3);
+const QUIC_PATH_TRIES: u32 = 3;
+
+fn reason_of_dial(e: &DialError) -> DisconnectReason {
+    match e {
+        DialError::Offline => DisconnectReason::Offline,
+        DialError::RateLimited => DisconnectReason::RateLimited,
+        DialError::WrongDevice => DisconnectReason::PinMismatch,
+        DialError::NoPath | DialError::NoAnswer => DisconnectReason::NoPath,
+        DialError::BadPeer(_) => DisconnectReason::AuthFailed,
+        DialError::Signal(_) | DialError::Refused(_) => DisconnectReason::SignalServer,
+        DialError::Io(_) => DisconnectReason::Network,
+    }
+}
+
+/// Rendezvous through the signaling server, then QUIC over the validated path.
+async fn connect_by_id(
+    core: &Arc<Core>,
+    session: &Arc<Session>,
+    device: &Device,
+    request: &ConnectRequest,
+    short_id: &str,
+    pinned: Option<DevicePublicKey>,
+    config: quinn::ClientConfig,
+) -> Result<(Endpoint, Connection, Arc<Link>, TrickleGuard), (DisconnectReason, String)> {
+    if request.signal_server.trim().is_empty() {
+        return Err((
+            DisconnectReason::InvalidRequest,
+            "no signaling server is set, so a device ID cannot be used".to_owned(),
+        ));
+    }
+    let mut server = SignalConfig::new(request.signal_server.trim().to_owned());
+    let ca = core.data_dir.join("signal-ca.pem");
+    if ca.exists() {
+        server = server
+            .with_ca_file(&ca)
+            .map_err(|e| (DisconnectReason::InvalidRequest, e))?;
+    }
+    let keys = device.signal_keys();
+    let tag = session.tag;
+    let events = core.events.clone();
+    let progress = move |stage: Stage| {
+        let stage = match stage {
+            Stage::Resolving => ConnectStage::Resolving,
+            Stage::Gathering => ConnectStage::Gathering,
+            Stage::Checking => ConnectStage::Checking,
+        };
+        events.send(
+            tag,
+            EventBody::Connecting(Connecting {
+                stage: stage as i32,
+            }),
+        );
+    };
+    let mut close = session.close.subscribe();
+    let dialed = tokio::select! {
+        d = rendezvous::dial(&server, &keys, short_id, pinned, core.deps.link_options(), &progress) => d,
+        _ = close.wait_for(|c| *c) => {
+            return Err((DisconnectReason::ClosedLocally, "closed by the application".to_owned()));
+        }
+    };
+    let dialed = dialed.map_err(|e| (reason_of_dial(&e), e.to_string()))?;
+    core.events.send(
+        tag,
+        EventBody::Connecting(Connecting {
+            stage: ConnectStage::Quic as i32,
+        }),
+    );
+    let endpoint = dialed.link.endpoint.clone();
+    let connecting = endpoint
+        .connect_with(config, VIRTUAL_PEER, SERVER_NAME)
+        .map_err(|e| (DisconnectReason::Network, e.to_string()))?;
+    tokio::pin!(connecting);
+    let mut tries = 0;
+    let conn = loop {
+        tokio::select! {
+            r = &mut connecting => match r {
+                Ok(c) => break c,
+                Err(e) => {
+                    let reason = if is_tls_failure(&e) {
+                        DisconnectReason::PinMismatch
+                    } else {
+                        DisconnectReason::Network
+                    };
+                    return Err((reason, e.to_string()));
+                }
+            },
+            _ = tokio::time::sleep(QUIC_PATH_TIMEOUT) => {
+                tries += 1;
+                if tries >= QUIC_PATH_TRIES {
+                    return Err((DisconnectReason::TimedOut, "connection timed out".to_owned()));
+                }
+                dialed.link.rotate();
+            }
+            _ = close.wait_for(|c| *c) => {
+                return Err((DisconnectReason::ClosedLocally, "closed by the application".to_owned()));
+            }
+        }
+    };
+    // The QUIC peer must be the device the rendezvous was sealed with.
+    if peer_public_key(&conn).ok() != Some(dialed.host_key) {
+        conn.close(3u32.into(), b"identity mismatch");
+        return Err((
+            DisconnectReason::PinMismatch,
+            "the device that answered is not the one at this ID".to_owned(),
+        ));
+    }
+    Ok((endpoint, conn, dialed.link, TrickleGuard(dialed.trickle)))
 }
 
 async fn establish(
@@ -594,7 +738,17 @@ async fn establish(
     };
     let config = client_config(&device.identity, policy)
         .map_err(|e| (DisconnectReason::Internal, e.to_string()))?;
-    let (endpoint, conn) = connect_quic(&request.address, config).await?;
+    let (endpoint, conn, link, trickle) = match normalize_short_id(&request.address) {
+        Some(id) => {
+            let (e, c, l, t) =
+                connect_by_id(core, session, &device, request, &id, pinned, config).await?;
+            (e, c, Some(l), Some(t))
+        }
+        None => {
+            let (e, c) = connect_quic(&request.address, config).await?;
+            (e, c, None, None)
+        }
+    };
 
     let handshake = viewer_handshake(
         &conn,
@@ -633,6 +787,8 @@ async fn establish(
         endpoint,
         conn,
         accepted,
+        link,
+        _trickle: trickle,
     })
 }
 
@@ -752,7 +908,17 @@ fn start_input(
 
 async fn run_session(core: Arc<Core>, session: Arc<Session>, request: ConnectRequest) {
     let tag = session.tag;
-    core.events.send(tag, EventBody::Connecting(Connecting {}));
+    let stage = if normalize_short_id(&request.address).is_some() {
+        ConnectStage::Resolving
+    } else {
+        ConnectStage::Quic
+    };
+    core.events.send(
+        tag,
+        EventBody::Connecting(Connecting {
+            stage: stage as i32,
+        }),
+    );
     let established = match establish(&core, &session, &request).await {
         Ok(e) => e,
         Err((reason, message)) => {
@@ -765,10 +931,23 @@ async fn run_session(core: Arc<Core>, session: Arc<Session>, request: ConnectReq
         endpoint,
         conn,
         accepted,
+        link,
+        _trickle,
     } = established;
 
     let (reason, message) = match core.device().await {
-        Ok(device) => stream_session(&core, &session, device, &conn, accepted, &request).await,
+        Ok(device) => {
+            stream_session(
+                &core,
+                &session,
+                device,
+                &conn,
+                accepted,
+                &request,
+                link.as_ref(),
+            )
+            .await
+        }
         Err(m) => (DisconnectReason::Internal, m),
     };
     ended(tag, &core, reason, message);
@@ -784,6 +963,7 @@ async fn stream_session(
     conn: &Connection,
     accepted: ViewerAccepted,
     request: &ConnectRequest,
+    link: Option<&Arc<Link>>,
 ) -> (DisconnectReason, String) {
     let tag = session.tag;
     let perms = accepted
@@ -827,6 +1007,22 @@ async fn stream_session(
 
     let (ctl_tx, ctl_rx) = async_mpsc::unbounded_channel();
     let writer = tokio::spawn(control_writer(send, ctl_rx));
+    // §4.5: the path manager's decisions go to the host on this authenticated stream.
+    let switch_pump = link.and_then(|l| l.take_switches()).map(|mut switches| {
+        let ctl = ctl_tx.clone();
+        tokio::spawn(async move {
+            while let Some(path_id) = switches.recv().await {
+                if ctl
+                    .send(ControlBody::PathSwitch(nexa_wire::control::PathSwitch {
+                        path_id,
+                    }))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+    });
     let _ = ctl_tx.send(ControlBody::Request(StreamRequest {
         mode: request.mode,
         fps: request.fps,
@@ -960,6 +1156,7 @@ async fn stream_session(
                     use std::sync::atomic::Ordering::Relaxed as R;
                     let s = &media.stats;
                     let g = *lock(&gate_stats);
+                    let (path, path_detail, path_rtt_us) = path_stats(link, conn);
                     core.events.send(tag, EventBody::Stats(Stats {
                         complete: s.complete.load(R),
                         lost: s.lost.load(R),
@@ -972,6 +1169,9 @@ async fn stream_session(
                         gate_held: g.held as u32,
                         gate_timeouts: g.released_by_deadline as u32,
                         rx_bytes: conn.stats().udp_rx.bytes,
+                        path: path as i32,
+                        path_detail,
+                        path_rtt_us,
                     }));
                 }
             }
@@ -980,6 +1180,9 @@ async fn stream_session(
 
     // Teardown. Local capture ends first; the keyboard must never stay captured.
     session.stop_input();
+    if let Some(p) = switch_pump {
+        p.abort();
+    }
     session.presenter.detach();
     drop(ctl_tx);
     let _ = tokio::time::timeout(FLUSH_TIMEOUT, writer).await;
@@ -1002,6 +1205,35 @@ async fn stream_session(
     })
     .await;
     (reason, message)
+}
+
+/// What the diagnostics show about the path (§11).
+fn path_stats(link: Option<&Arc<Link>>, conn: &Connection) -> (PathKind, String, u64) {
+    let kind_of = |c: PathClass| match c {
+        PathClass::Direct => PathKind::Direct,
+        PathClass::Punched => PathKind::Punched,
+        PathClass::Relay => PathKind::Relay,
+        PathClass::Tailscale => PathKind::Tailscale,
+    };
+    match link {
+        Some(l) => match l.state().active {
+            Some(a) => (
+                kind_of(a.class),
+                describe(&a),
+                a.rtt.map_or(0, |r| r.as_micros() as u64),
+            ),
+            None => (PathKind::Unknown, String::new(), 0),
+        },
+        None => {
+            let remote = conn.remote_address();
+            let kind = if is_tailnet(remote.ip()) {
+                PathKind::Tailscale
+            } else {
+                PathKind::Direct
+            };
+            (kind, remote.to_string(), 0)
+        }
+    }
 }
 
 fn reason_of_close_code(code: u64) -> DisconnectReason {

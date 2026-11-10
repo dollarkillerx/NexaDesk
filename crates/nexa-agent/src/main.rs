@@ -21,12 +21,18 @@ fn main() {
 
 #[cfg(target_os = "macos")]
 const USAGE: &str = "usage: nexa-agent --listen <ip:port> [--name <device name>] [--data-dir <dir>] [--consent terminal|ui]\n\
+                 [--signal <wss://server[:port]>] [--signal-ca <pem>] [--paired-only] [--relay-only]\n\
   --listen    UDP address to listen on; use a LAN or Tailscale address, or 127.0.0.1\n\
   --name      name shown to viewers (default: this Mac's host name)\n\
   --data-dir  where pairings.json and agent.sock live (default: ~/Library/Application Support/NexaDesk)\n\
   --consent   who allows connections: the controlling terminal (default), or the NexaDesk\n\
               app over <data-dir>/agent.sock, falling back to the terminal while no app is\n\
-              connected. With neither, every connection is refused.";
+              connected. With neither, every connection is refused.\n\
+  --signal    also be reachable by device ID through this nexa-signal server; the ID is shown\n\
+              once registered. Pairing and consent work exactly as for --listen.\n\
+  --signal-ca extra CA certificate(s) for the server (default: <data-dir>/signal-ca.pem if present)\n\
+  --paired-only  only devices already paired may make this Mac reveal its addresses\n\
+  --relay-only   never offer a direct address to connecting devices; always use the relay";
 
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -41,6 +47,10 @@ struct Args {
     name: String,
     data_dir: std::path::PathBuf,
     consent: ConsentMode,
+    signal: Option<String>,
+    signal_ca: Option<std::path::PathBuf>,
+    paired_only: bool,
+    relay_only: bool,
 }
 
 #[cfg(target_os = "macos")]
@@ -49,6 +59,10 @@ fn parse_args() -> Result<Args, String> {
     let mut name = None;
     let mut data_dir = None;
     let mut consent = ConsentMode::Terminal;
+    let mut signal = None;
+    let mut signal_ca = None;
+    let mut paired_only = false;
+    let mut relay_only = false;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         let mut value = || {
@@ -72,6 +86,10 @@ fn parse_args() -> Result<Args, String> {
                     other => return Err(format!("unknown consent mode: {other}\n{USAGE}")),
                 }
             }
+            "--signal" => signal = Some(value()?).filter(|s| !s.trim().is_empty()),
+            "--signal-ca" => signal_ca = Some(std::path::PathBuf::from(value()?)),
+            "--paired-only" => paired_only = true,
+            "--relay-only" => relay_only = true,
             "-h" | "--help" => return Err(USAGE.to_owned()),
             other => return Err(format!("unknown argument: {other}\n{USAGE}")),
         }
@@ -99,6 +117,10 @@ fn parse_args() -> Result<Args, String> {
         name,
         data_dir,
         consent,
+        signal,
+        signal_ca,
+        paired_only,
+        relay_only,
     })
 }
 
@@ -168,12 +190,35 @@ fn run() -> Result<(), String> {
             }
         })
     });
+    let signal = match &args.signal {
+        None => None,
+        Some(url) => {
+            nexa_session::rendezvous::signal::parse_url(url).map_err(|e| e.to_string())?;
+            let mut server = nexa_session::rendezvous::signal::SignalConfig::new(url.clone());
+            let ca = args
+                .signal_ca
+                .clone()
+                .or_else(|| Some(args.data_dir.join("signal-ca.pem")).filter(|p| p.exists()));
+            if let Some(ca) = ca {
+                server = server.with_ca_file(&ca)?;
+            }
+            Some(nexa_agent::SignalSetup {
+                server,
+                // Session sockets stay on the interface --listen names.
+                bind_ip: args.listen.ip(),
+                interfaces: None,
+                paired_only: args.paired_only,
+                relay_only: args.relay_only,
+            })
+        }
+    };
     let config = AgentConfig {
         listen: args.listen,
         device_name: args.name,
         os: Os::Macos,
         caps,
         timeouts: Timeouts::default(),
+        signal,
     };
     // Held until exit: dropping it removes the socket.
     let mut _ipc = None;

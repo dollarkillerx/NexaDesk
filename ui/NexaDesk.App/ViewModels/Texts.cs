@@ -29,6 +29,9 @@ public static partial class Texts
         DisconnectReason.TimedOut => new("连接超时", "对方没有及时响应。请确认地址正确、对方在线，然后重试。"),
         DisconnectReason.InvalidRequest => new("连接请求无效", "地址或一次性码的格式不对。"),
         DisconnectReason.Internal => new("NexaDesk 内部错误", "发生了意外错误。请重试；如果反复出现，请重启 NexaDesk。"),
+        DisconnectReason.Offline => new("对方不在线", "这个设备 ID 现在没有连到信令服务器。请确认对方已开启“允许别人控制本机”，并且两边设置的是同一台信令服务器。"),
+        DisconnectReason.NoPath => new("找不到能走通的网络路径", "直连、打洞和中继都没有成功。可能是防火墙拦截了 UDP，或者信令服务器没有配置中继。"),
+        DisconnectReason.SignalServer => new("无法使用信令服务器", "连不上信令服务器，或服务器拒绝了请求。请检查设置里的服务器地址和网络。"),
         _ => new("连接已断开", "连接意外中断。"),
     };
 
@@ -132,6 +135,98 @@ public static partial class Texts
         }
         return ip.IsIPv6LinkLocal || (b[0] & 0xFE) == 0xFC ? $"直连（局域网）· {address}" : $"直连（公网）· {address}";
     }
+
+    /// <summary>Nine digits, with or without spaces or dashes: a device ID. Null otherwise.</summary>
+    public static string? NormalizeDeviceId(string? input)
+    {
+        if (input == null) return null;
+        var s = new string(input.Where(c => c != ' ' && c != '-' && c != '\u00A0').ToArray());
+        return s.Length == 9 && s.All(c => c is >= '0' and <= '9') ? s : null;
+    }
+
+    /// <summary>123456789 → 123 456 789.</summary>
+    public static string GroupDeviceId(string id) =>
+        NormalizeDeviceId(id) is { } d ? $"{d[..3]} {d[3..6]} {d[6..]}" : id;
+
+    /// <summary>What the connect box holds: a device ID, or host:port. Null if neither.</summary>
+    public static string? NormalizeTarget(string? input) =>
+        NormalizeDeviceId(input) ?? NormalizeAddress(input);
+
+    /// <summary>
+    /// The signaling server as the agent and library take it: wss://host[:port], or
+    /// ws:// only to this machine. A bare host:port means wss. Null if unusable.
+    /// </summary>
+    public static string? NormalizeServer(string? input)
+    {
+        var s = input?.Trim() ?? "";
+        if (s.Length == 0 || s.Any(char.IsWhiteSpace)) return null;
+        var plain = false;
+        if (s.StartsWith("wss://", StringComparison.OrdinalIgnoreCase)) s = s[6..];
+        else if (s.StartsWith("ws://", StringComparison.OrdinalIgnoreCase)) { s = s[5..]; plain = true; }
+        else if (s.Contains("://")) return null;
+        var slash = s.IndexOf('/');
+        if (slash >= 0) s = s[..slash];
+        if (s.Length == 0 || s.Contains('@')) return null;
+        string host;
+        var port = "";
+        if (s.StartsWith('['))
+        {
+            var end = s.IndexOf(']');
+            if (end < 2) return null;
+            host = s[1..end];
+            var rest = s[(end + 1)..];
+            if (rest.Length > 0 && !rest.StartsWith(':')) return null;
+            if (rest.Length > 0) port = rest[1..];
+        }
+        else
+        {
+            var i = s.LastIndexOf(':');
+            host = i < 0 ? s : s[..i];
+            if (i >= 0) port = s[(i + 1)..];
+            if (host.Contains(':')) return null;
+        }
+        if (host.Length == 0 || !host.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-' or ':')) return null;
+        if (port.Length > 0 && (!int.TryParse(port, out var p) || p < 1 || p > 65535 || port.StartsWith('+'))) return null;
+        if (plain)
+        {
+            var loopback = host == "localhost" || (System.Net.IPAddress.TryParse(host, out var ip) && System.Net.IPAddress.IsLoopback(ip));
+            if (!loopback || port.Length == 0) return null;
+        }
+        var shownHost = host.Contains(':') ? $"[{host}]" : host;
+        return $"{(plain ? "ws" : "wss")}://{shownHost}{(port.Length > 0 ? ":" + port : "")}";
+    }
+
+    /// <summary>How the session's packets travel, for diagnostics (§11).</summary>
+    public static string Path(PathKind kind, string detail)
+    {
+        var what = kind switch
+        {
+            PathKind.Direct => "直连",
+            PathKind.Punched => "打洞",
+            PathKind.Relay => "中继",
+            PathKind.Tailscale => "Tailscale",
+            _ => "正在建立",
+        };
+        return string.IsNullOrEmpty(detail) ? what : $"{what} · {detail}";
+    }
+
+    public static string Stage(ConnectStage stage, string target) => stage switch
+    {
+        ConnectStage.Resolving => $"正在通过信令服务器查找 {target}…",
+        ConnectStage.Gathering => "正在收集本机网络地址…",
+        ConnectStage.Checking => "正在尝试直连和打洞…",
+        _ => $"已连上 {target}，正在验证并等待对方确认…",
+    };
+
+    public static string Signal(SignalState state, string shortId, string detail) => state switch
+    {
+        SignalState.Online => string.IsNullOrEmpty(detail)
+            ? "已连接信令服务器：对方可以用上面的 ID 连接本机"
+            : $"已连接信令服务器（{detail}）",
+        SignalState.Connecting => "正在连接信令服务器…",
+        SignalState.Error => $"无法连接信令服务器，正在重试：{detail}",
+        _ => "未设置信令服务器：对方只能用地址连接本机",
+    };
 
     public static string Ago(DateTimeOffset then, DateTimeOffset now)
     {

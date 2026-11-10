@@ -5,7 +5,7 @@
         x:DataType="vm:MainViewModel"
         Title="NexaDesk"
         Width="1040" Height="720" MinWidth="860" MinHeight="560">
-  <Grid RowDefinitions="Auto,*" Margin="24,18,24,24">
+  <Grid RowDefinitions="Auto,Auto,*" Margin="24,18,24,24">
     <!-- Header -->
     <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,14">
       <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
@@ -16,16 +16,29 @@
       <Button Grid.Column="1" Classes="small" Content="权限设置…" Command="{Binding ShowViewerPermissionsCommand}" />
     </Grid>
 
-    <Grid Grid.Row="1" ColumnDefinitions="*,20,*">
+    <!-- 信令服务器：按设备 ID 连接时使用 -->
+    <Border Grid.Row="1" Classes="subtle" Margin="0,0,0,14" DataContext="{Binding Settings}" x:DataType="vm:SettingsViewModel">
+      <StackPanel Spacing="4">
+        <StackPanel Orientation="Horizontal" Spacing="10">
+          <TextBlock Classes="label" Text="信令服务器" VerticalAlignment="Center" />
+          <TextBox Name="ServerBox" Text="{Binding ServerInput}" Width="320" PlaceholderText="wss://signal.example.com" />
+          <Button Name="SaveServerButton" Classes="small" Content="保存" Command="{Binding SaveCommand}" />
+          <TextBlock Classes="muted" Name="ServerStatusText" Text="{Binding ServerStatus}" VerticalAlignment="Center" />
+        </StackPanel>
+        <TextBlock Classes="errorText" Text="{Binding ServerHint}" IsVisible="{Binding ServerHint, Converter={x:Static ObjectConverters.IsNotNull}}" />
+      </StackPanel>
+    </Border>
+
+    <Grid Grid.Row="2" ColumnDefinitions="*,20,*">
       <!-- 连接到设备 -->
       <Border Classes="card" DataContext="{Binding Connect}" x:DataType="vm:ConnectViewModel">
         <Grid RowDefinitions="Auto,*,Auto">
           <StackPanel Spacing="8">
             <TextBlock Classes="h2" Text="连接到设备" />
-            <TextBlock Classes="muted" Text="输入对方的地址，以及对方 NexaDesk 窗口里显示的一次性码。" />
+            <TextBlock Classes="muted" TextWrapping="Wrap" Text="输入对方的设备 ID 或地址，以及对方 NexaDesk 窗口里显示的一次性码。" />
 
-            <TextBlock Classes="label" Text="对方地址" Margin="0,6,0,0" />
-            <TextBox Name="AddressBox" Text="{Binding Address}" PlaceholderText="例如 192.168.1.20:47800"
+            <TextBlock Classes="label" Text="设备 ID 或地址" Margin="0,6,0,0" />
+            <TextBox Name="AddressBox" Text="{Binding Address}" PlaceholderText="例如 123 456 789 或 192.168.1.20:47800"
                      IsEnabled="{Binding !IsConnecting}" />
             <TextBlock Classes="errorText" Text="{Binding AddressHint}" IsVisible="{Binding AddressHint, Converter={x:Static ObjectConverters.IsNotNull}}" />
 
@@ -127,9 +140,17 @@
               <TextBlock Classes="muted" Text="请选择对方能访问到的地址：局域网、Tailscale，或只在本机测试时用 127.0.0.1。" />
             </StackPanel>
 
-            <!-- Hosting: address and code -->
+            <!-- Hosting: ID, address and code -->
             <StackPanel Spacing="4" IsVisible="{Binding IsHosting}">
-              <TextBlock Classes="label" Text="对方填写的地址" Margin="0,6,0,0" />
+              <TextBlock Classes="label" Text="本机 ID（对方用它连接）" Margin="0,6,0,0" IsVisible="{Binding HasDeviceId}" />
+              <SelectableTextBlock Name="DeviceIdText" Text="{Binding DeviceIdDisplay}" FontFamily="{StaticResource MonoFont}"
+                                   FontSize="28" FontWeight="Bold" LetterSpacing="2" IsVisible="{Binding HasDeviceId}" />
+              <TextBlock Name="SignalStatusText" Classes="muted" TextWrapping="Wrap" Text="{Binding SignalText}"
+                         IsVisible="{Binding !SignalProblem}" />
+              <TextBlock Classes="errorText" TextWrapping="Wrap" Text="{Binding SignalText}" IsVisible="{Binding SignalProblem}" />
+              <TextBlock Classes="errorText" TextWrapping="Wrap" IsVisible="{Binding RestartNeeded}"
+                         Text="信令服务器设置已更改：停止后重新开始才会生效。" />
+              <TextBlock Classes="label" Text="或在局域网 / Tailscale 内填写地址" Margin="0,6,0,0" />
               <SelectableTextBlock Name="ActiveListenText" Text="{Binding ActiveListen}" FontFamily="{StaticResource MonoFont}" FontSize="16" />
               <TextBlock Classes="label" Text="一次性码" Margin="0,10,0,0" />
               <Border Classes="subtle" Padding="16,10" HorizontalAlignment="Left">

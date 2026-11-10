@@ -11,6 +11,7 @@ pub mod input;
 pub mod mailbox;
 pub mod negotiate;
 pub mod proto;
+pub mod rendezvous;
 pub mod viewer;
 
 use std::time::{Duration, Instant};

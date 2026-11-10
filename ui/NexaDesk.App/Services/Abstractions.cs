@@ -50,8 +50,8 @@ public interface IAgentProcess
     bool IsRunning { get; }
     /// <summary>Raised on the UI thread when a process this started exits.</summary>
     event Action<AgentExit>? Exited;
-    /// <summary>Null on success, else why it could not start.</summary>
-    string? Start(string listen, string deviceName);
+    /// <summary>Null on success, else why it could not start. An empty signalServer means not reachable by ID.</summary>
+    string? Start(string listen, string deviceName, string signalServer);
     void Kill();
 }
 
@@ -79,4 +79,20 @@ public interface ILocalAddresses
 {
     /// <summary>This machine's addresses worth listening on, best first.</summary>
     IReadOnlyList<string> Candidates();
+}
+
+/// <summary>Preferences kept in settings.json. SignalServer is already normalized, or empty.</summary>
+public sealed record AppSettings(string SignalServer = "");
+
+public interface ISettingsStore
+{
+    AppSettings Load();
+    void Save(AppSettings settings);
+}
+
+public sealed class MemorySettings(AppSettings? initial = null) : ISettingsStore
+{
+    public AppSettings Current { get; private set; } = initial ?? new AppSettings();
+    public AppSettings Load() => Current;
+    public void Save(AppSettings settings) => Current = settings;
 }

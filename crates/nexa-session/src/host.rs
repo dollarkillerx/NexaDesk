@@ -68,6 +68,8 @@ pub struct HostStats {
 
 enum Cmd {
     Report(VideoReport),
+    /// §4.5: the path changed under QUIC.
+    PathSwitched,
     SetBitrate(u32),
     Rebuild(RebuildReason),
 }
@@ -214,6 +216,12 @@ impl HostMedia {
         }
     }
 
+    /// §4.5 side effects of a path switch: the rate restarts at 70% and the next
+    /// frame is a key frame, since packets in flight on the old path may be lost.
+    pub fn path_switched(&self) {
+        let _ = self.cmds.send(Cmd::PathSwitched);
+    }
+
     /// Asks the capture thread to rebuild the pipeline (§6.7).
     pub fn request_rebuild(&self, reason: RebuildReason) {
         let _ = self.cmds.send(Cmd::Rebuild(reason));
@@ -302,6 +310,11 @@ fn run_encoder(
                     }
                 }
                 Cmd::Rebuild(reason) => pending_rebuild = Some(reason),
+                Cmd::PathSwitched => {
+                    rate.lock().unwrap().on_path_switch(Instant::now());
+                    force_key = true;
+                    recovery_pending = true;
+                }
                 Cmd::Report(r) if r.kind == ReportKind::FrameAck => {
                     encoder.on_frame_acked(r.last_good_frame)
                 }

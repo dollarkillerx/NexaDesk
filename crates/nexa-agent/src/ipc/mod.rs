@@ -274,6 +274,7 @@ fn refused(command: &str, reason: impl Into<String>) -> AgentToUi {
 }
 
 fn status_of(agent: &Agent) -> AgentToUi {
+    let signal = agent.signal_status();
     AgentBody::Status(Status {
         version: PROTOCOL_VERSION,
         listen: agent.local_addr().to_string(),
@@ -283,6 +284,17 @@ fn status_of(agent: &Agent) -> AgentToUi {
         device_key: agent.public_key().to_hex(),
         session: agent.active_session().map(|s| (&s).into()),
         input_available: agent.input_available(),
+        short_id: signal.short_id.clone().unwrap_or_default(),
+        signal: match &signal.state {
+            crate::SignalState::Off => proto::SignalState::Off,
+            crate::SignalState::Connecting => proto::SignalState::Connecting,
+            crate::SignalState::Online => proto::SignalState::Online,
+            crate::SignalState::Error(_) => proto::SignalState::Error,
+        } as i32,
+        signal_detail: match &signal.state {
+            crate::SignalState::Error(e) => e.clone(),
+            _ => signal.note.clone().unwrap_or_default(),
+        },
     })
     .into()
 }
