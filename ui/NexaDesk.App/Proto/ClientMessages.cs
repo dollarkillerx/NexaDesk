@@ -216,8 +216,15 @@ public sealed record WarningEvent(ulong Tag, string Text) : ClientEvent(Tag);
 public sealed record ReconnectingEvent(ulong Tag, uint Attempt, string Reason, uint RemainingMs) : ClientEvent(Tag);
 /// <summary>A Tailscale peer answering on the NexaDesk port. Address is "ip:port".</summary>
 public sealed record TailnetDevice(string Name, string Address, bool Direct, string Os, string DnsName);
-/// <summary>Tag 0: the whole current list.</summary>
-public sealed record TailnetDevicesEvent(ulong Tag, IReadOnlyList<TailnetDevice> Devices) : ClientEvent(Tag);
+/// <summary>This machine's Tailscale (§4.7): no tailnet address, an address but no readable status, or running.</summary>
+public enum TailscaleState { Absent = 0, AddressOnly = 1, Running = 2 }
+/// <summary>Tag 0: this machine's Tailscale and the whole current list. SelfDnsName is the MagicDNS name, or empty.</summary>
+public sealed record TailnetDevicesEvent(ulong Tag, IReadOnlyList<TailnetDevice> Devices,
+    TailscaleState State = TailscaleState.Running, string SelfName = "", string SelfDnsName = "",
+    IReadOnlyList<string>? SelfIps = null) : ClientEvent(Tag)
+{
+    public IReadOnlyList<string> Ips => SelfIps ?? [];
+}
 /// <summary>A host heard on the LAN over mDNS (§4.11): only an address to try; TLS and pairing still decide.</summary>
 public sealed record LanDevice(string Name, string Address, string Os, string DeviceId);
 /// <summary>Tag 0: the whole current list.</summary>
@@ -490,13 +497,26 @@ public static class ClientCodec
     static TailnetDevicesEvent Tailnet(ulong tag, ReadOnlySpan<byte> data)
     {
         var list = new List<TailnetDevice>();
+        var ips = new List<string>();
+        var state = TailscaleState.Absent;
+        string name = "", dns = "";
         var r = new ProtoReader(data);
         while (r.Next(out var f))
         {
-            if (f == 1) list.Add(Device(r.Bytes()));
-            else r.Skip();
+            switch (f)
+            {
+                case 1: list.Add(Device(r.Bytes())); break;
+                case 2:
+                    var v = r.UInt64();
+                    state = v <= 2 ? (TailscaleState)v : TailscaleState.Absent;
+                    break;
+                case 3: name = r.String(); break;
+                case 4: dns = r.String(); break;
+                case 5: ips.Add(r.String()); break;
+                default: r.Skip(); break;
+            }
         }
-        return new TailnetDevicesEvent(tag, list);
+        return new TailnetDevicesEvent(tag, list, state, name, dns, ips);
     }
 
     static LanDevicesEvent Lan(ulong tag, ReadOnlySpan<byte> data)

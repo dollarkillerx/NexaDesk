@@ -143,6 +143,8 @@ C ABI 用 `csbindgen` 生成，回调用 `[UnmanagedCallersOnly]` 函数指针�
    - Linux：`/var/run/tailscale/tailscaled.sock`；macOS：`/var/run/tailscaled.socket`（App Store 版改用 TCP 端口 + token）；Windows：命名管道 `\\.\pipe\ProtectedPrefix\Administrators\Tailscale\tailscaled`。
    - 读取失败时静默回退到第 1 级。这是内部接口，**不能作为连接的必需条件**。
 
+**默认形态（修订）**：不用服务器。同一局域网直接连接；跨网络推荐 Tailscale，打洞和中转都交给它（DERP）。自建 `nexa-signal` 是可选项，只为“不能用 Tailscale、又想按设备 ID 连接”的场景保留。App Store 版 Tailscale 的状态通过它自带的命令行 `status --json` 读取（详见 DETAILED_DESIGN §4.7 实现修订）。
+
 内嵌 `tsnet`（免安装 Tailscale）需要 Go 边车进程，增加体积和进程，暂不做。
 
 **MTU**：Tailscale 接口 MTU 为 1280，QUIC 固定为 1200 字节并关闭 PMTUD。路径切换对 QUIC 透明，若按较大路径探测 MTU，切到 Tailscale 时会黑洞。

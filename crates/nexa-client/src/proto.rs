@@ -550,6 +550,26 @@ pub struct TailnetDevice {
 pub struct TailnetDevices {
     #[prost(message, repeated, tag = "1")]
     pub devices: Vec<TailnetDevice>,
+    #[prost(enumeration = "TailscaleState", tag = "2")]
+    pub state: i32,
+    #[prost(string, tag = "3")]
+    pub self_name: String,
+    /// MagicDNS name without the trailing dot; empty when MagicDNS is off.
+    #[prost(string, tag = "4")]
+    pub self_dns_name: String,
+    #[prost(string, repeated, tag = "5")]
+    pub self_ips: Vec<String>,
+}
+
+/// This machine's Tailscale (§4.7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Enumeration)]
+#[repr(i32)]
+pub enum TailscaleState {
+    /// No tailnet address on any interface.
+    Absent = 0,
+    /// A tailnet address, but the status cannot be read.
+    AddressOnly = 1,
+    Running = 2,
 }
 
 /// A host heard on the LAN over mDNS (§4.11). Unverified: only an address to try.
@@ -701,6 +721,25 @@ mod tests {
         b.iter().map(|x| format!("{x:02x}")).collect()
     }
 
+    /// The same golden bytes as ui/NexaDesk.Tests/TailscaleFirstTests.cs.
+    #[test]
+    fn tailnet_status_matches_the_csharp_golden_bytes() {
+        let e = Event {
+            tag: 0,
+            body: Some(EventBody::Tailnet(TailnetDevices {
+                devices: vec![],
+                state: TailscaleState::Running as i32,
+                self_name: "m".into(),
+                self_dns_name: "m.ts.net".into(),
+                self_ips: vec!["100.64.0.1".into()],
+            })),
+        };
+        assert_eq!(
+            hex(&e.encode_to_vec()),
+            "ca021b10021a016d22086d2e74732e6e65742a0a3130302e36342e302e31"
+        );
+    }
+
     /// The same golden bytes as ui/NexaDesk.Tests/LanDiscoveryTests.cs.
     #[test]
     fn lan_event_matches_the_csharp_golden_bytes() {
@@ -715,7 +754,10 @@ mod tests {
                 }],
             })),
         };
-        assert_eq!(hex(&e.encode_to_vec()), "da020e0a0c0a01611201621a0163220164");
+        assert_eq!(
+            hex(&e.encode_to_vec()),
+            "da020e0a0c0a01611201621a0163220164"
+        );
     }
 
     /// The same golden bytes as ui/NexaDesk.Tests/SessionFeatureTests.cs.

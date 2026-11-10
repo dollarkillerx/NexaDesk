@@ -7,11 +7,10 @@
 ## 特点
 
 - **传输**：一个 UDP socket 上跑 QUIC。控制走可靠流，视频走 DATAGRAM，每帧带 Reed-Solomon 纠错。拥塞控制由应用层自己做，丢一个包不会卡住后面的帧。
-- **连接**：
-  - 局域网：mDNS 自动发现。
-  - Tailscale：识别 tailnet 地址，列出 tailnet 里运行 NexaDesk 的设备。
-  - 公网：经信令服务器按 9 位 ID 连接，自动打洞；打不通就走 UDP 中继，UDP 被封锁时走 WebSocket 中继。
-  - 端口映射：依次尝试 PCP、NAT-PMP、UPnP。
+- **连接，默认不用服务器**：
+  - 局域网：mDNS 自动发现，直接连接。
+  - 跨网络：**推荐 Tailscale**。两边登录同一个 Tailscale 账号即可互连，Tailscale 负责打洞，打不通时自动中转。NexaDesk 会列出 tailnet 里运行 NexaDesk 的设备，并标明是直连还是经 DERP 中转。
+  - 可选的自建服务器：按 9 位设备 ID 连接，自己打洞（端口映射依次尝试 PCP、NAT-PMP、UPnP），打不通就走 UDP 中继，UDP 被封锁时走 WebSocket 中继。
 - **画面**：macOS 用 ScreenCaptureKit 采集，VideoToolbox 硬件编码 HEVC / H.264，用低延迟码率控制和长期参考帧（LTR）。丢帧后只让失效的帧之后的画面重新参考，不必等关键帧。
 - **键盘**：按物理键码传输，控制端改写组合键意图。例如在 Mac 上按 ⌘C 控制 Windows 时发出 Ctrl+C，而不是全局对调 Ctrl 和 Cmd。映射表可以编辑和预览。
 - **剪贴板与粘贴**：按代际同步。远端粘贴前先等剪贴板到达对端，再放行粘贴键，避免粘贴出旧内容。
@@ -68,21 +67,19 @@ cargo build --release -p nexa-agent -p nexa-client
 ## 使用
 
 1. 两台 Mac 都打开 NexaDesk.app，按提示授予“屏幕录制”和“辅助功能”权限，首次在局域网使用时还要允许“本地网络”。
-2. 被控的一台点“允许别人控制本机”，窗口里会显示一次性码。
-3. 控制的一台选择对方：
-   - 局域网内：直接在“局域网中的 NexaDesk 设备”里选；
-   - Tailscale 内：在 tailnet 设备列表里选；
-   - 也可以手动填 `IP:端口`（默认端口 47800）。
+2. 不在同一个局域网时，两台都安装 [Tailscale](https://tailscale.com/download) 并登录同一个账号。同一局域网内不需要。
+3. 被控的一台点“允许别人控制本机”。默认监听所有网络，窗口里会列出对方可以输入的地址（Tailscale 名称、局域网 IP）和一次性码。
+4. 控制的一台选择对方，然后输入一次性码：
+   - 在“局域网中的 NexaDesk 设备”或“Tailscale 网络中的 NexaDesk 设备”里点“连接”；
+   - 也可以手动输入对方的地址，例如 `192.168.1.20` 或 `studio.tail1234.ts.net`（默认端口 47800）。
+5. 被控端确认后开始控制。配对过的设备下次可以直接连接。
 
-   然后输入一次性码。
-4. 被控端确认后开始控制。配对过的设备下次可以直接连接。
-
-跨网络按 ID 连接需要一台信令服务器，部署方法见 [docs/DEPLOY.md](docs/DEPLOY.md)。在窗口上方的“信令服务器”里填它的地址，被控端会显示 9 位设备 ID。
+不能用 Tailscale 时，可以自建信令服务器，按 9 位设备 ID 连接：部署方法见 [docs/DEPLOY.md](docs/DEPLOY.md)，然后在主窗口的“高级：自建信令服务器（可选）”里填写地址。
 
 被控端也可以从命令行运行，在终端里确认连接：
 
 ```bash
-nexa-agent --listen 0.0.0.0:47800
+nexa-agent --listen '[::]:47800'
 ```
 
 `nexa-agent --help` 列出全部选项，例如 `--paired-only`、`--relay-only`、`--no-lan-discovery`。

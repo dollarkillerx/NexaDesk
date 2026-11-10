@@ -112,6 +112,21 @@ async fn begin_stream(accepted: &mut ViewerAccepted) -> StreamConfig {
     }
 }
 
+/// The app listens on every interface by default (`[::]`, dual-stack). An IPv4
+/// viewer must still be shown, and charged pairing guesses, as plain IPv4.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dual_stack_host_sees_ipv4_viewers_as_ipv4() {
+    let ui = FakeUi::allowing(perms(true, false, false), false);
+    let mut h = common::host_on(ui.clone(), timeouts(), None, "[::]:0".parse().unwrap()).await;
+    assert!(h.addr.ip().is_unspecified());
+    h.addr = std::net::SocketAddr::new([127, 0, 0, 1].into(), h.addr.port());
+    let me = DeviceIdentity::generate();
+    let (_ep, _conn, result) = connect_with_code(&h, &me).await;
+    result.unwrap();
+    let asked = common::lock(&ui.asked);
+    assert_eq!(asked[0].remote.ip(), std::net::IpAddr::from([127, 0, 0, 1]));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn correct_code_with_consent_is_accepted_and_negotiates_a_stream() {
     let ui = FakeUi::allowing(perms(true, false, false), true);

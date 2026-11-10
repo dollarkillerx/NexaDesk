@@ -530,7 +530,8 @@ async fn accept_loop(endpoint: Endpoint, shared: Arc<Shared>, done: watch::Sende
         };
         let shared = shared.clone();
         tokio::spawn(async move {
-            let remote = incoming.remote_address();
+            // A dual-stack listener reports IPv4 peers as ::ffff:a.b.c.d.
+            let remote = nexa_net::vsock::canonical(incoming.remote_address());
             let conn = match incoming.await {
                 Ok(c) => c,
                 Err(e) => {
@@ -541,7 +542,7 @@ async fn accept_loop(endpoint: Endpoint, shared: Arc<Shared>, done: watch::Sende
                     return;
                 }
             };
-            let remote = conn.remote_address();
+            let remote = nexa_net::vsock::canonical(conn.remote_address());
             handle_connection(conn, shared, permit, remote, remote.ip(), None).await;
         });
     }

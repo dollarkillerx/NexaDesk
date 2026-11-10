@@ -77,6 +77,12 @@ sealed class AgentTransfers(IAgentLink link) : ITransferControl
     public void Answer(ulong id, bool accept) => link.Send(new UiRequest.AnswerTransfer(id, accept));
 }
 
+/// <summary>One way to reach this Mac while hosting: "Tailscale", "局域网", "设备 ID"…</summary>
+public sealed record ConnectOption(string Kind, string Address, string Detail = "")
+{
+    public bool HasDetail => Detail.Length > 0;
+}
+
 /// <summary>"允许别人控制本机": the agent, its code, and the devices paired with it.</summary>
 public sealed partial class HostViewModel : ObservableObject
 {
@@ -91,6 +97,7 @@ public sealed partial class HostViewModel : ObservableObject
     readonly string _deviceName;
     readonly Func<string> _signalServer;
     readonly Func<bool> _announceOnLan;
+    readonly ILocalAddresses _addresses;
     BannerViewModel? _banner;
     ConsentViewModel? _consent;
     CancellationTokenSource? _starting;
@@ -98,6 +105,34 @@ public sealed partial class HostViewModel : ObservableObject
 
     public ObservableCollection<PairedDeviceViewModel> Paired { get; } = new();
     public IReadOnlyList<string> AddressSuggestions { get; }
+
+    /// <summary>This Mac's Tailscale: how people outside the LAN reach it, with no server of ours.</summary>
+    public TailscaleViewModel Tailscale { get; }
+    public bool ShowTailscaleAdvice => Tailscale.IsAbsent;
+
+    /// <summary>While hosting: every address the viewer may type, Tailscale first.</summary>
+    public ObservableCollection<ConnectOption> ConnectOptions { get; } = new();
+
+    /// <summary>
+    /// Listen on every interface, dual-stack (the default): LAN and Tailscale at once, and
+    /// interfaces that come later. Off: only <see cref="ListenAddress"/>.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ListenHint), nameof(ListenSummary))]
+    private bool _listenEverywhere = true;
+
+    /// <summary>The other radio button: only <see cref="ListenAddress"/>.</summary>
+    public bool ListenOnOne
+    {
+        get => !ListenEverywhere;
+        set => ListenEverywhere = !value;
+    }
+
+    partial void OnListenEverywhereChanged(bool value) => OnPropertyChanged(nameof(ListenOnOne));
+
+    public string ListenSummary => ListenEverywhere
+        ? $"所有网络（局域网和 Tailscale），端口 {Texts.DefaultPort}"
+        : $"只在 {ListenAddress}";
     public ConsentViewModel? Consent => _consent;
     public BannerViewModel? Banner => _banner;
 
@@ -107,7 +142,7 @@ public sealed partial class HostViewModel : ObservableObject
     private HostState _state = HostState.Stopped;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(ListenHint))]
+    [NotifyPropertyChangedFor(nameof(ListenHint), nameof(ListenSummary))]
     private string _listenAddress;
 
     [ObservableProperty]
@@ -121,7 +156,12 @@ public sealed partial class HostViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(DeviceIdDisplay), nameof(HasDeviceId))]
     private string _deviceId = "";
 
-    [ObservableProperty] private string _signalText = "";
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasSignalText))]
+    private string _signalText = "";
+
+    /// <summary>Only said when a server is in use: without one there is nothing to report.</summary>
+    public bool HasSignalText => SignalText.Length > 0;
     [ObservableProperty] private bool _signalProblem;
 
     public bool HasDeviceId => DeviceId.Length > 0;
@@ -156,8 +196,15 @@ public sealed partial class HostViewModel : ObservableObject
 
     public HostViewModel(IAgentLink link, IAgentProcess process, IPermissionProbe permissions, IWindowService windows,
         ILocalAddresses addresses, string deviceName, Func<DateTimeOffset>? now = null, Func<string>? signalServer = null,
-        Func<bool>? announceOnLan = null)
+        Func<bool>? announceOnLan = null, TailscaleViewModel? tailscale = null)
     {
+        Tailscale = tailscale ?? new TailscaleViewModel(windows);
+        Tailscale.Changed += () =>
+        {
+            OnPropertyChanged(nameof(ShowTailscaleAdvice));
+            RebuildOptions();
+        };
+        _addresses = addresses;
         _signalServer = signalServer ?? (() => "");
         _announceOnLan = announceOnLan ?? (() => true);
         _link = link;
@@ -182,21 +229,61 @@ public sealed partial class HostViewModel : ObservableObject
     public string StateText => State switch
     {
         HostState.Starting => "正在启动…",
-        HostState.Hosting => "已开启：别人可以用下面的 ID 或地址加一次性码请求连接，每次都需要你确认",
+        HostState.Hosting => "已开启：对方输入下面任一地址和一次性码即可请求连接，每次都需要你确认",
         _ => "未开启：别人无法连接本机",
     };
 
-    public string? ListenHint => Texts.NormalizeAddress(ListenAddress) == null ? "格式应为 IP:端口" : null;
+    public string? ListenHint => !ListenEverywhere && Texts.NormalizeAddress(ListenAddress) == null ? "格式应为 IP:端口" : null;
 
     [RelayCommand]
-    private void UseSuggestion(string address) => ListenAddress = address;
+    private void UseSuggestion(string address)
+    {
+        ListenAddress = address;
+        ListenEverywhere = false;
+    }
+
+    /// <summary>
+    /// What the viewer can type. The agent reports where it listens; on every interface that
+    /// means each of this Mac's addresses. Tailscale comes first, as the way that works from
+    /// anywhere, and by its MagicDNS name when there is one.
+    /// </summary>
+    void RebuildOptions()
+    {
+        ConnectOptions.Clear();
+        if (!IsHosting || ActiveListen.Length == 0) return;
+        var (host, port) = SplitListen(ActiveListen);
+        var suffix = port == Texts.DefaultPort ? "" : $":{port}";
+        var everywhere = host is "0.0.0.0" or "::";
+        var ips = everywhere ? _addresses.Candidates().Where(ip => ip != "127.0.0.1").ToList() : [host];
+        var tailnet = ips.Where(IsTailnet).ToList();
+        if (tailnet.Count > 0 && Tailscale.DnsName.Length > 0)
+            ConnectOptions.Add(new ConnectOption("Tailscale", Tailscale.DnsName + suffix, $"或 {tailnet[0]}{suffix}"));
+        else
+            foreach (var ip in tailnet) ConnectOptions.Add(new ConnectOption("Tailscale", Bracket(ip) + suffix));
+        foreach (var ip in ips.Where(ip => !IsTailnet(ip)))
+            ConnectOptions.Add(new ConnectOption(ip == "127.0.0.1" || ip == "::1" ? "仅本机" : "局域网", Bracket(ip) + suffix));
+        if (HasDeviceId) ConnectOptions.Add(new ConnectOption("设备 ID", DeviceIdDisplay, "经自建信令服务器"));
+    }
+
+    partial void OnStateChanged(HostState value) => RebuildOptions();
+
+    static bool IsTailnet(string ip) => System.Net.IPAddress.TryParse(ip, out var a) && Texts.IsTailnetIp(a);
+
+    static string Bracket(string ip) => ip.Contains(':') ? $"[{ip}]" : ip;
+
+    static (string Host, int Port) SplitListen(string listen)
+    {
+        var i = listen.LastIndexOf(':');
+        if (i <= 0 || !int.TryParse(listen[(i + 1)..], out var port)) return (listen, Texts.DefaultPort);
+        return (listen[..i].Trim('[', ']'), port);
+    }
 
     [RelayCommand(CanExecute = nameof(IsStopped))]
     private async Task Start()
     {
         Error = null;
         Notice = null;
-        var listen = Texts.NormalizeAddress(ListenAddress);
+        var listen = ListenEverywhere ? $"[::]:{Texts.DefaultPort}" : Texts.NormalizeAddress(ListenAddress);
         if (listen == null)
         {
             Error = "监听地址格式不对，应为 IP:端口，例如 192.168.1.20:47800。";
@@ -313,7 +400,8 @@ public sealed partial class HostViewModel : ObservableObject
                 InputAvailable = s.InputAvailable;
                 HostFingerprint = Texts.Fingerprint(s.DeviceKey);
                 DeviceId = s.Signal == SignalState.Online ? s.ShortId : "";
-                SignalText = Texts.Signal(s.Signal, s.ShortId, s.SignalDetail);
+                SignalText = s.Signal == SignalState.Off ? "" : Texts.Signal(s.Signal, s.ShortId, s.SignalDetail);
+                RebuildOptions();
                 SignalProblem = s.Signal == SignalState.Error;
                 if (s.Session != null) ShowBanner(s.Session);
                 else HideBanner();
@@ -394,6 +482,7 @@ public sealed partial class HostViewModel : ObservableObject
         StartedWithAnnounce = null;
         DeviceId = "";
         SignalText = "";
+        ConnectOptions.Clear();
         SignalProblem = false;
         Paired.Clear();
         // With no UI the agent itself ends the session and denies the open question.
@@ -521,6 +610,8 @@ public sealed partial class MainViewModel : ObservableObject
     public ConnectViewModel Connect { get; }
     public HostViewModel Host { get; }
     public SettingsViewModel Settings { get; }
+    /// <summary>Shared by both halves.</summary>
+    public TailscaleViewModel Tailscale { get; }
 
     public MainViewModel(IClientCore core, IRecentStore recent, IAgentLink link, IAgentProcess process,
         IPermissionProbe permissions, IWindowService windows, ILocalAddresses addresses, string deviceName,
@@ -531,9 +622,10 @@ public sealed partial class MainViewModel : ObservableObject
         _core = core;
         DeviceName = deviceName;
         Settings = new SettingsViewModel(settings ?? new MemorySettings());
-        Connect = new ConnectViewModel(core, recent, windows, now, () => Settings.SavedServer);
+        Tailscale = new TailscaleViewModel(windows);
+        Connect = new ConnectViewModel(core, recent, windows, now, () => Settings.SavedServer, Tailscale);
         Host = new HostViewModel(link, process, permissions, windows, addresses, deviceName, now, () => Settings.SavedServer,
-            () => Settings.AnnounceOnLan);
+            () => Settings.AnnounceOnLan, Tailscale);
         Settings.ServerChanged += _ =>
         {
             Connect.OnServerChanged();

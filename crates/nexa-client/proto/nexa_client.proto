@@ -78,7 +78,7 @@ message Event {
     HostKeyPressed host_key = 10;
     Warning warning = 11;
     Reconnecting reconnecting = 40;  // the transport dropped; the session window stays
-    TailnetDevices tailnet = 41;     // tag 0: Tailscale peers that answer on the NexaDesk port
+    TailnetDevices tailnet = 41;     // tag 0: this machine's Tailscale and the peers that answer on the NexaDesk port
     Transfer transfer = 42;          // a file transfer of this session moved on
     LanDevices lan = 43;             // tag 0: hosts heard on the LAN over mDNS (§4.11)
   }
@@ -169,7 +169,17 @@ message TailnetDevice {
   string os = 4;
   string dns_name = 5;
 }
-message TailnetDevices { repeated TailnetDevice devices = 1; }
+// This machine's Tailscale, so the app can show its tailnet name or recommend
+// installing it (§4.7): ABSENT, no tailnet address; ADDRESS_ONLY, a tailnet
+// address but no readable status; RUNNING, status read.
+enum TailscaleState { TAILSCALE_ABSENT = 0; TAILSCALE_ADDRESS_ONLY = 1; TAILSCALE_RUNNING = 2; }
+message TailnetDevices {
+  repeated TailnetDevice devices = 1;
+  TailscaleState state = 2;
+  string self_name = 3;
+  string self_dns_name = 4;    // MagicDNS name, no trailing dot; empty if off
+  repeated string self_ips = 5;
+}
 // Unverified hints: TLS and pairing still decide who answers at the address.
 message LanDevice {
   string name = 1;

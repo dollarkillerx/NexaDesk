@@ -4,7 +4,10 @@ using NexaDesk.Services;
 
 namespace NexaDesk.ViewModels;
 
-/// <summary>The signaling server (§4.3): where device IDs are looked up. Empty means address only.</summary>
+/// <summary>
+/// The optional self-hosted signaling server (§4.3), where device IDs are looked up. Empty, the
+/// default, means addresses only: the LAN directly, and Tailscale across networks.
+/// </summary>
 public sealed partial class SettingsViewModel : ObservableObject
 {
     readonly ISettingsStore _store;
@@ -54,8 +57,8 @@ public sealed partial class SettingsViewModel : ObservableObject
             : null;
 
     public string ServerStatus => HasServer
-        ? $"用 {SavedServer} 按设备 ID 连接"
-        : "未设置：只能用 IP:端口 连接";
+        ? $"使用中：{SavedServer}"
+        : "未使用（跨网络推荐 Tailscale）";
 
     bool CanSave() => IsDirty && ServerHint == null;
 

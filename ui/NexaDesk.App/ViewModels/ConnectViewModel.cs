@@ -78,6 +78,22 @@ public sealed partial class ConnectViewModel : ObservableObject
     public bool HasLan => Lan.Count > 0;
     public IReadOnlyCollection<SessionViewModel> Sessions => _sessions.Values;
 
+    /// <summary>This Mac's Tailscale; recommended for anything beyond the LAN.</summary>
+    public TailscaleViewModel Tailscale { get; }
+
+    /// <summary>The Tailscale recommendation under the device lists: shown once the core says it is absent.</summary>
+    public bool ShowTailscaleAdvice => Tailscale.IsAbsent;
+
+    bool HasServer => _signalServer().Length > 0;
+
+    public string Intro => HasServer
+        ? "输入对方窗口里显示的地址（局域网 IP 或 Tailscale 名称）或设备 ID，以及一次性码。"
+        : "输入对方窗口里显示的地址（局域网 IP 或 Tailscale 名称），以及一次性码。";
+
+    public string AddressPlaceholder => HasServer
+        ? "例如 192.168.1.20、studio.tail1234.ts.net 或 123 456 789"
+        : "例如 192.168.1.20 或 studio.tail1234.ts.net";
+
     /// <summary>Asks the view to put the cursor in the code box.</summary>
     public event Action? FocusCodeRequested;
 
@@ -109,17 +125,22 @@ public sealed partial class ConnectViewModel : ObservableObject
 
     public string? AddressHint =>
         Address.Length > 0 && Texts.NormalizeTarget(Address) == null
-            ? "请输入 9 位设备 ID（例如 123 456 789），或 IP:端口（例如 192.168.1.20:47800）"
-            : Texts.NormalizeDeviceId(Address) != null && _signalServer().Length == 0
-                ? "用设备 ID 连接需要先在上方设置信令服务器"
+            ? "请输入对方的地址：局域网 IP 或 Tailscale 名称，可以带端口（例如 192.168.1.20:47800）"
+            : Texts.NormalizeDeviceId(Address) != null && !HasServer
+                ? IdNeedsServer
                 : null;
+
+    const string IdNeedsServer =
+        "设备 ID 只在设置了自建信令服务器（高级设置）后可用。不想自建服务器：两边都安装 Tailscale，然后输入对方的 Tailscale 名称。";
 
     public string? CodeHint =>
         Code.Length > 0 && Texts.NormalizeCode(Code) == null ? "一次性码是 8 位字母或数字（2–7），例如 ABCD-2345" : null;
 
     public ConnectViewModel(IClientCore core, IRecentStore store, IWindowService windows, Func<DateTimeOffset>? now = null,
-        Func<string>? signalServer = null)
+        Func<string>? signalServer = null, TailscaleViewModel? tailscale = null)
     {
+        Tailscale = tailscale ?? new TailscaleViewModel(windows);
+        Tailscale.Changed += () => OnPropertyChanged(nameof(ShowTailscaleAdvice));
         _core = core;
         _store = store;
         _windows = windows;
@@ -148,6 +169,8 @@ public sealed partial class ConnectViewModel : ObservableObject
     public void OnServerChanged()
     {
         OnPropertyChanged(nameof(AddressHint));
+        OnPropertyChanged(nameof(Intro));
+        OnPropertyChanged(nameof(AddressPlaceholder));
         ConnectCommand.NotifyCanExecuteChanged();
     }
 
@@ -207,7 +230,7 @@ public sealed partial class ConnectViewModel : ObservableObject
         var server = _signalServer();
         if (isId && server.Length == 0)
         {
-            Error = new ErrorText("未设置信令服务器", "用设备 ID 连接需要信令服务器。请在窗口上方填写服务器地址，或改用 IP:端口。");
+            Error = new ErrorText("设备 ID 需要信令服务器", IdNeedsServer);
             return;
         }
         var tag = _nextTag++;
@@ -245,6 +268,7 @@ public sealed partial class ConnectViewModel : ObservableObject
         }
         if (ev is TailnetDevicesEvent tailnet)
         {
+            Tailscale.Update(tailnet);
             Tailnet.Clear();
             foreach (var d in tailnet.Devices) Tailnet.Add(new TailnetDeviceViewModel(this, d));
             OnPropertyChanged(nameof(HasTailnet));
@@ -297,12 +321,20 @@ public sealed partial class ConnectViewModel : ObservableObject
                 IsConnecting = false;
                 ProgressText = "";
                 p.Session.Close();
-                if (d.Reason != DisconnectReason.ClosedLocally) Error = Texts.Disconnect(d.Reason);
+                if (d.Reason != DisconnectReason.ClosedLocally) Error = Failure(d.Reason, p.Address);
                 break;
             case WarningEvent w:
                 ProgressText = w.Text;
                 break;
         }
+    }
+
+    /// <summary>A failure to get through to an address outside any tailnet points at Tailscale.</summary>
+    static ErrorText Failure(DisconnectReason reason, string address)
+    {
+        var e = Texts.Disconnect(reason);
+        var unreachable = reason is DisconnectReason.Network or DisconnectReason.TimedOut or DisconnectReason.NoPath;
+        return unreachable && !Texts.IsTailnetTarget(address) ? new ErrorText(e.Title, $"{e.Detail}\n{Texts.TailscaleAdvice}") : e;
     }
 
     static string Shown(string address) =>

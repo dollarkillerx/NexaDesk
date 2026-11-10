@@ -16,6 +16,8 @@ public interface IWindowService
     void ShowPermissionGuide(PermissionGuideViewModel guide);
     void ShowDiagnostics(DiagnosticsViewModel diagnostics);
     void ShowKeyboardSettings(KeyboardSettingsViewModel settings);
+    /// <summary>Opens a fixed https link in the default browser.</summary>
+    void OpenUrl(string url);
 }
 
 /// <summary>

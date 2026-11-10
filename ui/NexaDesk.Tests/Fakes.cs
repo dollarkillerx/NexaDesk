@@ -220,6 +220,8 @@ public sealed class RecordingWindows : IWindowService
     public void ShowDiagnostics(DiagnosticsViewModel diagnostics) { }
     public List<KeyboardSettingsViewModel> KeyboardSettings { get; } = new();
     public void ShowKeyboardSettings(KeyboardSettingsViewModel settings) => KeyboardSettings.Add(settings);
+    public List<string> OpenedUrls { get; } = new();
+    public void OpenUrl(string url) => OpenedUrls.Add(url);
 }
 
 /// <summary>Never touches SMAppService: records what the app asked for.</summary>

@@ -424,6 +424,15 @@ pub async fn query_localapi() -> Option<TailscaleInfo>; // 失败返回 None
 - **免信令模式**：被控端在 tailnet 地址上监听固定 UDP 端口（默认 21116，可配）。控制端以 `IP:端口` 作为唯一候选，跳过信令直接开始检查；此时用 pwd 的预共享值由配对记录派生，首次连接使用公开默认值，身份校验仍由 §9 保证。
 - macOS App Store 版的 LocalAPI 使用 TCP + token，取不到就退回 `discover_local`，功能只损失设备列表。
 
+**实现修订（无服务器优先）**，以代码和测试为准：
+
+- **默认不用服务器**：同一局域网直接连接（§4.11 发现），跨网络推荐 Tailscale。Tailscale 自己打洞，打不通时经 DERP 中转，所以不需要自建信令和中继。`nexa-signal` 保留为可选项，App 里收在“高级：自建信令服务器（可选）”下，默认不显示。
+- **为什么不改路径打分**：只有配置了自建服务器才会出现自建中继，此时仍按实测打分（§4.5）。自建 UDP 中继扣分（5）小于 DERP（30），因为 DERP 走 TCP，延迟和抗丢包都更差。“推荐 Tailscale”体现在默认配置和界面上，不是让它在测量中占便宜。
+- **读取状态**：先试 LocalAPI socket，再试命令行 `status --json`。命令行只用固定路径：`/Applications/Tailscale.app/Contents/MacOS/Tailscale`、`/opt/homebrew/bin/tailscale`、`/usr/local/bin/tailscale`，不查 `PATH`，2 秒超时后结束子进程。命令行输出与 LocalAPI 是同一份文档，因此 App Store 版和官网独立版也能拿到设备列表、DERP 判断和本机名称。
+- **本机状态**：`TailscaleInfo` 增加 `self_name`、`self_dns_name`（MagicDNS 名）。控制端事件 `TailnetDevices` 增加 `state`（ABSENT / ADDRESS_ONLY / RUNNING）和本机名称、地址，没有 Tailscale 时也上报一次，界面据此决定显示本机的 Tailscale 名称还是推荐安装。
+- **监听所有网卡**：App 默认让被控端监听 `[::]:47800`（双栈），局域网和 Tailscale 同时可连，之后出现的网卡也可连。只监听一个地址收在“监听范围”里。被控端把 `::ffff:a.b.c.d` 形式的对端地址还原为 IPv4，确认窗口和按来源限速（§9.5）都按 IPv4 计。
+- **界面**：被控端开启后列出对方可输入的每个地址，Tailscale（优先 MagicDNS 名）在前，局域网其次，设置了自建服务器时最后是设备 ID。连接失败（网络不通、超时、无路径）且目标不是 tailnet 地址时，错误说明附带 Tailscale 建议。菜单栏状态优先显示 Tailscale 名称。
+
 ### 4.8 QUIC 配置
 
 | 参数 | 值 | 原因 |
@@ -501,7 +510,7 @@ M0 实测：若只按编码码率计算，120 fps 下每帧固定摊 4.17 ms，�
 - **暴露面**：默认情况下，任何知道 ID 的人都能让被控端回应候选地址，并向对方指定的地址发送最多 64×4 个检查包。`--paired-only` 和 `--relay-only` 可以收紧，默认值待产品决定。
 - **连接可靠性（第二轮已实现）**：断线后控制端保留窗口，以 0.5/1/2/4/8 秒退避在 30 秒内重连，每次重走会合和握手、钉住首次会话的公钥；被控端若授予了不同权限则结束会话。网络变化由 NWPathMonitor 加 2 秒轮询发现，经控制流发 `CandidateUpdate`（**消息编号 24**，与光标消息的 20–23 区分）。UDP 被封时改用信令服务器 `/relay` 上的 WSS 中继。端口映射依次尝试 PCP、NAT-PMP、UPnP（800 ms 内）。读取 Tailscale LocalAPI 区分直连和 DERP，并列出运行 NexaDesk 的设备。会话 socket 为双栈。
 - **被控端静默跟随**：活跃路径 1 秒没有 QUIC 时，被控端跟随到另一条**已验证**路径，否则控制端地址变化后会死锁。同一设备重连时不再弹出“接管”提示，访问决策本身不变。
-- **仍未实现或有局限**：断线检测受 QUIC 10 秒空闲超时支配；用一次性码重连时若对方已换码会失败；端口映射不续期（2 小时）；UDP 中继与 WSS 中继不能并存；Tailscale 设备列表是启发式探测，App Store 版 Tailscale 只做地址发现。mDNS 见 §4.11。
+- **仍未实现或有局限**：断线检测受 QUIC 10 秒空闲超时支配；用一次性码重连时若对方已换码会失败；端口映射不续期（2 小时）；UDP 中继与 WSS 中继不能并存；Tailscale 设备列表是启发式探测；App Store 版 Tailscale 的状态改由命令行读取（见 §4.7 实现修订）。mDNS 见 §4.11。
 - NAT 测试使用进程内 NAT 模拟器，代替 §14 中的 Linux 网络命名空间。
 
 ### 4.11 局域网发现

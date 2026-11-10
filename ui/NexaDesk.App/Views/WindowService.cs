@@ -122,6 +122,22 @@ public sealed class WindowService : IWindowService
 
     KeyboardSettingsWindow? _keyboard;
 
+    public void OpenUrl(string url)
+    {
+        // Only links this app wrote: never anything that came over the network.
+        if (!url.StartsWith("https://", StringComparison.Ordinal)) return;
+        try
+        {
+            using var _ = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("/usr/bin/open", [url])
+            {
+                UseShellExecute = false,
+            });
+        }
+        catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+        }
+    }
+
     public void ShowKeyboardSettings(KeyboardSettingsViewModel settings)
     {
         if (_keyboard != null)

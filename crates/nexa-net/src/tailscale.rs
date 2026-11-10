@@ -1,9 +1,12 @@
 //! The Tailscale module (§4.7): tailnet addresses from the interfaces, and,
-//! when tailscaled's LocalAPI is reachable, the device list and whether each
-//! peer is reached directly or through DERP.
+//! when tailscaled's status can be read, this machine's tailnet name, the
+//! device list and whether each peer is reached directly or through DERP.
 //!
-//! The LocalAPI is an internal interface: every failure here is silent and
-//! leaves address-only discovery (§5.4 level 1). Nothing depends on it.
+//! The status comes from the LocalAPI socket (open-source tailscaled), or else
+//! from `tailscale status --json`, which is how the Mac app (App Store and
+//! standalone) exposes the same document. Both are internal interfaces: every
+//! failure here is silent and leaves address-only discovery (§5.4 level 1).
+//! Nothing depends on it.
 
 use std::{
     io::{Read, Write},
@@ -25,11 +28,25 @@ pub const SOCKET_PATHS: [&str; 2] = [
     "/var/run/tailscale/tailscaled.sock",
 ];
 pub const LOCALAPI_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// The Tailscale command line: inside the Mac app, then Homebrew and the usual
+/// prefix. Fixed paths, never looked up in `PATH`.
+pub const CLI_PATHS: [&str; 3] = [
+    "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+    "/opt/homebrew/bin/tailscale",
+    "/usr/local/bin/tailscale",
+];
+pub const CLI_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_STATUS: usize = 8 << 20;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TailscaleInfo {
     pub self_ips: Vec<IpAddr>,
+    /// This machine's name in the tailnet.
+    pub self_name: String,
+    /// This machine's MagicDNS name without the trailing dot; empty when
+    /// MagicDNS is off.
+    pub self_dns_name: String,
     pub peers: Vec<TsPeer>,
 }
 
@@ -66,11 +83,51 @@ pub fn discover_local() -> Vec<IpAddr> {
     out
 }
 
-/// `/localapi/v0/status` from the first socket that answers; `None` on any failure.
+/// `/localapi/v0/status` from the first socket that answers, else the command
+/// line's `status --json`; `None` on any failure.
 pub fn query_localapi() -> Option<TailscaleInfo> {
     SOCKET_PATHS
         .iter()
         .find_map(|p| query_localapi_at(Path::new(p), LOCALAPI_TIMEOUT))
+        .or_else(|| {
+            CLI_PATHS
+                .iter()
+                .find_map(|p| query_cli_at(Path::new(p), CLI_TIMEOUT))
+        })
+}
+
+/// Runs `<path> status --json` and parses what it prints. Killed after
+/// `timeout`; `None` if missing, slow, failing, or not running.
+pub fn query_cli_at(path: &Path, timeout: Duration) -> Option<TailscaleInfo> {
+    use std::process::{Command, Stdio};
+    if !path.is_file() {
+        return None;
+    }
+    let mut child = Command::new(path)
+        .args(["status", "--json"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let out = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = std::thread::Builder::new()
+        .name("tailscale-cli".into())
+        .spawn(move || {
+            let mut buf = Vec::new();
+            let r = out.take(MAX_STATUS as u64 + 1).read_to_end(&mut buf);
+            let _ = tx.send(r.map(|_| buf));
+        });
+    let result = rx.recv_timeout(timeout);
+    // Ends a slow child, and so the reader; a finished one is just reaped.
+    let _ = child.kill();
+    let _ = child.wait();
+    let buf = result.ok()?.ok()?;
+    if buf.len() > MAX_STATUS {
+        return None;
+    }
+    parse_status(&buf)
 }
 
 #[cfg(unix)]
@@ -177,9 +234,11 @@ pub fn parse_status(json: &[u8]) -> Option<TailscaleInfo> {
     if v.get("BackendState").and_then(|s| s.as_str()) != Some("Running") {
         return None;
     }
-    let self_ips = v
-        .get("Self")
-        .map(|s| ips_of(&s["TailscaleIPs"]))
+    let me = v.get("Self");
+    let self_ips = me.map(|s| ips_of(&s["TailscaleIPs"])).unwrap_or_default();
+    let self_name = me.map(|s| text(s, "HostName", 64)).unwrap_or_default();
+    let self_dns_name = me
+        .map(|s| text(s, "DNSName", 253).trim_end_matches('.').to_owned())
         .unwrap_or_default();
     let mut peers: Vec<TsPeer> = v
         .get("Peer")
@@ -206,7 +265,12 @@ pub fn parse_status(json: &[u8]) -> Option<TailscaleInfo> {
         })
         .unwrap_or_default();
     peers.sort_by(|a, b| a.name.cmp(&b.name).then(a.dns_name.cmp(&b.dns_name)));
-    Some(TailscaleInfo { self_ips, peers })
+    Some(TailscaleInfo {
+        self_ips,
+        self_name,
+        self_dns_name,
+        peers,
+    })
 }
 
 /// Where a [`TailnetMonitor`] reads from.
@@ -344,7 +408,7 @@ mod tests {
 
     const STATUS: &str = r#"{
       "BackendState": "Running",
-      "Self": {"HostName": "me", "TailscaleIPs": ["100.64.0.1", "fd7a:115c:a1e0::1"]},
+      "Self": {"HostName": "me", "DNSName": "me.tail1234.ts.net.", "TailscaleIPs": ["100.64.0.1", "fd7a:115c:a1e0::1"]},
       "Peer": {
         "nodekey:a": {"HostName": "studio", "DNSName": "studio.tail1234.ts.net.", "OS": "macOS",
                       "TailscaleIPs": ["100.64.0.2", "fd7a:115c:a1e0::2"], "Online": true,
@@ -360,6 +424,8 @@ mod tests {
     fn parses_peers_and_direct_or_derp() {
         let info = parse_status(STATUS.as_bytes()).unwrap();
         assert_eq!(info.self_ips.len(), 2);
+        assert_eq!(info.self_name, "me");
+        assert_eq!(info.self_dns_name, "me.tail1234.ts.net");
         let names: Vec<&str> = info.peers.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
             names,
@@ -376,6 +442,58 @@ mod tests {
         assert_eq!(old.ips, vec!["100.64.0.4".parse::<IpAddr>().unwrap()]);
         assert!(parse_status(br#"{"BackendState":"Stopped"}"#).is_none());
         assert!(parse_status(b"not json").is_none());
+    }
+
+    /// A stand-in for the Mac app's command line.
+    fn fake_cli(dir: &Path, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[test]
+    fn reads_the_command_line_and_gives_up_on_a_slow_or_failing_one() {
+        let dir = tempdir();
+        let status = dir.join("status.json");
+        std::fs::write(&status, STATUS).unwrap();
+        let good = fake_cli(
+            &dir,
+            "good",
+            &format!(
+                "[ \"$1 $2\" = \"status --json\" ] || exit 2\ncat '{}'",
+                status.display()
+            ),
+        );
+        let info = query_cli_at(&good, Duration::from_secs(5)).unwrap();
+        assert_eq!(info.self_dns_name, "me.tail1234.ts.net");
+        assert_eq!(info.peers.len(), 3);
+
+        let stopped = fake_cli(&dir, "stopped", r#"echo '{"BackendState":"Stopped"}'"#);
+        assert!(query_cli_at(&stopped, Duration::from_secs(5)).is_none());
+        let failing = fake_cli(&dir, "failing", "echo nope; exit 1");
+        assert!(query_cli_at(&failing, Duration::from_secs(5)).is_none());
+        let slow = fake_cli(&dir, "slow", "sleep 30");
+        let t = Instant::now();
+        assert!(query_cli_at(&slow, Duration::from_millis(300)).is_none());
+        assert!(
+            t.elapsed() < Duration::from_secs(5),
+            "the slow one is killed"
+        );
+        assert!(query_cli_at(&dir.join("missing"), Duration::from_secs(1)).is_none());
+    }
+
+    /// The Tailscale installed on this machine, if any. Ignored by default: it
+    /// depends on the machine. Prints nothing about the tailnet.
+    #[test]
+    #[ignore]
+    fn reads_the_installed_tailscale() {
+        let Some(info) = query_localapi() else {
+            panic!("no readable Tailscale on this machine");
+        };
+        assert!(!info.self_ips.is_empty());
+        assert!(!info.self_name.is_empty());
     }
 
     fn fake_localapi(dir: &Path, response: Vec<u8>) -> PathBuf {

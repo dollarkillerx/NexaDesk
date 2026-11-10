@@ -464,9 +464,11 @@ public class HostViewModelTests
         _link.ConnectResults.Enqueue("not yet");
         _link.ConnectResults.Enqueue(null);
         var vm = Vm();
+        // Every network by default (LAN and Tailscale at once); one address is the exception.
+        Assert.True(vm.ListenEverywhere);
         Assert.Equal("192.168.1.20:47800", vm.ListenAddress);
         await vm.StartCommand.ExecuteAsync(null);
-        Assert.Equal(("192.168.1.20:47800", "工作室 Mac mini"), Assert.Single(_process.Starts));
+        Assert.Equal(("[::]:47800", "工作室 Mac mini"), Assert.Single(_process.Starts));
         Assert.True(vm.IsHosting);
 
         _link.Raise(Samples.Status());
@@ -795,7 +797,8 @@ public class DeviceIdTests
         Assert.Contains("信令服务器", vm.AddressHint);
         vm.ConnectCommand.Execute(null);
         Assert.Empty(client.Requests);
-        Assert.Equal("未设置信令服务器", vm.Error!.Title);
+        Assert.Equal("设备 ID 需要信令服务器", vm.Error!.Title);
+        Assert.Contains("Tailscale", vm.Error!.Detail);
 
         main.Settings.ServerInput = "wss://s.example";
         main.Settings.SaveCommand.Execute(null);

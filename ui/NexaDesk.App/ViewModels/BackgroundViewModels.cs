@@ -73,6 +73,7 @@ public sealed partial class TrayViewModel : ObservableObject
             if (e.PropertyName is nameof(HostViewModel.State) or nameof(HostViewModel.DeviceId) or nameof(HostViewModel.Banner))
                 Update();
         };
+        host.Tailscale.Changed += Update;
         Update();
     }
 
@@ -92,6 +93,8 @@ public sealed partial class TrayViewModel : ObservableObject
             ? banner.Headline
             : _host.State switch
             {
+                HostState.Hosting when _host.Tailscale.IsPresent && _host.Tailscale.ConnectName.Length > 0 =>
+                    $"允许控制中 · {_host.Tailscale.ConnectName}",
                 HostState.Hosting => _host.HasDeviceId ? $"允许控制中 · ID {_host.DeviceIdDisplay}" : "允许控制中",
                 HostState.Starting => "正在开启允许控制…",
                 _ => "未允许别人控制本机",

@@ -70,7 +70,7 @@ use crate::{
         ClipboardNotice, Command, ConnectAuth, ConnectRequest, ConnectStage, Connected, Connecting,
         DisconnectReason, Disconnected, DisplayInfo, Event, EventBody, KnownHost, LanDevice,
         LanDevices, PathKind, Permissions, Ready, Reconnecting, SessionCommand, Stats,
-        StreamChanged, TailnetDevice, TailnetDevices, Transfer, Warning,
+        StreamChanged, TailnetDevice, TailnetDevices, TailscaleState, Transfer, Warning,
     },
 };
 
@@ -1796,27 +1796,54 @@ fn probe_ids(buf: &mut [u8]) {
     }
 }
 
-/// Sends the tailnet device list (tag 0) whenever it changes.
+/// This machine's Tailscale without the device list: what the status says,
+/// or, when it cannot be read, whatever tailnet addresses the interfaces have.
+pub fn tailnet_status(info: Option<&TailscaleInfo>, local: &[std::net::IpAddr]) -> TailnetDevices {
+    match info {
+        Some(i) => TailnetDevices {
+            devices: Vec::new(),
+            state: TailscaleState::Running as i32,
+            self_name: i.self_name.clone(),
+            self_dns_name: i.self_dns_name.clone(),
+            self_ips: i.self_ips.iter().map(|ip| ip.to_string()).collect(),
+        },
+        None => TailnetDevices {
+            devices: Vec::new(),
+            state: if local.is_empty() {
+                TailscaleState::Absent
+            } else {
+                TailscaleState::AddressOnly
+            } as i32,
+            self_ips: local.iter().map(|ip| ip.to_string()).collect(),
+            ..Default::default()
+        },
+    }
+}
+
+/// Sends this machine's Tailscale and the tailnet device list (tag 0)
+/// whenever either changes, and once at start even when there is no Tailscale.
 async fn report_tailnet(events: EventTx, tailnet: Arc<TailnetMonitor>) {
-    let mut last: Option<Vec<TailnetDevice>> = None;
+    let mut last: Option<TailnetDevices> = None;
     loop {
-        if let Some(info) = tailnet.snapshot() {
-            let devices = tokio::task::spawn_blocking(move || {
+        let info = tailnet.snapshot();
+        let local = if info.is_none() {
+            nexa_net::tailscale::discover_local()
+        } else {
+            Vec::new()
+        };
+        let mut status = tailnet_status(info.as_ref(), &local);
+        if let Some(info) = info {
+            status.devices = tokio::task::spawn_blocking(move || {
                 tailnet_devices(&info, NEXADESK_PORT, &|addr| {
                     nexa_net::tailscale::probe_quic(addr, TAILNET_PROBE_TIMEOUT, &mut probe_ids)
                 })
             })
             .await
             .unwrap_or_default();
-            if last.as_ref() != Some(&devices) {
-                events.send(
-                    0,
-                    EventBody::Tailnet(TailnetDevices {
-                        devices: devices.clone(),
-                    }),
-                );
-                last = Some(devices);
-            }
+        }
+        if last.as_ref() != Some(&status) {
+            events.send(0, EventBody::Tailnet(status.clone()));
+            last = Some(status);
         }
         tokio::time::sleep(TAILNET_REFRESH).await;
     }
@@ -1909,6 +1936,29 @@ mod tests {
     }
 
     #[test]
+    fn tailnet_status_says_running_address_only_or_absent() {
+        let info = TailscaleInfo {
+            self_ips: vec!["100.64.0.1".parse().unwrap()],
+            self_name: "me".into(),
+            self_dns_name: "me.tail1234.ts.net".into(),
+            ..Default::default()
+        };
+        let running = tailnet_status(Some(&info), &[]);
+        assert_eq!(running.state, TailscaleState::Running as i32);
+        assert_eq!(running.self_dns_name, "me.tail1234.ts.net");
+        assert_eq!(running.self_ips, vec!["100.64.0.1"]);
+        let local = ["100.101.22.7".parse().unwrap()];
+        let address_only = tailnet_status(None, &local);
+        assert_eq!(address_only.state, TailscaleState::AddressOnly as i32);
+        assert_eq!(address_only.self_ips, vec!["100.101.22.7"]);
+        assert!(address_only.self_dns_name.is_empty());
+        assert_eq!(
+            tailnet_status(None, &[]).state,
+            TailscaleState::Absent as i32
+        );
+    }
+
+    #[test]
     fn tailnet_list_has_online_peers_that_answer_on_the_port() {
         let info = TailscaleInfo {
             self_ips: vec![],
@@ -1918,6 +1968,7 @@ mod tests {
                 peer("asleep", "100.64.0.4", false, None),
                 peer("no-nexadesk", "100.64.0.5", true, Some(true)),
             ],
+            ..Default::default()
         };
         let asked = Mutex::new(Vec::new());
         let list = tailnet_devices(&info, NEXADESK_PORT, &|a| {

@@ -377,6 +377,17 @@ pub async fn host_with(
     timeouts: Timeouts,
     signal: Option<nexa_agent::SignalSetup>,
 ) -> Host {
+    host_on(ui, timeouts, signal, "127.0.0.1:0".parse().unwrap()).await
+}
+
+/// An agent listening on `listen`.
+#[allow(dead_code)]
+pub async fn host_on(
+    ui: Arc<FakeUi>,
+    timeouts: Timeouts,
+    signal: Option<nexa_agent::SignalSetup>,
+    listen: std::net::SocketAddr,
+) -> Host {
     let dir = tempfile::tempdir().unwrap();
     let identity = DeviceIdentity::generate();
     let store =
@@ -385,7 +396,7 @@ pub async fn host_with(
     let agent = start(
         AgentConfig {
             lan_discovery: false,
-            listen: "127.0.0.1:0".parse().unwrap(),
+            listen,
             device_name: "fake host".into(),
             os: Os::Macos,
             caps: caps(),

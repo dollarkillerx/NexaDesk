@@ -1,6 +1,10 @@
+using Avalonia.Controls;
+using Avalonia.Headless.XUnit;
+using Avalonia.Styling;
 using NexaDesk.Proto;
 using NexaDesk.Services;
 using NexaDesk.ViewModels;
+using NexaDesk.Views;
 using Xunit;
 
 namespace NexaDesk.Tests;
@@ -13,6 +17,39 @@ public class LanDiscoveryTests
     static MainViewModel Main(FakeLink link, FakeProcess process, MemorySettings settings) =>
         new(new FakeClient(), new MemoryRecent(), link, process, new FakePermissions(), new RecordingWindows(),
             new FakeAddresses(), "Mac", () => Samples.T0, settings);
+
+    [AvaloniaFact]
+    public void Main_window_lists_lan_and_tailnet_devices()
+    {
+        foreach (var theme in new[] { ThemeVariant.Light, ThemeVariant.Dark })
+        {
+            var app = Avalonia.Application.Current!;
+            var before = app.RequestedThemeVariant;
+            app.RequestedThemeVariant = theme;
+            try
+            {
+                var client = new FakeClient();
+                var main = new MainViewModel(client, new MemoryRecent(), new FakeLink(), new FakeProcess(), new FakePermissions(),
+                    new RecordingWindows(), new FakeAddresses("192.168.1.35", "100.101.22.7"), "王小明的 MacBook Pro", () => Samples.T0);
+                client.Raise(new ReadyEvent(0, Samples.ViewerKey, [], ""));
+                client.Raise(new LanDevicesEvent(0, [
+                    new LanDevice("工作室 Mac mini", "192.168.1.20:47800", "macos", "0123456789abcdef0123456789abcdef"),
+                ]));
+                client.Raise(new TailnetDevicesEvent(0, [
+                    new TailnetDevice("家里的 iMac", "100.64.0.2:47800", false, "macOS", "imac.tail1234.ts.net"),
+                ]));
+                var w = new MainWindow { DataContext = main };
+                w.Show();
+                RenderTestsShim.Save(w, "main-lan", theme);
+                Assert.True(w.FindControl<StackPanel>("LanSection")!.IsVisible);
+                w.Close();
+            }
+            finally
+            {
+                app.RequestedThemeVariant = before;
+            }
+        }
+    }
 
     [Fact]
     public void Lan_event_decodes()

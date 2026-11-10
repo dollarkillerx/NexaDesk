@@ -116,6 +116,30 @@ public static partial class Texts
         return $"{host}:{p}";
     }
 
+    /// <summary>Whether a typed address goes into a tailnet: 100.64.0.0/10, fd7a:115c:a1e0::/48, or a MagicDNS name.</summary>
+    public static bool IsTailnetTarget(string address)
+    {
+        var host = address;
+        var i = address.LastIndexOf(':');
+        if (i > 0 && !address.EndsWith(']') && address.Count(c => c == ':') == 1) host = address[..i];
+        else if (address.StartsWith('[') && address.IndexOf(']') is > 0 and var end) host = address[1..end];
+        if (host.EndsWith(".ts.net", StringComparison.OrdinalIgnoreCase) ||
+            host.EndsWith(".ts.net.", StringComparison.OrdinalIgnoreCase)) return true;
+        return System.Net.IPAddress.TryParse(host, out var ip) && IsTailnetIp(ip);
+    }
+
+    public static bool IsTailnetIp(System.Net.IPAddress ip)
+    {
+        var b = ip.GetAddressBytes();
+        return b.Length == 4
+            ? b[0] == 100 && b[1] >= 64 && b[1] < 128
+            : b[0] == 0xfd && b[1] == 0x7a && b[2] == 0x11 && b[3] == 0x5c && b[4] == 0xa1 && b[5] == 0xe0;
+    }
+
+    /// <summary>Added to a failure across networks: Tailscale gets through, relaying when it must.</summary>
+    public const string TailscaleAdvice =
+        "如果两台设备不在同一个局域网，推荐都安装 Tailscale 并登录同一个账号，然后输入对方的 Tailscale 名称。Tailscale 会自动打洞，打不通时自动中转，不需要自建服务器。";
+
     /// <summary>Where a direct connection goes, from its address.</summary>
     public static string PathOf(string address)
     {
