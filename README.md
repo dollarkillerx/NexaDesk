@@ -59,6 +59,8 @@ scripts/package-macos.sh
 
 产物是 `dist/NexaDesk.app`，ad-hoc 签名（自签）。每次重新打包，macOS 都会把它当成新应用，“屏幕录制”和“辅助功能”权限需要重新授予。
 
+应用图标在 `assets/icon/`（`AppIcon.icns` 和 1024 px 原图），已提交到仓库，打包时直接使用。图标由 `scripts/make-app-icon.swift` 用代码绘制；修改后运行 `scripts/make-app-icon.sh` 重新生成。
+
 只编译 Rust 部分：
 
 ```bash

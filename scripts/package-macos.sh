@@ -9,6 +9,7 @@
 #   Contents/MacOS/nexa-agent             the host side, started by the UI with --consent ui
 #   Contents/MacOS/libnexa_client.dylib   the viewer library
 #   Contents/MacOS/lib*.dylib             Avalonia's native parts (AvaloniaNative, Skia, HarfBuzz)
+#   Contents/Resources/AppIcon.icns       the app icon (assets/icon, from scripts/make-app-icon.sh)
 #
 # Ad-hoc signing ties macOS privacy grants (Screen Recording, Accessibility) to this exact
 # build: after rebuilding, macOS treats it as a new app and the grants must be given again.
@@ -69,6 +70,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <array><string>en</string><string>zh-Hans</string><string>ja</string></array>
   <key>CFBundleDisplayName</key><string>NexaDesk</string>
   <key>CFBundleExecutable</key><string>NexaDesk</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>NexaDesk</string>
@@ -93,6 +95,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 printf 'APPL????' > "$APP/Contents/PkgInfo"
+# App icon (Finder, Dock, Cmd+Tab). Regenerate with scripts/make-app-icon.sh.
+cp "$ROOT/assets/icon/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 # Permission prompts in the person's language (same languages as the app's own text).
 for lproj in "$ROOT/ui/NexaDesk.App/Localization/InfoPlist"/*.lproj; do
