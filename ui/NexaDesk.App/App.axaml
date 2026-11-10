@@ -1,0 +1,134 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="NexaDesk.App"
+             Name="NexaDesk"
+             RequestedThemeVariant="Default">
+  <Application.Resources>
+    <ResourceDictionary>
+      <ResourceDictionary.ThemeDictionaries>
+        <ResourceDictionary x:Key="Light">
+          <SolidColorBrush x:Key="PageBrush" Color="#F3F4F6" />
+          <SolidColorBrush x:Key="CardBrush" Color="#FFFFFF" />
+          <SolidColorBrush x:Key="CardBorderBrush" Color="#E3E5EA" />
+          <SolidColorBrush x:Key="SubtleBrush" Color="#F4F5F8" />
+          <SolidColorBrush x:Key="TextBrush" Color="#111827" />
+          <SolidColorBrush x:Key="MutedBrush" Color="#5B6370" />
+          <SolidColorBrush x:Key="AccentBrush" Color="#2458D3" />
+          <SolidColorBrush x:Key="AccentTextBrush" Color="#FFFFFF" />
+          <SolidColorBrush x:Key="ErrorBackBrush" Color="#FDEDEC" />
+          <SolidColorBrush x:Key="ErrorBrush" Color="#B42318" />
+          <SolidColorBrush x:Key="WarnBackBrush" Color="#FFF6E5" />
+          <SolidColorBrush x:Key="WarnBrush" Color="#9A4A00" />
+          <SolidColorBrush x:Key="OkBrush" Color="#157F3B" />
+          <SolidColorBrush x:Key="BadgeBrush" Color="#E8EEFC" />
+          <SolidColorBrush x:Key="BannerBrush" Color="#C2410C" />
+          <SolidColorBrush x:Key="ToolbarBrush" Color="#F7F8FA" />
+        </ResourceDictionary>
+        <ResourceDictionary x:Key="Dark">
+          <SolidColorBrush x:Key="PageBrush" Color="#16181D" />
+          <SolidColorBrush x:Key="CardBrush" Color="#1F2229" />
+          <SolidColorBrush x:Key="CardBorderBrush" Color="#323641" />
+          <SolidColorBrush x:Key="SubtleBrush" Color="#272B33" />
+          <SolidColorBrush x:Key="TextBrush" Color="#F3F4F6" />
+          <SolidColorBrush x:Key="MutedBrush" Color="#A3AAB6" />
+          <SolidColorBrush x:Key="AccentBrush" Color="#4C7DF0" />
+          <SolidColorBrush x:Key="AccentTextBrush" Color="#FFFFFF" />
+          <SolidColorBrush x:Key="ErrorBackBrush" Color="#3A1F1E" />
+          <SolidColorBrush x:Key="ErrorBrush" Color="#FF9C92" />
+          <SolidColorBrush x:Key="WarnBackBrush" Color="#3A2E17" />
+          <SolidColorBrush x:Key="WarnBrush" Color="#F7C36B" />
+          <SolidColorBrush x:Key="OkBrush" Color="#6FD597" />
+          <SolidColorBrush x:Key="BadgeBrush" Color="#2B3550" />
+          <SolidColorBrush x:Key="BannerBrush" Color="#C2410C" />
+          <SolidColorBrush x:Key="ToolbarBrush" Color="#23262E" />
+        </ResourceDictionary>
+      </ResourceDictionary.ThemeDictionaries>
+      <FontFamily x:Key="UiFont">PingFang SC, Hiragino Sans GB, Heiti SC, sans-serif</FontFamily>
+      <FontFamily x:Key="MonoFont">Menlo, SF Mono, PingFang SC, monospace</FontFamily>
+    </ResourceDictionary>
+  </Application.Resources>
+
+  <Application.Styles>
+    <FluentTheme />
+    <Style Selector="Window">
+      <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
+      <Setter Property="Background" Value="{DynamicResource PageBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+    </Style>
+    <Style Selector="Border.card">
+      <Setter Property="Background" Value="{DynamicResource CardBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource CardBorderBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="10" />
+      <Setter Property="Padding" Value="20" />
+    </Style>
+    <Style Selector="Border.error">
+      <Setter Property="Background" Value="{DynamicResource ErrorBackBrush}" />
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="Padding" Value="12,10" />
+    </Style>
+    <Style Selector="Border.warn">
+      <Setter Property="Background" Value="{DynamicResource WarnBackBrush}" />
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="Padding" Value="12,10" />
+    </Style>
+    <Style Selector="Border.subtle">
+      <Setter Property="Background" Value="{DynamicResource SubtleBrush}" />
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="Padding" Value="12,10" />
+    </Style>
+    <Style Selector="Border.badge">
+      <Setter Property="Background" Value="{DynamicResource BadgeBrush}" />
+      <Setter Property="CornerRadius" Value="4" />
+      <Setter Property="Padding" Value="6,1" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="TextBlock.h1">
+      <Setter Property="FontSize" Value="20" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+    <Style Selector="TextBlock.h2">
+      <Setter Property="FontSize" Value="17" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+    <Style Selector="TextBlock.label">
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="Foreground" Value="{DynamicResource MutedBrush}" />
+    </Style>
+    <Style Selector="TextBlock.muted">
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Foreground" Value="{DynamicResource MutedBrush}" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+    <Style Selector="TextBlock.errorTitle">
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Foreground" Value="{DynamicResource ErrorBrush}" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+    <Style Selector="TextBlock.errorText">
+      <Setter Property="Foreground" Value="{DynamicResource ErrorBrush}" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+      <Setter Property="FontSize" Value="12.5" />
+    </Style>
+    <Style Selector="TextBlock.mono">
+      <Setter Property="FontFamily" Value="{StaticResource MonoFont}" />
+    </Style>
+    <Style Selector="Button.accent">
+      <Setter Property="Background" Value="{DynamicResource AccentBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource AccentTextBrush}" />
+    </Style>
+    <Style Selector="Button.accent:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource AccentBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource AccentTextBrush}" />
+      <Setter Property="Opacity" Value="0.9" />
+    </Style>
+    <Style Selector="Button">
+      <Setter Property="Padding" Value="14,6" />
+      <Setter Property="CornerRadius" Value="6" />
+    </Style>
+    <Style Selector="Button.small">
+      <Setter Property="Padding" Value="10,3" />
+      <Setter Property="FontSize" Value="12.5" />
+    </Style>
+  </Application.Styles>
+</Application>

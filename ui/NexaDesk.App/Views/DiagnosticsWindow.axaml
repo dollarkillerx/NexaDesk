@@ -1,0 +1,30 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:NexaDesk.ViewModels"
+        x:Class="NexaDesk.Views.DiagnosticsWindow"
+        x:DataType="vm:DiagnosticsViewModel"
+        Title="连接诊断"
+        Width="440" SizeToContent="Height" CanResize="False">
+  <StackPanel Margin="20" Spacing="10">
+    <TextBlock Classes="h2" Text="连接诊断" />
+    <Grid ColumnDefinitions="Auto,16,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto">
+      <TextBlock Classes="label" Text="路径" />
+      <TextBlock Grid.Column="2" Name="PathValue" Text="{Binding PathText}" TextWrapping="Wrap" />
+      <TextBlock Grid.Row="1" Classes="label" Text="往返延迟" Margin="0,6,0,0" />
+      <TextBlock Grid.Row="1" Grid.Column="2" Name="RttValue" Text="{Binding RttText}" Margin="0,6,0,0" />
+      <TextBlock Grid.Row="2" Classes="label" Text="丢包率" Margin="0,6,0,0" />
+      <TextBlock Grid.Row="2" Grid.Column="2" Name="LossValue" Text="{Binding LossText}" Margin="0,6,0,0" />
+      <TextBlock Grid.Row="3" Classes="label" Text="帧率" Margin="0,6,0,0" />
+      <TextBlock Grid.Row="3" Grid.Column="2" Name="FpsValue" Text="{Binding FpsText}" Margin="0,6,0,0" />
+      <TextBlock Grid.Row="4" Classes="label" Text="码率" Margin="0,6,0,0" />
+      <TextBlock Grid.Row="4" Grid.Column="2" Name="BitrateValue" Text="{Binding BitrateText}" Margin="0,6,0,0" />
+      <TextBlock Grid.Row="5" Classes="label" Text="视频流" Margin="0,6,0,0" />
+      <TextBlock Grid.Row="5" Grid.Column="2" Text="{Binding StreamText}" TextWrapping="Wrap" Margin="0,6,0,0" />
+      <TextBlock Grid.Row="6" Classes="label" Text="恢复" Margin="0,6,0,0" />
+      <TextBlock Grid.Row="6" Grid.Column="2" Text="{Binding RecoveryText}" TextWrapping="Wrap" Margin="0,6,0,0" />
+      <TextBlock Grid.Row="7" Classes="label" Text="粘贴闸门" Margin="0,6,0,0" />
+      <TextBlock Grid.Row="7" Grid.Column="2" Text="{Binding PasteText}" TextWrapping="Wrap" Margin="0,6,0,0" />
+    </Grid>
+    <TextBlock Classes="muted" Text="每秒更新一次。帧率按实际显示的帧计算，码率按收到的全部 UDP 数据计算。" />
+  </StackPanel>
+</Window>

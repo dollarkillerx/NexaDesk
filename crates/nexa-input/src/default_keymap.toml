@@ -1,0 +1,263 @@
+# Built-in keymap (DESIGN.md §8.3). User keymap.toml files use the same format.
+#
+# `*` stands for character-producing keys and Enter; see hid::matches_wildcard.
+# Rule priority: exact with ctx > exact without ctx > wildcard.
+
+[[profile]]
+from = "macos"
+to = "windows"
+deferred = ["LGui", "RGui", "LAlt", "RAlt"]
+
+[[profile.rule]]          # Cmd tapped alone
+when = "Cmd"
+then = "Win"
+
+[[profile.rule]]
+when = "Cmd+Shift+Z"
+then = "Ctrl+Y"
+
+[[profile.rule]]
+when = "Cmd+Tab"
+then = "Alt+Tab"
+hold = "Alt"
+
+[[profile.rule]]          # not in §8.3; keeps the switcher open when reversing
+when = "Cmd+Shift+Tab"
+then = "Alt+Shift+Tab"
+hold = "Alt"
+
+[[profile.rule]]
+when = "Cmd+Q"
+then = "Alt+F4"
+
+[[profile.rule]]
+when = "Cmd+Left"
+then = "Home"
+
+[[profile.rule]]
+when = "Cmd+Right"
+then = "End"
+
+[[profile.rule]]
+when = "Cmd+Up"
+then = "Ctrl+Home"
+
+[[profile.rule]]
+when = "Cmd+Down"
+then = "Ctrl+End"
+
+[[profile.rule]]
+when = "Option+Left"
+then = "Ctrl+Left"
+
+[[profile.rule]]
+when = "Option+Right"
+then = "Ctrl+Right"
+
+[[profile.rule]]          # selection variants of the navigation rows; not in §8.3
+when = "Cmd+Shift+Left"
+then = "Shift+Home"
+
+[[profile.rule]]
+when = "Cmd+Shift+Right"
+then = "Shift+End"
+
+[[profile.rule]]
+when = "Cmd+Shift+Up"
+then = "Ctrl+Shift+Home"
+
+[[profile.rule]]
+when = "Cmd+Shift+Down"
+then = "Ctrl+Shift+End"
+
+[[profile.rule]]
+when = "Option+Shift+Left"
+then = "Ctrl+Shift+Left"
+
+[[profile.rule]]
+when = "Option+Shift+Right"
+then = "Ctrl+Shift+Right"
+
+[[profile.rule]]
+when = "Option+Backspace"
+then = "Ctrl+Backspace"
+
+[[profile.rule]]
+when = "Cmd+Backspace"
+then = ["Shift+Home", "Delete"]
+
+[[profile.rule]]
+when = "Cmd+Option+Esc"
+then = "Ctrl+Shift+Esc"
+
+[[profile.rule]]
+when = "Cmd+Shift+4"
+then = "Win+Shift+S"
+
+[[profile.rule]]
+when = "Cmd+V"
+then = "Ctrl+V"
+tag = "paste"
+
+[[profile.rule]]
+when = "Cmd+Click"
+then = "Ctrl+Click"
+
+[[profile.rule]]          # hold: wheel notches arrive on the datagram channel
+when = "Cmd+Wheel"
+then = "Ctrl+Wheel"
+hold = "Ctrl"
+
+[[profile.rule]]
+when = "Cmd+*"
+then = "Ctrl+*"
+
+
+[[profile]]
+from = "windows"
+to = "macos"
+
+[[profile.rule]]
+when = "Ctrl+Y"
+then = "Cmd+Shift+Z"
+
+[[profile.rule]]          # hold is not in §8.3; the Mac switcher closes on Cmd up
+when = "Alt+Tab"
+then = "Cmd+Tab"
+hold = "Cmd"
+
+[[profile.rule]]          # not in §8.3; keeps the switcher open when reversing
+when = "Alt+Shift+Tab"
+then = "Cmd+Shift+Tab"
+hold = "Cmd"
+
+[[profile.rule]]
+when = "Alt+F4"
+then = "Cmd+Q"
+
+[[profile.rule]]
+when = "Home"
+then = "Cmd+Left"
+
+[[profile.rule]]
+when = "End"
+then = "Cmd+Right"
+
+[[profile.rule]]
+when = "Ctrl+Home"
+then = "Cmd+Up"
+
+[[profile.rule]]
+when = "Ctrl+End"
+then = "Cmd+Down"
+
+[[profile.rule]]
+when = "Ctrl+Left"
+then = "Option+Left"
+
+[[profile.rule]]
+when = "Ctrl+Right"
+then = "Option+Right"
+
+[[profile.rule]]          # selection variants of the navigation rows; not in §8.3
+when = "Shift+Home"
+then = "Cmd+Shift+Left"
+
+[[profile.rule]]
+when = "Shift+End"
+then = "Cmd+Shift+Right"
+
+[[profile.rule]]
+when = "Ctrl+Shift+Home"
+then = "Cmd+Shift+Up"
+
+[[profile.rule]]
+when = "Ctrl+Shift+End"
+then = "Cmd+Shift+Down"
+
+[[profile.rule]]
+when = "Ctrl+Shift+Left"
+then = "Option+Shift+Left"
+
+[[profile.rule]]
+when = "Ctrl+Shift+Right"
+then = "Option+Shift+Right"
+
+[[profile.rule]]
+when = "Ctrl+Backspace"
+then = "Option+Backspace"
+
+[[profile.rule]]
+when = "Ctrl+Shift+Esc"
+then = "Cmd+Option+Esc"
+
+[[profile.rule]]
+when = "Win+Shift+S"
+then = "Cmd+Shift+4"
+
+[[profile.rule]]
+when = "PrintScreen"
+then = "Cmd+Shift+3"
+
+[[profile.rule]]
+when = "Ctrl+V"
+then = "Cmd+V"
+tag = "paste"
+
+[[profile.rule]]
+when = "Ctrl+Click"
+then = "Cmd+Click"
+
+[[profile.rule]]
+when = "Ctrl+*"
+then = "Cmd+*"
+
+# Terminal exception (DESIGN.md §8.4).
+
+[[profile.rule]]
+ctx = "terminal"
+when = "Ctrl+C"
+then = "Ctrl+C"
+
+[[profile.rule]]
+ctx = "terminal"
+when = "Ctrl+Shift+C"
+then = "Cmd+C"
+
+[[profile.rule]]
+ctx = "terminal"
+when = "Ctrl+Shift+V"
+then = "Cmd+V"
+tag = "paste"
+
+[[profile.rule]]          # Ctrl+D, Ctrl+W, Ctrl+Z and the like stay control keys
+ctx = "terminal"
+when = "Ctrl+*"
+then = "Ctrl+*"
+
+
+# Same-OS sessions rewrite nothing; these only tag paste so the gate (§8.3) still applies.
+
+[[profile]]
+from = "macos"
+to = "macos"
+
+[[profile.rule]]
+when = "Cmd+V"
+then = "Cmd+V"
+tag = "paste"
+
+
+[[profile]]
+from = "windows"
+to = "windows"
+
+[[profile.rule]]
+when = "Ctrl+V"
+then = "Ctrl+V"
+tag = "paste"
+
+[[profile.rule]]
+when = "Shift+Insert"
+then = "Shift+Insert"
+tag = "paste"

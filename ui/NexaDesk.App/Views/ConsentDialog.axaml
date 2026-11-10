@@ -1,0 +1,68 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:NexaDesk.ViewModels"
+        x:Class="NexaDesk.Views.ConsentDialog"
+        x:DataType="vm:ConsentViewModel"
+        Title="NexaDesk — 连接请求"
+        Width="540" SizeToContent="Height" CanResize="False"
+        Topmost="True" ShowInTaskbar="True"
+        WindowStartupLocation="CenterScreen">
+  <StackPanel Margin="24,20,24,20" Spacing="12">
+    <TextBlock Classes="h1" Text="{Binding Headline}" TextWrapping="Wrap" />
+    <TextBlock Classes="muted" FontSize="13"
+               Text="允许后，对方可以按你勾选的权限看到并操作这台 Mac。不认识对方就请拒绝。" />
+
+    <Border Classes="subtle">
+      <Grid ColumnDefinitions="Auto,14,*" RowDefinitions="Auto,Auto,Auto,Auto" >
+        <TextBlock Classes="label" Text="设备名" />
+        <TextBlock Grid.Column="2" Name="DeviceNameText" Text="{Binding DeviceName}" FontWeight="SemiBold" TextWrapping="Wrap" />
+        <TextBlock Grid.Row="1" Classes="label" Text="验证方式" Margin="0,4,0,0" />
+        <TextBlock Grid.Row="1" Grid.Column="2" Text="{Binding AuthText}" Margin="0,4,0,0" />
+        <TextBlock Grid.Row="2" Classes="label" Text="来源地址" Margin="0,4,0,0" />
+        <TextBlock Grid.Row="2" Grid.Column="2" Text="{Binding Remote}" Margin="0,4,0,0" />
+        <TextBlock Grid.Row="3" Classes="label" Text="设备 ID" Margin="0,4,0,0" />
+        <TextBlock Grid.Row="3" Grid.Column="2" Text="{Binding DeviceId}" FontFamily="{StaticResource MonoFont}" FontSize="12" Margin="0,4,0,0" />
+      </Grid>
+    </Border>
+
+    <StackPanel Spacing="4">
+      <TextBlock Classes="label" Text="对方的密钥指纹（可请对方读出他窗口里的“本机指纹”核对）" />
+      <Border Classes="subtle">
+        <TextBlock Name="FingerprintText" Text="{Binding Fingerprint}" FontFamily="{StaticResource MonoFont}" FontSize="14" />
+      </Border>
+    </StackPanel>
+
+    <Border Classes="warn" IsVisible="{Binding IsTakeover}">
+      <TextBlock Foreground="{DynamicResource WarnBrush}" TextWrapping="Wrap"
+                 Text="本机正在被另一台设备控制。允许后，那个会话会被结束。" />
+    </Border>
+
+    <StackPanel Spacing="2">
+      <TextBlock Classes="label" Text="允许对方：" />
+      <CheckBox IsChecked="True" IsEnabled="False" Content="查看屏幕（必需）" />
+      <CheckBox Name="InputBox" IsChecked="{Binding AllowInput}" IsEnabled="{Binding InputAvailable}" Content="控制键盘和鼠标" />
+      <TextBlock Classes="muted" Margin="28,-4,0,2" Text="{Binding InputNote}" />
+      <CheckBox Name="ClipboardBox" IsChecked="{Binding AllowClipboard}" Content="同步剪贴板（复制的内容会在两边互通）" />
+    </StackPanel>
+
+    <StackPanel Spacing="2" IsVisible="{Binding OfferSave}">
+      <CheckBox Name="SaveBox" IsChecked="{Binding SaveDevice}" Content="保存这台设备（下次不用再输入代码，但仍需确认）" />
+    </StackPanel>
+    <StackPanel Spacing="2" IsVisible="{Binding OfferSkipNextTime}">
+      <CheckBox Name="SkipBox" IsChecked="{Binding SkipNextTime}" Content="以后这台设备连接时不再询问" />
+      <TextBlock Classes="muted" Margin="28,-4,0,0"
+                 Text="开启后，对方可以在你不在电脑前时直接连接；屏幕上方仍会一直显示提示条。" />
+    </StackPanel>
+
+    <Grid ColumnDefinitions="*,Auto" Margin="0,8,0,0">
+      <TextBlock Classes="muted" VerticalAlignment="Center" Text="{Binding CountdownText}" />
+      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10">
+        <!-- Deny is the default and cancel button, and has focus: Enter, Space and Escape all deny. -->
+        <Button Name="DenyButton" Classes="accent" Content="拒绝" MinWidth="96" HorizontalContentAlignment="Center"
+                IsDefault="True" IsCancel="True" Command="{Binding DenyCommand}" />
+        <Button Name="AllowButton" Content="允许" MinWidth="96" HorizontalContentAlignment="Center"
+                Command="{Binding AllowCommand}" />
+      </StackPanel>
+    </Grid>
+  </StackPanel>
+</Window>

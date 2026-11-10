@@ -1,0 +1,115 @@
+// Messages crossing the libnexa_client C ABI (§10.1). Kept in step by hand with
+// crates/nexa-client/src/proto.rs; both directions are plain proto3.
+syntax = "proto3";
+package nexa.client;
+
+// nexa_init(cfg). data_dir defaults to ~/Library/Application Support/NexaDesk.
+message ClientConfig {
+  string device_name = 1;
+  string data_dir = 2;
+}
+
+enum Mode { MODE_OFFICE = 0; MODE_BALANCED = 1; MODE_GAME = 2; }
+
+// nexa_connect(req). `tag` is echoed on every event of this session.
+message ConnectRequest {
+  string address = 1;                 // "host:port"; IPv4, IPv6, or a resolvable name
+  uint64 tag = 2;
+  Mode mode = 3;
+  uint32 fps = 7;                     // 0 = host's choice
+  oneof auth {
+    string known_host = 4;            // hex public key from Ready.hosts or Connected.host_key
+    string code = 5;                  // one-time code shown by the host
+    string password = 6;
+  }
+}
+
+// nexa_session_command(cmd). Coordinates are view pixels, as passed to attach_view.
+message SessionCommand {
+  oneof cmd {
+    PointerMove move = 1;
+    PointerButton button = 2;
+    PointerWheel wheel = 3;
+    SendText text = 4;
+    SetMode mode = 5;
+    SetClipboardPolicy clipboard = 6;
+  }
+}
+message PointerMove { double x = 1; double y = 2; }
+message PointerButton { uint32 button = 1; bool down = 2; }    // 0 left, 1 right, 2+ others
+message PointerWheel { sint32 dx = 1; sint32 dy = 2; }         // 1/120 notch; + is right/up
+message SendText { string utf8 = 1; }
+message SetMode { Mode mode = 1; uint32 fps = 2; }
+message SetClipboardPolicy { bool outbound = 1; bool inbound = 2; }
+
+message Permissions {
+  bool view = 1; bool input = 2; bool clipboard = 3; bool file = 4; bool audio = 5;
+}
+
+message KnownHost { string key = 1; string name = 2; uint64 last_seen = 3; }
+
+// Everything sent to nexa_event_cb. tag 0 means not tied to a session.
+message Event {
+  uint64 tag = 20;
+  oneof body {
+    Ready ready = 1;
+    Connecting connecting = 2;
+    Connected connected = 3;
+    StreamChanged stream = 4;
+    InputCapture input_capture = 5;
+    PasteGate paste_gate = 6;
+    ClipboardNotice clipboard = 7;
+    Stats stats = 8;
+    Disconnected disconnected = 9;
+    HostKeyPressed host_key = 10;
+    Warning warning = 11;
+  }
+}
+
+// The device identity loaded. Sent after nexa_init and after a new pairing.
+message Ready { string this_device_key = 1; repeated KnownHost hosts = 2; string error = 3; }
+message Connecting {}
+message Connected {
+  string host_key = 1;
+  string host_name = 2;
+  Permissions perms = 3;
+  uint32 host_os = 4;          // 0 unknown, 1 windows, 2 macos, 3 linux
+  bool paired_now = 5;         // this connection added or replaced the pin
+}
+message StreamChanged { uint32 codec = 1; Mode mode = 2; uint32 w = 3; uint32 h = 4; uint32 fps = 5; }
+enum CaptureState {
+  CAPTURE_INACTIVE = 0;
+  CAPTURE_ACTIVE = 1;
+  CAPTURE_DEGRADED = 2;        // no Accessibility: NSEvent fallback, Cmd+Tab stays local
+  CAPTURE_UNAVAILABLE = 3;
+}
+message InputCapture { CaptureState state = 1; }
+message PasteGate { uint32 waited_ms = 1; bool timed_out = 2; }
+message ClipboardNotice { string text = 1; }
+message Stats {
+  uint64 complete = 1; uint64 lost = 2; uint64 fec_recovered = 3; uint64 decoded = 4;
+  uint64 decode_errors = 5; uint64 presented = 6; uint64 rtt_us = 7; uint32 gate_pastes = 8;
+  uint32 gate_held = 9; uint32 gate_timeouts = 10;
+  uint64 rx_bytes = 11;        // UDP bytes received so far; the UI derives a bitrate
+}
+enum DisconnectReason {
+  DISCONNECT_UNSPECIFIED = 0;
+  DISCONNECT_CLOSED_LOCALLY = 1;
+  DISCONNECT_HOST_ENDED = 2;
+  DISCONNECT_REPLACED = 3;
+  DISCONNECT_PIPELINE_FAILED = 4;
+  DISCONNECT_NETWORK = 5;
+  DISCONNECT_PIN_MISMATCH = 6;
+  DISCONNECT_NOT_PAIRED = 7;
+  DISCONNECT_AUTH_FAILED = 8;
+  DISCONNECT_RATE_LIMITED = 9;
+  DISCONNECT_CONSENT_DENIED = 10;
+  DISCONNECT_NO_COMMON_CODEC = 11;
+  DISCONNECT_VERSION_MISMATCH = 12;
+  DISCONNECT_TIMED_OUT = 13;
+  DISCONNECT_INVALID_REQUEST = 14;
+  DISCONNECT_INTERNAL = 15;
+}
+message Disconnected { DisconnectReason reason = 1; string message = 2; }
+message HostKeyPressed {}
+message Warning { string text = 1; }

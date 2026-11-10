@@ -1,0 +1,61 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:NexaDesk.ViewModels"
+        x:Class="NexaDesk.Views.PermissionGuideWindow"
+        x:DataType="vm:PermissionGuideViewModel"
+        Title="NexaDesk — 权限"
+        Width="560" SizeToContent="Height" CanResize="False"
+        WindowStartupLocation="CenterOwner">
+  <StackPanel Margin="24,20" Spacing="12">
+    <TextBlock Classes="h1" Text="{Binding Title}" />
+    <TextBlock TextWrapping="Wrap" Text="{Binding Intro}" />
+
+    <Border Classes="subtle" IsVisible="{Binding ShowScreenRecording}">
+      <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto">
+        <TextBlock FontWeight="SemiBold" Text="{Binding ScreenRecordingUse}" TextWrapping="Wrap" />
+        <TextBlock Grid.Column="1" Name="ScreenRecordingState" Text="{Binding ScreenRecordingStatus}" Margin="12,0,0,0"
+                   Classes.ok="{Binding ScreenRecording}" />
+        <StackPanel Grid.Row="1" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
+          <Button Classes="small" Content="请求授权" Command="{Binding RequestScreenRecordingCommand}" />
+          <Button Classes="small" Content="打开“屏幕录制”设置" Command="{Binding OpenScreenRecordingCommand}" />
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <Border Classes="subtle">
+      <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto">
+        <TextBlock FontWeight="SemiBold" Text="{Binding AccessibilityUse}" TextWrapping="Wrap" />
+        <TextBlock Grid.Column="1" Name="AccessibilityState" Text="{Binding AccessibilityStatus}" Margin="12,0,0,0"
+                   Classes.ok="{Binding Accessibility}" />
+        <StackPanel Grid.Row="1" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
+          <Button Classes="small" Content="打开“辅助功能”设置" Command="{Binding OpenAccessibilityCommand}" />
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <StackPanel Spacing="4">
+      <TextBlock Classes="label" Text="步骤" />
+      <TextBlock TextWrapping="Wrap" Text="1. 点上面的按钮打开“系统设置 → 隐私与安全性”的对应页面。" />
+      <TextBlock TextWrapping="Wrap" Text="2. 在列表里找到 NexaDesk 并打开开关；没有的话点“+”从“应用程序”中添加 NexaDesk.app。" />
+      <TextBlock TextWrapping="Wrap" Text="3. 回到这里点“重新检查”。" />
+      <TextBlock Classes="muted" Text="{Binding RestartNote}" />
+    </StackPanel>
+
+    <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Right">
+      <Button Name="RecheckButton" Content="重新检查" Command="{Binding RecheckCommand}" />
+      <Button Classes="accent" Content="完成" Command="{Binding CloseCommand}" />
+    </StackPanel>
+  </StackPanel>
+
+  <Window.Styles>
+    <Style Selector="TextBlock">
+      <Setter Property="FontSize" Value="13" />
+    </Style>
+    <Style Selector="TextBlock.ok">
+      <Setter Property="Foreground" Value="{DynamicResource OkBrush}" />
+    </Style>
+    <Style Selector="TextBlock.h1">
+      <Setter Property="FontSize" Value="20" />
+    </Style>
+  </Window.Styles>
+</Window>

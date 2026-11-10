@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Publishes the real views and view-models with NativeAOT and renders them headless,
+       so compiled XAML, bindings and source-generated code are checked as they will run
+       in the bundle, without opening a window or loading libnexa_client. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <PublishAot>true</PublishAot>
+    <TrimMode>full</TrimMode>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia.Headless" Version="12.1.6" />
+    <PackageReference Include="Avalonia.Skia" Version="12.1.6" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../NexaDesk.App/NexaDesk.App.csproj" />
+  </ItemGroup>
+</Project>

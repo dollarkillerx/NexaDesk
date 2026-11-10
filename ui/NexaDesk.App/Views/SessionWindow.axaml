@@ -1,0 +1,20 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:NexaDesk.ViewModels"
+        xmlns:views="using:NexaDesk.Views"
+        x:Class="NexaDesk.Views.SessionWindow"
+        x:DataType="vm:SessionViewModel"
+        Title="{Binding Title}"
+        Width="1280" Height="800" MinWidth="480" MinHeight="320"
+        Background="Black"
+        WindowStartupLocation="CenterScreen">
+  <!-- No transparency: the native view must not take the layered path (§10.2). -->
+  <Grid>
+    <!-- Behind the native view: only seen before the first frame, or headless. -->
+    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="6">
+      <TextBlock Text="{Binding StreamText}" Foreground="#9CA3AF" HorizontalAlignment="Center" FontSize="15" />
+      <TextBlock Text="{Binding HostKeyHint}" Foreground="#6B7280" HorizontalAlignment="Center" FontSize="12" />
+    </StackPanel>
+    <views:VideoHost Name="Video" />
+  </Grid>
+</Window>

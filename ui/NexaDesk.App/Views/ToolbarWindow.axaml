@@ -1,0 +1,42 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:NexaDesk.ViewModels"
+        x:Class="NexaDesk.Views.ToolbarWindow"
+        x:DataType="vm:SessionViewModel"
+        Title="NexaDesk 工具条"
+        Width="820" Height="76" CanResize="False"
+        Topmost="True" ShowInTaskbar="False" ShowActivated="False"
+        WindowDecorations="None"
+        Background="{DynamicResource ToolbarBrush}">
+  <Border BorderBrush="{DynamicResource CardBorderBrush}" BorderThickness="1" Padding="12,8">
+    <Grid RowDefinitions="Auto,Auto">
+      <Grid ColumnDefinitions="Auto,*,Auto">
+        <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+          <TextBlock Text="{Binding HostName}" FontWeight="SemiBold" VerticalAlignment="Center" MaxWidth="160"
+                     TextTrimming="CharacterEllipsis" />
+          <TextBlock Classes="label" Text="模式" VerticalAlignment="Center" />
+          <StackPanel Orientation="Horizontal" Spacing="2">
+            <RadioButton Name="ModeOffice" GroupName="mode" Content="办公" IsChecked="{Binding IsOffice}" />
+            <RadioButton Name="ModeBalanced" GroupName="mode" Content="均衡" IsChecked="{Binding IsBalanced}" />
+            <RadioButton Name="ModeGame" GroupName="mode" Content="游戏" IsChecked="{Binding IsGame}" />
+          </StackPanel>
+        </StackPanel>
+        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+          <Button Name="ResumeButton" Classes="small accent" Content="继续控制" Command="{Binding ResumeCommand}"
+                  IsVisible="{Binding IsSuspended}" />
+          <Button Name="DiagnosticsButton" Classes="small" Content="诊断" Click="OnDiagnostics" />
+          <Button Name="FullScreenButton" Classes="small" Content="全屏" Click="OnFullScreen" />
+          <Button Name="HideButton" Classes="small" Content="隐藏" Command="{Binding ToggleToolbarCommand}" />
+          <Button Name="ToolbarDisconnectButton" Classes="small" Content="断开" Command="{Binding DisconnectCommand}"
+                  Foreground="{DynamicResource ErrorBrush}" />
+        </StackPanel>
+      </Grid>
+      <Grid Grid.Row="1" ColumnDefinitions="*,Auto" Margin="0,6,0,0">
+        <TextBlock Name="CaptureText" Classes="muted" Text="{Binding CaptureText}" TextTrimming="CharacterEllipsis"
+                   TextWrapping="NoWrap" />
+        <TextBlock Grid.Column="1" Name="ClipboardText" Classes="muted" Text="{Binding ClipboardText}" Margin="16,0,0,0"
+                   TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" MaxWidth="320" />
+      </Grid>
+    </Grid>
+  </Border>
+</Window>

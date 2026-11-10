@@ -1,0 +1,109 @@
+// The local IPC between nexa-agent and the desktop UI (§5.3). Kept in step by hand
+// with crates/nexa-agent/src/ipc/proto.rs and ui/NexaDesk.App/Proto/IpcMessages.cs.
+//
+// Transport: a Unix socket, `<data dir>/agent.sock`, mode 0600, and the agent checks
+// that the peer has the agent's own uid. Framing is the reliable-stream framing
+// without the stream-type byte: varint(length) + one message, at most 64 KiB.
+// The UI sends UiToAgent frames, the agent AgentToUi frames. The UI's first frame
+// must be Hello, within 2 s; anything malformed closes the connection. One UI at a
+// time: a second connection is refused while one is attached.
+syntax = "proto3";
+package nexa.agent.ipc;
+
+message Permissions {
+  bool view = 1; bool input = 2; bool clipboard = 3; bool file = 4; bool audio = 5;
+}
+
+message UiToAgent {
+  oneof body {
+    Hello hello = 1;
+    GetStatus get_status = 2;
+    SetAccessPolicy set_access_policy = 3;
+    ListPairings list_pairings = 4;
+    RevokePairing revoke_pairing = 5;
+    Disconnect disconnect = 6;
+    RotateCode rotate_code = 7;
+    Decide decide = 8;
+    Shutdown shutdown = 9;
+  }
+}
+
+message Hello { uint32 version = 1; string client = 2; }   // version must be 1
+message GetStatus {}
+message ListPairings {}                                     // answered with Pairings
+message RevokePairing { string device_key = 1; }            // also ends that device's session
+// Narrows what a paired device may do. It can only switch `unattended` off and
+// remove permissions; granting more needs the consent dialog.
+message SetAccessPolicy { string device_key = 1; bool unattended = 2; Permissions perms = 3; }
+message Disconnect {}                                       // ends the running session
+message RotateCode {}
+message Shutdown {}                                         // stop hosting; the agent exits
+// The answer to IncomingRequest. Every default denies: allow is false unless set,
+// and a grant without `view` is refused.
+message Decide {
+  uint64 req_id = 1; bool allow = 2; Permissions perms = 3; bool save = 4; bool skip_next_time = 5;
+}
+
+message AgentToUi {
+  oneof body {
+    Status status = 1;
+    IncomingRequest incoming = 2;
+    SessionStarted session_started = 3;
+    SessionEnded session_ended = 4;
+    Pairings pairings = 5;
+    RequestClosed request_closed = 6;
+    Notice notice = 7;
+    Refused refused = 8;
+  }
+}
+
+message SessionInfo {
+  uint64 id = 1; string device_name = 2; string device_id = 3; string device_key = 4;
+  string remote = 5; Permissions perms = 6;
+}
+
+// Sent after Hello, after GetStatus and whenever any of it changes.
+message Status {
+  uint32 version = 1;
+  string listen = 2;
+  string code = 3;               // the one-time code, 8 characters
+  string device_name = 4;
+  string device_id = 5;
+  string device_key = 6;         // this host's public key, hex
+  SessionInfo session = 7;       // absent when no session is running
+  bool input_available = 8;      // Accessibility is granted, so input can be allowed
+}
+
+enum AuthKind { AUTH_UNSPECIFIED = 0; AUTH_PAIRED = 1; AUTH_CODE = 2; AUTH_PASSWORD = 3; }
+
+// Someone wants a session. Answer with Decide; no answer within timeout_ms denies.
+message IncomingRequest {
+  uint64 req_id = 1;
+  string device_name = 2;        // sanitized, as typed by the requester
+  string device_id = 3;
+  string device_key = 4;         // the requester's public key, hex: the fingerprint
+  string remote = 5;
+  AuthKind auth = 6;
+  Permissions perms = 7;         // proposed; the person may change them
+  bool offer_save = 8;
+  bool save_default = 9;
+  bool offer_skip_next_time = 10;
+  bool takeover = 11;            // accepting ends the running session
+  uint32 timeout_ms = 12;
+  bool input_available = 13;
+}
+// The request is over: answered, timed out, or the requester went away.
+message RequestClosed { uint64 req_id = 1; string reason = 2; }
+message SessionStarted { SessionInfo session = 1; }
+message SessionEnded { uint64 id = 1; string device_name = 2; string reason = 3; }
+
+message PairedDevice {
+  string device_key = 1; string device_id = 2; string name = 3; Permissions perms = 4;
+  uint64 added_at = 5; uint64 last_seen = 6; bool unattended = 7;
+}
+message Pairings { repeated PairedDevice devices = 1; }
+
+enum NoticeKind { NOTICE_WARNING = 0; NOTICE_CONNECTION_FAILED = 1; NOTICE_CLIPBOARD = 2; }
+message Notice { NoticeKind kind = 1; string text = 2; }
+// A command that could not be carried out.
+message Refused { string command = 1; string reason = 2; }

@@ -1,0 +1,22 @@
+[package]
+name = "s2-transport"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Spike only. See docs/DETAILED_DESIGN.md §15 S2.
+[workspace]
+
+[dependencies]
+quinn = "=0.11.12"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = "0.14"
+tokio = { version = "1", features = ["rt-multi-thread", "time", "net", "sync", "macros"] }
+bytes = "1"
+reed-solomon-simd = "3.1"
+socket2 = "0.6"
+libc = "0.2"
+anyhow = "1"
+
+[profile.release]
+debug = 1

@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ef3cacfcc857df1478972e713b6483112456a5e20a9612552dfba0350c2a1dd2 # shrinks to actions = [Key { index: 0, down: false, repeat: false }, Key { index: 0, down: false, repeat: false }, Key { index: 0, down: false, repeat: false }, Key { index: 23, down: true, repeat: false }], release_order = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], which = 1
+cc e922ee6cb6b79a33b5f179de3fa96b0193897105ddd62c98c812885c0ec943dc # shrinks to actions = [Key { index: 0, down: true, repeat: false }, Wheel], release_order = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], which = 0

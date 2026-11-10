@@ -1,0 +1,39 @@
+[package]
+name = "nexa-client"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+nexa-wire = { path = "../nexa-wire" }
+nexa-net = { path = "../nexa-net" }
+nexa-media = { path = "../nexa-media" }
+nexa-auth = { path = "../nexa-auth" }
+nexa-clip = { path = "../nexa-clip" }
+nexa-input = { path = "../nexa-input" }
+nexa-session = { path = "../nexa-session" }
+bytes.workspace = true
+prost = "0.14"
+quinn = "=0.11.12"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "sync"] }
+zeroize = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = "0.3"
+dispatch2 = "0.3"
+libc = "0.2"
+
+[build-dependencies]
+csbindgen = "1.9"
+
+[dev-dependencies]
+nexa-agent = { path = "../nexa-agent" }
+tempfile = "3"
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2-core-graphics = "0.3"
