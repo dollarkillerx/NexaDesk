@@ -12,8 +12,23 @@ public sealed partial class SettingsViewModel : ObservableObject
     public SettingsViewModel(ISettingsStore store)
     {
         _store = store;
-        _savedServer = store.Load().SignalServer;
+        var loaded = store.Load();
+        _savedServer = loaded.SignalServer;
         _serverInput = _savedServer;
+        _announceOnLan = loaded.AnnounceOnLan;
+    }
+
+    /// <summary>Whether this Mac's host is announced on the LAN (§4.11). Saved at once; applies on the next start.</summary>
+    [ObservableProperty]
+    private bool _announceOnLan;
+
+    /// <summary>Raised after AnnounceOnLan is saved.</summary>
+    public event Action<bool>? AnnounceChanged;
+
+    partial void OnAnnounceOnLanChanged(bool value)
+    {
+        _store.Save(new AppSettings(SavedServer, value));
+        AnnounceChanged?.Invoke(value);
     }
 
     /// <summary>What is in effect: normalized, or empty.</summary>
@@ -51,7 +66,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         if (value == null) return;
         SavedServer = value;
         ServerInput = value;
-        _store.Save(new AppSettings(value));
+        _store.Save(new AppSettings(value, AnnounceOnLan));
         ServerChanged?.Invoke(value);
     }
 }

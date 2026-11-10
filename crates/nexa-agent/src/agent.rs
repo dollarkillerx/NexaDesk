@@ -1,7 +1,7 @@
 //! The accept loop and the single session slot (§5.3).
 
 use std::{
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering::Relaxed},
@@ -55,6 +55,9 @@ pub struct AgentConfig {
     /// Also be reachable by device ID through this signaling server (§4.3).
     pub signal: Option<SignalSetup>,
     pub files: FileSettings,
+    /// Announce this host on the LAN over mDNS (§4.11). Never on a loopback address.
+    /// Off with `--relay-only`, which must not reveal a direct address.
+    pub lan_discovery: bool,
 }
 
 #[derive(Debug, Error)]
@@ -93,6 +96,8 @@ pub(crate) struct Shared {
     replacing: tokio::sync::Mutex<()>,
     next_id: AtomicU64,
     pub(crate) shutdown: watch::Sender<bool>,
+    /// The mDNS announcement, withdrawn on shutdown.
+    lan: Mutex<Option<nexa_net::discovery::Advertiser>>,
 }
 
 impl Shared {
@@ -347,6 +352,14 @@ impl Agent {
 
     /// Stops listening and ends the session.
     pub fn shutdown(&self) {
+        // First, so viewers stop listing a host that is going away.
+        drop(
+            self.shared
+                .lan
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take(),
+        );
         let _ = self.shared.shutdown.send(true);
         self.shared.end_active(CloseReason::Shutdown);
     }
@@ -437,9 +450,25 @@ pub async fn start(
         replacing: tokio::sync::Mutex::new(()),
         next_id: AtomicU64::new(1),
         shutdown,
+        lan: Mutex::new(None),
     });
 
     ui.event(AgentEvent::Listening(local));
+    if config.lan_discovery && !local.ip().is_loopback() {
+        let advert = nexa_net::discovery::Advert {
+            id: identity.device_id().to_string(),
+            name: config.device_name.clone(),
+            os: os_label(config.os).into(),
+            port: local.port(),
+            ip: Some(local.ip()).filter(|ip| !ip.is_unspecified()),
+        };
+        match nexa_net::discovery::Advertiser::start(&advert) {
+            Ok(a) => *shared.lan.lock().unwrap_or_else(|e| e.into_inner()) = Some(a),
+            Err(e) => ui.event(AgentEvent::Warning(format!(
+                "not announced on the local network: {e}"
+            ))),
+        }
+    }
     shared.report_code();
     let (done_tx, done) = watch::channel(false);
     tokio::spawn(accept_loop(endpoint, shared.clone(), done_tx));
@@ -454,6 +483,15 @@ pub async fn start(
         done,
         focus: focus_tx,
     })
+}
+
+fn os_label(os: Os) -> &'static str {
+    match os {
+        Os::Macos => "macos",
+        Os::Windows => "windows",
+        Os::Linux => "linux",
+        Os::Unknown => "",
+    }
 }
 
 /// `SessionAccept.displays` (§3.4, §3.6): `id` is the index a viewer asks for,
@@ -504,7 +542,7 @@ async fn accept_loop(endpoint: Endpoint, shared: Arc<Shared>, done: watch::Sende
                 }
             };
             let remote = conn.remote_address();
-            handle_connection(conn, shared, permit, remote, None).await;
+            handle_connection(conn, shared, permit, remote, remote.ip(), None).await;
         });
     }
     endpoint.close(0u32.into(), b"agent stopped");
@@ -522,13 +560,14 @@ pub(crate) async fn serve_connection(
     conn: Connection,
     shared: Arc<Shared>,
     remote: SocketAddr,
+    origin: IpAddr,
     link: Option<Arc<Link>>,
 ) {
     let Ok(permit) = shared.handshakes.clone().try_acquire_owned() else {
         conn.close(1u32.into(), b"busy");
         return;
     };
-    handle_connection(conn, shared, permit, remote, link).await;
+    handle_connection(conn, shared, permit, remote, origin, link).await;
 }
 
 async fn handle_connection(
@@ -536,6 +575,7 @@ async fn handle_connection(
     shared: Arc<Shared>,
     permit: tokio::sync::OwnedSemaphorePermit,
     remote: SocketAddr,
+    origin: IpAddr,
     link: Option<Arc<Link>>,
 ) {
     let result = {
@@ -545,7 +585,7 @@ async fn handle_connection(
             Some(p) => probe.session_active_for_other(p),
             None => probe.session_active(),
         };
-        host_handshake_from(&conn, &shared.host, &active, remote).await
+        host_handshake_from(&conn, &shared.host, &active, remote, origin).await
     };
     shared.report_code();
     let accepted = match result {

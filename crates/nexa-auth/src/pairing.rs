@@ -35,7 +35,7 @@ use zeroize::Zeroizing;
 use crate::{
     identity::DevicePublicKey,
     secrets::{
-        Attempt, HostPassword, OneTimeCode, PasswordGuard, SALT_LEN, normalize_code,
+        Attempt, HostPassword, OneTimeCode, PasswordGuard, SALT_LEN, Source, normalize_code,
         password_verifier,
     },
 };
@@ -372,12 +372,14 @@ pub struct HostStepOutcome {
 }
 
 impl HostPairing {
-    /// Charges an attempt against `code`, and returns the first message for the viewer.
+    /// Charges an attempt against `code` and `source`, and returns the first message
+    /// for the viewer. `source` is where the viewer really is (see [`Source`]).
     pub fn with_code(
         ctx: PairingContext,
         code: &OneTimeCode,
+        source: Source,
     ) -> Result<(Self, AuthStep), PairError> {
-        let (attempt, secret) = code.begin()?;
+        let (attempt, secret) = code.begin(source)?;
         let mut salt = [0u8; SALT_LEN];
         OsRng.fill_bytes(&mut salt);
         Ok(Self::start(
@@ -389,13 +391,15 @@ impl HostPairing {
         ))
     }
 
-    /// Charges an attempt against `guard`, and returns the first message for the viewer.
+    /// Charges an attempt against `guard` and `source`, and returns the first message
+    /// for the viewer.
     pub fn with_password(
         ctx: PairingContext,
         password: &HostPassword,
         guard: &PasswordGuard,
+        source: Source,
     ) -> Result<(Self, AuthStep), PairError> {
-        let attempt = guard.begin()?;
+        let attempt = guard.begin(source)?;
         Ok(Self::start(
             ctx,
             AuthMethod::Password,

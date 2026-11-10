@@ -45,6 +45,18 @@ public sealed partial class TailnetDeviceViewModel(ConnectViewModel owner, Tailn
     private void Connect() => owner.UseTailnet(this);
 }
 
+/// <summary>A NexaDesk host heard on the LAN (§4.11). Unverified: connecting checks it as for a typed address.</summary>
+public sealed partial class LanDeviceViewModel(ConnectViewModel owner, LanDevice device) : ObservableObject
+{
+    public LanDevice Device { get; } = device;
+    public string Name => string.IsNullOrWhiteSpace(Device.Name) ? Device.Address : Device.Name;
+    public string Address => Device.Address;
+    public string Detail => string.IsNullOrEmpty(Device.Os) ? Device.Address : $"{Device.Address} · {Device.Os}";
+
+    [RelayCommand]
+    private void Connect() => owner.UseAddress(Device.Address);
+}
+
 /// <summary>"连接到设备": address, one-time code, recent devices, and the attempt in flight.</summary>
 public sealed partial class ConnectViewModel : ObservableObject
 {
@@ -62,6 +74,8 @@ public sealed partial class ConnectViewModel : ObservableObject
     public ObservableCollection<RecentDeviceViewModel> Recent { get; } = new();
     public ObservableCollection<TailnetDeviceViewModel> Tailnet { get; } = new();
     public bool HasTailnet => Tailnet.Count > 0;
+    public ObservableCollection<LanDeviceViewModel> Lan { get; } = new();
+    public bool HasLan => Lan.Count > 0;
     public IReadOnlyCollection<SessionViewModel> Sessions => _sessions.Values;
 
     /// <summary>Asks the view to put the cursor in the code box.</summary>
@@ -161,16 +175,19 @@ public sealed partial class ConnectViewModel : ObservableObject
     }
 
     /// <summary>A tailnet device: a paired one connects at once, anything else needs its code.</summary>
-    internal void UseTailnet(TailnetDeviceViewModel device)
+    internal void UseTailnet(TailnetDeviceViewModel device) => UseAddress(device.Address);
+
+    /// <summary>A listed ip:port: a paired one connects at once, anything else needs its code.</summary>
+    internal void UseAddress(string address)
     {
         if (IsConnecting) return;
-        var known = _recent.FirstOrDefault(r => r.Address == device.Address && IsPaired(r.HostKey));
+        var known = _recent.FirstOrDefault(r => r.Address == address && IsPaired(r.HostKey));
         if (known != null)
         {
             Start(known.Address, new ConnectAuth.KnownHost(known.HostKey));
             return;
         }
-        Address = device.Address;
+        Address = address;
         Code = "";
         Error = null;
         FocusCodeRequested?.Invoke();
@@ -231,6 +248,13 @@ public sealed partial class ConnectViewModel : ObservableObject
             Tailnet.Clear();
             foreach (var d in tailnet.Devices) Tailnet.Add(new TailnetDeviceViewModel(this, d));
             OnPropertyChanged(nameof(HasTailnet));
+            return;
+        }
+        if (ev is LanDevicesEvent lan)
+        {
+            Lan.Clear();
+            foreach (var d in lan.Devices) Lan.Add(new LanDeviceViewModel(this, d));
+            OnPropertyChanged(nameof(HasLan));
             return;
         }
         if (_pending is { } p && p.Tag == ev.Tag)

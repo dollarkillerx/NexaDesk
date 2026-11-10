@@ -100,6 +100,7 @@ async fn rig_with(fallback: Option<Arc<FakeUi>>, tweak: impl FnOnce(&mut IpcConf
     let s = shutdowns.clone();
     let host = start_with_ui(
         AgentConfig {
+            lan_discovery: false,
             listen: "127.0.0.1:0".parse().unwrap(),
             device_name: "fake host".into(),
             os: Os::Macos,

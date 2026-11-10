@@ -118,6 +118,11 @@ pub trait Deps: Send + Sync + 'static {
     fn tailnet(&self) -> Option<std::sync::Arc<nexa_net::tailscale::TailnetMonitor>> {
         None
     }
+    /// Hosts announced on the LAN (§4.11) for the connect card. Called once, at
+    /// init. `None`: no LAN list.
+    fn lan(&self) -> Option<std::sync::Arc<nexa_net::discovery::Browser>> {
+        None
+    }
 }
 
 /// A [`CursorDisplay`] that does nothing: headless use and tests.

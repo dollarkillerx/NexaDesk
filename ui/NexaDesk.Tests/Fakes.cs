@@ -142,15 +142,17 @@ public sealed class FakeProcess : IAgentProcess
 {
     public List<(string Listen, string Name)> Starts { get; } = new();
     public List<string> Servers { get; } = new();
+    public List<bool> Announces { get; } = new();
     public string? StartResult { get; set; }
     public bool IsRunning { get; set; }
     public int Kills { get; private set; }
     public event Action<AgentExit>? Exited;
 
-    public string? Start(string listen, string deviceName, string signalServer)
+    public string? Start(string listen, string deviceName, string signalServer, bool announceOnLan)
     {
         Starts.Add((listen, deviceName));
         Servers.Add(signalServer);
+        Announces.Add(announceOnLan);
         IsRunning = StartResult == null;
         return StartResult;
     }

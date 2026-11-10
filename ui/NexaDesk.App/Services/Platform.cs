@@ -53,7 +53,7 @@ public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
         return null;
     }
 
-    public string? Start(string listen, string deviceName, string signalServer)
+    public string? Start(string listen, string deviceName, string signalServer, bool announceOnLan)
     {
         var path = Locate();
         if (path == null) return "找不到 nexa-agent。请使用打包好的 NexaDesk.app。";
@@ -75,6 +75,7 @@ public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
             info.ArgumentList.Add("--signal");
             info.ArgumentList.Add(signalServer);
         }
+        if (!announceOnLan) info.ArgumentList.Add("--no-lan-discovery");
         Process process;
         try
         {
@@ -194,7 +195,7 @@ public sealed class SettingsStore(string path) : ISettingsStore
             if (f.Length > 1 << 16) return new AppSettings();
             var s = JsonSerializer.Deserialize(f, SettingsJson.Default.AppSettings) ?? new AppSettings();
             // Only what the app itself would have written is honoured.
-            return new AppSettings(ViewModels.Texts.NormalizeServer(s.SignalServer) ?? "");
+            return new AppSettings(ViewModels.Texts.NormalizeServer(s.SignalServer) ?? "", s.AnnounceOnLan);
         }
         catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException)
         {

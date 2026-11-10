@@ -1,0 +1,35 @@
+# /etc/nexa-signal/nexa-signal.toml (docs/DEPLOY.md). Check it with
+#   nexa-signal --check-config /etc/nexa-signal/nexa-signal.toml
+#
+# Replace signal.example.com and 203.0.113.10 / 203.0.113.11 with your own.
+
+[signal]
+# wss:// for apps and agents; also the WebSocket relay fallback at /relay.
+listen = "0.0.0.0:443"
+# TLS terminates here, not in a proxy: a proxy in front would hide clients'
+# addresses from the rate limits. deploy/certbot-deploy-hook.sh keeps these
+# copies of the Let's Encrypt files readable by the service user.
+tls_cert = "/etc/nexa-signal/tls/fullchain.pem"
+tls_key = "/etc/nexa-signal/tls/privkey.pem"
+# The name clients put in their settings. Registrations made for any other
+# name are refused.
+server_names = ["signal.example.com"]
+
+[stun]
+# Two addresses on two different public IPs let clients tell an easy NAT from a
+# hard one (and predict ports for the hard one). One works, with less success
+# punching through hard NATs.
+listen = ["203.0.113.10:3478", "203.0.113.11:3478"]
+
+[relay]
+# For the pairs that cannot connect directly. Traffic is end-to-end encrypted;
+# the relay sees only volume and timing.
+listen = "0.0.0.0:3480"
+advertise = "203.0.113.10:3480"
+# Per session. 50 Mbit/s carries 4K at the highest quality.
+bandwidth_bps = 50000000
+max_sessions = 1000
+
+[limits]
+max_connections = 10000
+max_connections_per_ip = 32

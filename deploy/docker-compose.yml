@@ -1,0 +1,31 @@
+# nexa-signal with Docker Compose (docs/DEPLOY.md).
+#
+#   cd deploy && docker compose up -d --build
+#
+# Expects, on the host:
+#   /etc/nexa-signal/nexa-signal.toml   from deploy/nexa-signal.toml
+#   /etc/nexa-signal/tls/fullchain.pem  readable by uid 10001
+#   /etc/nexa-signal/tls/privkey.pem    readable by uid 10001 (deploy/certbot-deploy-hook.sh)
+
+services:
+  nexa-signal:
+    build:
+      context: ..
+      dockerfile: deploy/nexa-signal.Dockerfile
+    image: nexa-signal
+    # STUN answers with the address a request came from, and the server limits
+    # rates per client IP: both need the real addresses, which Docker's NAT hides.
+    network_mode: host
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    # Do not add no-new-privileges: the binary gets port 443 from a file capability,
+    # which that option disables.
+    volumes:
+      - /etc/nexa-signal:/etc/nexa-signal:ro
+    stop_signal: SIGTERM
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }

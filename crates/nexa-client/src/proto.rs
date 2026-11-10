@@ -552,6 +552,27 @@ pub struct TailnetDevices {
     pub devices: Vec<TailnetDevice>,
 }
 
+/// A host heard on the LAN over mDNS (§4.11). Unverified: only an address to try.
+#[derive(Clone, PartialEq, Message)]
+pub struct LanDevice {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    /// `ip:port`, the best of what it announced.
+    #[prost(string, tag = "2")]
+    pub address: String,
+    #[prost(string, tag = "3")]
+    pub os: String,
+    /// Its `DeviceId` as announced. Not proof of anything.
+    #[prost(string, tag = "4")]
+    pub device_id: String,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct LanDevices {
+    #[prost(message, repeated, tag = "1")]
+    pub devices: Vec<LanDevice>,
+}
+
 #[derive(Clone, PartialEq, Oneof)]
 pub enum EventBody {
     #[prost(message, tag = "1")]
@@ -582,6 +603,8 @@ pub enum EventBody {
     Tailnet(TailnetDevices),
     #[prost(message, tag = "42")]
     Transfer(Transfer),
+    #[prost(message, tag = "43")]
+    Lan(LanDevices),
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -590,7 +613,7 @@ pub struct Event {
     pub tag: u64,
     #[prost(
         oneof = "EventBody",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 40, 41, 42"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 40, 41, 42, 43"
     )]
     pub body: Option<EventBody>,
 }
@@ -676,6 +699,23 @@ mod tests {
 
     fn hex(b: &[u8]) -> String {
         b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    /// The same golden bytes as ui/NexaDesk.Tests/LanDiscoveryTests.cs.
+    #[test]
+    fn lan_event_matches_the_csharp_golden_bytes() {
+        let e = Event {
+            tag: 0,
+            body: Some(EventBody::Lan(LanDevices {
+                devices: vec![LanDevice {
+                    name: "a".into(),
+                    address: "b".into(),
+                    os: "c".into(),
+                    device_id: "d".into(),
+                }],
+            })),
+        };
+        assert_eq!(hex(&e.encode_to_vec()), "da020e0a0c0a01611201621a0163220164");
     }
 
     /// The same golden bytes as ui/NexaDesk.Tests/SessionFeatureTests.cs.

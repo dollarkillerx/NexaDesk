@@ -83,7 +83,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSAccessibilityUsageDescription</key>
   <string>NexaDesk 需要辅助功能权限：控制别人时捕获全部按键（包括 Cmd+Tab）；被控制时，在你同意后执行对方的键盘和鼠标操作。</string>
   <key>NSLocalNetworkUsageDescription</key>
-  <string>NexaDesk 需要访问本地网络，才能连接局域网中的其他电脑，或接受它们的连接。</string>
+  <string>NexaDesk 需要访问本地网络，才能发现并连接局域网中的其他电脑，或接受它们的连接。</string>
+  <key>NSBonjourServices</key>
+  <array><string>_nexadesk._udp</string></array>
 </dict>
 </plist>
 PLIST

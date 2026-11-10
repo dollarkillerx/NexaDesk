@@ -384,6 +384,7 @@ pub async fn host_with(
     let platform = FakePlatform::default();
     let agent = start(
         AgentConfig {
+            lan_discovery: false,
             listen: "127.0.0.1:0".parse().unwrap(),
             device_name: "fake host".into(),
             os: Os::Macos,

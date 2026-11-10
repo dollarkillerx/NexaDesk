@@ -29,7 +29,10 @@ pub use pairing::{
     AuthMethod, HelloAuth, HostPairing, HostStepOutcome, HostVerified, PROTOCOL_VERSION, PairError,
     PairingContext, ViewerEvent, ViewerPairing, ViewerVerified, hello_auth,
 };
-pub use secrets::{HostPassword, MAX_ATTEMPTS, OneTimeCode, PasswordGuard, normalize_code};
+pub use secrets::{
+    CODE_ATTEMPTS_PER_SOURCE, HostPassword, MAX_ATTEMPTS, OneTimeCode, PASSWORD_FAILURES_GLOBAL,
+    PasswordGuard, Source, normalize_code,
+};
 pub use store::{PairingRecord, PairingStore, Perms, PinnedPeer, StoreError, VerifiedExchange};
 pub use tls::{
     ALPN, PeerPolicy, TlsError, client_config, pair_exporter, peer_public_key, server_config,

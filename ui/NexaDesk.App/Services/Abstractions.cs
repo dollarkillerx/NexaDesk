@@ -51,7 +51,8 @@ public interface IAgentProcess
     /// <summary>Raised on the UI thread when a process this started exits.</summary>
     event Action<AgentExit>? Exited;
     /// <summary>Null on success, else why it could not start. An empty signalServer means not reachable by ID.</summary>
-    string? Start(string listen, string deviceName, string signalServer);
+    /// <param name="announceOnLan">Announce this Mac to viewers on the LAN over mDNS (§4.11).</param>
+    string? Start(string listen, string deviceName, string signalServer, bool announceOnLan);
     void Kill();
 }
 
@@ -81,8 +82,9 @@ public interface ILocalAddresses
     IReadOnlyList<string> Candidates();
 }
 
-/// <summary>Preferences kept in settings.json. SignalServer is already normalized, or empty.</summary>
-public sealed record AppSettings(string SignalServer = "");
+/// <summary>Preferences kept in settings.json. SignalServer is already normalized, or empty.
+/// AnnounceOnLan: whether the host is announced to viewers on the LAN (§4.11).</summary>
+public sealed record AppSettings(string SignalServer = "", bool AnnounceOnLan = true);
 
 public interface ISettingsStore
 {

@@ -12,7 +12,7 @@ use std::{
 use bytes::BytesMut;
 use nexa_auth::{
     AuthMethod, DeviceIdentity, HelloAuth, HostPairing, HostPassword, HostVerified, OneTimeCode,
-    PairError, PairingContext, PasswordGuard, ViewerEvent, ViewerPairing, ViewerVerified,
+    PairError, PairingContext, PasswordGuard, Source, ViewerEvent, ViewerPairing, ViewerVerified,
     hello_auth, pair_exporter, peer_public_key,
 };
 use nexa_net::vsock::{VIRTUAL_PEER, VirtualSocket, bind_media_socket};
@@ -27,6 +27,16 @@ use quinn::{
 };
 
 pub const LIMIT: Duration = Duration::from_secs(20);
+
+/// A different source on every call, so tests about the shared budget are not
+/// stopped by the per-source share.
+#[allow(dead_code)]
+pub fn test_source() -> Source {
+    use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+    static NEXT: AtomicU32 = AtomicU32::new(1);
+    let n = NEXT.fetch_add(1, Relaxed).to_be_bytes();
+    Source::of(std::net::IpAddr::from([10, n[1], n[2], n[3]]))
+}
 
 fn clock() -> Box<dyn Fn() -> u64 + Send + Sync> {
     static START: OnceLock<Instant> = OnceLock::new();
@@ -244,9 +254,9 @@ pub async fn run_host(
     let mut control = Control::accept(conn).await?;
     let hello: ClientHello = control.recv().await?;
     let (mut machine, offer) = match (hello_auth(&hello)?, accepts) {
-        (HelloAuth::Code, Accepts::Code(code)) => HostPairing::with_code(ctx, code)?,
+        (HelloAuth::Code, Accepts::Code(code)) => HostPairing::with_code(ctx, code, test_source())?,
         (HelloAuth::Password, Accepts::Password(stored, guard)) => {
-            HostPairing::with_password(ctx, stored, guard)?
+            HostPairing::with_password(ctx, stored, guard, test_source())?
         }
         _ => {
             return Err(Failure::Pair(PairError::Malformed(
@@ -277,7 +287,7 @@ pub fn pair_in_memory(
     let shown = code.current();
     let exporter = [42u8; 32];
     let ctx = || PairingContext::new(viewer.public_key(), host.public_key(), exporter).unwrap();
-    let (mut h, offer) = HostPairing::with_code(ctx(), &code).unwrap();
+    let (mut h, offer) = HostPairing::with_code(ctx(), &code, test_source()).unwrap();
     let mut v = ViewerPairing::with_code(ctx(), &shown).unwrap();
     let ViewerEvent::Send(reply) = v.on_step(&offer).unwrap() else {
         panic!("viewer should reply");

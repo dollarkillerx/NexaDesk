@@ -175,6 +175,28 @@ pub struct Incoming {
     pub sealed: Vec<u8>,
     #[prost(message, optional, tag = "6")]
     pub relay: Option<RelayGrant>,
+    /// The viewer's address as the server saw it: 4 or 16 bytes, empty from older
+    /// servers. Only a rate-limit key for the host's pairing guesses, never trusted
+    /// for anything else; a lying server can at worst share budgets out wrongly.
+    #[prost(bytes = "vec", tag = "7")]
+    pub from_ip: Vec<u8>,
+}
+
+/// Decodes [`Incoming::from_ip`].
+pub fn decode_ip(bytes: &[u8]) -> Option<std::net::IpAddr> {
+    match bytes.len() {
+        4 => Some(<[u8; 4]>::try_from(bytes).ok()?.into()),
+        16 => Some(<[u8; 16]>::try_from(bytes).ok()?.into()),
+        _ => None,
+    }
+}
+
+/// Encodes an address for [`Incoming::from_ip`].
+pub fn encode_ip(ip: std::net::IpAddr) -> Vec<u8> {
+    match ip.to_canonical() {
+        std::net::IpAddr::V4(v4) => v4.octets().to_vec(),
+        std::net::IpAddr::V6(v6) => v6.octets().to_vec(),
+    }
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -680,6 +702,17 @@ mod tests {
 
     /// Everything here faces the network: decoding garbage must not panic.
     #[test]
+    fn from_ip_round_trip_and_rejects_odd_lengths() {
+        for ip in ["198.51.100.7", "2001:db8::7", "::ffff:198.51.100.7"] {
+            let ip: std::net::IpAddr = ip.parse().unwrap();
+            assert_eq!(decode_ip(&encode_ip(ip)), Some(ip.to_canonical()));
+        }
+        assert_eq!(decode_ip(&[]), None);
+        assert_eq!(decode_ip(&[1, 2, 3]), None);
+        assert_eq!(decode_ip(&[0; 17]), None);
+    }
+
+    #[test]
     fn decoders_survive_garbage() {
         let mut x = 0x0123_4567_89AB_CDEFu64;
         let mut next = move || {
@@ -698,6 +731,7 @@ mod tests {
                 relay: "203.0.113.1:3480".into(),
                 token: vec![6; RELAY_TOKEN_LEN],
             }),
+            from_ip: vec![198, 51, 100, 7],
         }))
         .encode_to_vec();
         let rdv = Rendezvous {

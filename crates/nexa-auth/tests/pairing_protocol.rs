@@ -11,6 +11,8 @@ use nexa_auth::{
 use nexa_wire::control::AuthStep;
 use prost::Message;
 
+use common::test_source;
+
 struct Pair {
     viewer: DeviceIdentity,
     host: DeviceIdentity,
@@ -48,7 +50,7 @@ fn exchange(
     code: &OneTimeCode,
     typed: &str,
 ) -> Result<AuthMethod, PairError> {
-    let (mut h, offer) = HostPairing::with_code(h_ctx, code)?;
+    let (mut h, offer) = HostPairing::with_code(h_ctx, code, test_source())?;
     let mut v = ViewerPairing::with_code(v_ctx, typed)?;
     let reply = viewer_reply(&mut v, &offer)?;
     let done = h.on_step(&reply)?;
@@ -68,7 +70,7 @@ fn code_exchange_completes_both_ways() {
     let p = Pair::new();
     let code = OneTimeCode::generate();
     let shown = code.current();
-    let (mut h, offer) = HostPairing::with_code(p.ctx(1), &code).unwrap();
+    let (mut h, offer) = HostPairing::with_code(p.ctx(1), &code, test_source()).unwrap();
     let mut v = ViewerPairing::with_code(p.ctx(1), &shown).unwrap();
     let reply = viewer_reply(&mut v, &offer).unwrap();
     let done = h.on_step(&reply).unwrap();
@@ -94,7 +96,8 @@ fn password_exchange_completes() {
     let p = Pair::new();
     let stored = HostPassword::create("hunter2 hunter2").unwrap();
     let guard = PasswordGuard::default();
-    let (mut h, offer) = HostPairing::with_password(p.ctx(1), &stored, &guard).unwrap();
+    let (mut h, offer) =
+        HostPairing::with_password(p.ctx(1), &stored, &guard, test_source()).unwrap();
     let mut v = ViewerPairing::with_password(p.ctx(1), "hunter2 hunter2").unwrap();
     let reply = viewer_reply(&mut v, &offer).unwrap();
     let done = h.on_step(&reply).unwrap();
@@ -160,7 +163,7 @@ fn a_changed_salt_fails_confirmation() {
     let p = Pair::new();
     let code = OneTimeCode::generate();
     let shown = code.current();
-    let (mut h, mut offer) = HostPairing::with_code(p.ctx(1), &code).unwrap();
+    let (mut h, mut offer) = HostPairing::with_code(p.ctx(1), &code, test_source()).unwrap();
     offer.salt[0] ^= 1;
     let mut v = ViewerPairing::with_code(p.ctx(1), &shown).unwrap();
     let reply = viewer_reply(&mut v, &offer).unwrap();
@@ -172,7 +175,7 @@ fn a_tampered_viewer_confirm_fails() {
     let p = Pair::new();
     let code = OneTimeCode::generate();
     let shown = code.current();
-    let (mut h, offer) = HostPairing::with_code(p.ctx(1), &code).unwrap();
+    let (mut h, offer) = HostPairing::with_code(p.ctx(1), &code, test_source()).unwrap();
     let mut v = ViewerPairing::with_code(p.ctx(1), &shown).unwrap();
     let mut reply = viewer_reply(&mut v, &offer).unwrap();
     reply.confirm[31] ^= 1;
@@ -184,7 +187,7 @@ fn a_tampered_host_confirm_fails() {
     let p = Pair::new();
     let code = OneTimeCode::generate();
     let shown = code.current();
-    let (mut h, offer) = HostPairing::with_code(p.ctx(1), &code).unwrap();
+    let (mut h, offer) = HostPairing::with_code(p.ctx(1), &code, test_source()).unwrap();
     let mut v = ViewerPairing::with_code(p.ctx(1), &shown).unwrap();
     let reply = viewer_reply(&mut v, &offer).unwrap();
     let mut done = h.on_step(&reply).unwrap();
@@ -200,11 +203,11 @@ fn a_viewer_step_cannot_be_replayed_into_a_new_exchange() {
     let p = Pair::new();
     let code = OneTimeCode::generate();
     let shown = code.current();
-    let (_h1, offer) = HostPairing::with_code(p.ctx(1), &code).unwrap();
+    let (_h1, offer) = HostPairing::with_code(p.ctx(1), &code, test_source()).unwrap();
     let mut v = ViewerPairing::with_code(p.ctx(1), &shown).unwrap();
     let captured = viewer_reply(&mut v, &offer).unwrap();
     // The exchange it was made for never saw it; a new one gets the same bytes.
-    let (mut h2, _) = HostPairing::with_code(p.ctx(1), &code).unwrap();
+    let (mut h2, _) = HostPairing::with_code(p.ctx(1), &code, test_source()).unwrap();
     assert_eq!(
         h2.on_step(&captured).err(),
         Some(PairError::ConfirmationFailed)
@@ -216,7 +219,7 @@ fn the_machines_refuse_steps_after_finishing() {
     let p = Pair::new();
     let code = OneTimeCode::generate();
     let shown = code.current();
-    let (mut h, offer) = HostPairing::with_code(p.ctx(1), &code).unwrap();
+    let (mut h, offer) = HostPairing::with_code(p.ctx(1), &code, test_source()).unwrap();
     let mut v = ViewerPairing::with_code(p.ctx(1), &shown).unwrap();
     let reply = viewer_reply(&mut v, &offer).unwrap();
     let done = h.on_step(&reply).unwrap();
@@ -230,7 +233,7 @@ fn an_error_is_terminal() {
     let p = Pair::new();
     let code = OneTimeCode::generate();
     let shown = code.current();
-    let (mut h, offer) = HostPairing::with_code(p.ctx(1), &code).unwrap();
+    let (mut h, offer) = HostPairing::with_code(p.ctx(1), &code, test_source()).unwrap();
     let mut v = ViewerPairing::with_code(p.ctx(1), &shown).unwrap();
     let good = viewer_reply(&mut v, &offer).unwrap();
     assert!(h.on_step(&AuthStep::default()).is_err());
@@ -266,7 +269,7 @@ fn abandoned_exchanges_count_as_failures() {
     let code = OneTimeCode::generate();
     let first = code.current();
     for _ in 0..MAX_ATTEMPTS {
-        let (h, _offer) = HostPairing::with_code(p.ctx(1), &code).unwrap();
+        let (h, _offer) = HostPairing::with_code(p.ctx(1), &code, test_source()).unwrap();
         drop(h); // Connection died, or the attacker walked away.
     }
     assert_ne!(code.current(), first);
@@ -290,8 +293,8 @@ fn two_viewers_racing_on_one_code_cannot_both_win() {
     let p = Pair::new();
     let code = OneTimeCode::generate();
     let shown = code.current();
-    let (mut h1, offer1) = HostPairing::with_code(p.ctx(1), &code).unwrap();
-    let (mut h2, offer2) = HostPairing::with_code(p.ctx(2), &code).unwrap();
+    let (mut h1, offer1) = HostPairing::with_code(p.ctx(1), &code, test_source()).unwrap();
+    let (mut h2, offer2) = HostPairing::with_code(p.ctx(2), &code, test_source()).unwrap();
     let mut v1 = ViewerPairing::with_code(p.ctx(1), &shown).unwrap();
     let mut v2 = ViewerPairing::with_code(p.ctx(2), &shown).unwrap();
     let r1 = viewer_reply(&mut v1, &offer1).unwrap();
@@ -306,14 +309,18 @@ fn password_attempts_lock_out_at_the_host() {
     // Skips Argon2: the guard does not depend on the stored value.
     let stored = HostPassword::from_bytes(&[3u8; 48]).unwrap();
     let guard = PasswordGuard::with_lockout(Duration::from_secs(600));
+    let attacker = test_source();
     for _ in 0..MAX_ATTEMPTS {
-        let (mut h, _offer) = HostPairing::with_password(p.ctx(1), &stored, &guard).unwrap();
+        let (mut h, _offer) =
+            HostPairing::with_password(p.ctx(1), &stored, &guard, attacker).unwrap();
         assert!(h.on_step(&AuthStep::default()).is_err());
     }
     assert!(matches!(
-        HostPairing::with_password(p.ctx(1), &stored, &guard).map(|_| ()),
+        HostPairing::with_password(p.ctx(1), &stored, &guard, attacker).map(|_| ()),
         Err(PairError::LockedOut)
     ));
+    // Only that source is locked out.
+    assert!(HostPairing::with_password(p.ctx(1), &stored, &guard, test_source()).is_ok());
 }
 
 /// A small deterministic generator, so a failing fuzz case reproduces.
@@ -370,7 +377,7 @@ fn malformed_auth_steps_never_panic_and_never_complete() {
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
     let code = OneTimeCode::generate();
     for _ in 0..400 {
-        let (mut h, _offer) = HostPairing::with_code(p.ctx(1), &code).unwrap();
+        let (mut h, _offer) = HostPairing::with_code(p.ctx(1), &code, test_source()).unwrap();
         let first = h.on_step(&rng.step());
         assert!(first.is_err(), "a random step must not complete pairing");
         assert!(h.on_step(&rng.step()).is_err());
@@ -412,7 +419,7 @@ fn random_bytes_on_the_wire_never_panic() {
         let bytes = rng.bytes(n);
         if let Ok(step) = AuthStep::decode(bytes.as_slice()) {
             decoded += 1;
-            let (mut h, _) = HostPairing::with_code(p.ctx(1), &code).unwrap();
+            let (mut h, _) = HostPairing::with_code(p.ctx(1), &code, test_source()).unwrap();
             assert!(h.on_step(&step).is_err());
         }
     }
@@ -432,7 +439,7 @@ fn special_curve_points_do_not_complete_or_panic() {
     let mut not_a_point = [0xFFu8; 32];
     not_a_point[0] = 0xED;
     for point in [identity, [0; 32], order_two, not_a_point] {
-        let (mut h, _offer) = HostPairing::with_code(p.ctx(1), &code).unwrap();
+        let (mut h, _offer) = HostPairing::with_code(p.ctx(1), &code, test_source()).unwrap();
         let mut spake_msg = vec![b'A'];
         spake_msg.extend_from_slice(&point);
         let step = AuthStep {
@@ -471,7 +478,7 @@ fn right_length_wrong_content_is_rejected() {
     let p = Pair::new();
     let code = OneTimeCode::generate();
     // Wrong SPAKE side byte: a viewer message claiming to be from the host.
-    let (mut h, offer) = HostPairing::with_code(p.ctx(1), &code).unwrap();
+    let (mut h, offer) = HostPairing::with_code(p.ctx(1), &code, test_source()).unwrap();
     assert_eq!(offer.spake_msg[0], b'B');
     let reflected = AuthStep {
         spake_msg: offer.spake_msg.clone(),

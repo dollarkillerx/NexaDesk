@@ -8,6 +8,7 @@
 //! key the rendezvous was sealed with.
 
 use std::{
+    net::IpAddr,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -181,6 +182,7 @@ pub(crate) async fn run(shared: Arc<Shared>, setup: SignalSetup, keys: Arc<Signa
                         continue;
                     };
                     let viewer = offered.viewer.identity;
+                    let origin = nexa_wire::signal::decode_ip(&incoming.from_ip);
                     if setup.paired_only
                         && shared
                             .host
@@ -225,7 +227,7 @@ pub(crate) async fn run(shared: Arc<Shared>, setup: SignalSetup, keys: Arc<Signa
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
                             .push((session.clone(), r.trickles.clone()));
-                        accept(shared2, r, viewer, permit).await;
+                        accept(shared2, r, viewer, origin, permit).await;
                         sessions2
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
@@ -266,6 +268,7 @@ async fn accept(
     shared: Arc<Shared>,
     r: HostRendezvous,
     viewer: DevicePublicKey,
+    origin: Option<IpAddr>,
     permit: tokio::sync::OwnedSemaphorePermit,
 ) {
     let mut shutdown: watch::Receiver<bool> = shared.shutdown.subscribe();
@@ -301,6 +304,8 @@ async fn accept(
         return;
     }
     drop(permit);
-    crate::agent::serve_connection(conn, shared, remote, Some(r.link.clone())).await;
+    // Charge pairing guesses to the viewer, not to the relay it may come through.
+    let origin = origin.unwrap_or(remote.ip());
+    crate::agent::serve_connection(conn, shared, remote, origin, Some(r.link.clone())).await;
     r.pump.abort();
 }

@@ -2,6 +2,7 @@
 
 pub mod cc;
 pub mod check;
+pub mod discovery;
 pub mod gather;
 pub mod netwatch;
 pub mod path;

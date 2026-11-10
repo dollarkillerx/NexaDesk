@@ -218,6 +218,10 @@ public sealed record ReconnectingEvent(ulong Tag, uint Attempt, string Reason, u
 public sealed record TailnetDevice(string Name, string Address, bool Direct, string Os, string DnsName);
 /// <summary>Tag 0: the whole current list.</summary>
 public sealed record TailnetDevicesEvent(ulong Tag, IReadOnlyList<TailnetDevice> Devices) : ClientEvent(Tag);
+/// <summary>A host heard on the LAN over mDNS (§4.11): only an address to try; TLS and pairing still decide.</summary>
+public sealed record LanDevice(string Name, string Address, string Os, string DeviceId);
+/// <summary>Tag 0: the whole current list.</summary>
+public sealed record LanDevicesEvent(ulong Tag, IReadOnlyList<LanDevice> Devices) : ClientEvent(Tag);
 public sealed record TransferEvent(ulong Tag, TransferInfo Info) : ClientEvent(Tag);
 public sealed record UnknownEvent(ulong Tag) : ClientEvent(Tag);
 
@@ -232,7 +236,7 @@ public static class ClientCodec
         while (r.Next(out var field))
         {
             if (field == 20) tag = r.UInt64();
-            else if (field is >= 1 and <= 11 or 40 or 41 or 42) { body = field; payload = r.Bytes(); }
+            else if (field is >= 1 and <= 11 or 40 or 41 or 42 or 43) { body = field; payload = r.Bytes(); }
             else r.Skip();
         }
         return body switch
@@ -251,6 +255,7 @@ public static class ClientCodec
             40 => Reconnecting(tag, payload),
             41 => Tailnet(tag, payload),
             42 => Transfer(tag, payload),
+            43 => Lan(tag, payload),
             _ => new UnknownEvent(tag),
         };
     }
@@ -492,6 +497,36 @@ public static class ClientCodec
             else r.Skip();
         }
         return new TailnetDevicesEvent(tag, list);
+    }
+
+    static LanDevicesEvent Lan(ulong tag, ReadOnlySpan<byte> data)
+    {
+        var list = new List<LanDevice>();
+        var r = new ProtoReader(data);
+        while (r.Next(out var f))
+        {
+            if (f == 1) list.Add(LanEntry(r.Bytes()));
+            else r.Skip();
+        }
+        return new LanDevicesEvent(tag, list);
+    }
+
+    static LanDevice LanEntry(ReadOnlySpan<byte> data)
+    {
+        string name = "", address = "", os = "", id = "";
+        var r = new ProtoReader(data);
+        while (r.Next(out var f))
+        {
+            switch (f)
+            {
+                case 1: name = r.String(); break;
+                case 2: address = r.String(); break;
+                case 3: os = r.String(); break;
+                case 4: id = r.String(); break;
+                default: r.Skip(); break;
+            }
+        }
+        return new LanDevice(name, address, os, id);
     }
 
     static TailnetDevice Device(ReadOnlySpan<byte> data)

@@ -18,7 +18,7 @@ use std::{
 use nexa_auth::{
     AccessDecision, AccessPolicy, ConsentPrompt, DenyReason, DevicePublicKey, Evidence, HelloAuth,
     HostPairing, HostPassword, HostVerified, OneTimeCode, PairError, PairingContext, PairingStore,
-    PasswordGuard, Perms, ViewerEvent, ViewerPairing, ViewerVerified, decide, hello_auth,
+    PasswordGuard, Perms, Source, ViewerEvent, ViewerPairing, ViewerVerified, decide, hello_auth,
     pair_exporter, peer_public_key, store::unix_now,
 };
 use nexa_wire::{
@@ -42,8 +42,9 @@ pub const CONSENT_TIMEOUT: Duration = Duration::from_secs(60);
 pub const FLUSH_TIMEOUT: Duration = Duration::from_millis(500);
 const MAX_DEVICE_NAME: usize = 64;
 
-/// Pairing attempts allowed per source address per [`PAIR_WINDOW`]. Without this, any
-/// reachable peer can burn the code's five attempts and force it to rotate (§9.5).
+/// Pairing exchanges a [`Source`] may start per [`PAIR_WINDOW`], whatever the secret.
+/// Bounds the work one sender makes the host do; the secrets themselves also keep a
+/// per-source share of their guesses (`nexa_auth::secrets`).
 const PAIR_ATTEMPTS_PER_WINDOW: u32 = 8;
 const PAIR_WINDOW: Duration = Duration::from_secs(60);
 const LIMITER_MAX_TRACKED: usize = 1024;
@@ -121,18 +122,18 @@ pub trait Consent: Send + Sync {
     fn ask(&self, request: &ConsentRequest, timeout: Duration) -> ConsentAnswer;
 }
 
-/// Limits pairing attempts per source address.
+/// Limits pairing exchanges per [`Source`]: an IPv4 address or an IPv6 /64.
 #[derive(Default)]
 pub struct PairLimiter {
-    seen: Mutex<HashMap<IpAddr, (u32, Instant)>>,
+    seen: Mutex<HashMap<Source, (u32, Instant)>>,
 }
 
 impl PairLimiter {
-    pub fn allow(&self, addr: IpAddr) -> bool {
-        self.allow_at(addr, Instant::now())
+    pub fn allow(&self, source: Source) -> bool {
+        self.allow_at(source, Instant::now())
     }
 
-    fn allow_at(&self, addr: IpAddr, now: Instant) -> bool {
+    fn allow_at(&self, addr: Source, now: Instant) -> bool {
         let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
         if seen.len() >= LIMITER_MAX_TRACKED {
             seen.retain(|_, (_, start)| now.saturating_duration_since(*start) < PAIR_WINDOW);
@@ -305,7 +306,7 @@ async fn authenticate(
     cfg: &HostConfig,
     peer: DevicePublicKey,
     control: &mut ControlChannel,
-    remote: SocketAddr,
+    source: Source,
 ) -> Result<Authenticated, Refusal> {
     let hello = match map_stage(control.recv().await)? {
         Some(ControlBody::Hello(h)) => h,
@@ -335,7 +336,7 @@ async fn authenticate(
             })
         }
         HelloAuth::Code | HelloAuth::Password => {
-            if !cfg.limiter.allow(remote.ip().to_canonical()) {
+            if !cfg.limiter.allow(source) {
                 return Err((
                     RejectReason::RateLimited,
                     "too many attempts, try again later",
@@ -347,7 +348,7 @@ async fn authenticate(
                 .map_err(|e| refusal_of_pair_error(&e))?;
             let (mut machine, offer, auth) = match method {
                 HelloAuth::Code => {
-                    let (m, offer) = HostPairing::with_code(ctx, &cfg.secrets.code)
+                    let (m, offer) = HostPairing::with_code(ctx, &cfg.secrets.code, source)
                         .map_err(|e| refusal_of_pair_error(&e))?;
                     (m, offer, AuthKind::Code)
                 }
@@ -358,7 +359,7 @@ async fn authenticate(
                             "password login is not set up",
                         ));
                     };
-                    let (m, offer) = HostPairing::with_password(ctx, stored, guard)
+                    let (m, offer) = HostPairing::with_password(ctx, stored, guard, source)
                         .map_err(|e| refusal_of_pair_error(&e))?;
                     (m, offer, AuthKind::Password)
                 }
@@ -418,17 +419,22 @@ pub async fn host_handshake(
     cfg: &HostConfig,
     session_active: &(dyn Fn() -> bool + Send + Sync),
 ) -> Result<HostAccepted, SessionError> {
-    host_handshake_from(conn, cfg, session_active, conn.remote_address()).await
+    let remote = conn.remote_address();
+    host_handshake_from(conn, cfg, session_active, remote, remote.ip()).await
 }
 
 /// [`host_handshake`] for a connection whose QUIC peer address is the virtual
-/// one (§4.1): `remote` is the real path, shown to the person and used for the
-/// pairing rate limit. Nothing else differs.
+/// one (§4.1): `remote` is the real path, shown to the person. `origin` is where
+/// the viewer really is, which pairing guesses are charged to: usually
+/// `remote.ip()`, but for a relayed path the address the signaling server saw,
+/// since otherwise everyone coming through one relay would share a budget.
+/// Nothing else differs.
 pub async fn host_handshake_from(
     conn: &Connection,
     cfg: &HostConfig,
     session_active: &(dyn Fn() -> bool + Send + Sync),
     remote: SocketAddr,
+    origin: IpAddr,
 ) -> Result<HostAccepted, SessionError> {
     let accept = async {
         let (kind, send, recv) = accept_bi(conn).await?;
@@ -448,7 +454,7 @@ pub async fn host_handshake_from(
 
     let authenticated = match tokio::time::timeout(
         cfg.timeouts.handshake,
-        authenticate(conn, cfg, peer, &mut control, remote),
+        authenticate(conn, cfg, peer, &mut control, Source::of(origin)),
     )
     .await
     {
@@ -769,7 +775,8 @@ mod tests {
     #[test]
     fn limiter_blocks_then_recovers_per_address() {
         let limiter = PairLimiter::default();
-        let (a, b): (IpAddr, IpAddr) = ("10.0.0.1".parse().unwrap(), "10.0.0.2".parse().unwrap());
+        let src = |s: &str| Source::of(s.parse::<IpAddr>().unwrap());
+        let (a, b) = (src("10.0.0.1"), src("10.0.0.2"));
         let t = Instant::now();
         for _ in 0..PAIR_ATTEMPTS_PER_WINDOW {
             assert!(limiter.allow_at(a, t));
@@ -777,5 +784,17 @@ mod tests {
         assert!(!limiter.allow_at(a, t));
         assert!(limiter.allow_at(b, t));
         assert!(limiter.allow_at(a, t + PAIR_WINDOW));
+    }
+
+    #[test]
+    fn limiter_counts_an_ipv6_slash_64_as_one_source() {
+        let limiter = PairLimiter::default();
+        let t = Instant::now();
+        for i in 0..PAIR_ATTEMPTS_PER_WINDOW {
+            let ip: IpAddr = format!("2001:db8:5:6::{:x}", i + 1).parse().unwrap();
+            assert!(limiter.allow_at(Source::of(ip), t));
+        }
+        let fresh: IpAddr = "2001:db8:5:6:dead::1".parse().unwrap();
+        assert!(!limiter.allow_at(Source::of(fresh), t));
     }
 }

@@ -450,6 +450,7 @@ impl Hub {
             from_x25519_sig: viewer.x25519_sig.clone(),
             sealed: c.sealed,
             relay: host_grant,
+            from_ip: nexa_wire::signal::encode_ip(viewer.ip),
         })
         .into();
         if host.out.try_send(incoming).is_err() {
@@ -673,6 +674,8 @@ mod tests {
                 assert_eq!(i.from_pubkey, v.public_key().as_bytes().to_vec());
                 assert_eq!(i.sealed, vec![1; 10]);
                 assert!(i.relay.is_some());
+                // The viewer joined as conn 1, from 198.51.100.1.
+                assert_eq!(i.from_ip, vec![198, 51, 100, 1]);
             }
             other => panic!("{other:?}"),
         }

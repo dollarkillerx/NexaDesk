@@ -1,0 +1,7 @@
+# Used by BuildKit for deploy/nexa-signal.Dockerfile. The image needs only the
+# Rust workspace.
+*
+!Cargo.toml
+!Cargo.lock
+!crates/
+crates/*/target

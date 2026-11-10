@@ -22,7 +22,7 @@ fn main() {
 #[cfg(target_os = "macos")]
 const USAGE: &str = "usage: nexa-agent --listen <ip:port> [--name <device name>] [--data-dir <dir>] [--consent terminal|ui]\n\
                  [--signal <wss://server[:port]>] [--signal-ca <pem>] [--paired-only] [--relay-only]\n\
-                 [--downloads <dir>]\n\
+                 [--downloads <dir>] [--no-lan-discovery]\n\
   --listen    UDP address to listen on; use a LAN or Tailscale address, or 127.0.0.1\n\
   --name      name shown to viewers (default: this Mac's host name)\n\
   --data-dir  where pairings.json and agent.sock live (default: ~/Library/Application Support/NexaDesk)\n\
@@ -33,7 +33,9 @@ const USAGE: &str = "usage: nexa-agent --listen <ip:port> [--name <device name>]
               once registered. Pairing and consent work exactly as for --listen.\n\
   --signal-ca extra CA certificate(s) for the server (default: <data-dir>/signal-ca.pem if present)\n\
   --paired-only  only devices already paired may make this Mac reveal its addresses\n\
-  --relay-only   never offer a direct address to connecting devices; always use the relay\n\
+  --relay-only   never offer a direct address to connecting devices; always use the relay.\n\
+                 Also turns off the LAN announcement.\n\
+  --no-lan-discovery  do not announce this Mac to viewers on the local network (mDNS)\n\
   --downloads where files sent to this Mac are saved (default: ~/Downloads/NexaDesk)";
 
 #[cfg(target_os = "macos")]
@@ -53,6 +55,7 @@ struct Args {
     signal_ca: Option<std::path::PathBuf>,
     paired_only: bool,
     relay_only: bool,
+    lan_discovery: bool,
     downloads: std::path::PathBuf,
 }
 
@@ -66,6 +69,7 @@ fn parse_args() -> Result<Args, String> {
     let mut signal_ca = None;
     let mut paired_only = false;
     let mut relay_only = false;
+    let mut lan_discovery = true;
     let mut downloads = None;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
@@ -94,6 +98,7 @@ fn parse_args() -> Result<Args, String> {
             "--signal-ca" => signal_ca = Some(std::path::PathBuf::from(value()?)),
             "--paired-only" => paired_only = true,
             "--relay-only" => relay_only = true,
+            "--no-lan-discovery" => lan_discovery = false,
             "--downloads" => downloads = Some(std::path::PathBuf::from(value()?)),
             "-h" | "--help" => return Err(USAGE.to_owned()),
             other => return Err(format!("unknown argument: {other}\n{USAGE}")),
@@ -125,6 +130,7 @@ fn parse_args() -> Result<Args, String> {
         signal_ca,
         paired_only,
         relay_only,
+        lan_discovery: lan_discovery && !relay_only,
         downloads,
     })
 }
@@ -238,6 +244,7 @@ fn run() -> Result<(), String> {
             downloads: args.downloads.clone(),
             limits: Default::default(),
         },
+        lan_discovery: args.lan_discovery,
     };
     // Held until exit: dropping it removes the socket.
     let mut _ipc = None;

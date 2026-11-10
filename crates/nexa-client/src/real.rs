@@ -258,6 +258,11 @@ impl Deps for RealDeps {
         Some(nexa_session::rendezvous::link::system_tailnet())
     }
 
+    fn lan(&self) -> Option<Arc<nexa_net::discovery::Browser>> {
+        // Without it the card simply has no LAN section.
+        nexa_net::discovery::Browser::start().ok().map(Arc::new)
+    }
+
     fn thread_init(&self) -> Option<fn()> {
         Some(qos_user_interactive)
     }

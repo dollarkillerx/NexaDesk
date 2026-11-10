@@ -68,15 +68,17 @@ use crate::{
     presenter::PresenterSlot,
     proto::{
         ClipboardNotice, Command, ConnectAuth, ConnectRequest, ConnectStage, Connected, Connecting,
-        DisconnectReason, Disconnected, DisplayInfo, Event, EventBody, KnownHost, PathKind,
-        Permissions, Ready, Reconnecting, SessionCommand, Stats, StreamChanged, TailnetDevice,
-        TailnetDevices, Transfer, Warning,
+        DisconnectReason, Disconnected, DisplayInfo, Event, EventBody, KnownHost, LanDevice,
+        LanDevices, PathKind, Permissions, Ready, Reconnecting, SessionCommand, Stats,
+        StreamChanged, TailnetDevice, TailnetDevices, Transfer, Warning,
     },
 };
 
 /// The port NexaDesk hosts listen on by default (the UI's suggestion).
 pub const NEXADESK_PORT: u16 = 47800;
 const TAILNET_REFRESH: Duration = Duration::from_secs(15);
+/// The LAN list is local state, so checking it often costs nothing.
+const LAN_REFRESH: Duration = Duration::from_secs(2);
 const TAILNET_PROBE_TIMEOUT: Duration = Duration::from_millis(400);
 /// Probing every peer of a large tailnet is not worth it.
 const TAILNET_MAX_PROBES: usize = 32;
@@ -167,6 +169,9 @@ impl Core {
         if let Some(tailnet) = core.deps.tailnet() {
             core.handle
                 .spawn(report_tailnet(core.events.clone(), tailnet));
+        }
+        if let Some(lan) = core.deps.lan() {
+            core.handle.spawn(report_lan(core.events.clone(), lan));
         }
         let c = core.clone();
         core.handle.spawn(async move {
@@ -1817,6 +1822,42 @@ async fn report_tailnet(events: EventTx, tailnet: Arc<TailnetMonitor>) {
     }
 }
 
+/// The LAN list for the connect card: what was heard, less this machine's own host.
+pub fn lan_devices(
+    peers: &[nexa_net::discovery::LanPeer],
+    local: &[std::net::IpAddr],
+) -> Vec<LanDevice> {
+    peers
+        .iter()
+        .filter(|p| !p.is_this_machine(local))
+        .map(|p| LanDevice {
+            name: p.name.clone(),
+            address: p.addrs[0].to_string(),
+            os: p.os.clone(),
+            device_id: p.id.clone(),
+        })
+        .collect()
+}
+
+/// Sends the LAN device list (tag 0) whenever it changes.
+async fn report_lan(events: EventTx, browser: Arc<nexa_net::discovery::Browser>) {
+    let mut last: Option<Vec<LanDevice>> = None;
+    loop {
+        let local = nexa_net::discovery::local_ips();
+        let devices = lan_devices(&browser.peers(), &local);
+        if last.as_ref() != Some(&devices) {
+            events.send(
+                0,
+                EventBody::Lan(LanDevices {
+                    devices: devices.clone(),
+                }),
+            );
+            last = Some(devices);
+        }
+        tokio::time::sleep(LAN_REFRESH).await;
+    }
+}
+
 fn reason_of_close_code(code: u64) -> DisconnectReason {
     use nexa_session::proto::close;
     match code as u32 {
@@ -1843,6 +1884,28 @@ mod tests {
             direct,
             relay: "fra".into(),
         }
+    }
+
+    #[test]
+    fn lan_list_leaves_out_this_machine_and_dials_the_best_address() {
+        use nexa_net::discovery::LanPeer;
+        let peer = |id: &str, addrs: &[&str]| LanPeer {
+            id: id.into(),
+            name: format!("host {id}"),
+            os: "macos".into(),
+            addrs: addrs.iter().map(|a| a.parse().unwrap()).collect(),
+        };
+        let peers = [
+            peer("a", &["192.168.1.5:47800", "[2001:db8::5]:47800"]),
+            peer("me", &["192.168.1.9:47800"]),
+        ];
+        let local: Vec<std::net::IpAddr> =
+            vec!["127.0.0.1".parse().unwrap(), "192.168.1.9".parse().unwrap()];
+        let list = lan_devices(&peers, &local);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].device_id, "a");
+        assert_eq!(list[0].address, "192.168.1.5:47800");
+        assert_eq!(list[0].name, "host a");
     }
 
     #[test]

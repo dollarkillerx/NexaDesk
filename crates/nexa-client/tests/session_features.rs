@@ -208,6 +208,7 @@ async fn host(p: Permissions) -> Host {
     let ui = FakeUi::allowing(p, false);
     let agent = start(
         AgentConfig {
+            lan_discovery: false,
             listen: "127.0.0.1:0".parse().unwrap(),
             device_name: "feature host".into(),
             os: Os::Macos,

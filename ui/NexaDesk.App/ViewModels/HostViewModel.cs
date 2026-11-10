@@ -90,6 +90,7 @@ public sealed partial class HostViewModel : ObservableObject
     readonly Func<DateTimeOffset> _now;
     readonly string _deviceName;
     readonly Func<string> _signalServer;
+    readonly Func<bool> _announceOnLan;
     BannerViewModel? _banner;
     ConsentViewModel? _consent;
     CancellationTokenSource? _starting;
@@ -134,7 +135,14 @@ public sealed partial class HostViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(RestartNeeded))]
     private string? _startedWithServer;
 
-    public bool RestartNeeded => IsHosting && StartedWithServer != null && StartedWithServer != _signalServer();
+    /// <summary>The LAN announcement setting the running agent was started with; null as for the server.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(RestartNeeded))]
+    private bool? _startedWithAnnounce;
+
+    public bool RestartNeeded => IsHosting &&
+        ((StartedWithServer != null && StartedWithServer != _signalServer()) ||
+         (StartedWithAnnounce != null && StartedWithAnnounce != _announceOnLan()));
 
     public void OnServerChanged() => OnPropertyChanged(nameof(RestartNeeded));
     [ObservableProperty] private string _hostFingerprint = "—";
@@ -147,9 +155,11 @@ public sealed partial class HostViewModel : ObservableObject
     [ObservableProperty] private string? _notice;
 
     public HostViewModel(IAgentLink link, IAgentProcess process, IPermissionProbe permissions, IWindowService windows,
-        ILocalAddresses addresses, string deviceName, Func<DateTimeOffset>? now = null, Func<string>? signalServer = null)
+        ILocalAddresses addresses, string deviceName, Func<DateTimeOffset>? now = null, Func<string>? signalServer = null,
+        Func<bool>? announceOnLan = null)
     {
         _signalServer = signalServer ?? (() => "");
+        _announceOnLan = announceOnLan ?? (() => true);
         _link = link;
         _process = process;
         _permissions = permissions;
@@ -211,8 +221,10 @@ public sealed partial class HostViewModel : ObservableObject
                 return;
             }
             var server = _signalServer();
+            var announce = _announceOnLan();
             StartedWithServer = server;
-            var why = _process.Start(listen, _deviceName, server);
+            StartedWithAnnounce = announce;
+            var why = _process.Start(listen, _deviceName, server, announce);
             if (why != null)
             {
                 State = HostState.Stopped;
@@ -379,6 +391,7 @@ public sealed partial class HostViewModel : ObservableObject
         Code = "";
         ActiveListen = "";
         StartedWithServer = null;
+        StartedWithAnnounce = null;
         DeviceId = "";
         SignalText = "";
         SignalProblem = false;
@@ -519,12 +532,14 @@ public sealed partial class MainViewModel : ObservableObject
         DeviceName = deviceName;
         Settings = new SettingsViewModel(settings ?? new MemorySettings());
         Connect = new ConnectViewModel(core, recent, windows, now, () => Settings.SavedServer);
-        Host = new HostViewModel(link, process, permissions, windows, addresses, deviceName, now, () => Settings.SavedServer);
+        Host = new HostViewModel(link, process, permissions, windows, addresses, deviceName, now, () => Settings.SavedServer,
+            () => Settings.AnnounceOnLan);
         Settings.ServerChanged += _ =>
         {
             Connect.OnServerChanged();
             Host.OnServerChanged();
         };
+        Settings.AnnounceChanged += _ => Host.OnServerChanged();
         _permissions = permissions;
         _windows = windows;
         LoginItem = new LoginItemViewModel(loginItem ?? new NoLoginItem());
