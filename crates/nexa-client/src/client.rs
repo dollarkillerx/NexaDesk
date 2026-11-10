@@ -9,7 +9,7 @@ use std::{
         mpsc::{self, Sender},
     },
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use nexa_auth::{
@@ -17,28 +17,36 @@ use nexa_auth::{
     peer_public_key, store::unix_now, tls::SERVER_NAME,
 };
 use nexa_clip::{ClipPolicy, GateStats};
-use nexa_input::{FocusClass, Keymap, Rewriter};
+use nexa_input::{FocusClass, Rewriter};
 use nexa_media::PresentMode;
 use nexa_net::{
     check::{PathClass, is_tailnet},
+    path::CandKind,
+    tailscale::{TailnetMonitor, TailscaleInfo},
     vsock::{VIRTUAL_PEER, bind_media_socket},
 };
 use nexa_session::{
     SessionError,
+    bulk::{BulkLimiter, UplinkScavenger},
     clip::{ClipCallbacks, ClipChannel, ClipHandle, ClipSession, PromiseMode},
-    framed::{FramedSend, open_bi, open_uni},
+    framed::{FramedSend, accept_bi, open_bi, open_uni},
     handshake::{
         ControlChannel, FLUSH_TIMEOUT, Timeouts, ViewerAccepted, ViewerAuth, ViewerConfig,
         viewer_handshake,
     },
-    proto::{CloseReason, ControlBody, ControlMsg, Goodbye, InputMsg, RejectReason, StreamRequest},
+    proto::{
+        AudioControl, CandidateUpdate, CloseReason, ControlBody, ControlMsg, Goodbye, InputMsg,
+        RejectReason, StreamRequest,
+    },
+    reconnect::Backoff,
     rendezvous::{
         self, DialError, Stage,
         link::{Link, describe},
         seal::SignalKeys,
         signal::SignalConfig,
     },
-    viewer::{ViewerMedia, ViewerParams},
+    transfer::{self, CONFIRM_TIMEOUT, TransferConfig, TransferLimits, Transfers},
+    viewer::{AudioSink, ViewerMedia, ViewerOptions, ViewerParams},
 };
 use nexa_wire::signal::normalize_short_id;
 use nexa_wire::{
@@ -53,15 +61,25 @@ use tokio::{
 use zeroize::Zeroizing;
 
 use crate::{
-    deps::{Deps, KeySource},
-    input::{self, InputCmd, InputThreadConfig, ViewGeometry},
+    audio::AudioPlayback,
+    cursor::CursorState,
+    deps::{CursorDisplay, Deps, KeySource},
+    input::{self, InputCmd, InputThreadConfig, LockStats, ViewGeometry},
     presenter::PresenterSlot,
     proto::{
         ClipboardNotice, Command, ConnectAuth, ConnectRequest, ConnectStage, Connected, Connecting,
-        DisconnectReason, Disconnected, Event, EventBody, KnownHost, PathKind, Permissions, Ready,
-        SessionCommand, Stats, StreamChanged, Warning,
+        DisconnectReason, Disconnected, DisplayInfo, Event, EventBody, KnownHost, PathKind,
+        Permissions, Ready, Reconnecting, SessionCommand, Stats, StreamChanged, TailnetDevice,
+        TailnetDevices, Transfer, Warning,
     },
 };
+
+/// The port NexaDesk hosts listen on by default (the UI's suggestion).
+pub const NEXADESK_PORT: u16 = 47800;
+const TAILNET_REFRESH: Duration = Duration::from_secs(15);
+const TAILNET_PROBE_TIMEOUT: Duration = Duration::from_millis(400);
+/// Probing every peer of a large tailnet is not worth it.
+const TAILNET_MAX_PROBES: usize = 32;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const STATS_INTERVAL: Duration = Duration::from_secs(1);
@@ -114,6 +132,8 @@ pub struct Core {
     events: EventTx,
     device_name: String,
     data_dir: PathBuf,
+    /// Where files from hosts are saved (§3.1 stream 4).
+    downloads: PathBuf,
     device: OnceCell<Arc<Device>>,
     caps: OnceCell<Caps>,
 }
@@ -123,6 +143,7 @@ impl Core {
         deps: Arc<dyn Deps>,
         device_name: String,
         data_dir: PathBuf,
+        downloads: PathBuf,
         events: EventTx,
     ) -> std::io::Result<Arc<Self>> {
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -138,10 +159,15 @@ impl Core {
             events,
             device_name,
             data_dir,
+            downloads,
             device: OnceCell::new(),
             caps: OnceCell::new(),
         });
         // nexa_init must not block on the Keychain or the disk.
+        if let Some(tailnet) = core.deps.tailnet() {
+            core.handle
+                .spawn(report_tailnet(core.events.clone(), tailnet));
+        }
         let c = core.clone();
         core.handle.spawn(async move {
             match c.device().await {
@@ -254,6 +280,15 @@ impl Core {
             fallback: Arc::new(Mutex::new(None)),
             clip: Arc::new(Mutex::new(None)),
             close: watch::channel(false).0,
+            stream: Mutex::new(StreamRequest {
+                mode: request.mode,
+                fps: request.fps,
+                display: 0,
+            }),
+            cursor: Arc::new(Mutex::new(CursorState::default())),
+            audio: Mutex::new(None),
+            lock_stats: Arc::new(Mutex::new(LockStats::default())),
+            transfers: Mutex::new(None),
         });
         let s = session.clone();
         let core = self.clone();
@@ -280,6 +315,7 @@ impl Core {
 
 pub enum SessionCtl {
     Stream(StreamRequest),
+    Control(ControlBody),
 }
 
 /// The handle behind `NexaSession*`. All methods return immediately.
@@ -300,9 +336,72 @@ pub struct Session {
     fallback: Arc<Mutex<Option<Box<dyn KeySource>>>>,
     clip: Arc<Mutex<Option<ClipHandle>>>,
     close: watch::Sender<bool>,
+    /// What the viewer last asked of the host: mode, frame rate and display (§6.7).
+    stream: Mutex<StreamRequest>,
+    /// The host's cursor over the video (§6.9).
+    cursor: Arc<Mutex<CursorState>>,
+    /// Only in sessions granted the audio permission.
+    audio: Mutex<Option<AudioPlayback>>,
+    lock_stats: Arc<Mutex<LockStats>>,
+    /// Only while connected, and only if the host granted `file`.
+    transfers: Mutex<Option<Transfers>>,
 }
 
 impl Session {
+    /// What game mode's pointer lock did in this session (engaged, released).
+    pub fn lock_stats(&self) -> LockStats {
+        *lock(&self.lock_stats)
+    }
+
+    /// Whether system audio is playing (unmuted, with the permission).
+    pub fn audio_playing(&self) -> bool {
+        lock(&self.audio).as_ref().is_some_and(|a| a.enabled())
+    }
+
+    fn update_view(&self, f: impl FnOnce(&mut ViewGeometry)) {
+        let view = {
+            let mut view = lock(&self.view);
+            f(&mut view);
+            *view
+        };
+        lock(&self.cursor).set_view(view);
+    }
+
+    fn send_stream_request(&self, f: impl FnOnce(&mut StreamRequest)) {
+        let request = {
+            let mut r = lock(&self.stream);
+            f(&mut r);
+            r.clone()
+        };
+        if let Some(ctl) = lock(&self.command).as_ref() {
+            let _ = ctl.send(SessionCtl::Stream(request));
+        }
+    }
+
+    /// Mutes or unmutes system audio, locally first and then at the host.
+    fn set_audio(&self, enabled: bool) -> Result<(), &'static str> {
+        let mut audio = lock(&self.audio);
+        let Some(a) = audio.as_mut() else {
+            return Err("the host did not share its audio");
+        };
+        if a.set_enabled(&*self.core.deps, enabled).is_err() {
+            drop(audio);
+            self.core.events.send(
+                self.tag,
+                EventBody::Warning(Warning {
+                    text: "this Mac's audio output could not start".into(),
+                }),
+            );
+            return Ok(());
+        }
+        drop(audio);
+        if let Some(ctl) = lock(&self.command).as_ref() {
+            let _ = ctl.send(SessionCtl::Control(ControlBody::Audio(AudioControl {
+                enabled,
+            })));
+        }
+        Ok(())
+    }
     pub fn tag(&self) -> u64 {
         self.tag
     }
@@ -347,11 +446,14 @@ impl Session {
                 .attach_view(handle, kind, w, h, scale, self.presenter.current_mode())?
         };
         self.presenter.attach(presenter);
-        {
-            let mut view = lock(&self.view);
+        // SAFETY: forwarded from the caller, like the presenter's.
+        let display = unsafe { self.core.deps.cursor_display(handle, kind) };
+        lock(&self.cursor).attach(display);
+        self.update_view(|view| {
             view.view_w = w;
             view.view_h = h;
-        }
+            view.scale = scale;
+        });
         if self.input_granted.get().copied().unwrap_or(true) {
             let mut slot = lock(&self.fallback);
             if slot.is_none() {
@@ -364,19 +466,22 @@ impl Session {
 
     pub fn resize_view(&self, w: u32, h: u32, scale: f32) {
         self.presenter.resize(w, h, scale);
-        {
-            let mut view = lock(&self.view);
+        self.update_view(|view| {
             view.view_w = w;
             view.view_h = h;
-        }
+            view.scale = scale;
+        });
         self.repaint();
     }
 
     pub fn detach_view(&self) {
         self.presenter.detach();
-        let mut view = lock(&self.view);
-        view.view_w = 0;
-        view.view_h = 0;
+        let display: Option<Box<dyn CursorDisplay>> = lock(&self.cursor).detach();
+        drop(display);
+        self.update_view(|view| {
+            view.view_w = 0;
+            view.view_h = 0;
+        });
     }
 
     /// `Err` if the host refused input for this session.
@@ -399,13 +504,46 @@ impl Session {
             Command::Wheel(w) => InputCmd::Wheel(w.dx, w.dy),
             Command::Text(t) => InputCmd::Text(t.utf8),
             Command::Mode(m) => {
-                if let Some(ctl) = lock(&self.command).as_ref() {
-                    let _ = ctl.send(SessionCtl::Stream(StreamRequest {
-                        mode: m.mode,
-                        fps: m.fps,
-                    }));
+                self.send_stream_request(|r| {
+                    r.mode = m.mode;
+                    r.fps = m.fps;
+                });
+                return Ok(());
+            }
+            Command::Display(d) => {
+                self.send_stream_request(|r| r.display = d.display);
+                return Ok(());
+            }
+            Command::Audio(a) => return self.set_audio(a.enabled),
+            Command::SendFiles(f) => {
+                const MAX_FILES: usize = 100;
+                let transfers = lock(&self.transfers)
+                    .clone()
+                    .ok_or("the host did not allow file transfer")?;
+                if f.paths.is_empty() || f.paths.len() > MAX_FILES {
+                    return Err("send between 1 and 100 files at a time");
+                }
+                let _runtime = self.core.handle.enter();
+                for p in f.paths {
+                    transfers.send_file(PathBuf::from(p));
                 }
                 return Ok(());
+            }
+            Command::CancelTransfer(c) => {
+                if let Some(t) = lock(&self.transfers).as_ref() {
+                    t.cancel(c.id);
+                }
+                return Ok(());
+            }
+            Command::AnswerTransfer(a) => {
+                let answered = lock(&self.transfers)
+                    .as_ref()
+                    .is_some_and(|t| t.answer(a.id, a.accept));
+                return if answered {
+                    Ok(())
+                } else {
+                    Err("no such transfer is waiting for an answer")
+                };
             }
             Command::Clipboard(p) => {
                 if let Some(clip) = lock(&self.clip).as_ref() {
@@ -704,10 +842,18 @@ async fn connect_by_id(
     Ok((endpoint, conn, dialed.link, TrickleGuard(dialed.trickle)))
 }
 
+/// What a reconnect (§4.4) holds on to: the device of the dropped session, and
+/// how much of the 30 s window the transport may take.
+struct Again {
+    host: DevicePublicKey,
+    budget: Duration,
+}
+
 async fn establish(
     core: &Arc<Core>,
     session: &Arc<Session>,
     request: &ConnectRequest,
+    again: Option<&Again>,
 ) -> Result<Accepted, (DisconnectReason, String)> {
     let auth = request.auth.clone().ok_or_else(|| {
         (
@@ -724,31 +870,62 @@ async fn establish(
 
     // Known-host connections are pinned; anything else must prove itself with a
     // secret. There is no third way to reach a host.
-    let policy = match pinned {
-        Some(key) => {
+    let (auth, policy, pinned) = match (again, pinned) {
+        // A reconnect only ever goes to the device of the session that dropped.
+        // If it is paired by now, it is asked as a known host; otherwise with the
+        // same secret as the first time. Either way the host decides afresh:
+        // a paired unattended device is let in, anything else is asked again.
+        (Some(a), _) => {
+            let known = lock(&device.store).pinned(&a.host).is_some();
+            let auth = if known { ViewerAuth::Known } else { auth };
+            (auth, PeerPolicy::Pinned(a.host), Some(a.host))
+        }
+        (None, Some(key)) => {
             if lock(&device.store).pinned(&key).is_none() {
                 return Err((
                     DisconnectReason::NotPaired,
                     "that host is not paired".to_owned(),
                 ));
             }
-            PeerPolicy::Pinned(key)
+            (auth, PeerPolicy::Pinned(key), Some(key))
         }
-        None => PeerPolicy::AcceptUnknown,
+        (None, None) => (auth, PeerPolicy::AcceptUnknown, None),
     };
     let config = client_config(&device.identity, policy)
         .map_err(|e| (DisconnectReason::Internal, e.to_string()))?;
-    let (endpoint, conn, link, trickle) = match normalize_short_id(&request.address) {
-        Some(id) => {
-            let (e, c, l, t) =
-                connect_by_id(core, session, &device, request, &id, pinned, config).await?;
-            (e, c, Some(l), Some(t))
-        }
-        None => {
-            let (e, c) = connect_quic(&request.address, config).await?;
-            (e, c, None, None)
+    let transport = async {
+        match normalize_short_id(&request.address) {
+            Some(id) => {
+                let (e, c, l, t) =
+                    connect_by_id(core, session, &device, request, &id, pinned, config).await?;
+                Ok::<_, (DisconnectReason, String)>((e, c, Some(l), Some(t)))
+            }
+            None => {
+                let (e, c) = connect_quic(&request.address, config).await?;
+                Ok((e, c, None, None))
+            }
         }
     };
+    let (endpoint, conn, link, trickle) = match again {
+        Some(a) => tokio::time::timeout(a.budget, transport)
+            .await
+            .map_err(|_| {
+                (
+                    DisconnectReason::TimedOut,
+                    "the host did not answer".to_owned(),
+                )
+            })??,
+        None => transport.await?,
+    };
+    if let Some(a) = again
+        && peer_public_key(&conn).ok() != Some(a.host)
+    {
+        conn.close(3u32.into(), b"identity mismatch");
+        return Err((
+            DisconnectReason::PinMismatch,
+            "a different device answered the reconnect".to_owned(),
+        ));
+    }
 
     let handshake = viewer_handshake(
         &conn,
@@ -816,6 +993,7 @@ fn store_pairing(device: &Device, accepted: &ViewerAccepted, name: &str) -> Resu
 struct Running {
     media_codec: Option<Codec>,
     last_config: Option<StreamConfig>,
+    audio: Option<AudioSink>,
 }
 
 fn apply_config(
@@ -829,11 +1007,18 @@ fn apply_config(
         return Err("unknown codec".to_owned());
     };
     let mode = Mode::try_from(config.mode).unwrap_or(Mode::Balanced);
-    {
-        let mut view = lock(&session.view);
+    session.update_view(|view| {
         view.stream_w = config.w;
         view.stream_h = config.h;
+        view.display = config.display;
+    });
+    // The host's StreamConfig is what both ends act on (§6.7), whoever asked.
+    {
+        let mut r = lock(&session.stream);
+        r.mode = config.mode;
+        r.display = config.display;
     }
+    lock(&session.cursor).set_game(mode == Mode::Game);
     session.presenter.set_mode(if mode == Mode::Game {
         PresentMode::Immediate
     } else {
@@ -851,12 +1036,15 @@ fn apply_config(
             frame_deadline: frame_deadline(mode, config.fps),
             reorder_grace: Duration::from_millis(2),
         };
-        let media = ViewerMedia::spawn_with(
+        let media = ViewerMedia::spawn_full(
             conn.clone(),
             decoder,
             session.presenter.proxy(),
             params,
-            core.deps.thread_init(),
+            ViewerOptions {
+                thread_init: core.deps.thread_init(),
+                audio: running.audio.clone(),
+            },
         );
         *lock(&session.media) = Some(media);
         running.media_codec = Some(codec);
@@ -869,6 +1057,7 @@ fn apply_config(
             w: config.w,
             h: config.h,
             fps: config.fps,
+            display: config.display,
         }),
     );
     running.last_config = Some(config);
@@ -882,10 +1071,15 @@ fn start_input(
     host_os: Os,
     stream: async_mpsc::Sender<InputMsg>,
     gate_stats: Arc<Mutex<GateStats>>,
-) -> Option<JoinHandle<()>> {
+) -> Option<JoinHandle<mpsc::Receiver<InputCmd>>> {
     let rx = lock(&session.input_rx).take()?;
     let tx = session.input_tx.clone();
-    let profile = Keymap::builtin().for_session(core.deps.os(), host_os);
+    let (keymap, problem) = crate::keymap::for_sessions(&core.data_dir);
+    if let Some(text) = problem {
+        core.events
+            .send(session.tag, EventBody::Warning(Warning { text }));
+    }
+    let profile = keymap.for_session(core.deps.os(), host_os);
     let handle = input::spawn(
         InputThreadConfig {
             conn: conn.clone(),
@@ -899,6 +1093,12 @@ fn start_input(
             tag: session.tag,
             start_active: session.want_active.load(Relaxed),
             gate_stats,
+            pointer_lock: {
+                let (deps, tx) = (core.deps.clone(), tx.clone());
+                Box::new(move || deps.pointer_lock(tx.clone()))
+            },
+            cursor: session.cursor.clone(),
+            lock_stats: session.lock_stats.clone(),
         },
         rx,
     );
@@ -919,7 +1119,7 @@ async fn run_session(core: Arc<Core>, session: Arc<Session>, request: ConnectReq
             stage: stage as i32,
         }),
     );
-    let established = match establish(&core, &session, &request).await {
+    let mut established = match establish(&core, &session, &request, None).await {
         Ok(e) => e,
         Err((reason, message)) => {
             let _ = session.input_granted.set(false);
@@ -927,35 +1127,133 @@ async fn run_session(core: Arc<Core>, session: Arc<Session>, request: ConnectReq
             return;
         }
     };
-    let Accepted {
-        endpoint,
-        conn,
-        accepted,
-        link,
-        _trickle,
-    } = established;
-
-    let (reason, message) = match core.device().await {
-        Ok(device) => {
-            stream_session(
-                &core,
-                &session,
-                device,
-                &conn,
-                accepted,
-                &request,
-                link.as_ref(),
-            )
-            .await
+    let mut granted: Option<nexa_wire::control::Permissions> = None;
+    loop {
+        let Accepted {
+            endpoint,
+            conn,
+            accepted,
+            link,
+            _trickle,
+        } = established;
+        let host = accepted.host;
+        let (reason, message, dropped) = match core.device().await {
+            Ok(device) => {
+                stream_session(
+                    &core,
+                    &session,
+                    device,
+                    &conn,
+                    accepted,
+                    &request,
+                    link.as_ref(),
+                    &mut granted,
+                )
+                .await
+            }
+            Err(m) => (DisconnectReason::Internal, m, false),
+        };
+        conn.close(3u32.into(), b"session ended");
+        let _ = tokio::time::timeout(CLOSE_LINGER, endpoint.wait_idle()).await;
+        drop((link, _trickle));
+        if !dropped || *session.close.borrow() {
+            ended(tag, &core, reason, message);
+            return;
         }
-        Err(m) => (DisconnectReason::Internal, m),
-    };
-    ended(tag, &core, reason, message);
-
-    conn.close(3u32.into(), b"session ended");
-    let _ = tokio::time::timeout(CLOSE_LINGER, endpoint.wait_idle()).await;
+        // §4.4 Reconnecting: the window stays; a new connection, same rules.
+        match reconnect(&core, &session, &request, host, &message).await {
+            Ok(e) => established = e,
+            Err((reason, message)) => {
+                session.presenter.detach();
+                ended(tag, &core, reason, message);
+                return;
+            }
+        }
+    }
 }
 
+/// Whether a dial failure is worth another try inside the window.
+fn worth_retrying(reason: DisconnectReason) -> bool {
+    matches!(
+        reason,
+        DisconnectReason::Network
+            | DisconnectReason::TimedOut
+            | DisconnectReason::NoPath
+            | DisconnectReason::Offline
+            | DisconnectReason::SignalServer
+            | DisconnectReason::RateLimited
+    )
+}
+
+/// The transport went away under a running session, rather than anyone ending it.
+fn transport_dropped(e: &ConnectionError) -> bool {
+    matches!(
+        e,
+        ConnectionError::TimedOut
+            | ConnectionError::Reset
+            | ConnectionError::TransportError(_)
+            | ConnectionError::ConnectionClosed(_)
+    )
+}
+
+/// §4.4: new connections to the same device with exponential backoff, for at
+/// most 30 s. Each goes through the full handshake.
+async fn reconnect(
+    core: &Arc<Core>,
+    session: &Arc<Session>,
+    request: &ConnectRequest,
+    host: DevicePublicKey,
+    why: &str,
+) -> Result<Accepted, (DisconnectReason, String)> {
+    let tag = session.tag;
+    let mut backoff = Backoff::new(Instant::now());
+    let mut close = session.close.subscribe();
+    let closed = || {
+        (
+            DisconnectReason::ClosedLocally,
+            "closed by the application".to_owned(),
+        )
+    };
+    let mut last = why.to_owned();
+    loop {
+        let Some(delay) = backoff.next_delay(Instant::now()) else {
+            return Err((
+                DisconnectReason::Network,
+                format!("could not reconnect within 30 s: {last}"),
+            ));
+        };
+        core.events.send(
+            tag,
+            EventBody::Reconnecting(Reconnecting {
+                attempt: backoff.attempts(),
+                reason: why.to_owned(),
+                remaining_ms: backoff.remaining(Instant::now()).as_millis() as u32,
+            }),
+        );
+        tokio::select! {
+            _ = tokio::time::sleep(delay) => {}
+            _ = close.wait_for(|c| *c) => return Err(closed()),
+        }
+        let budget = backoff.remaining(Instant::now());
+        if budget.is_zero() {
+            continue;
+        }
+        let again = Again { host, budget };
+        let r = tokio::select! {
+            r = establish(core, session, request, Some(&again)) => r,
+            _ = close.wait_for(|c| *c) => return Err(closed()),
+        };
+        match r {
+            Ok(a) => return Ok(a),
+            Err((reason, message)) if worth_retrying(reason) => last = message,
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Runs one connection of the session. The flag says the transport dropped
+/// under it (§4.4: reconnect) rather than anyone ending it.
+#[allow(clippy::too_many_arguments)]
 async fn stream_session(
     core: &Arc<Core>,
     session: &Arc<Session>,
@@ -964,7 +1262,8 @@ async fn stream_session(
     accepted: ViewerAccepted,
     request: &ConnectRequest,
     link: Option<&Arc<Link>>,
-) -> (DisconnectReason, String) {
+    granted: &mut Option<nexa_wire::control::Permissions>,
+) -> (DisconnectReason, String, bool) {
     let tag = session.tag;
     let perms = accepted
         .accept
@@ -977,12 +1276,33 @@ async fn stream_session(
             file: false,
             audio: false,
         });
-    let host_name = accepted
+    // The window was built for what the first connection granted; a reconnect
+    // that was given something else (the person at the host decided again)
+    // starts over as a new session instead.
+    if granted.as_ref().is_some_and(|g| *g != perms) {
+        return (
+            DisconnectReason::Unspecified,
+            "the host granted different permissions after reconnecting; connect again".to_owned(),
+            false,
+        );
+    }
+    *granted = Some(perms.clone());
+    // Older hosts sent their name as the first display's.
+    let host_name = Some(accepted.accept.host_name.clone())
+        .filter(|n| !n.is_empty())
+        .or_else(|| accepted.accept.displays.first().map(|d| d.name.clone()))
+        .unwrap_or_default();
+    let displays: Vec<DisplayInfo> = accepted
         .accept
         .displays
-        .first()
-        .map(|d| d.name.clone())
-        .unwrap_or_default();
+        .iter()
+        .map(|d| DisplayInfo {
+            id: d.id,
+            name: d.name.clone(),
+            w: d.w,
+            h: d.h,
+        })
+        .collect();
     let paired_now = match store_pairing(&device, &accepted, &host_name) {
         Ok(p) => p,
         Err(e) => {
@@ -1023,9 +1343,26 @@ async fn stream_session(
             }
         })
     });
+    // §4.5: after a network change, our new candidates go on the same stream.
+    let update_pump = link
+        .and_then(|l| l.take_candidate_updates())
+        .map(|mut updates| {
+            let ctl = ctl_tx.clone();
+            tokio::spawn(async move {
+                while let Some(candidates) = updates.recv().await {
+                    if ctl
+                        .send(ControlBody::Candidates(CandidateUpdate { candidates }))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+        });
     let _ = ctl_tx.send(ControlBody::Request(StreamRequest {
         mode: request.mode,
         fps: request.fps,
+        display: lock(&session.stream).display,
     }));
 
     let (cmd_tx, mut cmd_rx) = async_mpsc::unbounded_channel();
@@ -1041,6 +1378,7 @@ async fn stream_session(
             perms: Some(perms_message(&perms)),
             host_os: host_os as u32,
             paired_now,
+            displays,
         }),
     );
 
@@ -1055,9 +1393,32 @@ async fn stream_session(
                 input_thread =
                     start_input(core, session, conn, host_os, stream_tx, gate_stats.clone());
             }
-            Err(e) => return (DisconnectReason::Network, e.to_string()),
+            Err(e) => {
+                let dropped = conn.close_reason().as_ref().is_some_and(transport_dropped);
+                return (DisconnectReason::Network, e.to_string(), dropped);
+            }
         }
     }
+
+    // §4.9: the clipboard and every file transfer share one bulk budget. This side
+    // has no rate controller for its uplink, so the budget follows the round trip.
+    let bulk = BulkLimiter::new(Arc::new(UplinkScavenger::new(conn.clone())));
+    // Files only with the permission, in both directions.
+    let transfers = perms.file.then(|| {
+        let events = core.events.clone();
+        Transfers::new(
+            conn.clone(),
+            TransferConfig {
+                downloads: core.downloads.clone(),
+                limits: TransferLimits::default(),
+                bulk: bulk.clone(),
+                confirm_timeout: CONFIRM_TIMEOUT,
+            },
+            Arc::new(move |e| events.send(tag, EventBody::Transfer(Transfer::of(&e)))),
+        )
+    });
+    *lock(&session.transfers) = transfers.clone();
+    let acceptor = tokio::spawn(accept_host_streams(conn.clone(), transfers.clone()));
 
     let mut clipboard: Option<ClipSession> = None;
     if perms.clipboard {
@@ -1089,6 +1450,7 @@ async fn stream_session(
                             );
                         }),
                     },
+                    bulk.clone(),
                 );
                 *lock(&session.clip) = Some(started.handle.clone());
                 clipboard = Some(started);
@@ -1105,12 +1467,33 @@ async fn stream_session(
         }
     }
 
+    // Audio only with the permission; it starts unmuted and the UI can mute it.
+    let mut audio_sink = None;
+    if perms.audio {
+        match core.deps.audio_decoder() {
+            Ok(decoder) => {
+                let playback = AudioPlayback::new(decoder);
+                audio_sink = Some(playback.sink());
+                *lock(&session.audio) = Some(playback);
+                let _ = session.set_audio(true);
+            }
+            Err(e) => core.events.send(
+                tag,
+                EventBody::Warning(Warning {
+                    text: format!("the host's audio cannot be played here: {e}"),
+                }),
+            ),
+        }
+    }
+
     let mut running = Running {
         media_codec: None,
         last_config: None,
+        audio: audio_sink,
     };
     let mut close_rx = session.close.subscribe();
     let mut stats = tokio::time::interval(STATS_INTERVAL);
+    let mut warned_path: Option<PathKind> = None;
     let (reason, message): (DisconnectReason, String) = loop {
         tokio::select! {
             changed = close_rx.wait_for(|c| *c) => {
@@ -1135,6 +1518,18 @@ async fn stream_session(
                         break (DisconnectReason::PipelineFailed, e);
                     }
                 }
+                Ok(Some(ControlMsg { body: Some(ControlBody::CursorShape(shape)) })) => {
+                    lock(&session.cursor).on_shape(shape);
+                }
+                Ok(Some(ControlMsg { body: Some(ControlBody::CursorSet(set)) })) => {
+                    lock(&session.cursor).on_set(set);
+                }
+                Ok(Some(ControlMsg { body: Some(ControlBody::CursorMoved(moved)) })) => {
+                    let active = session.want_active.load(Relaxed) && perms.input;
+                    if lock(&session.cursor).on_moved(&moved, active).is_some() {
+                        session.to_input(InputCmd::Warped(moved.x, moved.y));
+                    }
+                }
                 Ok(Some(ControlMsg { body: Some(ControlBody::Focus(focus)) })) => {
                     let class = FocusClass::try_from(focus.cls).unwrap_or(FocusClass::Default);
                     session.to_input(InputCmd::Focus(class));
@@ -1143,20 +1538,41 @@ async fn stream_session(
                     let reason = CloseReason::try_from(bye.reason).unwrap_or(CloseReason::Unspecified);
                     break (reason_of_close(reason), bye.message);
                 }
+                Ok(Some(ControlMsg { body: Some(ControlBody::Candidates(c)) })) => {
+                    if let Some(l) = link {
+                        l.apply_candidate_update(&c.candidates);
+                    }
+                }
                 Ok(Some(_)) => {}
                 Ok(None) => break (DisconnectReason::HostEnded, "the host closed the stream".to_owned()),
                 Err(e) => break (DisconnectReason::Network, e.to_string()),
             },
-            Some(cmd) = cmd_rx.recv() => {
-                let SessionCtl::Stream(request) = cmd;
-                let _ = ctl_tx.send(ControlBody::Request(request));
-            }
+            Some(cmd) = cmd_rx.recv() => match cmd {
+                SessionCtl::Stream(request) => {
+                    let _ = ctl_tx.send(ControlBody::Request(request));
+                }
+                SessionCtl::Control(body) => {
+                    let _ = ctl_tx.send(body);
+                }
+            },
             _ = stats.tick() => {
+                let (path, _, _) = path_stats(link, conn, core.deps.tailnet().as_deref());
+                let game = running
+                    .last_config
+                    .as_ref()
+                    .is_some_and(|c| Mode::try_from(c.mode) == Ok(Mode::Game));
+                if let Some(text) = path_warning(path, game)
+                    && warned_path != Some(path)
+                {
+                    warned_path = Some(path);
+                    core.events.send(tag, EventBody::Warning(Warning { text: text.to_owned() }));
+                }
                 if let Some(media) = lock(&session.media).as_ref() {
                     use std::sync::atomic::Ordering::Relaxed as R;
                     let s = &media.stats;
                     let g = *lock(&gate_stats);
-                    let (path, path_detail, path_rtt_us) = path_stats(link, conn);
+                    let (path, path_detail, path_rtt_us) = path_stats(link, conn, core.deps.tailnet().as_deref());
+                    let a = lock(&session.audio).as_ref().map(|a| a.stats()).unwrap_or_default();
                     core.events.send(tag, EventBody::Stats(Stats {
                         complete: s.complete.load(R),
                         lost: s.lost.load(R),
@@ -1172,18 +1588,45 @@ async fn stream_session(
                         path: path as i32,
                         path_detail,
                         path_rtt_us,
+                        audio_played: a.played,
+                        audio_concealed: a.concealed,
+                        audio_buffer_us: a.mean_delay().as_micros().min(u128::from(u32::MAX)) as u32,
+                        latency: latency_of(&media.latency),
                     }));
                 }
             }
         }
     };
 
+    // The transport dropped (§4.4): the window stays and shows the last frame
+    // while we reconnect. Anything else ends the session.
+    let dropped = reason == DisconnectReason::Network
+        && conn.close_reason().as_ref().is_some_and(transport_dropped);
+
     // Teardown. Local capture ends first; the keyboard must never stay captured.
     session.stop_input();
+    acceptor.abort();
+    *lock(&session.transfers) = None;
+    if let Some(t) = &transfers {
+        t.shutdown();
+    }
+    // No sound and no host cursor once the session is over.
+    let playback = lock(&session.audio).take();
+    drop(playback);
+    {
+        let mut cursor = lock(&session.cursor);
+        cursor.set_locked(false);
+        cursor.set_game(true);
+    }
     if let Some(p) = switch_pump {
         p.abort();
     }
-    session.presenter.detach();
+    if let Some(p) = update_pump {
+        p.abort();
+    }
+    if !dropped {
+        session.presenter.detach();
+    }
     drop(ctl_tx);
     let _ = tokio::time::timeout(FLUSH_TIMEOUT, writer).await;
     if let Some(writer) = input_writer.take() {
@@ -1192,47 +1635,185 @@ async fn stream_session(
     *lock(&session.command) = None;
     *lock(&session.clip) = None;
     let media = lock(&session.media).take();
-    let _ = tokio::task::spawn_blocking(move || {
-        if let Some(thread) = input_thread {
-            let _ = thread.join();
-        }
+    let rx = tokio::task::spawn_blocking(move || {
+        let rx = input_thread.and_then(|thread| thread.join().ok());
         if let Some(c) = clipboard {
             c.stop();
         }
         if let Some(m) = media {
             m.stop();
         }
+        rx
     })
-    .await;
-    (reason, message)
+    .await
+    .ok()
+    .flatten();
+    // A reconnected session starts a new input thread on the same channel.
+    if let Some(rx) = rx {
+        *lock(&session.input_rx) = Some(rx);
+    }
+    session.input_started.store(false, Relaxed);
+    (reason, message, dropped)
+}
+
+/// §6.1 segments for the HUD, in the ABI's numbering.
+fn latency_of(l: &nexa_session::latency::LatencyStats) -> Vec<crate::proto::LatencySegment> {
+    use crate::proto::Segment as P;
+    use nexa_session::latency::Segment as S;
+    l.summary()
+        .into_iter()
+        .map(|p| crate::proto::LatencySegment {
+            segment: match p.segment {
+                S::HostAndNetwork => P::HostAndNetwork,
+                S::Receive => P::Receive,
+                S::DecodeQueue => P::DecodeQueue,
+                S::Decode => P::Decode,
+                S::PresentQueue => P::PresentQueue,
+                S::Present => P::Present,
+                S::Total => P::Total,
+            } as i32,
+            p50_us: p.p50_us,
+            p99_us: p.p99_us,
+        })
+        .collect()
+}
+
+/// Streams the host opens: only File (§3.1), and only into `transfers`. Without the
+/// permission a File stream is refused unread; any other kind is stopped.
+async fn accept_host_streams(conn: Connection, transfers: Option<Transfers>) {
+    loop {
+        match accept_bi(&conn).await {
+            Ok((StreamType::File, send, recv)) => match &transfers {
+                Some(t) => t.accept(send, recv),
+                None => transfer::refuse(send, recv),
+            },
+            Ok((_, send, recv)) => {
+                recv.stop();
+                drop(send);
+            }
+            Err(SessionError::Connection(_)) => return,
+            Err(_) => {}
+        }
+    }
+}
+
+/// What to tell someone in game mode about the path (§4.6, §5.2).
+fn path_warning(path: PathKind, game: bool) -> Option<&'static str> {
+    if !game {
+        return None;
+    }
+    match path {
+        PathKind::RelayWss => {
+            Some("游戏模式：UDP 被阻断，当前经 WSS（TCP）中继传输，延迟和卡顿会明显增加")
+        }
+        PathKind::TailscaleDerp => Some("游戏模式：Tailscale 当前经 DERP 中继，延迟和带宽受限"),
+        _ => None,
+    }
 }
 
 /// What the diagnostics show about the path (§11).
-fn path_stats(link: Option<&Arc<Link>>, conn: &Connection) -> (PathKind, String, u64) {
-    let kind_of = |c: PathClass| match c {
-        PathClass::Direct => PathKind::Direct,
-        PathClass::Punched => PathKind::Punched,
-        PathClass::Relay => PathKind::Relay,
-        PathClass::Tailscale => PathKind::Tailscale,
+fn path_stats(
+    link: Option<&Arc<Link>>,
+    conn: &Connection,
+    tailnet: Option<&TailnetMonitor>,
+) -> (PathKind, String, u64) {
+    let kind_of = |c: PathClass, k: CandKind| match (c, k) {
+        (_, CandKind::WssRelay) => PathKind::RelayWss,
+        (_, CandKind::TailnetDerp) => PathKind::TailscaleDerp,
+        (PathClass::Direct, _) => PathKind::Direct,
+        (PathClass::Punched, _) => PathKind::Punched,
+        (PathClass::Relay, _) => PathKind::Relay,
+        (PathClass::Tailscale, _) => PathKind::Tailscale,
     };
     match link {
         Some(l) => match l.state().active {
             Some(a) => (
-                kind_of(a.class),
+                kind_of(a.class, a.kind),
                 describe(&a),
                 a.rtt.map_or(0, |r| r.as_micros() as u64),
             ),
             None => (PathKind::Unknown, String::new(), 0),
         },
         None => {
-            let remote = conn.remote_address();
+            let remote = nexa_net::vsock::canonical(conn.remote_address());
             let kind = if is_tailnet(remote.ip()) {
-                PathKind::Tailscale
+                match tailnet.and_then(|t| t.direct(remote.ip())) {
+                    Some(false) => PathKind::TailscaleDerp,
+                    _ => PathKind::Tailscale,
+                }
             } else {
                 PathKind::Direct
             };
             (kind, remote.to_string(), 0)
         }
+    }
+}
+
+/// The Tailscale peers worth listing in the connect card: online, with a
+/// NexaDesk host answering on its port (§4.7, LocalAPI level).
+pub fn tailnet_devices(
+    info: &TailscaleInfo,
+    port: u16,
+    probe: &dyn Fn(SocketAddr) -> bool,
+) -> Vec<TailnetDevice> {
+    info.peers
+        .iter()
+        .filter(|p| p.online)
+        .filter_map(|p| {
+            let ip = p.ips.iter().find(|ip| ip.is_ipv4()).or(p.ips.first())?;
+            Some((p, SocketAddr::new(*ip, port)))
+        })
+        .take(TAILNET_MAX_PROBES)
+        .filter(|(_, addr)| probe(*addr))
+        .map(|(p, addr)| TailnetDevice {
+            name: if p.name.is_empty() {
+                p.dns_name.clone()
+            } else {
+                p.name.clone()
+            },
+            address: addr.to_string(),
+            direct: p.direct != Some(false),
+            os: p.os.clone(),
+            dns_name: p.dns_name.clone(),
+        })
+        .collect()
+}
+
+/// Connection IDs for the QUIC probe: unpredictable enough to match answers,
+/// nothing secret rides on them.
+fn probe_ids(buf: &mut [u8]) {
+    use std::hash::{BuildHasher, Hasher};
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    for chunk in buf.chunks_mut(8) {
+        h.write_u64(Instant::now().elapsed().as_nanos() as u64);
+        let v = h.finish().to_ne_bytes();
+        chunk.copy_from_slice(&v[..chunk.len()]);
+    }
+}
+
+/// Sends the tailnet device list (tag 0) whenever it changes.
+async fn report_tailnet(events: EventTx, tailnet: Arc<TailnetMonitor>) {
+    let mut last: Option<Vec<TailnetDevice>> = None;
+    loop {
+        if let Some(info) = tailnet.snapshot() {
+            let devices = tokio::task::spawn_blocking(move || {
+                tailnet_devices(&info, NEXADESK_PORT, &|addr| {
+                    nexa_net::tailscale::probe_quic(addr, TAILNET_PROBE_TIMEOUT, &mut probe_ids)
+                })
+            })
+            .await
+            .unwrap_or_default();
+            if last.as_ref() != Some(&devices) {
+                events.send(
+                    0,
+                    EventBody::Tailnet(TailnetDevices {
+                        devices: devices.clone(),
+                    }),
+                );
+                last = Some(devices);
+            }
+        }
+        tokio::time::sleep(TAILNET_REFRESH).await;
     }
 }
 
@@ -1244,5 +1825,66 @@ fn reason_of_close_code(code: u64) -> DisconnectReason {
         close::PIPELINE_FAILED => DisconnectReason::PipelineFailed,
         close::REJECTED => DisconnectReason::ConsentDenied,
         _ => DisconnectReason::Unspecified,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nexa_net::tailscale::TsPeer;
+
+    fn peer(name: &str, ip: &str, online: bool, direct: Option<bool>) -> TsPeer {
+        TsPeer {
+            name: name.into(),
+            dns_name: format!("{name}.tail1234.ts.net"),
+            os: "macOS".into(),
+            ips: vec![ip.parse().unwrap(), "fd7a:115c:a1e0::9".parse().unwrap()],
+            online,
+            direct,
+            relay: "fra".into(),
+        }
+    }
+
+    #[test]
+    fn tailnet_list_has_online_peers_that_answer_on_the_port() {
+        let info = TailscaleInfo {
+            self_ips: vec![],
+            peers: vec![
+                peer("studio", "100.64.0.2", true, Some(true)),
+                peer("laptop", "100.64.0.3", true, Some(false)),
+                peer("asleep", "100.64.0.4", false, None),
+                peer("no-nexadesk", "100.64.0.5", true, Some(true)),
+            ],
+        };
+        let asked = Mutex::new(Vec::new());
+        let list = tailnet_devices(&info, NEXADESK_PORT, &|a| {
+            lock(&asked).push(a);
+            a.ip() != "100.64.0.5".parse::<std::net::IpAddr>().unwrap()
+        });
+        let names: Vec<&str> = list.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["studio", "laptop"]);
+        assert_eq!(list[0].address, "100.64.0.2:47800", "IPv4 first");
+        assert!(list[0].direct);
+        assert!(!list[1].direct, "DERP");
+        assert_eq!(lock(&asked).len(), 3, "offline peers are not probed");
+    }
+
+    #[test]
+    fn game_mode_warns_about_wss_and_derp_only() {
+        assert!(path_warning(PathKind::RelayWss, true).is_some());
+        assert!(path_warning(PathKind::TailscaleDerp, true).is_some());
+        assert!(path_warning(PathKind::Relay, true).is_none());
+        assert!(path_warning(PathKind::RelayWss, false).is_none());
+    }
+
+    #[test]
+    fn only_transport_failures_reconnect() {
+        assert!(transport_dropped(&ConnectionError::TimedOut));
+        assert!(transport_dropped(&ConnectionError::Reset));
+        assert!(!transport_dropped(&ConnectionError::LocallyClosed));
+        assert!(worth_retrying(DisconnectReason::NoPath));
+        assert!(!worth_retrying(DisconnectReason::AuthFailed));
+        assert!(!worth_retrying(DisconnectReason::PinMismatch));
+        assert!(!worth_retrying(DisconnectReason::ConsentDenied));
     }
 }

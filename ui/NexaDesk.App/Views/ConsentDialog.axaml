@@ -43,6 +43,9 @@
       <CheckBox Name="InputBox" IsChecked="{Binding AllowInput}" IsEnabled="{Binding InputAvailable}" Content="控制键盘和鼠标" />
       <TextBlock Classes="muted" Margin="28,-4,0,2" Text="{Binding InputNote}" />
       <CheckBox Name="ClipboardBox" IsChecked="{Binding AllowClipboard}" Content="同步剪贴板（复制的内容会在两边互通）" />
+      <CheckBox Name="AudioBox" IsChecked="{Binding AllowAudio}" Content="传送声音（本机播放的声音会在对方那里播放）" />
+      <CheckBox Name="FileBox" IsChecked="{Binding AllowFile}" Content="传输文件（只能由拥有文件的一方发起）" />
+      <TextBlock Classes="muted" Margin="28,-4,0,2" Text="{Binding FileNote}" TextWrapping="Wrap" />
     </StackPanel>
 
     <StackPanel Spacing="2" IsVisible="{Binding OfferSave}">

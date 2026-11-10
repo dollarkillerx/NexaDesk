@@ -6,3 +6,4 @@ obj/
 spikes/**/out/
 ui/out/
 dist/
+.claude/worktrees/

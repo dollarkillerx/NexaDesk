@@ -1,29 +1,41 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:NexaDesk.ViewModels"
+        xmlns:views="using:NexaDesk.Views"
         x:Class="NexaDesk.Views.ControlBanner"
         x:DataType="vm:BannerViewModel"
         Title="NexaDesk — 正在被控制"
-        Width="720" Height="64" CanResize="False"
+        Width="720" SizeToContent="Height" CanResize="False"
         Topmost="True" ShowInTaskbar="False" ShowActivated="False"
         WindowDecorations="None"
         Background="{DynamicResource BannerBrush}">
-  <Border Padding="18,0,10,0">
-    <Grid ColumnDefinitions="Auto,*,Auto,Auto" VerticalAlignment="Center">
-      <Ellipse Width="12" Height="12" Fill="White" VerticalAlignment="Center" Margin="0,0,12,0" />
-      <StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center">
-        <TextBlock Name="HeadlineText" Text="{Binding Headline}" Foreground="White" FontWeight="SemiBold" FontSize="14"
-                   TextTrimming="CharacterEllipsis" />
-        <TextBlock Foreground="White" Opacity="0.92" FontSize="12" TextTrimming="CharacterEllipsis">
-          <Run Text="{Binding PermsText}" />
-          <Run Text=" · " />
-          <Run Text="{Binding Detail}" />
-        </TextBlock>
+  <StackPanel>
+    <Border Padding="18,0,10,0" Height="64">
+      <Grid ColumnDefinitions="Auto,*,Auto,Auto" VerticalAlignment="Center">
+        <Ellipse Width="12" Height="12" Fill="White" VerticalAlignment="Center" Margin="0,0,12,0" />
+        <StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center">
+          <TextBlock Name="HeadlineText" Text="{Binding Headline}" Foreground="White" FontWeight="SemiBold" FontSize="14"
+                     TextTrimming="CharacterEllipsis" />
+          <TextBlock Foreground="White" Opacity="0.92" FontSize="12" TextTrimming="CharacterEllipsis">
+            <Run Text="{Binding PermsText}" />
+            <Run Text=" · " />
+            <Run Text="{Binding Detail}" />
+          </TextBlock>
+        </StackPanel>
+        <TextBlock Grid.Column="2" Text="{Binding DurationText}" Foreground="White" FontFamily="{StaticResource MonoFont}"
+                   VerticalAlignment="Center" Margin="12,0,12,0" />
+        <Button Grid.Column="3" Name="BannerDisconnectButton" Content="断开" Command="{Binding DisconnectCommand}"
+                Background="White" Foreground="#9A3412" FontWeight="SemiBold" MinWidth="80" HorizontalContentAlignment="Center" />
+      </Grid>
+    </Border>
+    <!-- Only with the file permission: drop files here to send them to the viewer (§3.1 stream 4). -->
+    <Border Name="FilePanel" Background="{DynamicResource CardBrush}" Padding="14,8,14,10" IsVisible="{Binding CanSendFiles}">
+      <StackPanel Spacing="6">
+        <Border Name="DropZone" Classes="subtle" Padding="10,6">
+          <TextBlock Name="DropHintText" Classes="muted" Text="{Binding DropHint}" HorizontalAlignment="Center" />
+        </Border>
+        <views:TransferListView DataContext="{Binding Transfers}" IsVisible="{Binding HasItems}" />
       </StackPanel>
-      <TextBlock Grid.Column="2" Text="{Binding DurationText}" Foreground="White" FontFamily="{StaticResource MonoFont}"
-                 VerticalAlignment="Center" Margin="12,0,12,0" />
-      <Button Grid.Column="3" Name="BannerDisconnectButton" Content="断开" Command="{Binding DisconnectCommand}"
-              Background="White" Foreground="#9A3412" FontWeight="SemiBold" MinWidth="80" HorizontalContentAlignment="Center" />
-    </Grid>
-  </Border>
+    </Border>
+  </StackPanel>
 </Window>

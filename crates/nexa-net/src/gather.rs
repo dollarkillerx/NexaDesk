@@ -1,13 +1,14 @@
 //! Candidate gathering helpers (§4.2): which local addresses to offer, and what
 //! two STUN answers say about the NAT. The I/O lives with the session.
 //!
-//! Not implemented: Portmap (PCP / NAT-PMP / UPnP), mDNS, and the Tailscale
-//! LocalAPI. Tailnet addresses are recognised by range on any interface.
+//! Port mapping is in [`crate::portmap`], the Tailscale LocalAPI in
+//! [`crate::tailscale`]. Not implemented: mDNS. Tailnet addresses are
+//! recognised by range on any interface.
 
 use std::net::{IpAddr, SocketAddr};
 
 use crate::{
-    check::{PeerNat, is_tailnet},
+    check::{Families, PeerNat, is_tailnet},
     path::CandKind,
     stun::{NatClass, classify_nat},
 };
@@ -53,9 +54,20 @@ pub fn local_candidates(
     port: u16,
     family_v4: bool,
 ) -> Vec<(SocketAddr, CandKind)> {
+    local_candidates_for(addrs, port, Families::from(family_v4))
+}
+
+/// Host, IPv6 and Tailnet candidates for a socket bound to `port`; IPv4 first.
+pub fn local_candidates_for(
+    addrs: &[(String, IpAddr)],
+    port: u16,
+    families: Families,
+) -> Vec<(SocketAddr, CandKind)> {
     let mut out: Vec<(SocketAddr, CandKind)> = Vec::new();
-    for (name, ip) in addrs {
-        if ip.is_ipv4() != family_v4 {
+    let mut sorted: Vec<&(String, IpAddr)> = addrs.iter().collect();
+    sorted.sort_by_key(|(_, ip)| ip.is_ipv6());
+    for (name, ip) in sorted {
+        if !families.allows(SocketAddr::new(*ip, port)) {
             continue;
         }
         if let Some(kind) = classify_local(name, *ip) {
@@ -140,6 +152,14 @@ mod tests {
             vec![("192.168.1.20:4000".parse().unwrap(), CandKind::Host)]
         );
         assert_eq!(local_candidates(&addrs, 4000, false).len(), 1);
+        let both = local_candidates_for(&addrs, 4000, Families::DUAL);
+        assert_eq!(
+            both,
+            vec![
+                ("192.168.1.20:4000".parse().unwrap(), CandKind::Host),
+                ("[2001:db8::5]:4000".parse().unwrap(), CandKind::Ipv6),
+            ]
+        );
     }
 
     #[test]

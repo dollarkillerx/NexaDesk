@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use nexa_wire::control::{Chroma, Codec, Mode};
 
+pub mod caps_cache;
 #[cfg(target_os = "macos")]
 pub mod macos;
 
@@ -179,4 +180,73 @@ pub trait Presenter: Send {
     fn resize(&mut self, width_px: u32, height_px: u32, scale: f32) -> Result<()>;
     fn set_mode(&mut self, mode: PresentMode) -> Result<()>;
     fn present(&mut self, frame: &DecodedFrame) -> Result<PresentStat>;
+}
+
+// ---------------------------------------------------------------------------------
+// Cursor (§6.9)
+// ---------------------------------------------------------------------------------
+
+/// An RGBA cursor image as the host draws it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CursorImage {
+    pub width: u32,
+    pub height: u32,
+    /// Straight (not premultiplied) RGBA, `width * height * 4` bytes, top row first.
+    pub rgba: Vec<u8>,
+    /// Hot spot in image pixels.
+    pub hot_x: f64,
+    pub hot_y: f64,
+    /// Image pixels per host point: 2.0 for a Retina cursor.
+    pub scale: f64,
+}
+
+/// One look at the host's cursor.
+#[derive(Clone, Debug, Default)]
+pub struct CursorSample {
+    /// `None` when the shape could not be read; the last one stays in effect.
+    pub image: Option<std::sync::Arc<CursorImage>>,
+    pub visible: bool,
+    /// Global host points (CoreGraphics: top-left origin of the main display).
+    pub position: Option<(f64, f64)>,
+}
+
+/// Reads the host cursor. Implementations must never move or change it.
+pub trait CursorSource: Send {
+    fn sample(&mut self) -> CursorSample;
+}
+
+// ---------------------------------------------------------------------------------
+// System audio (DESIGN §6.1): 48 kHz stereo, interleaved f32, 10 ms Opus packets.
+// ---------------------------------------------------------------------------------
+
+pub const AUDIO_SAMPLE_RATE: u32 = 48_000;
+pub const AUDIO_CHANNELS: usize = 2;
+/// Samples per channel in one 10 ms frame.
+pub const AUDIO_FRAME_SAMPLES: usize = 480;
+/// Interleaved samples in one frame.
+pub const AUDIO_FRAME_LEN: usize = AUDIO_FRAME_SAMPLES * AUDIO_CHANNELS;
+
+/// Interleaved stereo float samples at 48 kHz, as captured.
+pub struct AudioChunk {
+    pub samples: Vec<f32>,
+    /// When the last sample was captured.
+    pub captured_at: Instant,
+}
+
+/// The host's system audio. Creating one starts capture; dropping it stops capture.
+pub trait AudioCapture: Send {
+    /// The next chunk, or `None` after `timeout` with nothing new.
+    fn next(&mut self, timeout: Duration) -> Result<Option<AudioChunk>>;
+}
+
+pub trait AudioEncoder: Send {
+    /// Encodes exactly one frame (`AUDIO_FRAME_LEN` interleaved samples) into `out`.
+    fn encode(&mut self, pcm: &[f32], out: &mut Vec<u8>) -> Result<()>;
+}
+
+pub trait AudioDecoder: Send {
+    /// Decodes one packet into exactly one frame (`AUDIO_FRAME_LEN` samples). `None`
+    /// asks the codec to conceal a lost packet; a codec that cannot returns `Err`.
+    fn decode(&mut self, packet: Option<&[u8]>, out: &mut [f32]) -> Result<()>;
+    fn reset(&mut self);
 }

@@ -94,7 +94,8 @@ fn auth_kind(a: AuthKind) -> pb::AuthKind {
 }
 
 /// Turns a `Decide` into what the handshake carries out. Only an explicit allow with
-/// view is an allow; file and audio do not exist yet and are never granted.
+/// view is an allow. Files and audio are granted only when the dialog says so (both
+/// boxes start unticked).
 pub(crate) fn answer_of(d: &pb::Decide) -> ConsentAnswer {
     let p = d.perms.clone().unwrap_or_default();
     if !d.allow || !p.view {
@@ -106,8 +107,8 @@ pub(crate) fn answer_of(d: &pb::Decide) -> ConsentAnswer {
             view: true,
             input: p.input,
             clipboard: p.clipboard,
-            file: false,
-            audio: false,
+            file: p.file,
+            audio: p.audio,
         },
         save: d.save,
         skip_next_time: d.skip_next_time,
@@ -341,6 +342,9 @@ impl AgentUi for IpcHub {
             ),
             AgentEvent::ClipboardNotice(n) => notice(NoticeKind::Clipboard, format!("{n:?}")),
             AgentEvent::Warning(w) => notice(NoticeKind::Warning, w),
+            AgentEvent::Transfer { session, event } => {
+                message(AgentBody::Transfer(pb::Transfer::of(session, &event)))
+            }
         };
         self.send(out);
     }
@@ -391,10 +395,23 @@ mod tests {
     }
 
     #[test]
-    fn an_allow_never_grants_what_does_not_exist() {
+    fn files_follow_the_dialog_and_default_to_off() {
         let a = answer_of(&decide(true, true));
         assert!(a.allow && a.perms.view && a.perms.input && a.perms.clipboard);
-        assert!(!a.perms.file && !a.perms.audio);
+        assert!(a.perms.file, "ticked");
+        let mut unticked = decide(true, true);
+        unticked.perms.as_mut().unwrap().file = false;
+        assert!(!answer_of(&unticked).perms.file);
+        assert!(!answer_of(&pb::Decide::default()).perms.file);
+    }
+
+    #[test]
+    fn audio_follows_the_dialog_and_defaults_to_off() {
+        assert!(answer_of(&decide(true, true)).perms.audio, "ticked");
+        let mut unticked = decide(true, true);
+        unticked.perms.as_mut().unwrap().audio = false;
+        assert!(!answer_of(&unticked).perms.audio);
+        assert!(!answer_of(&pb::Decide::default()).perms.audio);
     }
 
     #[test]

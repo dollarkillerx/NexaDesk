@@ -25,6 +25,9 @@ message UiToAgent {
     RotateCode rotate_code = 7;
     Decide decide = 8;
     Shutdown shutdown = 9;
+    SendFiles send_files = 10;
+    CancelTransfer cancel_transfer = 11;
+    AnswerTransfer answer_transfer = 12;
   }
 }
 
@@ -38,6 +41,11 @@ message SetAccessPolicy { string device_key = 1; bool unattended = 2; Permission
 message Disconnect {}                                       // ends the running session
 message RotateCode {}
 message Shutdown {}                                         // stop hosting; the agent exits
+// Files the person at the host dropped on the banner, sent to the viewer. Refused
+// unless the running session was granted `file`. Absolute paths, at most 100.
+message SendFiles { repeated string paths = 1; }
+message CancelTransfer { uint64 id = 1; }                   // either direction
+message AnswerTransfer { uint64 id = 1; bool accept = 2; }  // to Transfer{state: NEEDS_CONFIRM}
 // The answer to IncomingRequest. Every default denies: allow is false unless set,
 // and a grant without `view` is refused.
 message Decide {
@@ -54,6 +62,7 @@ message AgentToUi {
     RequestClosed request_closed = 6;
     Notice notice = 7;
     Refused refused = 8;
+    Transfer transfer = 9;
   }
 }
 
@@ -112,3 +121,22 @@ enum NoticeKind { NOTICE_WARNING = 0; NOTICE_CONNECTION_FAILED = 1; NOTICE_CLIPB
 message Notice { NoticeKind kind = 1; string text = 2; }
 // A command that could not be carried out.
 message Refused { string command = 1; string reason = 2; }
+
+enum TransferState {
+  TRANSFER_WAITING = 0; TRANSFER_NEEDS_CONFIRM = 1; TRANSFER_RUNNING = 2;
+  TRANSFER_DONE = 3; TRANSFER_FAILED = 4; TRANSFER_CANCELLED = 5;
+}
+enum FailReason {
+  FAIL_NONE = 0; FAIL_DECLINED = 1; FAIL_TOO_LARGE = 2; FAIL_NOT_PERMITTED = 3; FAIL_INVALID = 4;
+  FAIL_HASH_MISMATCH = 5; FAIL_NO_SPACE = 6; FAIL_IO = 7; FAIL_CONNECTION_LOST = 8; FAIL_TIMEOUT = 9;
+  FAIL_NOT_A_FILE = 10; FAIL_BUSY = 11;
+}
+// A file transfer of the running session moved on. Ids are per session.
+message Transfer {
+  uint64 session_id = 1; uint64 id = 2;
+  bool outgoing = 3;             // from this Mac to the viewer
+  string name = 4; uint64 size = 5; uint64 done = 6;
+  TransferState state = 7; FailReason reason = 8;
+  string path = 9;               // where a received file was saved
+  bool by_peer = 10;             // a cancel came from the other side
+}

@@ -39,6 +39,14 @@ internal static partial class MacWindows
         };
     }
 
+    /// <summary>The HUD: clicks and scrolls go to the window below (the video).</summary>
+    public static void IgnoreMouse(Window window)
+    {
+        var ns = NsWindow(window);
+        if (ns == 0) return;
+        SendBool(ns, Selector("setIgnoresMouseEvents:"), 1);
+    }
+
     /// <summary>
     /// The banner: on every Space and over full-screen apps, above ordinary floating
     /// windows, out of the Cmd+` cycle, and not hidden by Cmd+H.

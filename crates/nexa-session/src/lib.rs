@@ -2,16 +2,22 @@
 //! the session protocol on top of QUIC (§3, §9.2). Contains no platform code: every
 //! backend arrives through a trait.
 
+pub mod audio;
+pub mod bulk;
 pub mod clip;
+pub mod cursor;
 pub mod feedback;
 pub mod framed;
 pub mod handshake;
 pub mod host;
 pub mod input;
+pub mod latency;
 pub mod mailbox;
 pub mod negotiate;
 pub mod proto;
+pub mod reconnect;
 pub mod rendezvous;
+pub mod transfer;
 pub mod viewer;
 
 use std::time::{Duration, Instant};

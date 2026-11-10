@@ -437,5 +437,26 @@ fn handle(ctx: &Ctx, conn: u64, msg: UiToAgent) -> Option<AgentToUi> {
             (ctx.on_shutdown)();
             None
         }
+        Some(UiBody::SendFiles(f)) => {
+            let paths = f.paths.into_iter().map(std::path::PathBuf::from).collect();
+            match agent.send_files(paths) {
+                Ok(_) => None,
+                Err(e) => Some(refused("files", e)),
+            }
+        }
+        Some(UiBody::CancelTransfer(c)) => {
+            agent.cancel_transfer(c.id);
+            None
+        }
+        Some(UiBody::AnswerTransfer(a)) => {
+            if agent.answer_transfer(a.id, a.accept) {
+                None
+            } else {
+                Some(refused(
+                    "transfer",
+                    "no such transfer is waiting for an answer",
+                ))
+            }
+        }
     }
 }

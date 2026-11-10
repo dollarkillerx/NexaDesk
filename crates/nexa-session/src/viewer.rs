@@ -16,10 +16,10 @@ use nexa_net::{
     recovery::{Decision, ReceiverRecovery},
     shard::{Assembler, AssemblerEvent, CompleteFrame},
 };
-use nexa_wire::datagram::{self, Clock, ReportKind, VideoReport, VideoShardHeader};
+use nexa_wire::datagram::{self, AudioHeader, Clock, ReportKind, VideoReport, VideoShardHeader};
 use quinn::Connection;
 
-use crate::{feedback::FeedbackBuilder, mailbox::Mailbox};
+use crate::{feedback::FeedbackBuilder, latency::LatencyStats, mailbox::Mailbox};
 
 /// §1.2: at most four whole frames wait for the decoder.
 const DECODE_QUEUE: usize = 4;
@@ -32,6 +32,19 @@ pub struct ViewerParams {
     pub stream: u8,
     pub frame_deadline: Duration,
     pub reorder_grace: Duration,
+}
+
+/// Receives AudioPacket datagrams on the `media-rx` thread. Must not block.
+pub type AudioSink = Arc<dyn Fn(&AudioHeader, &[u8], Instant) + Send + Sync>;
+
+/// Optional behaviour for [`ViewerMedia::spawn_full`].
+#[derive(Default)]
+pub struct ViewerOptions {
+    /// Runs first on every media thread (§1.2).
+    pub thread_init: Option<fn()>,
+    /// Where audio goes. Without one, audio packets still count towards transport
+    /// feedback (they share `tx_seq` with video) and are then dropped.
+    pub audio: Option<AudioSink>,
 }
 
 #[derive(Default, Debug)]
@@ -47,6 +60,7 @@ pub struct ViewerStats {
     pub decoder_overruns: AtomicU64,
     pub malformed: AtomicU64,
     pub rtt_us: AtomicU64,
+    pub audio_packets: AtomicU64,
 }
 
 /// The most recently presented frame, kept so a newly attached or resized view is
@@ -59,6 +73,8 @@ pub struct ViewerMedia {
     mailbox: Arc<Mailbox<DecodedFrame>>,
     last: LastFrame,
     pub stats: Arc<ViewerStats>,
+    /// §6.1 segments for the HUD.
+    pub latency: Arc<LatencyStats>,
 }
 
 impl ViewerMedia {
@@ -79,8 +95,30 @@ impl ViewerMedia {
         params: ViewerParams,
         thread_init: Option<fn()>,
     ) -> Self {
+        Self::spawn_full(
+            conn,
+            decoder,
+            presenter,
+            params,
+            ViewerOptions {
+                thread_init,
+                audio: None,
+            },
+        )
+    }
+
+    /// [`Self::spawn`] with [`ViewerOptions`].
+    pub fn spawn_full(
+        conn: Connection,
+        decoder: Box<dyn Decoder>,
+        presenter: Box<dyn Presenter>,
+        params: ViewerParams,
+        options: ViewerOptions,
+    ) -> Self {
+        let ViewerOptions { thread_init, audio } = options;
         let stop = Arc::new(AtomicBool::new(false));
         let stats = Arc::new(ViewerStats::default());
+        let latency = Arc::new(LatencyStats::new(Instant::now()));
         let mailbox = Arc::new(Mailbox::<DecodedFrame>::default());
         let last = LastFrame::default();
         let (decode_tx, decode_rx) = mpsc::sync_channel(DECODE_QUEUE);
@@ -88,21 +126,27 @@ impl ViewerMedia {
 
         let mut threads = Vec::new();
         {
-            let (s, st, m) = (stop.clone(), stats.clone(), mailbox.clone());
+            let (s, st, m, l) = (
+                stop.clone(),
+                stats.clone(),
+                mailbox.clone(),
+                latency.clone(),
+            );
             threads.push(spawn("decode", thread_init, move || {
-                run_decode(decoder, decode_rx, failed_tx, m, s, st)
+                run_decode(decoder, decode_rx, failed_tx, m, s, st, l)
             }));
         }
         {
             let (s, st, m, l) = (stop.clone(), stats.clone(), mailbox.clone(), last.clone());
+            let lat = latency.clone();
             threads.push(spawn("render", thread_init, move || {
-                run_render(presenter, m, l, s, st)
+                run_render(presenter, m, l, s, st, lat)
             }));
         }
         {
-            let (s, st) = (stop.clone(), stats.clone());
+            let (s, st, l) = (stop.clone(), stats.clone(), latency.clone());
             threads.push(spawn("media-rx", thread_init, move || {
-                run_rx(conn, params, decode_tx, failed_rx, s, st)
+                run_rx(conn, params, decode_tx, failed_rx, audio, s, st, l)
             }));
         }
         Self {
@@ -111,6 +155,7 @@ impl ViewerMedia {
             mailbox,
             last,
             stats,
+            latency,
         }
     }
 
@@ -158,6 +203,7 @@ fn run_decode(
     mailbox: Arc<Mailbox<DecodedFrame>>,
     stop: Arc<AtomicBool>,
     stats: Arc<ViewerStats>,
+    latency: Arc<LatencyStats>,
 ) {
     while !stop.load(Relaxed) {
         let f = match frames.recv_timeout(Duration::from_millis(50)) {
@@ -165,6 +211,7 @@ fn run_decode(
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
         };
+        let started = Instant::now();
         match decoder.decode(
             &f.data,
             FrameMeta {
@@ -173,6 +220,7 @@ fn run_decode(
             },
         ) {
             Ok(d) => {
+                latency.on_decoded(f.frame_id, started, Instant::now());
                 stats.decoded.fetch_add(1, Relaxed);
                 if mailbox.put(d).is_some() {
                     stats.replaced_before_present.fetch_add(1, Relaxed);
@@ -192,10 +240,13 @@ fn run_render(
     last: LastFrame,
     stop: Arc<AtomicBool>,
     stats: Arc<ViewerStats>,
+    latency: Arc<LatencyStats>,
 ) {
     while !stop.load(Relaxed) {
         if let Some(f) = mailbox.take(Duration::from_millis(50)) {
+            let call = Instant::now();
             if presenter.present(&f).is_ok() {
+                latency.on_presented(f.meta.frame_id, call, Instant::now());
                 stats.presented.fetch_add(1, Relaxed);
             }
             *last.lock().unwrap() = Some(f);
@@ -207,15 +258,18 @@ fn send(conn: &Connection, b: &[u8]) {
     let _ = conn.send_datagram(Bytes::copy_from_slice(b));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_rx(
     conn: Connection,
     p: ViewerParams,
     decode: SyncSender<CompleteFrame>,
     failed: Receiver<u32>,
+    audio: Option<AudioSink>,
     stop: Arc<AtomicBool>,
     stats: Arc<ViewerStats>,
+    latency: Arc<LatencyStats>,
 ) {
-    let base = Instant::now();
+    let base = latency.base();
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build()
@@ -247,9 +301,22 @@ fn run_rx(
                                 stats.malformed.fetch_add(1, Relaxed);
                             }
                         },
+                        Some(&datagram::TYPE_AUDIO) => match AudioHeader::parse(&d) {
+                            Ok((h, body)) => {
+                                fb.on_packet(h.tx_seq, base.elapsed().as_micros() as u64);
+                                stats.audio_packets.fetch_add(1, Relaxed);
+                                if let Some(sink) = &audio {
+                                    sink(&h, body, now);
+                                }
+                            }
+                            Err(_) => {
+                                stats.malformed.fetch_add(1, Relaxed);
+                            }
+                        },
                         Some(&datagram::TYPE_CLOCK) => {
                             if let Ok(Clock::Pong { t1, t2, t3 }) = Clock::parse(&d) {
                                 let t4 = base.elapsed().as_micros() as u64;
+                                latency.on_clock(t1, t2, t3, t4);
                                 stats.rtt_us.store(
                                     t4.saturating_sub(t1).saturating_sub(t3.saturating_sub(t2)),
                                     Relaxed,
@@ -286,6 +353,9 @@ fn run_rx(
                     }
                     Decision::Decode(f) => {
                         let id = f.frame_id;
+                        if let Some((first, complete)) = f.arrival {
+                            latency.on_complete(id, f.capture_ts_us, first, complete);
+                        }
                         match decode.try_send(f) {
                             Ok(()) => send(
                                 &conn,

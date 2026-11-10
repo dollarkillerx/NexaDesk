@@ -22,3 +22,4 @@ objc2-foundation = "0.3"
 
 [dev-dependencies]
 proptest = "1"
+tempfile = "3"

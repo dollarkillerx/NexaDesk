@@ -34,7 +34,24 @@ public partial class ControlBanner : Window
             if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed && e.Source is not Button)
                 BeginMoveDrag(e);
         };
+        // Files the person at this Mac drops here go to the viewer, and only if the
+        // session was granted files; the agent checks that again.
+        DragDrop.SetAllowDrop(this, true);
+        AddHandler(DragDrop.DragOverEvent, (_, e) =>
+        {
+            e.DragEffects = Vm is { CanSendFiles: true } && DroppedFiles.HasFiles(e) ? DragDropEffects.Copy : DragDropEffects.None;
+            e.Handled = true;
+        });
+        AddHandler(DragDrop.DropEvent, (_, e) =>
+        {
+            e.Handled = true;
+            if (Vm is not { CanSendFiles: true } vm) return;
+            var paths = DroppedFiles.Of(e);
+            if (paths.Count > 0) vm.Transfers.SendFiles(paths);
+        });
     }
+
+    BannerViewModel? Vm => DataContext as BannerViewModel;
 
     protected override void OnClosing(WindowClosingEventArgs e)
     {

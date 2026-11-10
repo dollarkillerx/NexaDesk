@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::hid::{Chord, ChordError, ChordKey, Hid, ModSet, matches_wildcard, parse_modifier_name};
@@ -28,39 +28,74 @@ pub enum KeymapError {
     InvalidRule { when: String, reason: &'static str },
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct RawKeymap {
+pub(crate) struct RawKeymap {
     #[serde(default)]
-    profile: Vec<RawProfile>,
+    pub(crate) profile: Vec<RawProfile>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct RawProfile {
-    from: String,
-    to: String,
-    #[serde(default)]
-    deferred: Vec<String>,
-    #[serde(default)]
-    rule: Vec<RawRule>,
+pub(crate) struct RawProfile {
+    pub(crate) from: String,
+    pub(crate) to: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) deferred: Vec<String>,
+    /// User files only: built-in rules of this profile switched off.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) disable: Vec<RawRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) rule: Vec<RawRule>,
 }
 
-#[derive(Deserialize)]
+/// Names a rule by its trigger: `when` and `ctx`.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct RawRule {
-    ctx: Option<String>,
-    when: String,
-    then: RawThen,
-    hold: Option<String>,
-    tag: Option<String>,
+pub(crate) struct RawRef {
+    pub(crate) when: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) ctx: Option<String>,
 }
 
-#[derive(Deserialize)]
+fn yes() -> bool {
+    true
+}
+
+fn is_yes(b: &bool) -> bool {
+    *b
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawRule {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) ctx: Option<String>,
+    pub(crate) when: String,
+    pub(crate) then: RawThen,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) hold: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) tag: Option<String>,
+    /// User files only: a rule kept but switched off.
+    #[serde(default = "yes", skip_serializing_if = "is_yes")]
+    pub(crate) enabled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(untagged)]
-enum RawThen {
+pub(crate) enum RawThen {
     One(String),
     Sequence(Vec<String>),
+}
+
+impl RawThen {
+    pub(crate) fn items(&self) -> Vec<String> {
+        match self {
+            Self::One(s) => vec![s.clone()],
+            Self::Sequence(v) => v.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -158,7 +193,7 @@ impl Compiled {
         best
     }
 
-    fn compile(raw: RawProfile) -> Result<Self, KeymapError> {
+    pub(crate) fn compile(raw: RawProfile) -> Result<Self, KeymapError> {
         let mut deferred = ModSet::EMPTY;
         for name in &raw.deferred {
             let m = parse_modifier_name(name)
@@ -169,7 +204,7 @@ impl Compiled {
             deferred,
             ..Default::default()
         };
-        for rule in raw.rule {
+        for rule in raw.rule.into_iter().filter(|r| r.enabled) {
             compiled.add_rule(rule)?;
         }
         Ok(compiled)
@@ -260,7 +295,7 @@ impl Compiled {
     }
 }
 
-fn parse_os(name: &str) -> Result<Os, KeymapError> {
+pub(crate) fn parse_os(name: &str) -> Result<Os, KeymapError> {
     match name {
         "macos" => Ok(Os::Macos),
         "windows" => Ok(Os::Windows),
@@ -269,7 +304,7 @@ fn parse_os(name: &str) -> Result<Os, KeymapError> {
     }
 }
 
-fn parse_ctx(name: &str) -> Result<FocusClass, KeymapError> {
+pub(crate) fn parse_ctx(name: &str) -> Result<FocusClass, KeymapError> {
     match name {
         "default" => Ok(FocusClass::Default),
         "terminal" => Ok(FocusClass::Terminal),
@@ -294,6 +329,14 @@ pub struct Keymap {
 impl Keymap {
     pub fn parse(text: &str) -> Result<Self, KeymapError> {
         let raw: RawKeymap = toml::from_str(text)?;
+        Self::from_raw(raw)
+    }
+
+    pub(crate) fn builtin_raw() -> RawKeymap {
+        toml::from_str(DEFAULT_KEYMAP).expect("embedded keymap is valid")
+    }
+
+    pub(crate) fn from_raw(raw: RawKeymap) -> Result<Self, KeymapError> {
         let mut profiles = Vec::with_capacity(raw.profile.len());
         for profile in raw.profile {
             let from = parse_os(&profile.from)?;

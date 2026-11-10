@@ -164,6 +164,7 @@ fn options(net: &SimNet, lan_ip: IpAddr) -> LinkOptions {
         relay_only: false,
         socket_factory: Some(factory),
         repunch_every: Duration::from_secs(2),
+        ..LinkOptions::default()
     }
 }
 
@@ -761,6 +762,647 @@ async fn dialing_a_paired_id_that_answers_with_another_key_is_refused() {
         matches!(r, Err(rendezvous::DialError::Offline)),
         "{:?}",
         r.err()
+    );
+    std::mem::forget(host);
+}
+
+// ---------------------------------------------------------------------------------
+// Reliability: WSS fallback, IPv6, port mapping, network change, reconnect.
+// ---------------------------------------------------------------------------------
+
+use nexa_net::{
+    path::{CandKind, Role},
+    portmap::{PortMapConfig, fake},
+};
+use nexa_session::{
+    proto::CandidateUpdate,
+    reconnect::Backoff,
+    rendezvous::link::{Link, PortMap},
+};
+
+/// The session's control stream, both ways: the viewer's PathSwitch, and
+/// CandidateUpdates from either side (§4.5).
+fn wire_control(o: &Outcome) -> tokio::task::JoinHandle<()> {
+    let mut switches = o.dialed.link.take_switches().unwrap();
+    let mut v_updates = o.dialed.link.take_candidate_updates().unwrap();
+    let mut h_updates = o.host.0.link.take_candidate_updates().unwrap();
+    let (vconn, hconn) = (o.viewer_conn.clone(), o.host.1.clone());
+    let (vlink, hlink) = (o.dialed.link.clone(), o.host.0.link.clone());
+    tokio::spawn(async move {
+        let (mut vsend, mut vrecv) = open_bi(&vconn, StreamType::Control).await.unwrap();
+        // A stream is only announced once something is sent on it.
+        vsend
+            .send(&ControlMsg::from(ControlBody::Candidates(
+                CandidateUpdate {
+                    candidates: Vec::new(),
+                },
+            )))
+            .await
+            .unwrap();
+        let (_, mut hsend, mut hrecv) = accept_bi(&hconn).await.unwrap();
+        let _host_side = AbortOnDrop(tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    m = hrecv.next::<ControlMsg>() => match m {
+                        Ok(Some(ControlMsg { body: Some(ControlBody::PathSwitch(p)) })) => hlink.apply_remote_switch(p.path_id),
+                        Ok(Some(ControlMsg { body: Some(ControlBody::Candidates(c)) })) => hlink.apply_candidate_update(&c.candidates),
+                        Ok(Some(_)) => {}
+                        _ => break,
+                    },
+                    Some(c) = h_updates.recv() => {
+                        let _ = hsend.send(&ControlMsg::from(ControlBody::Candidates(CandidateUpdate { candidates: c }))).await;
+                    }
+                }
+            }
+        }));
+        loop {
+            tokio::select! {
+                Some(tag) = switches.recv() => {
+                    let _ = vsend.send(&ControlMsg::from(ControlBody::PathSwitch(PathSwitch { path_id: tag }))).await;
+                }
+                Some(c) = v_updates.recv() => {
+                    let _ = vsend.send(&ControlMsg::from(ControlBody::Candidates(CandidateUpdate { candidates: c }))).await;
+                }
+                m = vrecv.next::<ControlMsg>() => match m {
+                    Ok(Some(ControlMsg { body: Some(ControlBody::Candidates(c)) })) => vlink.apply_candidate_update(&c.candidates),
+                    Ok(Some(_)) => {}
+                    _ => break,
+                },
+            }
+        }
+    })
+}
+
+/// Aborting the control pump must also stop its host half, which holds the host's link.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+fn blocked() -> Option<HashSet<IpAddr>> {
+    Some(HashSet::new())
+}
+
+/// §4.6: UDP is blocked outright, STUN and the UDP relay included. Both sides
+/// fall back to the relay over WebSocket and QUIC runs through it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn udp_fully_blocked_connects_over_wss() {
+    let w = world(false).await;
+    for (public, lan, up) in [(VIEWER_PUBLIC, VIEWER_LAN, 10), (HOST_PUBLIC, HOST_LAN, 15)] {
+        let mut c = Nat::Easy.config(ip(public), up).unwrap();
+        c.allow_only = blocked();
+        w.net.add_nat(c, &[ip(lan)]);
+    }
+    let (viewer, host_dev) = (device(), device());
+    let mut hopts = options(&w.net, ip(HOST_LAN));
+    hopts.wss_relay = Some(w.signal.clone());
+    let mut host = start_host(&w, &host_dev, hopts).await;
+    let o = connect(
+        &w,
+        &viewer,
+        &host_dev,
+        &mut host,
+        options(&w.net, ip(VIEWER_LAN)),
+    )
+    .await
+    .unwrap();
+    exchange(&o.viewer_conn, &o.host.1).await;
+    let busy = keep_busy(&o.viewer_conn, &o.host.1);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    busy.abort();
+    exchange(&o.viewer_conn, &o.host.1).await;
+    assert_eq!(o.first, PathClass::Relay);
+    assert_eq!(o.dialed.first_path.kind, CandKind::WssRelay);
+    assert!(o.dialed.first_path.target.is_stream_relay());
+    assert!(o.dialed.link.state().relay_over_wss);
+    assert!(o.host.0.link.state().relay_over_wss);
+    assert_eq!(w.server.relay_streams(), 2);
+    // At least the QUIC handshake (three 1200-byte Initials) went through it.
+    assert!(w.server.relay_stats().forwarded_bytes > 3_600);
+    assert_eq!(w.net.stats().delivered, 0, "not one UDP datagram got out");
+    eprintln!(
+        "MATRIX | {:<38} | first {:<12} {:>5} ms validated, QUIC {:>5} ms | relay over WSS",
+        "UDP fully blocked",
+        class_name(o.first),
+        o.validated_after.as_millis(),
+        o.quic_after.as_millis()
+    );
+    std::mem::forget(host);
+}
+
+fn options_dual(net: &SimNet, ips: Vec<IpAddr>) -> LinkOptions {
+    let net = net.clone();
+    let bind_ips = ips.clone();
+    let factory: SocketFactory = Arc::new(move |_| {
+        let s: Arc<dyn AsyncUdpSocket> = net.bind_dual(&bind_ips, 0)?;
+        Ok(s)
+    });
+    LinkOptions {
+        bind: "[::]:0".parse().unwrap(),
+        interfaces: Interfaces::Fixed(ips),
+        socket_factory: Some(factory),
+        repunch_every: Duration::from_secs(2),
+        ..LinkOptions::default()
+    }
+}
+
+/// IPv6 only, no NAT, but each side behind a stateful firewall: both send
+/// checks, so both firewalls open, and the direct IPv6 path is used. The
+/// signaling server's STUN and relay are IPv4 and unreachable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ipv6_only_connects_directly() {
+    let w = world(false).await;
+    let (v6v, v6h) = (ip("2001:db8:1::10"), ip("2001:db8:2::20"));
+    w.net.add_firewalled_host(v6v, Duration::from_millis(10));
+    w.net.add_firewalled_host(v6h, Duration::from_millis(15));
+    let (viewer, host_dev) = (device(), device());
+    let mut host = start_host(&w, &host_dev, options_dual(&w.net, vec![v6h])).await;
+    let o = connect(
+        &w,
+        &viewer,
+        &host_dev,
+        &mut host,
+        options_dual(&w.net, vec![v6v]),
+    )
+    .await
+    .unwrap();
+    exchange(&o.viewer_conn, &o.host.1).await;
+    assert_eq!(o.first, PathClass::Direct);
+    assert_eq!(o.dialed.first_path.kind, CandKind::Ipv6);
+    assert_eq!(
+        o.dialed.first_path.target.wire_addr().ip(),
+        v6h,
+        "{:?}",
+        o.dialed.first_path
+    );
+    assert!(
+        w.net.stats().dropped_filtered > 0,
+        "the firewalls did filter"
+    );
+    eprintln!(
+        "MATRIX | {:<38} | first {:<12} {:>5} ms validated, QUIC {:>5} ms | {}",
+        "IPv6 only (stateful firewalls)",
+        class_name(o.first),
+        o.validated_after.as_millis(),
+        o.quic_after.as_millis(),
+        o.dialed.first_path.target
+    );
+    std::mem::forget(host);
+}
+
+/// Dual-stack on both sides, IPv4 behind hard NATs that cannot be punched:
+/// IPv6 still connects directly on the same socket.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dual_stack_uses_ipv6_when_ipv4_needs_the_relay() {
+    let w = world(false).await;
+    w.net.add_nat(
+        Nat::HardRandom(5).config(ip(VIEWER_PUBLIC), 10).unwrap(),
+        &[ip(VIEWER_LAN)],
+    );
+    w.net.add_nat(
+        Nat::HardRandom(6).config(ip(HOST_PUBLIC), 15).unwrap(),
+        &[ip(HOST_LAN)],
+    );
+    let (v6v, v6h) = (ip("2001:db8:1::10"), ip("2001:db8:2::20"));
+    w.net.add_firewalled_host(v6v, Duration::from_millis(10));
+    w.net.add_firewalled_host(v6h, Duration::from_millis(15));
+    let (viewer, host_dev) = (device(), device());
+    let mut host = start_host(&w, &host_dev, options_dual(&w.net, vec![ip(HOST_LAN), v6h])).await;
+    let o = connect(
+        &w,
+        &viewer,
+        &host_dev,
+        &mut host,
+        options_dual(&w.net, vec![ip(VIEWER_LAN), v6v]),
+    )
+    .await
+    .unwrap();
+    let _ctl = wire_control(&o);
+    exchange(&o.viewer_conn, &o.host.1).await;
+    let busy = keep_busy(&o.viewer_conn, &o.host.1);
+    let mut watch = o.dialed.link.watch();
+    let on_v6 = tokio::time::timeout(
+        Duration::from_secs(8),
+        watch.wait_for(|s| s.active.is_some_and(|a| a.kind == CandKind::Ipv6)),
+    )
+    .await
+    .is_ok();
+    busy.abort();
+    let st = o.dialed.link.state();
+    assert!(on_v6, "{st:?}");
+    exchange(&o.viewer_conn, &o.host.1).await;
+    eprintln!(
+        "MATRIX | {:<38} | first {:<12} {:>5} ms validated | settled IPv6 direct {}",
+        "dual stack, IPv4 hard ↔ hard",
+        class_name(o.first),
+        o.validated_after.as_millis(),
+        st.active.unwrap().target
+    );
+    std::mem::forget(host);
+}
+
+/// §4.2 Portmap: both NATs are unpunchable, but the host's gateway speaks PCP
+/// (a fake on loopback that opens a static entry in the simulated NAT). The
+/// mapped address is a candidate the viewer can reach directly; it is released
+/// when the link goes away.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn port_mapped_candidate_beats_the_relay() {
+    let w = world(false).await;
+    w.net.add_nat(
+        Nat::HardRandom(11).config(ip(VIEWER_PUBLIC), 10).unwrap(),
+        &[ip(VIEWER_LAN)],
+    );
+    w.net.add_nat(
+        Nat::HardRandom(12).config(ip(HOST_PUBLIC), 15).unwrap(),
+        &[ip(HOST_LAN)],
+    );
+    let net = w.net.clone();
+    let gw = fake::pcp(Arc::new(move |internal, _| {
+        let external = internal.wrapping_add(7);
+        net.add_static_mapping(
+            ip(HOST_PUBLIC),
+            SocketAddr::new(ip(HOST_LAN), internal),
+            external,
+        )
+        .then_some((ip(HOST_PUBLIC), external))
+    }));
+    let (viewer, host_dev) = (device(), device());
+    let mut hopts = options(&w.net, ip(HOST_LAN));
+    hopts.portmap = Some(PortMap::Fixed(PortMapConfig {
+        gateways: vec![gw.addr.ip()],
+        pcp_port: gw.addr.port(),
+        ssdp: None,
+        timeout: nexa_net::portmap::PORTMAP_TIMEOUT,
+        lifetime_secs: 600,
+    }));
+    let mut host = start_host(&w, &host_dev, hopts).await;
+    let o = connect(
+        &w,
+        &viewer,
+        &host_dev,
+        &mut host,
+        options(&w.net, ip(VIEWER_LAN)),
+    )
+    .await
+    .unwrap();
+    let ctl = wire_control(&o);
+    exchange(&o.viewer_conn, &o.host.1).await;
+    let busy = keep_busy(&o.viewer_conn, &o.host.1);
+    let mut watch = o.dialed.link.watch();
+    let mapped = tokio::time::timeout(
+        Duration::from_secs(8),
+        watch.wait_for(|s| s.active.is_some_and(|a| a.kind == CandKind::Portmap)),
+    )
+    .await
+    .is_ok();
+    busy.abort();
+    let st = o.dialed.link.state();
+    assert!(mapped, "{st:?}");
+    let external = o
+        .host
+        .0
+        .link
+        .state()
+        .port_mapping
+        .expect("host has a mapping");
+    assert_eq!(st.active.unwrap().target, PathTarget::Direct(external));
+    exchange(&o.viewer_conn, &o.host.1).await;
+    eprintln!(
+        "MATRIX | {:<38} | first {:<12} {:>5} ms validated | settled port-mapped {external}",
+        "hard ↔ hard, host gateway has PCP",
+        class_name(o.first),
+        o.validated_after.as_millis(),
+    );
+    // Released when the host's link goes.
+    let port = external.port().wrapping_sub(7);
+    o.host.0.pump.abort();
+    ctl.abort();
+    drop(o);
+    let t = Instant::now();
+    while !gw.requests.lock().unwrap().contains(&(port, 0)) && t.elapsed() < Duration::from_secs(3)
+    {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let requests = gw.requests.lock().unwrap().clone();
+    assert!(requests.contains(&(port, 0)), "{requests:?}");
+    std::mem::forget(host);
+}
+
+/// §4.5: mid-session the viewer moves to another network (new LAN address,
+/// new NAT). It notices, rebinds the relay, gathers again and sends a
+/// CandidateUpdate over the control stream; the session carries on and ends
+/// up direct again on the new address.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn network_change_mid_session_moves_to_the_new_address() {
+    let w = world(false).await;
+    w.net.add_nat(
+        Nat::Easy.config(ip(VIEWER_PUBLIC), 10).unwrap(),
+        &[ip(VIEWER_LAN)],
+    );
+    w.net.add_nat(
+        Nat::Easy.config(ip(HOST_PUBLIC), 15).unwrap(),
+        &[ip(HOST_LAN)],
+    );
+    let (new_lan, new_public) = (ip("192.168.7.10"), ip("198.51.100.3"));
+    w.net
+        .add_nat(Nat::Easy.config(new_public, 10).unwrap(), &[new_lan]);
+    let (viewer, host_dev) = (device(), device());
+    let mut host = start_host(&w, &host_dev, options(&w.net, ip(HOST_LAN))).await;
+    let current = Arc::new(std::sync::Mutex::new(ip(VIEWER_LAN)));
+    let (changes_tx, changes_rx) = tokio::sync::watch::channel(0u64);
+    let mut vopts = options(&w.net, ip(VIEWER_LAN));
+    vopts.bind = "0.0.0.0:0".parse().unwrap();
+    let c = current.clone();
+    vopts.interfaces = Interfaces::Dynamic(Arc::new(move || vec![*c.lock().unwrap()]));
+    vopts.network_changes = Some(changes_rx);
+    let o = connect(&w, &viewer, &host_dev, &mut host, vopts)
+        .await
+        .unwrap();
+    let _ctl = wire_control(&o);
+    exchange(&o.viewer_conn, &o.host.1).await;
+    assert_eq!(o.first, PathClass::Punched);
+    let busy = keep_busy(&o.viewer_conn, &o.host.1);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // The move: same socket, new address, new NAT; the old mapping is gone.
+    let moved = Instant::now();
+    assert_eq!(w.net.change_address(ip(VIEWER_LAN), new_lan), 1);
+    *current.lock().unwrap() = new_lan;
+    changes_tx.send_modify(|v| *v += 1);
+
+    let host_link = o.host.0.link.clone();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut settled = false;
+    while Instant::now() < deadline {
+        let host_on_new = host_link
+            .vsock
+            .active_path()
+            .is_some_and(|p| p.wire_addr().ip() == new_public);
+        let viewer_direct = o
+            .dialed
+            .link
+            .state()
+            .active
+            .is_some_and(|a| a.class == PathClass::Punched);
+        if host_on_new && viewer_direct {
+            settled = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let took = moved.elapsed();
+    busy.abort();
+    let (vs, hs) = (o.dialed.link.state(), host_link.state());
+    assert!(
+        settled,
+        "viewer {vs:?}\nhost {hs:?}\nhost rx {:?} last {}\nviewer {:?}\nhost {:?}\nhost dropped {} viewer dropped {} relay {:?} net {:?}",
+        hs.validated
+            .iter()
+            .map(|p| host_link.vsock.path_last_rx_us(&p.target))
+            .collect::<Vec<_>>(),
+        host_link.vsock.last_rx_us(),
+        (
+            o.viewer_conn.close_reason(),
+            o.viewer_conn.stats().udp_rx,
+            o.viewer_conn.stats().udp_tx
+        ),
+        (
+            o.host.1.close_reason(),
+            o.host.1.stats().udp_rx,
+            o.host.1.stats().udp_tx
+        ),
+        host_link.vsock.dropped_unvalidated(),
+        o.dialed.link.vsock.dropped_unvalidated(),
+        w.server.relay_stats(),
+        w.net.stats()
+    );
+    assert_eq!(vs.network_changes, 1);
+    assert!(hs.peer_updates >= 1, "the host got a CandidateUpdate");
+    exchange(&o.viewer_conn, &o.host.1).await;
+    eprintln!(
+        "MATRIX | {:<38} | direct again {:>5} ms after the move; host now sends to {}",
+        "network change (viewer moves)",
+        took.as_millis(),
+        host_link.vsock.active_path().unwrap()
+    );
+    std::mem::forget(host);
+}
+
+/// §4.4 Reconnecting: a full outage outlasts QUIC's idle timeout; the viewer
+/// re-runs the rendezvous with the host's pinned key, with backoff, inside
+/// the 30 s window, and gets a new connection to the same device.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reconnects_after_an_outage() {
+    let w = world(false).await;
+    w.net.add_nat(
+        Nat::Easy.config(ip(VIEWER_PUBLIC), 10).unwrap(),
+        &[ip(VIEWER_LAN)],
+    );
+    w.net.add_nat(
+        Nat::Easy.config(ip(HOST_PUBLIC), 15).unwrap(),
+        &[ip(HOST_LAN)],
+    );
+    let (viewer, host_dev) = (device(), device());
+    // No WebSocket fallback: this outage takes out everything but signaling.
+    let no_wss = SignalConfig::new("ws://127.0.0.1:9");
+    let mut hopts = options(&w.net, ip(HOST_LAN));
+    hopts.wss_relay = Some(no_wss.clone());
+    let mut host = start_host(&w, &host_dev, hopts).await;
+    let vopts = || {
+        let mut v = options(&w.net, ip(VIEWER_LAN));
+        v.wss_relay = Some(no_wss.clone());
+        v
+    };
+    let first = connect(&w, &viewer, &host_dev, &mut host, vopts())
+        .await
+        .unwrap();
+    exchange(&first.viewer_conn, &first.host.1).await;
+    let pinned = first.dialed.host_key;
+
+    let outage = Instant::now();
+    w.net.set_firewall(ip(VIEWER_PUBLIC), blocked());
+    w.net.set_firewall(ip(HOST_PUBLIC), blocked());
+    let lifted = tokio::spawn({
+        let net = w.net.clone();
+        async move {
+            tokio::time::sleep(Duration::from_secs(12)).await;
+            net.set_firewall(ip(VIEWER_PUBLIC), None);
+            net.set_firewall(ip(HOST_PUBLIC), None);
+        }
+    });
+    let closed = tokio::time::timeout(Duration::from_secs(15), first.viewer_conn.closed())
+        .await
+        .expect("QUIC noticed the outage");
+    let dropped_after = outage.elapsed();
+    assert!(
+        matches!(closed, quinn::ConnectionError::TimedOut),
+        "{closed:?}"
+    );
+
+    let mut backoff = Backoff::new(Instant::now());
+    let mut attempts = 0;
+    let again = loop {
+        let Some(delay) = backoff.next_delay(Instant::now()) else {
+            panic!("no reconnect within the window after {attempts} attempts");
+        };
+        tokio::time::sleep(delay).await;
+        attempts += 1;
+        let budget = backoff.remaining(Instant::now());
+        match tokio::time::timeout(
+            budget,
+            connect_pinned(&w, &viewer, &mut host, vopts(), pinned),
+        )
+        .await
+        {
+            Ok(Ok(o)) => break o,
+            Ok(Err(_)) | Err(_) => continue,
+        }
+    };
+    let reconnected_after = backoff.started().elapsed();
+    lifted.await.unwrap();
+    assert_eq!(peer_public_key(&again.viewer_conn).unwrap(), pinned);
+    exchange(&again.viewer_conn, &again.host.1).await;
+    eprintln!(
+        "MATRIX | {:<38} | QUIC dropped {:>5} ms into the outage; reconnected {:>5} ms later, attempt {attempts}",
+        "reconnect after a 12 s outage",
+        dropped_after.as_millis(),
+        reconnected_after.as_millis()
+    );
+    std::mem::forget(host);
+}
+
+async fn connect_pinned(
+    w: &World,
+    viewer: &Device,
+    host: &mut Host,
+    opts: LinkOptions,
+    pinned: nexa_auth::DevicePublicKey,
+) -> Result<Outcome, String> {
+    let t0 = Instant::now();
+    let dialed = rendezvous::dial(
+        &w.signal,
+        &viewer.keys,
+        &host.id,
+        Some(pinned),
+        opts,
+        &|_: Stage| {},
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let validated_after = t0.elapsed();
+    let first = dialed.first_path.class;
+    let cfg = client_config(&viewer.identity, PeerPolicy::Pinned(pinned)).unwrap();
+    let conn = tokio::time::timeout(
+        Duration::from_secs(5),
+        dialed
+            .link
+            .endpoint
+            .connect_with(cfg, VIRTUAL_PEER, SERVER_NAME)
+            .unwrap(),
+    )
+    .await
+    .map_err(|_| "QUIC timed out".to_owned())?
+    .map_err(|e| e.to_string())?;
+    let quic_after = t0.elapsed();
+    let host_side = tokio::time::timeout(Duration::from_secs(10), host.accepted.recv())
+        .await
+        .map_err(|_| "host never accepted".to_owned())?
+        .ok_or("host task ended")?;
+    assert_eq!(
+        peer_public_key(&host_side.1).unwrap(),
+        viewer.identity.public_key()
+    );
+    Ok(Outcome {
+        validated_after,
+        quic_after,
+        first,
+        dialed,
+        viewer_conn: conn,
+        host: host_side,
+    })
+}
+
+/// A link with nothing to talk to drops cleanly.
+#[tokio::test]
+async fn idle_link_drops_cleanly() {
+    let net = SimNet::new();
+    let link = Link::bind(Role::Viewer, options(&net, ip(VIEWER_LAN)), None).unwrap();
+    drop(link);
+}
+
+/// §4.5 the other way round: the host moves. It rebinds the relay, gathers
+/// again and sends its CandidateUpdate to the viewer, who still decides.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn network_change_on_the_host_side() {
+    let w = world(false).await;
+    w.net.add_nat(
+        Nat::Easy.config(ip(VIEWER_PUBLIC), 10).unwrap(),
+        &[ip(VIEWER_LAN)],
+    );
+    w.net.add_nat(
+        Nat::Easy.config(ip(HOST_PUBLIC), 15).unwrap(),
+        &[ip(HOST_LAN)],
+    );
+    let (new_lan, new_public) = (ip("10.0.9.20"), ip("198.51.100.4"));
+    w.net
+        .add_nat(Nat::Easy.config(new_public, 15).unwrap(), &[new_lan]);
+    let (viewer, host_dev) = (device(), device());
+    let current = Arc::new(std::sync::Mutex::new(ip(HOST_LAN)));
+    let (changes_tx, changes_rx) = tokio::sync::watch::channel(0u64);
+    let mut hopts = options(&w.net, ip(HOST_LAN));
+    hopts.bind = "0.0.0.0:0".parse().unwrap();
+    let c = current.clone();
+    hopts.interfaces = Interfaces::Dynamic(Arc::new(move || vec![*c.lock().unwrap()]));
+    hopts.network_changes = Some(changes_rx);
+    let mut host = start_host(&w, &host_dev, hopts).await;
+    let o = connect(
+        &w,
+        &viewer,
+        &host_dev,
+        &mut host,
+        options(&w.net, ip(VIEWER_LAN)),
+    )
+    .await
+    .unwrap();
+    let _ctl = wire_control(&o);
+    exchange(&o.viewer_conn, &o.host.1).await;
+    let busy = keep_busy(&o.viewer_conn, &o.host.1);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let moved = Instant::now();
+    assert_eq!(w.net.change_address(ip(HOST_LAN), new_lan), 1);
+    *current.lock().unwrap() = new_lan;
+    changes_tx.send_modify(|v| *v += 1);
+
+    let mut watch = o.dialed.link.watch();
+    let settled = tokio::time::timeout(
+        Duration::from_secs(15),
+        watch.wait_for(|s| {
+            s.active.is_some_and(|a| {
+                a.class == PathClass::Punched && a.target.wire_addr().ip() == new_public
+            })
+        }),
+    )
+    .await
+    .is_ok();
+    let took = moved.elapsed();
+    busy.abort();
+    let (vs, hs) = (o.dialed.link.state(), o.host.0.link.state());
+    assert!(settled, "viewer {vs:?}\nhost {hs:?}");
+    assert_eq!(hs.network_changes, 1);
+    assert!(
+        vs.peer_updates >= 1,
+        "the viewer got the host's CandidateUpdate"
+    );
+    exchange(&o.viewer_conn, &o.host.1).await;
+    eprintln!(
+        "MATRIX | {:<38} | direct again {:>5} ms after the move; viewer now sends to {}",
+        "network change (host moves)",
+        took.as_millis(),
+        vs.active.unwrap().target
     );
     std::mem::forget(host);
 }

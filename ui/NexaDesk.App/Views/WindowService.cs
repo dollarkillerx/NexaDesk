@@ -26,6 +26,7 @@ public sealed class WindowService : IWindowService
     {
         var window = new SessionWindow { DataContext = session };
         var toolbar = new ToolbarWindow { DataContext = session };
+        HudWindow? hud = null;
         DiagnosticsWindow? diagnostics = null;
         toolbar.Follow(window);
         toolbar.DiagnosticsRequested += () =>
@@ -42,6 +43,19 @@ public sealed class WindowService : IWindowService
         };
         session.PropertyChanged += (_, e) =>
         {
+            if (e.PropertyName == nameof(SessionViewModel.IsHudVisible))
+            {
+                if (session.IsHudVisible && hud == null)
+                {
+                    hud = new HudWindow { DataContext = session.Hud };
+                    hud.Follow(window);
+                    hud.Closed += (_, _) => hud = null;
+                    Track(hud);
+                    hud.Show(window);
+                }
+                else if (!session.IsHudVisible) hud?.Close();
+                return;
+            }
             if (e.PropertyName != nameof(SessionViewModel.IsToolbarVisible)) return;
             if (session.IsToolbarVisible && !toolbar.IsVisible)
             {
@@ -55,12 +69,14 @@ public sealed class WindowService : IWindowService
         session.Ended += (_, _, _) =>
         {
             diagnostics?.Close();
+            hud?.Close();
             toolbar.Close();
             window.Close();
         };
         window.Closed += (_, _) =>
         {
             diagnostics?.Close();
+            hud?.Close();
             toolbar.Close();
         };
         Track(window);
@@ -102,6 +118,22 @@ public sealed class WindowService : IWindowService
         Track(_guide);
         if (Owner is { IsVisible: true } owner) _guide.Show(owner);
         else _guide.Show();
+    }
+
+    KeyboardSettingsWindow? _keyboard;
+
+    public void ShowKeyboardSettings(KeyboardSettingsViewModel settings)
+    {
+        if (_keyboard != null)
+        {
+            _keyboard.Activate();
+            return;
+        }
+        _keyboard = new KeyboardSettingsWindow { DataContext = settings };
+        _keyboard.Closed += (_, _) => _keyboard = null;
+        Track(_keyboard);
+        if (Owner is { IsVisible: true } owner) _keyboard.Show(owner);
+        else _keyboard.Show();
     }
 
     public void ShowDiagnostics(DiagnosticsViewModel diagnostics)

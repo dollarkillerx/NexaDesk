@@ -12,6 +12,8 @@ pub const MAX_CONTROL_FRAME: usize = 64 * 1024;
 /// A key event or a batch of typed text.
 pub const MAX_INPUT_FRAME: usize = 16 * 1024;
 pub const MAX_CLIPBOARD_FRAME: usize = DEFAULT_MAX_FRAME;
+/// A file chunk ([`crate::transfer::CHUNK`]) and its envelope.
+pub const MAX_FILE_FRAME: usize = 128 * 1024;
 
 const READ_CHUNK: usize = 8192;
 
@@ -28,7 +30,8 @@ fn max_frame_of(kind: StreamType) -> usize {
     match kind {
         StreamType::Control => MAX_CONTROL_FRAME,
         StreamType::Input => MAX_INPUT_FRAME,
-        StreamType::Clipboard | StreamType::File => MAX_CLIPBOARD_FRAME,
+        StreamType::Clipboard => MAX_CLIPBOARD_FRAME,
+        StreamType::File => MAX_FILE_FRAME,
     }
 }
 
@@ -56,6 +59,16 @@ impl FramedSend {
 
     pub async fn send<M: Message>(&mut self, message: &M) -> Result<(), SessionError> {
         self.send_body(&message.encode_to_vec()).await
+    }
+
+    /// Abandons the stream: the peer's reads fail with `code`.
+    pub fn reset(&mut self, code: u32) {
+        let _ = self.inner.reset(code.into());
+    }
+
+    /// Closes the send side without waiting.
+    pub fn finish(&mut self) {
+        let _ = self.inner.finish();
     }
 
     /// Closes the send side, then waits until the peer has the data or has given up.
@@ -113,6 +126,11 @@ impl FramedRecv {
     /// Tells the peer no more of this stream will be read.
     pub fn stop(mut self) {
         let _ = self.inner.stop(0u32.into());
+    }
+
+    /// [`Self::stop`] with an application code, keeping the handle.
+    pub fn stop_with(&mut self, code: u32) {
+        let _ = self.inner.stop(code.into());
     }
 }
 

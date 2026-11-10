@@ -21,6 +21,11 @@ public partial class SessionWindow : Window
         AddHandler(PointerPressedEvent, OnPointerPressed, handledEventsToo: true);
         AddHandler(PointerReleasedEvent, OnPointerReleased, handledEventsToo: true);
         AddHandler(PointerWheelChangedEvent, OnWheel, handledEventsToo: true);
+        // Files dropped on the video go to the host. AppKit delivers a drag over the
+        // native video view to this window's view, which registers for file drags.
+        DragDrop.SetAllowDrop(this, true);
+        AddHandler(DragDrop.DragOverEvent, (_, e) => FileDrop.Over(this, e));
+        AddHandler(DragDrop.DropEvent, (_, e) => FileDrop.Drop(this, e));
     }
 
     SessionViewModel? Vm => DataContext as SessionViewModel;

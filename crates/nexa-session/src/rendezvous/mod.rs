@@ -20,6 +20,7 @@
 pub mod link;
 pub mod seal;
 pub mod signal;
+pub mod wss;
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
@@ -114,10 +115,12 @@ pub async fn dial(
     keys: &Arc<SignalKeys>,
     target_id: &str,
     expected: Option<DevicePublicKey>,
-    opts: LinkOptions,
+    mut opts: LinkOptions,
     progress: &(dyn Fn(Stage) + Send + Sync),
 ) -> Result<Dialed, DialError> {
     progress(Stage::Resolving);
+    // §4.6: the relay over WebSocket goes to the server we already talk to.
+    opts.wss_relay.get_or_insert_with(|| config.clone());
     let resolve = async {
         let mut client = SignalClient::connect(config, keys).await?;
         let req_id = 1;

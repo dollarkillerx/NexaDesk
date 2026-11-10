@@ -216,6 +216,82 @@ public sealed class RecordingWindows : IWindowService
 
     public void ShowPermissionGuide(PermissionGuideViewModel guide) => Guides.Add(guide);
     public void ShowDiagnostics(DiagnosticsViewModel diagnostics) { }
+    public List<KeyboardSettingsViewModel> KeyboardSettings { get; } = new();
+    public void ShowKeyboardSettings(KeyboardSettingsViewModel settings) => KeyboardSettings.Add(settings);
+}
+
+/// <summary>Never touches SMAppService: records what the app asked for.</summary>
+public sealed class FakeLoginItem : ILoginItem
+{
+    public LoginItemStatus Status { get; set; } = LoginItemStatus.NotRegistered;
+    /// <summary>What a successful register leads to (approval may be needed).</summary>
+    public LoginItemStatus AfterRegister { get; set; } = LoginItemStatus.Enabled;
+    public string? Fail { get; set; }
+    public int Registers { get; private set; }
+    public int Unregisters { get; private set; }
+    public int SettingsOpened { get; private set; }
+
+    public string? Register()
+    {
+        Registers++;
+        if (Fail != null) return Fail;
+        Status = AfterRegister;
+        return null;
+    }
+
+    public string? Unregister()
+    {
+        Unregisters++;
+        if (Fail != null) return Fail;
+        Status = LoginItemStatus.NotRegistered;
+        return null;
+    }
+
+    public void OpenSettings() => SettingsOpened++;
+}
+
+/// <summary>
+/// Keyboard rules in memory, with just enough rewriting to tell the view-model's
+/// calls apart. The real rewriter behind the ABI is tested in Rust.
+/// </summary>
+public sealed class FakeKeymap : IKeymapService
+{
+    public Dictionary<RemoteOs, List<KeymapRule>> Saved { get; } = new()
+    {
+        [RemoteOs.Windows] =
+        [
+            new KeymapRule(true, "", "Cmd+Shift+Z", ["Ctrl+Y"], "", "", true),
+            new KeymapRule(true, "", "Cmd+V", ["Ctrl+V"], "", "paste", true),
+            new KeymapRule(true, "terminal", "Ctrl+C", ["Ctrl+C"], "", "", true),
+            new KeymapRule(true, "", "Cmd+*", ["Ctrl+*"], "", "", true),
+        ],
+        [RemoteOs.Macos] = [new KeymapRule(true, "", "Cmd+V", ["Cmd+V"], "", "paste", true)],
+    };
+    public string FileError { get; set; } = "";
+    public List<(RemoteOs, string, KeyContext, int)> Previews { get; } = new();
+    public int Saves { get; private set; }
+
+    public KeymapView Rules(RemoteOs remote) => new(Saved[remote].ToList(), FileError);
+
+    static bool Valid(string chord) => chord.Split('+').All(p => p.Length > 0 && !p.Contains("Nope"));
+
+    public string? Save(RemoteOs remote, IReadOnlyList<KeymapRule> rules)
+    {
+        if (rules.Any(r => !Valid(r.When) || r.Then.Any(t => !Valid(t)))) return "unknown key";
+        Saves++;
+        Saved[remote] = rules.ToList();
+        return null;
+    }
+
+    public KeyPreview Preview(RemoteOs remote, string chord, KeyContext ctx, IReadOnlyList<KeymapRule> rules)
+    {
+        Previews.Add((remote, chord, ctx, rules.Count));
+        if (!Valid(chord) || rules.Any(r => !Valid(r.When))) return new KeyPreview([], [], false, "unknown key in chord");
+        var rule = rules.FirstOrDefault(r => r.Enabled && r.When == chord && (r.Ctx == "" || (r.Ctx == "terminal" && ctx == KeyContext.Terminal)));
+        var sent = rule?.Then.ToList() ?? [chord.Replace("Cmd", "Ctrl")];
+        var events = sent.SelectMany(s => s.Split('+').Select(k => new KeyOut(k, true))).ToList();
+        return new KeyPreview(events, sent, rule?.Tag == "paste", "");
+    }
 }
 
 public static class Samples

@@ -30,8 +30,11 @@ use crate::{
     config::Limits,
     hub::{Hub, HubSettings, error},
     limit::{Bucket, Rate},
-    relay::{Relay, RelayLimits, TokenIssuer},
+    relay::{Relay, RelayIo, RelayLimits, TokenIssuer},
 };
+
+/// The WebSocket path of the relay fallback (§4.6); anything else is signaling.
+pub const RELAY_PATH: &str = "/relay";
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const REGISTER_TIMEOUT: Duration = Duration::from_secs(10);
@@ -63,6 +66,7 @@ pub struct Server {
     pub ws_addr: SocketAddr,
     hub: Arc<Mutex<Hub>>,
     relay: Arc<Mutex<Relay>>,
+    relay_io: Arc<RelayIo>,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -76,6 +80,11 @@ impl Server {
 
     pub fn relay_stats(&self) -> crate::relay::RelayStats {
         self.relay.lock().unwrap_or_else(|e| e.into_inner()).stats
+    }
+
+    /// Relay ends connected over WebSocket right now.
+    pub fn relay_streams(&self) -> usize {
+        self.relay_io.stream_count()
     }
 
     pub fn shutdown(&self) {
@@ -113,8 +122,13 @@ pub async fn start(settings: Settings, sockets: Sockets) -> std::io::Result<Serv
     for s in sockets.stun {
         tasks.push(tokio::spawn(crate::stun::serve(s, stun_rate)));
     }
+    let relay_io = Arc::new(RelayIo::new(sockets.relay.clone()));
     if let Some(s) = sockets.relay {
-        tasks.push(tokio::spawn(crate::relay::serve(s, relay.clone())));
+        tasks.push(tokio::spawn(crate::relay::serve(
+            s,
+            relay.clone(),
+            relay_io.clone(),
+        )));
     }
     {
         let hub = hub.clone();
@@ -128,16 +142,31 @@ pub async fn start(settings: Settings, sockets: Sockets) -> std::io::Result<Serv
         }));
     }
     let acceptor = settings.tls.clone().map(TlsAcceptor::from);
-    tasks.push(tokio::spawn(accept_loop(sockets.ws, acceptor, hub.clone())));
+    let ends = Ends {
+        hub: hub.clone(),
+        relay: relay.clone(),
+        relay_io: relay_io.clone(),
+    };
+    tasks.push(tokio::spawn(accept_loop(sockets.ws, acceptor, ends)));
     Ok(Server {
         ws_addr,
         hub,
         relay,
+        relay_io,
         tasks,
     })
 }
 
-async fn accept_loop(listener: TcpListener, tls: Option<TlsAcceptor>, hub: Arc<Mutex<Hub>>) {
+/// What a WebSocket connection can be served by.
+#[derive(Clone)]
+struct Ends {
+    hub: Arc<Mutex<Hub>>,
+    relay: Arc<Mutex<Relay>>,
+    relay_io: Arc<RelayIo>,
+}
+
+async fn accept_loop(listener: TcpListener, tls: Option<TlsAcceptor>, ends: Ends) {
+    let hub = ends.hub.clone();
     let next_conn = Arc::new(AtomicU64::new(1));
     loop {
         let (tcp, peer) = match listener.accept().await {
@@ -154,17 +183,17 @@ async fn accept_loop(listener: TcpListener, tls: Option<TlsAcceptor>, hub: Arc<M
         }
         let _ = tcp.set_nodelay(true);
         let conn = next_conn.fetch_add(1, Relaxed);
-        let (hub, tls) = (hub.clone(), tls.clone());
+        let (hub, tls, ends) = (hub.clone(), tls.clone(), ends.clone());
         tokio::spawn(async move {
             match tls {
                 Some(acceptor) => {
                     if let Ok(Ok(stream)) =
                         tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(tcp)).await
                     {
-                        serve_conn(stream, conn, ip, &hub).await;
+                        route_conn(stream, conn, ip, &ends).await;
                     }
                 }
-                None => serve_conn(tcp, conn, ip, &hub).await,
+                None => route_conn(tcp, conn, ip, &ends).await,
             }
             hub.lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -183,19 +212,44 @@ fn encode(msg: &SignalServerMsg) -> Message {
     Message::binary(msg.encode_to_vec())
 }
 
-async fn serve_conn<S>(stream: S, conn: u64, ip: IpAddr, hub: &Arc<Mutex<Hub>>)
+/// Upgrades to WebSocket and serves signaling, or the relay on [`RELAY_PATH`].
+async fn route_conn<S>(stream: S, conn: u64, ip: IpAddr, ends: &Ends)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+    let mut path = String::new();
+    let seen = &mut path;
+    // The callback's error type is tungstenite's, and large; it is never returned here.
+    #[allow(clippy::result_large_err)]
+    let pick = |req: &Request, resp: Response| {
+        *seen = req.uri().path().to_owned();
+        Ok(resp)
+    };
     let ws = match tokio::time::timeout(
         HANDSHAKE_TIMEOUT,
-        tokio_tungstenite::accept_async_with_config(stream, Some(ws_config())),
+        tokio_tungstenite::accept_hdr_async_with_config(stream, pick, Some(ws_config())),
     )
     .await
     {
         Ok(Ok(ws)) => ws,
         _ => return,
     };
+    if path == RELAY_PATH {
+        crate::relay::serve_stream(ws, conn, ip, ends.relay.clone(), ends.relay_io.clone()).await;
+    } else {
+        serve_conn(ws, conn, ip, &ends.hub).await;
+    }
+}
+
+async fn serve_conn<S>(
+    ws: tokio_tungstenite::WebSocketStream<S>,
+    conn: u64,
+    ip: IpAddr,
+    hub: &Arc<Mutex<Hub>>,
+) where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let (mut sink, mut stream) = ws.split();
 
     let mut nonce = [0u8; NONCE_LEN];

@@ -166,7 +166,11 @@ pub struct HostConfig {
     pub input_available: Arc<dyn Fn() -> bool + Send + Sync>,
     pub caps: Caps,
     pub os: Os,
-    pub displays: Vec<Display>,
+    /// Shown to the viewer.
+    pub host_name: String,
+    /// The displays a viewer may choose from (§6.7), read again for every session
+    /// because monitors come and go. `Display.id` is the index.
+    pub displays: Arc<dyn Fn() -> Vec<Display> + Send + Sync>,
     pub timeouts: Timeouts,
 }
 
@@ -549,9 +553,10 @@ pub async fn host_handshake_from(
 
     let accepted = SessionAccept {
         perms: Some(perms.clone()),
-        displays: cfg.displays.clone(),
+        displays: (cfg.displays)(),
         caps: Some(cfg.caps.clone()),
         os: cfg.os as i32,
+        host_name: cfg.host_name.clone(),
     };
     control.send(ControlBody::Accept(accepted)).await?;
     Ok(HostAccepted {

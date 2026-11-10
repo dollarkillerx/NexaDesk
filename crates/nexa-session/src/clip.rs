@@ -28,7 +28,10 @@ use nexa_clip::{
 };
 use tokio::{sync::mpsc as async_mpsc, task::JoinHandle as TaskHandle};
 
-use crate::framed::{FramedRecv, FramedSend};
+use crate::{
+    bulk::BulkLimiter,
+    framed::{FramedRecv, FramedSend},
+};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const QUEUE: usize = 256;
@@ -36,9 +39,8 @@ const OUTBOUND_QUEUE: usize = 32;
 /// Longest a provider call may block on the agent. The fetch itself gives up after
 /// 10 s without progress (§8.2); this also covers a large transfer that keeps moving.
 const RESOLVE_LIMIT: Duration = Duration::from_secs(60);
-/// §4.9 wants bulk reliable writes under the rate controller; until that is wired to
-/// streams, this keeps a clipboard transfer from starving video.
-const BULK_BYTES_PER_SEC: u64 = 12_500_000;
+/// Frames this large are bulk (§4.9) and wait for the session's [`BulkLimiter`];
+/// announcements and acknowledgements below it go straight out.
 const BULK_MIN_FRAME: usize = 4096;
 
 /// Answers a promise on whichever thread AppKit calls it (same shape as
@@ -107,15 +109,18 @@ impl ClipChannel {
         mode: PromiseMode,
         streams: (FramedSend, FramedRecv),
         callbacks: ClipCallbacks,
+        bulk: Arc<BulkLimiter>,
     ) -> ClipSession {
         let (send, recv) = streams;
         let (out_tx, out_rx) = async_mpsc::channel(OUTBOUND_QUEUE);
         let ClipChannel { tx, rx } = self;
-        let writer = tokio::spawn(write_loop(send, out_rx));
+        let writer = tokio::spawn(write_loop(send, out_rx, bulk));
         let reader = tokio::spawn(read_loop(recv, tx.clone()));
         let config = ClipConfig {
             // §8.6: a restart must not start below values the peer already saw.
             initial_lamport: wall_clock_millis(),
+            // Bulk writes are paced per message (§4.9); see `transfer::CHUNK`.
+            chunk_size: crate::transfer::CHUNK as u64,
             ..ClipConfig::default()
         };
         let driver = Driver {
@@ -212,17 +217,15 @@ async fn read_loop(mut recv: FramedRecv, tx: SyncSender<DriverMsg>) {
     let _ = tx.try_send(DriverMsg::StreamEnded);
 }
 
-async fn write_loop(mut send: FramedSend, mut out: async_mpsc::Receiver<ClipMessage>) {
-    let mut next_at = Instant::now();
+async fn write_loop(
+    mut send: FramedSend,
+    mut out: async_mpsc::Receiver<ClipMessage>,
+    bulk: Arc<BulkLimiter>,
+) {
     while let Some(message) = out.recv().await {
         let body = message.encode();
         if body.len() >= BULK_MIN_FRAME {
-            let wait = next_at.saturating_duration_since(Instant::now());
-            if !wait.is_zero() {
-                tokio::time::sleep(wait).await;
-            }
-            let cost = Duration::from_secs_f64(body.len() as f64 / BULK_BYTES_PER_SEC as f64);
-            next_at = next_at.max(Instant::now()) + cost;
+            bulk.acquire(body.len()).await;
         }
         if send.send_body(&body).await.is_err() {
             return;

@@ -22,6 +22,7 @@ fn main() {
 #[cfg(target_os = "macos")]
 const USAGE: &str = "usage: nexa-agent --listen <ip:port> [--name <device name>] [--data-dir <dir>] [--consent terminal|ui]\n\
                  [--signal <wss://server[:port]>] [--signal-ca <pem>] [--paired-only] [--relay-only]\n\
+                 [--downloads <dir>]\n\
   --listen    UDP address to listen on; use a LAN or Tailscale address, or 127.0.0.1\n\
   --name      name shown to viewers (default: this Mac's host name)\n\
   --data-dir  where pairings.json and agent.sock live (default: ~/Library/Application Support/NexaDesk)\n\
@@ -32,7 +33,8 @@ const USAGE: &str = "usage: nexa-agent --listen <ip:port> [--name <device name>]
               once registered. Pairing and consent work exactly as for --listen.\n\
   --signal-ca extra CA certificate(s) for the server (default: <data-dir>/signal-ca.pem if present)\n\
   --paired-only  only devices already paired may make this Mac reveal its addresses\n\
-  --relay-only   never offer a direct address to connecting devices; always use the relay";
+  --relay-only   never offer a direct address to connecting devices; always use the relay\n\
+  --downloads where files sent to this Mac are saved (default: ~/Downloads/NexaDesk)";
 
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -51,6 +53,7 @@ struct Args {
     signal_ca: Option<std::path::PathBuf>,
     paired_only: bool,
     relay_only: bool,
+    downloads: std::path::PathBuf,
 }
 
 #[cfg(target_os = "macos")]
@@ -63,6 +66,7 @@ fn parse_args() -> Result<Args, String> {
     let mut signal_ca = None;
     let mut paired_only = false;
     let mut relay_only = false;
+    let mut downloads = None;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         let mut value = || {
@@ -90,6 +94,7 @@ fn parse_args() -> Result<Args, String> {
             "--signal-ca" => signal_ca = Some(std::path::PathBuf::from(value()?)),
             "--paired-only" => paired_only = true,
             "--relay-only" => relay_only = true,
+            "--downloads" => downloads = Some(std::path::PathBuf::from(value()?)),
             "-h" | "--help" => return Err(USAGE.to_owned()),
             other => return Err(format!("unknown argument: {other}\n{USAGE}")),
         }
@@ -105,13 +110,12 @@ fn parse_args() -> Result<Args, String> {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "Mac".to_owned())
     });
-    let data_dir = match data_dir {
-        Some(d) => d,
-        None => {
-            let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
-            std::path::Path::new(&home).join("Library/Application Support/NexaDesk")
-        }
-    };
+    let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
+    let data_dir = data_dir.unwrap_or_else(|| {
+        std::path::Path::new(&home).join("Library/Application Support/NexaDesk")
+    });
+    let downloads =
+        downloads.unwrap_or_else(|| std::path::Path::new(&home).join("Downloads/NexaDesk"));
     Ok(Args {
         listen,
         name,
@@ -121,6 +125,7 @@ fn parse_args() -> Result<Args, String> {
         signal_ca,
         paired_only,
         relay_only,
+        downloads,
     })
 }
 
@@ -134,7 +139,7 @@ fn run() -> Result<(), String> {
     use nexa_agent::{AgentConfig, AgentUi, ipc::IpcConfig, start, start_with_ui};
     use nexa_auth::{DeviceIdentity, KeychainStore, PairingStore};
     use nexa_input::platform::macos::{FocusWatcher, accessibility_granted};
-    use nexa_media::macos::{has_screen_capture_permission, probe_caps};
+    use nexa_media::macos::{cached_caps, has_screen_capture_permission, probe_caps};
     use nexa_session::handshake::Timeouts;
     use nexa_wire::control::{FocusContext, Os};
     use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSRunLoop};
@@ -164,7 +169,11 @@ fn run() -> Result<(), String> {
         identity.store_mac_key(),
     )
     .map_err(|e| format!("pairing store (fix or remove it to continue): {e}"))?;
-    let caps = probe_caps();
+    // §3.5: probed with real sessions once per OS build and GPU, then cached.
+    let caps = match nexa_media::caps_cache::default_path() {
+        Some(path) => cached_caps(&path),
+        None => probe_caps(),
+    };
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -204,11 +213,17 @@ fn run() -> Result<(), String> {
             }
             Some(nexa_agent::SignalSetup {
                 server,
-                // Session sockets stay on the interface --listen names.
-                bind_ip: args.listen.ip(),
+                // Session sockets stay on the interface --listen names; all
+                // interfaces means dual-stack (IPv4 only where there is no IPv6).
+                bind_ip: if args.listen.ip().is_unspecified() {
+                    std::net::Ipv6Addr::UNSPECIFIED.into()
+                } else {
+                    args.listen.ip()
+                },
                 interfaces: None,
                 paired_only: args.paired_only,
                 relay_only: args.relay_only,
+                system_services: true,
             })
         }
     };
@@ -219,6 +234,10 @@ fn run() -> Result<(), String> {
         caps,
         timeouts: Timeouts::default(),
         signal,
+        files: nexa_agent::FileSettings {
+            downloads: args.downloads.clone(),
+            limits: Default::default(),
+        },
     };
     // Held until exit: dropping it removes the socket.
     let mut _ipc = None;

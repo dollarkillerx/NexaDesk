@@ -30,8 +30,9 @@ use tokio::sync::mpsc;
 
 use crate::{
     client::EventTx,
-    deps::{KeySource, KeySourceError},
-    proto::{CaptureState, EventBody, InputCapture, PasteGate},
+    cursor::CursorState,
+    deps::{KeySource, KeySourceError, PointerLock},
+    proto::{CaptureState, EventBody, InputCapture, PasteGate, Warning},
 };
 
 const SYNC_INTERVAL: Duration = Duration::from_secs(1);
@@ -51,6 +52,11 @@ pub enum InputCmd {
     GameMode(bool),
     /// View pixels.
     Move(f64, f64),
+    /// Game mode: the pointer lock's running totals (`Pointer` x/y, relative).
+    Relative(i32, i32),
+    /// The host moved its cursor and the local one was moved to match: stream
+    /// pixels, to carry on from without sending anything.
+    Warped(i32, i32),
     Button(u32, bool),
     Wheel(i32, i32),
     Text(String),
@@ -59,15 +65,37 @@ pub enum InputCmd {
 }
 
 /// Where the stream is drawn inside the view, to turn view pixels into stream pixels.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ViewGeometry {
     pub view_w: u32,
     pub view_h: u32,
     pub stream_w: u32,
     pub stream_h: u32,
+    /// View pixels per point (the backing scale passed to attach_view).
+    pub scale: f32,
+    /// The host display being streamed (`StreamConfig.display`).
+    pub display: u32,
 }
 
 impl ViewGeometry {
+    /// How many view pixels one stream pixel covers.
+    pub fn view_pixels_per_stream_pixel(&self) -> Option<f64> {
+        if self.view_w == 0 || self.view_h == 0 || self.stream_w == 0 || self.stream_h == 0 {
+            return None;
+        }
+        let (_, _, vw, _) =
+            fit_viewport((self.view_w, self.view_h), (self.stream_w, self.stream_h));
+        Some(vw / f64::from(self.stream_w))
+    }
+
+    /// Stream pixels to view pixels: the inverse of [`Self::to_stream`].
+    pub fn to_view(&self, x: i32, y: i32) -> Option<(f64, f64)> {
+        let k = self.view_pixels_per_stream_pixel()?;
+        let (vx, vy, _, _) =
+            fit_viewport((self.view_w, self.view_h), (self.stream_w, self.stream_h));
+        Some((vx + (f64::from(x) + 0.5) * k, vy + (f64::from(y) + 0.5) * k))
+    }
+
     pub fn to_stream(&self, x: f64, y: f64) -> Option<(i32, i32)> {
         if self.view_w == 0 || self.view_h == 0 || self.stream_w == 0 || self.stream_h == 0 {
             return None;
@@ -152,6 +180,11 @@ pub struct InputThreadConfig {
     pub tag: u64,
     pub start_active: bool,
     pub gate_stats: Arc<Mutex<GateStats>>,
+    /// Starts game mode's pointer lock; motion then arrives as `InputCmd::Relative`.
+    pub pointer_lock: Box<dyn Fn() -> Result<Box<dyn PointerLock>, String> + Send>,
+    pub cursor: Arc<Mutex<CursorState>>,
+    /// Filled in when the thread ends.
+    pub lock_stats: Arc<Mutex<LockStats>>,
 }
 
 struct InputState {
@@ -165,6 +198,29 @@ struct InputState {
     sync_seq: u64,
     last_pressed: BTreeSet<Hid>,
     next_sync: Instant,
+    game: GameLock,
+    lock_stats: LockStats,
+}
+
+/// Game mode's pointer lock (§7.4). Held only while in game mode with input
+/// captured; the host key releases it until capture is switched on again.
+#[derive(Default)]
+struct GameLock {
+    game: bool,
+    /// The host key released the lock; it stays off until capture restarts.
+    suspended: bool,
+    lock: Option<Box<dyn PointerLock>>,
+    /// Running totals sent to the host, and the lock's own totals last seen.
+    total: (i32, i32),
+    from_lock: Option<(i32, i32)>,
+    failed: bool,
+}
+
+/// Counts what game mode did, for tests.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LockStats {
+    pub engaged: u64,
+    pub released: u64,
 }
 
 impl InputState {
@@ -222,13 +278,14 @@ impl InputState {
                 }
                 Output::Button { button, down } => {
                     let (x, y) = self.pos;
+                    let display = lock(&self.cfg.view).display;
                     self.ordered(
                         InputBody::Button(ButtonEvent {
                             button,
                             down,
                             x,
                             y,
-                            display: 0,
+                            display,
                         }),
                         now,
                         &mut released,
@@ -307,13 +364,61 @@ impl InputState {
             return;
         }
         self.active = active;
+        if !active {
+            // The mouse comes back before anything else.
+            self.update_lock(now);
+        }
         self.set_capture(active);
         if !active {
             // §7.4: leaving capture releases everything on the remote side.
             let outputs = self.cfg.rewriter.reset();
             self.emit(outputs, now);
+        } else {
+            // Switching capture on again is how the person resumes after the host key.
+            self.game.suspended = false;
+            self.update_lock(now);
         }
         self.next_sync = now + SYNC_INTERVAL;
+    }
+
+    /// Takes or releases the pointer lock so that it is held exactly when game
+    /// mode, capture and no host-key suspension all say so.
+    fn update_lock(&mut self, now: Instant) {
+        let want = self.game.game && self.active && !self.game.suspended && !self.game.failed;
+        match (want, self.game.lock.is_some()) {
+            (true, false) => match (self.cfg.pointer_lock)() {
+                Ok(l) => {
+                    self.game.lock = Some(l);
+                    self.game.from_lock = None;
+                    self.lock_stats.engaged += 1;
+                    *lock(&self.cfg.lock_stats) = self.lock_stats;
+                    // The host takes the first relative packet as its baseline.
+                    let p = &mut self.pointer.current;
+                    p.relative = true;
+                    p.x = self.game.total.0;
+                    p.y = self.game.total.1;
+                    self.pos = self.game.total;
+                    self.pointer.changed(now);
+                    lock(&self.cfg.cursor).set_locked(true);
+                }
+                Err(e) => {
+                    // Once per session: the person sees it and the absolute pointer stays.
+                    self.game.failed = true;
+                    self.event(EventBody::Warning(Warning {
+                        text: format!("game mode could not lock the pointer: {e}"),
+                    }));
+                }
+            },
+            (false, true) => {
+                // Dropping the lock re-associates the mouse (PointerCapture's guard).
+                self.game.lock = None;
+                self.lock_stats.released += 1;
+                *lock(&self.cfg.lock_stats) = self.lock_stats;
+                self.pointer.current.relative = false;
+                lock(&self.cfg.cursor).set_locked(false);
+            }
+            _ => {}
+        }
     }
 
     fn on_cmd(&mut self, cmd: InputCmd, now: Instant) -> bool {
@@ -329,18 +434,56 @@ impl InputState {
                 };
                 let outputs = self.cfg.rewriter.set_mode(mode);
                 self.emit(outputs, now);
+                if game != self.game.game {
+                    self.game.game = game;
+                    self.game.failed = false;
+                    self.update_lock(now);
+                }
+            }
+            InputCmd::Relative(x, y) if self.game.lock.is_some() => {
+                // The lock's totals start at zero each time it is taken; ours carry on.
+                let (dx, dy) = match self.game.from_lock {
+                    Some((lx, ly)) => (x.wrapping_sub(lx), y.wrapping_sub(ly)),
+                    None => (x, y),
+                };
+                self.game.from_lock = Some((x, y));
+                self.game.total = (
+                    self.game.total.0.wrapping_add(dx),
+                    self.game.total.1.wrapping_add(dy),
+                );
+                self.pos = self.game.total;
+                let p = &mut self.pointer.current;
+                p.x = self.game.total.0;
+                p.y = self.game.total.1;
+                self.pointer.changed(now);
+            }
+            InputCmd::Warped(x, y) if self.game.lock.is_none() => {
+                self.pos = (x, y);
+                self.pointer.current.x = x;
+                self.pointer.current.y = y;
             }
             InputCmd::Key(key) if self.active => {
                 let outputs = self.cfg.rewriter.on_key(key, self.focus);
                 self.emit(outputs, now);
             }
             InputCmd::Interrupted => {
+                // The tap was switched off under us: give the mouse back too.
+                self.suspend_lock(now);
                 let outputs = self.cfg.rewriter.reset();
                 self.emit(outputs, now);
             }
-            InputCmd::HostKey => self.event(EventBody::HostKey(crate::proto::HostKeyPressed {})),
-            InputCmd::Move(x, y) if self.active => {
-                let mapped = lock(&self.cfg.view).to_stream(x, y);
+            InputCmd::HostKey => {
+                // §7.4: the host key always gets the mouse back, before anything else.
+                self.suspend_lock(now);
+                self.event(EventBody::HostKey(crate::proto::HostKeyPressed {}))
+            }
+            // While locked the local cursor does not move; motion comes as Relative.
+            InputCmd::Move(x, y) if self.active && self.game.lock.is_none() => {
+                let (mapped, display) = {
+                    let view = lock(&self.cfg.view);
+                    (view.to_stream(x, y), view.display)
+                };
+                self.pointer.current.display = display.min(255) as u8;
                 if let Some((sx, sy)) = mapped {
                     self.pos = (sx, sy);
                     self.pointer.current.x = sx;
@@ -369,11 +512,20 @@ impl InputState {
             // Input arriving while inactive is ignored.
             InputCmd::Key(_)
             | InputCmd::Move(..)
+            | InputCmd::Relative(..)
+            | InputCmd::Warped(..)
             | InputCmd::Button(..)
             | InputCmd::Wheel(..)
             | InputCmd::Text(_) => {}
         }
         true
+    }
+
+    fn suspend_lock(&mut self, now: Instant) {
+        if self.game.lock.is_some() {
+            self.game.suspended = true;
+            self.update_lock(now);
+        }
     }
 
     fn wait_time(&self, now: Instant) -> Duration {
@@ -400,7 +552,8 @@ impl InputState {
         }
     }
 
-    fn run(mut self, rx: Receiver<InputCmd>) {
+    /// Returns the command channel, so a reconnected session can start a new thread on it.
+    fn run(mut self, rx: Receiver<InputCmd>) -> Receiver<InputCmd> {
         if self.cfg.start_active {
             self.apply_active(true, Instant::now());
         }
@@ -417,17 +570,21 @@ impl InputState {
             }
             self.poll_timers(Instant::now());
         }
-        // Local capture must end before anything else: the keyboard is the user's.
+        // Local capture must end before anything else: the keyboard and mouse are the user's.
         let now = Instant::now();
         self.apply_active(false, now);
+        self.game.suspended = true;
+        self.update_lock(now);
+        *lock(&self.cfg.lock_stats) = self.lock_stats;
         let mut released = Vec::new();
         self.gate.flush(now, &mut released);
         self.flush(&mut released);
+        rx
     }
 }
 
-/// Spawns the input-capture thread.
-pub fn spawn(cfg: InputThreadConfig, rx: Receiver<InputCmd>) -> JoinHandle<()> {
+/// Spawns the input-capture thread. Joining it gives the channel back.
+pub fn spawn(cfg: InputThreadConfig, rx: Receiver<InputCmd>) -> JoinHandle<Receiver<InputCmd>> {
     let next_sync = Instant::now() + SYNC_INTERVAL;
     let conn = cfg.conn.clone();
     let pointer: PointerSender<PointerTx> = PointerSender::new(Box::new(move |p: &Pointer| {
@@ -444,6 +601,8 @@ pub fn spawn(cfg: InputThreadConfig, rx: Receiver<InputCmd>) -> JoinHandle<()> {
         sync_seq: 0,
         last_pressed: BTreeSet::new(),
         next_sync,
+        game: GameLock::default(),
+        lock_stats: LockStats::default(),
     };
     thread::Builder::new()
         .name("input-capture".into())
@@ -462,10 +621,17 @@ mod tests {
             view_h: 1000,
             stream_w: 1000,
             stream_h: 1000,
+            ..ViewGeometry::default()
         };
         assert_eq!(g.to_stream(500.0, 0.0), Some((0, 0)));
         assert_eq!(g.to_stream(1000.0, 500.0), Some((500, 500)));
         assert_eq!(g.to_stream(10.0, 5000.0), Some((0, 999)));
+        // And back: the middle of a stream pixel, through the same letterbox.
+        assert_eq!(g.to_view(500, 500), Some((1000.5, 500.5)));
+        assert_eq!(
+            g.to_view(0, 0).map(|(x, y)| g.to_stream(x, y)),
+            Some(Some((0, 0)))
+        );
     }
 
     #[test]

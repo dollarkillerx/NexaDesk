@@ -75,16 +75,25 @@ fn perms(view: bool, input: bool, clipboard: bool) -> Permissions {
     }
 }
 
-/// Turns the reply to the permission question into a grant. Anything unrecognized denies.
+/// Turns the reply to the permission question into a grant. Anything unrecognized
+/// denies. A trailing `s` on a one-letter answer adds sound (system audio), which is
+/// otherwise never granted unless it was proposed.
 fn parse_grant(line: &str, proposed: &Permissions) -> Option<Permissions> {
-    match line.trim().to_ascii_lowercase().as_str() {
-        "y" | "yes" => Some(proposed.clone()),
-        "v" => Some(perms(true, false, false)),
-        "c" => Some(perms(true, false, true)),
-        "i" => Some(perms(true, true, false)),
-        "a" => Some(perms(true, true, true)),
-        _ => None,
-    }
+    let line = line.trim().to_ascii_lowercase();
+    let (base, sound) = match line.strip_suffix('s') {
+        Some(b) if b.len() == 1 => (b, true),
+        _ => (line.as_str(), false),
+    };
+    let mut granted = match base {
+        "y" | "yes" => proposed.clone(),
+        "v" => perms(true, false, false),
+        "c" => perms(true, false, true),
+        "i" => perms(true, true, false),
+        "a" => perms(true, true, true),
+        _ => return None,
+    };
+    granted.audio |= sound;
+    Some(granted)
 }
 
 fn is_yes(line: &str) -> bool {
@@ -223,7 +232,7 @@ impl Consent for TerminalUi {
         ));
         terminal.say("  y = allow as proposed   v = view only   c = view + clipboard");
         terminal.say("  i = view + input        a = view + input + clipboard");
-        terminal.say("  anything else = deny");
+        terminal.say("  add s to also share sound (e.g. as)   anything else = deny");
         terminal.say(&format!("Allow? (answer within {} s)", timeout.as_secs()));
 
         let (tx, rx) = mpsc::sync_channel(4);
@@ -309,6 +318,22 @@ impl AgentUi for TerminalUi {
             }
             AgentEvent::ClipboardNotice(n) => t.say(&format!("Clipboard: {n:?}")),
             AgentEvent::Warning(w) => t.say(&format!("Warning: {w}")),
+            // The terminal never grants `file`, so transfers only reach it when the
+            // desktop UI granted them and then went away; say how they end.
+            AgentEvent::Transfer { event, .. } => {
+                use nexa_session::transfer::TransferState as S;
+                let outcome = match &event.state {
+                    S::Done { path: Some(p) } => format!("received {}", p.display()),
+                    S::Done { path: None } => "sent".to_owned(),
+                    S::Failed(r) => format!("failed ({r:?})"),
+                    S::Cancelled { .. } => "cancelled".to_owned(),
+                    S::NeedsConfirm => {
+                        "is large and needs the NexaDesk app to accept it".to_owned()
+                    }
+                    S::Waiting | S::Running => return,
+                };
+                t.say(&format!("File \"{}\": {outcome}", event.name));
+            }
             AgentEvent::Signal(s) => match (&s.state, s.grouped_id()) {
                 (nexa_agent::SignalState::Online, Some(id)) => {
                     t.say(&format!("Reachable by ID: {id}"));
@@ -335,6 +360,26 @@ mod tests {
         assert_eq!(parse_grant("y", &proposed), Some(proposed.clone()));
         assert_eq!(parse_grant(" A ", &proposed), Some(perms(true, true, true)));
         assert_eq!(parse_grant("i", &proposed), Some(perms(true, true, false)));
+    }
+
+    #[test]
+    fn sound_is_only_granted_when_asked_for() {
+        let proposed = perms(true, false, false);
+        for line in ["y", "yes", "v", "c", "i", "a"] {
+            assert!(!parse_grant(line, &proposed).unwrap().audio, "{line}");
+        }
+        let with = |v, i, c| Permissions {
+            audio: true,
+            ..perms(v, i, c)
+        };
+        assert_eq!(parse_grant("as", &proposed), Some(with(true, true, true)));
+        assert_eq!(
+            parse_grant(" VS", &proposed),
+            Some(with(true, false, false))
+        );
+        assert_eq!(parse_grant("ys", &proposed), Some(with(true, false, false)));
+        assert_eq!(parse_grant("s", &proposed), None);
+        assert_eq!(parse_grant("ass", &proposed), None);
     }
 
     #[test]

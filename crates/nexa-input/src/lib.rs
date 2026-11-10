@@ -8,6 +8,7 @@ pub mod keytable;
 #[cfg(target_os = "macos")]
 pub mod platform;
 pub mod rewriter;
+pub mod user;
 
 pub use hid::{Chord, ChordKey, Hid, ModSet};
 pub use keymap::{Compiled, Keymap, KeymapError};

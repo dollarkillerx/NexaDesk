@@ -28,7 +28,7 @@ use prost::Message;
 use crate::{
     client::{Core, EventTx, Session},
     deps::Deps,
-    proto::{ClientConfig, ConnectRequest, SessionCommand},
+    proto::{ClientConfig, ConnectRequest, KeymapRequest, SessionCommand},
 };
 
 pub const NEXA_OK: i32 = 0;
@@ -69,6 +69,7 @@ fn invalid(what: &str) -> Abi {
 
 thread_local! {
     static LAST_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
+
     static IN_CALLBACK: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -234,6 +235,13 @@ pub unsafe fn init_with_deps(
         } else {
             PathBuf::from(config.data_dir)
         };
+        // Only `nexa_init` defaults to the real Downloads folder; anything else
+        // (tests) keeps received files inside its own data directory.
+        let downloads = if config.downloads_dir.is_empty() {
+            data_dir.join("Downloads")
+        } else {
+            PathBuf::from(&config.downloads_dir)
+        };
         let device_name = if config.device_name.is_empty() {
             "Viewer".to_owned()
         } else {
@@ -250,7 +258,7 @@ pub unsafe fn init_with_deps(
                 .spawn(move || run_events(rx, callback, closing))
                 .map_err(|e| Abi(NEXA_E_INTERNAL, e.to_string()))?;
         }
-        let core = Core::new(deps, device_name, data_dir, EventTx::new(tx))
+        let core = Core::new(deps, device_name, data_dir, downloads, EventTx::new(tx))
             .map_err(|e| Abi(NEXA_E_INTERNAL, e.to_string()))?;
         let id = next_handle();
         registry().clients.insert(
@@ -283,8 +291,35 @@ pub unsafe extern "C" fn nexa_init(
 ) -> i32 {
     #[cfg(target_os = "macos")]
     {
-        // SAFETY: forwarded from the caller.
-        unsafe { init_with_deps(Arc::new(crate::real::RealDeps), cfg, len, cb, user, out) }
+        let mut defaulted_cfg = Vec::new();
+        let defaulted = guarded(|| {
+            // SAFETY: per the contract.
+            let mut config = parse_config(unsafe { bytes_of(cfg, len)? })?;
+            if config.downloads_dir.is_empty() {
+                let home = std::env::var_os("HOME").unwrap_or_default();
+                config.downloads_dir = PathBuf::from(home)
+                    .join("Downloads/NexaDesk")
+                    .to_string_lossy()
+                    .into_owned();
+            }
+            defaulted_cfg = config.encode_to_vec();
+            Ok(())
+        });
+        if defaulted != NEXA_OK {
+            return defaulted;
+        }
+        let cfg = defaulted_cfg;
+        // SAFETY: `cfg` is a live local buffer; the rest is forwarded from the caller.
+        unsafe {
+            init_with_deps(
+                Arc::new(crate::real::RealDeps),
+                cfg.as_ptr(),
+                cfg.len(),
+                cb,
+                user,
+                out,
+            )
+        }
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -467,6 +502,100 @@ pub unsafe extern "C" fn nexa_session_command(
     })
 }
 
+/// Copies `bytes` to `out` and reports their length in `written`;
+/// `NEXA_E_BUFFER_TOO_SMALL` (nothing copied) if `cap` is short, so the caller can
+/// retry with `written` bytes.
+///
+/// # Safety
+/// `out` must be writable for `cap` bytes (or null with `cap` 0), `written` writable.
+unsafe fn give(bytes: &[u8], out: *mut u8, cap: usize, written: *mut usize) -> Result<(), Abi> {
+    if written.is_null() {
+        return Err(invalid("null written pointer"));
+    }
+    // SAFETY: checked non-null; writable per the contract.
+    unsafe { *written = bytes.len() };
+    if bytes.len() > cap {
+        return Err(Abi(NEXA_E_BUFFER_TOO_SMALL, "buffer too small".to_owned()));
+    }
+    if !bytes.is_empty() {
+        if out.is_null() {
+            return Err(invalid("null buffer"));
+        }
+        // SAFETY: `out` is writable for `cap` >= `bytes.len()` bytes.
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len()) };
+    }
+    Ok(())
+}
+
+/// # Safety
+/// `req` must be valid for `len` bytes.
+unsafe fn keymap_request(req: *const u8, len: usize) -> Result<KeymapRequest, Abi> {
+    // SAFETY: per the contract.
+    let body = unsafe { bytes_of(req, len)? };
+    KeymapRequest::decode(body).map_err(|e| Abi(NEXA_E_PARSE, format!("bad keymap request: {e}")))
+}
+
+/// Lists the rules of one profile for the keyboard settings (§11.2): the built-in
+/// ones, switched on or off by keymap.toml, then the user's. `req` is a protobuf
+/// `KeymapRequest`; `out` receives a `KeymapView`. Needs no client handle.
+///
+/// # Safety
+/// `req` valid for `len` bytes, `out` writable for `cap` bytes, `written` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nexa_keymap_rules(
+    req: *const u8,
+    len: usize,
+    out: *mut u8,
+    cap: usize,
+    written: *mut usize,
+) -> i32 {
+    guarded(|| {
+        // SAFETY: per the contract.
+        let req = unsafe { keymap_request(req, len)? };
+        let view = crate::keymap::rules(&req, &default_data_dir()).map_err(|e| invalid(&e))?;
+        // SAFETY: per the contract.
+        unsafe { give(&view.encode_to_vec(), out, cap, written) }
+    })
+}
+
+/// Saves `req.rules` (the whole list as shown) for one profile to keymap.toml,
+/// atomically. Refused with `NEXA_E_INVALID_ARG` and nothing written if a rule is
+/// invalid. Sessions started afterwards use it.
+///
+/// # Safety
+/// `req` must be valid for `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nexa_keymap_save(req: *const u8, len: usize) -> i32 {
+    guarded(|| {
+        // SAFETY: per the contract.
+        let req = unsafe { keymap_request(req, len)? };
+        crate::keymap::save(&req, &default_data_dir()).map_err(|e| invalid(&e))
+    })
+}
+
+/// "按下 → 发送": runs the real rewriter on `req.chord` and writes a `KeyPreview`.
+/// Nothing is sent anywhere and no session is involved.
+///
+/// # Safety
+/// `req` valid for `len` bytes, `out` writable for `cap` bytes, `written` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nexa_keymap_preview(
+    req: *const u8,
+    len: usize,
+    out: *mut u8,
+    cap: usize,
+    written: *mut usize,
+) -> i32 {
+    guarded(|| {
+        // SAFETY: per the contract.
+        let req = unsafe { keymap_request(req, len)? };
+        let preview =
+            crate::keymap::preview_chord(&req, &default_data_dir()).map_err(|e| invalid(&e))?;
+        // SAFETY: per the contract.
+        unsafe { give(&preview.encode_to_vec(), out, cap, written) }
+    })
+}
+
 /// Copies this thread's last error message as UTF-8 and reports its full length in
 /// `written`. Returns `NEXA_E_BUFFER_TOO_SMALL` if it had to truncate.
 ///
@@ -533,6 +662,199 @@ mod tests {
             nexa_session_close(bogus);
             nexa_shutdown(987654usize as *mut NexaClient);
         }
+    }
+
+    fn call(
+        f: unsafe extern "C" fn(*const u8, usize, *mut u8, usize, *mut usize) -> i32,
+        req: &KeymapRequest,
+    ) -> (i32, Vec<u8>) {
+        let bytes = req.encode_to_vec();
+        let mut written = 0usize;
+        // SAFETY: valid buffers; a first call with no room asks for the size.
+        let first = unsafe {
+            f(
+                bytes.as_ptr(),
+                bytes.len(),
+                std::ptr::null_mut(),
+                0,
+                &mut written,
+            )
+        };
+        if first != NEXA_E_BUFFER_TOO_SMALL {
+            return (first, Vec::new());
+        }
+        let mut out = vec![0u8; written];
+        // SAFETY: as above, now with room.
+        let status = unsafe {
+            f(
+                bytes.as_ptr(),
+                bytes.len(),
+                out.as_mut_ptr(),
+                out.len(),
+                &mut written,
+            )
+        };
+        out.truncate(written);
+        (status, out)
+    }
+
+    #[test]
+    fn keymap_settings_load_save_and_preview_through_the_abi() {
+        use crate::proto::{KeyPreview, KeymapView};
+        let dir = tempfile::tempdir().unwrap();
+        let mut req = KeymapRequest {
+            data_dir: dir.path().to_string_lossy().into_owned(),
+            local_os: 2,
+            remote_os: 1,
+            ..Default::default()
+        };
+        let (status, bytes) = call(nexa_keymap_rules, &req);
+        assert_eq!(status, NEXA_OK);
+        let view = KeymapView::decode(bytes.as_slice()).unwrap();
+        assert!(view.error.is_empty());
+        assert!(
+            view.rules
+                .iter()
+                .any(|r| r.builtin && r.when == "Cmd+Shift+Z" && r.enabled)
+        );
+
+        req.chord = "Cmd+Shift+Z".into();
+        let (status, bytes) = call(nexa_keymap_preview, &req);
+        assert_eq!(status, NEXA_OK);
+        let p = KeyPreview::decode(bytes.as_slice()).unwrap();
+        assert_eq!(p.sent, vec!["Ctrl+Y"]);
+        assert!(p.events.iter().any(|e| e.key == "Y" && e.down));
+
+        // Switch it off and preview the edit before saving: the general rule applies.
+        let mut rules = view.rules.clone();
+        rules
+            .iter_mut()
+            .find(|r| r.when == "Cmd+Shift+Z")
+            .unwrap()
+            .enabled = false;
+        rules.push(crate::proto::KeymapRule {
+            when: "Cmd+J".into(),
+            then: vec!["Ctrl+Alt+J".into()],
+            enabled: true,
+            ..Default::default()
+        });
+        req.rules = rules;
+        req.edited = true;
+        let (_, bytes) = call(nexa_keymap_preview, &req);
+        assert_eq!(
+            KeyPreview::decode(bytes.as_slice()).unwrap().sent,
+            vec!["Ctrl+Shift+Z"]
+        );
+        assert!(
+            !dir.path().join("keymap.toml").exists(),
+            "a preview writes nothing"
+        );
+
+        let bytes = req.encode_to_vec();
+        // SAFETY: valid buffer.
+        assert_eq!(
+            unsafe { nexa_keymap_save(bytes.as_ptr(), bytes.len()) },
+            NEXA_OK
+        );
+        assert!(dir.path().join("keymap.toml").exists());
+        let saved = KeymapRequest {
+            rules: Vec::new(),
+            edited: false,
+            chord: "Cmd+J".into(),
+            ..req.clone()
+        };
+        let (_, bytes) = call(nexa_keymap_preview, &saved);
+        assert_eq!(
+            KeyPreview::decode(bytes.as_slice()).unwrap().sent,
+            vec!["Ctrl+Alt+J"]
+        );
+        let (_, bytes) = call(nexa_keymap_rules, &saved);
+        let listed = KeymapView::decode(bytes.as_slice()).unwrap();
+        assert!(
+            !listed
+                .rules
+                .iter()
+                .find(|r| r.when == "Cmd+Shift+Z")
+                .unwrap()
+                .enabled
+        );
+        assert!(
+            listed
+                .rules
+                .last()
+                .is_some_and(|r| !r.builtin && r.when == "Cmd+J")
+        );
+        // What sessions load.
+        let (keymap, problem) = crate::keymap::for_sessions(dir.path());
+        assert!(problem.is_none());
+        let p = nexa_input::user::preview(
+            &keymap,
+            nexa_input::Os::Macos,
+            nexa_input::Os::Windows,
+            "Cmd+J",
+            nexa_input::FocusClass::Default,
+        )
+        .unwrap();
+        assert_eq!(p.sent, vec!["Ctrl+Alt+J"]);
+
+        // An invalid rule is refused and the file is unchanged.
+        let before = std::fs::read(dir.path().join("keymap.toml")).unwrap();
+        let mut bad = req.clone();
+        bad.rules.push(crate::proto::KeymapRule {
+            when: "Cmd+Nope".into(),
+            then: vec!["Ctrl+K".into()],
+            enabled: true,
+            ..Default::default()
+        });
+        let bytes = bad.encode_to_vec();
+        // SAFETY: valid buffer.
+        assert_eq!(
+            unsafe { nexa_keymap_save(bytes.as_ptr(), bytes.len()) },
+            NEXA_E_INVALID_ARG
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("keymap.toml")).unwrap(),
+            before
+        );
+        // A bad chord in a preview is an answer, not an error.
+        let (status, bytes) = call(
+            nexa_keymap_preview,
+            &KeymapRequest {
+                chord: "Cmd+Nope".into(),
+                ..saved.clone()
+            },
+        );
+        assert_eq!(status, NEXA_OK);
+        assert!(
+            !KeyPreview::decode(bytes.as_slice())
+                .unwrap()
+                .error
+                .is_empty()
+        );
+        // A damaged file: built-in rules and a reason; sessions fall back too.
+        std::fs::write(dir.path().join("keymap.toml"), "garbage = [").unwrap();
+        let (_, bytes) = call(nexa_keymap_rules, &saved);
+        assert!(
+            !KeymapView::decode(bytes.as_slice())
+                .unwrap()
+                .error
+                .is_empty()
+        );
+        assert!(crate::keymap::for_sessions(dir.path()).1.is_some());
+        // Garbage requests are errors, not crashes.
+        let junk = [0xFFu8; 8];
+        let mut written = 0usize;
+        // SAFETY: valid buffers.
+        let status = unsafe {
+            nexa_keymap_rules(
+                junk.as_ptr(),
+                junk.len(),
+                std::ptr::null_mut(),
+                0,
+                &mut written,
+            )
+        };
+        assert_eq!(status, NEXA_E_PARSE);
     }
 
     #[test]

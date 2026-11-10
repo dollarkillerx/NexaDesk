@@ -14,6 +14,8 @@
     <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="6">
       <TextBlock Text="{Binding StreamText}" Foreground="#9CA3AF" HorizontalAlignment="Center" FontSize="15" />
       <TextBlock Text="{Binding HostKeyHint}" Foreground="#6B7280" HorizontalAlignment="Center" FontSize="12" />
+      <TextBlock Name="ReconnectOverlay" Text="{Binding ReconnectText}" Foreground="#FBBF24" HorizontalAlignment="Center"
+                 FontSize="14" IsVisible="{Binding IsReconnecting}" />
     </StackPanel>
     <views:VideoHost Name="Video" />
   </Grid>

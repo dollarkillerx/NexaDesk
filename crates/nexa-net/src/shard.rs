@@ -119,6 +119,9 @@ pub struct CompleteFrame {
     pub capture_ts_us: u32,
     pub data: Vec<u8>,
     pub recovered_shards: u32,
+    /// When the first shard and the completing shard arrived (§6.1 rx_first,
+    /// rx_complete). `None` for frames not built by an [`Assembler`].
+    pub arrival: Option<(Instant, Instant)>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -228,7 +231,8 @@ impl Assembler {
 
         if slot.count >= k {
             let slot = self.slots[i].take().expect("present");
-            if let Some(frame) = Self::finish(slot) {
+            if let Some(mut frame) = Self::finish(slot) {
+                frame.arrival = frame.arrival.map(|(first, _)| (first, now));
                 self.newest_complete_at = match self.newest_complete_at {
                     Some((id, _)) if newer(id, frame.frame_id) => self.newest_complete_at,
                     _ => Some((frame.frame_id, now)),
@@ -275,6 +279,7 @@ impl Assembler {
             capture_ts_us: h.capture_ts_us,
             data,
             recovered_shards,
+            arrival: Some((slot.first_rx, slot.first_rx)),
         })
     }
 

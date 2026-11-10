@@ -1,16 +1,16 @@
 //! Virtual path socket (§4.1): QUIC sees one fixed peer address; real paths live below it.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     fmt,
     io::{self, IoSliceMut},
-    net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket},
     pin::Pin,
     sync::{
-        Arc, RwLock,
+        Arc, Mutex, RwLock,
         atomic::{AtomicBool, AtomicU64, Ordering::Relaxed},
     },
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
 };
 
 use arc_swap::ArcSwap;
@@ -27,17 +27,82 @@ pub const VIRTUAL_PEER: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10
 
 pub const SOCKET_BUFFER: usize = 4 << 20;
 
-/// Creates a UDP socket with the enlarged buffers from §4.1.
+/// The "address" of the stream relay (§4.6 WSS fallback). No UDP packet can
+/// come from it, so it tells frames read from the WebSocket apart.
+pub const STREAM_RELAY_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
+
+/// Creates a UDP socket with the enlarged buffers from §4.1. An unspecified
+/// IPv6 address (`[::]`) makes a dual-stack socket that also carries IPv4.
 pub fn bind_media_socket(addr: SocketAddr) -> io::Result<UdpSocket> {
     let s = socket2::Socket::new(
         socket2::Domain::for_address(addr),
         socket2::Type::DGRAM,
         Some(socket2::Protocol::UDP),
     )?;
+    if let SocketAddr::V6(v6) = addr {
+        s.set_only_v6(!v6.ip().is_unspecified())?;
+    }
     s.set_send_buffer_size(SOCKET_BUFFER)?;
     s.set_recv_buffer_size(SOCKET_BUFFER)?;
     s.bind(&addr.into())?;
     Ok(s.into())
+}
+
+/// A dual-stack socket on `port` when this machine has IPv6, else IPv4 only.
+pub fn bind_dual_stack(port: u16) -> io::Result<UdpSocket> {
+    bind_media_socket(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port))
+        .or_else(|_| bind_media_socket(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port)))
+}
+
+/// IPv4-mapped IPv6 (how a dual-stack socket reports IPv4 peers) back to IPv4.
+pub fn canonical(a: SocketAddr) -> SocketAddr {
+    SocketAddr::new(a.ip().to_canonical(), a.port())
+}
+
+fn mapped(a: SocketAddr) -> SocketAddr {
+    match a {
+        SocketAddr::V4(v4) => SocketAddr::new(IpAddr::V6(v4.ip().to_ipv6_mapped()), v4.port()),
+        v6 => v6,
+    }
+}
+
+/// A relay reached over a byte stream instead of UDP (§4.6: the WSS fallback).
+/// Frames are relay frames exactly as on UDP; whoever owns the stream calls
+/// [`deliver`](Self::deliver) for each one read and drains what `send` is given.
+pub struct StreamPipe {
+    inbox: Mutex<(VecDeque<Vec<u8>>, Option<Waker>)>,
+    /// Queues one frame for the stream. False when full or closed: dropped, as UDP would.
+    send: Box<dyn Fn(Vec<u8>) -> bool + Send + Sync>,
+}
+
+impl fmt::Debug for StreamPipe {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StreamPipe").finish_non_exhaustive()
+    }
+}
+
+/// Frames read from the stream but not yet taken by QUIC; more are dropped.
+const STREAM_INBOX: usize = 2048;
+
+impl StreamPipe {
+    pub fn new(send: Box<dyn Fn(Vec<u8>) -> bool + Send + Sync>) -> Arc<Self> {
+        Arc::new(Self {
+            inbox: Mutex::new((VecDeque::new(), None)),
+            send,
+        })
+    }
+
+    /// One frame read from the stream.
+    pub fn deliver(&self, frame: Vec<u8>) {
+        let mut st = self.inbox.lock().unwrap_or_else(|e| e.into_inner());
+        if st.0.len() >= STREAM_INBOX {
+            return;
+        }
+        st.0.push_back(frame);
+        if let Some(w) = st.1.take() {
+            w.wake();
+        }
+    }
 }
 
 const STUN_MAGIC_COOKIE: [u8; 4] = [0x21, 0x12, 0xA4, 0x42];
@@ -76,6 +141,11 @@ impl PathTarget {
     pub fn is_relay(&self) -> bool {
         matches!(self, PathTarget::Relay { .. })
     }
+
+    /// A relay reached over the WebSocket fallback rather than UDP.
+    pub fn is_stream_relay(&self) -> bool {
+        matches!(self, PathTarget::Relay { server, .. } if *server == STREAM_RELAY_ADDR)
+    }
 }
 
 impl From<SocketAddr> for PathTarget {
@@ -88,6 +158,9 @@ impl fmt::Display for PathTarget {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PathTarget::Direct(a) => write!(f, "{a}"),
+            PathTarget::Relay { server, .. } if *server == STREAM_RELAY_ADDR => {
+                write!(f, "relay (WSS)")
+            }
             PathTarget::Relay { server, .. } => write!(f, "relay {server}"),
         }
     }
@@ -125,6 +198,21 @@ pub struct VirtualSocket {
     /// Until the first authenticated decision, answer on the validated path the
     /// peer's QUIC last arrived on (the host before its first `PathSwitch`).
     follow_source: AtomicBool,
+    /// Also follow when the active path has carried no QUIC for this long
+    /// (microseconds; 0 is off). The host's acknowledgements must reach the
+    /// viewer for the viewer's `PathSwitch` to get through at all: after the
+    /// viewer's address changes, the old path is dead, and QUIC cannot resend
+    /// the stream data in front of the `PathSwitch` until something is acked.
+    follow_after_silence_us: AtomicU64,
+    /// The inner socket is IPv6 (dual-stack when unspecified): IPv4 destinations
+    /// go out IPv4-mapped, and QUIC's fixed peer is the mapped virtual address,
+    /// which is what quinn uses on an IPv6 endpoint.
+    v6_socket: bool,
+    quic_peer: SocketAddr,
+    stream: RwLock<Option<Arc<StreamPipe>>>,
+    /// The endpoint driver's waker from its last empty receive, so that a pipe
+    /// attached later gets polled.
+    recv_waker: Mutex<Option<Waker>>,
 }
 
 impl fmt::Debug for VirtualSocket {
@@ -162,6 +250,7 @@ impl VirtualSocket {
         clock: Box<dyn Fn() -> u64 + Send + Sync>,
     ) -> Self {
         let now = clock();
+        let v6_socket = inner.local_addr().is_ok_and(|a| a.is_ipv6());
         Self {
             inner,
             active: ArcSwap::from_pointee(None),
@@ -172,12 +261,105 @@ impl VirtualSocket {
             last_rx_us: AtomicU64::new(now),
             dropped_unvalidated: AtomicU64::new(0),
             follow_source: AtomicBool::new(false),
+            follow_after_silence_us: AtomicU64::new(0),
+            v6_socket,
+            quic_peer: if v6_socket {
+                mapped(VIRTUAL_PEER)
+            } else {
+                VIRTUAL_PEER
+            },
+            stream: RwLock::new(None),
+            recv_waker: Mutex::new(None),
         }
+    }
+
+    /// The address QUIC must dial: [`VIRTUAL_PEER`], IPv4-mapped on an IPv6 socket.
+    pub fn quic_peer(&self) -> SocketAddr {
+        self.quic_peer
+    }
+
+    /// Frames for [`STREAM_RELAY_ADDR`] go to this pipe, and its frames are
+    /// relay frames from that address. `None` detaches it.
+    pub fn set_stream_relay(&self, pipe: Option<Arc<StreamPipe>>) {
+        if pipe.is_some() {
+            self.add_relay_server(STREAM_RELAY_ADDR);
+        }
+        *self.stream.write().unwrap() = pipe;
+        if let Some(w) = self.recv_waker.lock().unwrap().take() {
+            w.wake();
+        }
+    }
+
+    pub fn has_stream_relay(&self) -> bool {
+        self.stream.read().unwrap().is_some()
+    }
+
+    /// Sends one datagram (or GSO batch) to a real address, or into the stream relay.
+    fn raw_send(&self, t: &Transmit<'_>) -> io::Result<()> {
+        if t.destination == STREAM_RELAY_ADDR {
+            let pipe = self.stream.read().unwrap().clone();
+            if let Some(pipe) = pipe {
+                let seg = t.segment_size.unwrap_or(t.contents.len()).max(1);
+                for chunk in t.contents.chunks(seg) {
+                    (pipe.send)(chunk.to_vec());
+                }
+            }
+            return Ok(());
+        }
+        if self.v6_socket && t.destination.is_ipv4() {
+            return self.inner.try_send(&Transmit {
+                destination: mapped(t.destination),
+                ..*t
+            });
+        }
+        if !self.v6_socket && t.destination.is_ipv6() {
+            // An IPv4 socket has no route there: lost, like any datagram.
+            return Ok(());
+        }
+        self.inner.try_send(t)
+    }
+
+    /// Takes queued stream-relay frames into `bufs`. Registers the waker when empty.
+    fn take_stream(
+        &self,
+        cx: &mut Context<'_>,
+        bufs: &mut [IoSliceMut<'_>],
+        meta: &mut [RecvMeta],
+    ) -> usize {
+        let pipe = self.stream.read().unwrap().clone();
+        let Some(pipe) = pipe else { return 0 };
+        let mut st = pipe.inbox.lock().unwrap_or_else(|e| e.into_inner());
+        let mut n = 0;
+        while n < bufs.len().min(meta.len()) {
+            let Some(frame) = st.0.pop_front() else { break };
+            if frame.len() > bufs[n].len() {
+                continue;
+            }
+            bufs[n][..frame.len()].copy_from_slice(&frame);
+            meta[n] = RecvMeta {
+                addr: STREAM_RELAY_ADDR,
+                len: frame.len(),
+                stride: frame.len(),
+                ..Default::default()
+            };
+            n += 1;
+        }
+        if n == 0 {
+            st.1 = Some(cx.waker().clone());
+        }
+        n
     }
 
     /// See the field. Only ever moves between already validated paths.
     pub fn set_follow_source(&self, on: bool) {
         self.follow_source.store(on, Relaxed);
+    }
+
+    /// See the field. Only ever moves between already validated paths, and
+    /// only when the active one has gone quiet.
+    pub fn set_follow_after_silence(&self, after: Option<std::time::Duration>) {
+        let us = after.map_or(0, |d| (d.as_micros() as u64).max(1));
+        self.follow_after_silence_us.store(us, Relaxed);
     }
 
     /// Frames from this address are relay frames and are unwrapped before anything else.
@@ -258,7 +440,7 @@ impl VirtualSocket {
             segment_size: None,
             src_ip: None,
         };
-        match self.inner.try_send(&t) {
+        match self.raw_send(&t) {
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(()),
             r => r,
         }
@@ -275,7 +457,10 @@ impl VirtualSocket {
             // as before relays existed. Relayed paths never coalesce: each frame
             // arrives as its own datagram from the relay.
             let total = meta[i].len;
-            let from = meta[i].addr;
+            let from = canonical(meta[i].addr);
+            if from == STREAM_RELAY_ADDR && !is_relay_frame(&bufs[i][..total]) {
+                continue;
+            }
             let mut start = 0;
             let mut len = total;
             let mut path = PathTarget::Direct(from);
@@ -303,11 +488,20 @@ impl VirtualSocket {
                 (self.sink)(Inbound::Stun(&bufs[i][start..start + len], path));
                 continue;
             }
-            match self.validated.read().unwrap().get(&path) {
+            let validated = self.validated.read().unwrap();
+            match validated.get(&path) {
                 Some(last) => {
                     last.store(now, Relaxed);
-                    if self.follow_source.load(Relaxed) && **self.active.load() != Some(path) {
-                        self.active.store(Arc::new(Some(path)));
+                    let active = **self.active.load();
+                    if active != Some(path) {
+                        let silence = self.follow_after_silence_us.load(Relaxed);
+                        let active_quiet = silence > 0
+                            && active
+                                .and_then(|a| validated.get(&a))
+                                .is_none_or(|t| now.saturating_sub(t.load(Relaxed)) >= silence);
+                        if self.follow_source.load(Relaxed) || active_quiet {
+                            self.active.store(Arc::new(Some(path)));
+                        }
                     }
                 }
                 None => {
@@ -315,6 +509,7 @@ impl VirtualSocket {
                     continue;
                 }
             }
+            drop(validated);
             if kept != i {
                 let (dst, src) = bufs.split_at_mut(i);
                 dst[kept][..len].copy_from_slice(&src[0][start..start + len]);
@@ -322,7 +517,7 @@ impl VirtualSocket {
             } else if start != 0 {
                 bufs[i].copy_within(start..start + len, 0);
             }
-            meta[kept].addr = VIRTUAL_PEER;
+            meta[kept].addr = self.quic_peer;
             meta[kept].dst_ip = None;
             meta[kept].len = len;
             if start != 0 {
@@ -351,7 +546,7 @@ impl AsyncUdpSocket for VirtualSocket {
                     segment_size: t.segment_size,
                     src_ip: None,
                 };
-                self.inner.try_send(&real)
+                self.raw_send(&real)
             }
             Some(PathTarget::Relay { server, session }) => {
                 // §4.1: no GSO through a relay; each segment gets its own frame.
@@ -368,7 +563,7 @@ impl AsyncUdpSocket for VirtualSocket {
                         segment_size: None,
                         src_ip: None,
                     };
-                    self.inner.try_send(&real)?;
+                    self.raw_send(&real)?;
                 }
                 Ok(())
             }
@@ -382,6 +577,16 @@ impl AsyncUdpSocket for VirtualSocket {
         meta: &mut [RecvMeta],
     ) -> Poll<io::Result<usize>> {
         loop {
+            // Stream-relay frames first; the pipe's waker is registered when it is empty.
+            let n = self.take_stream(cx, bufs, meta);
+            if n > 0 {
+                self.last_rx_us.store((self.clock)(), Relaxed);
+                let kept = self.filter(bufs, meta, n);
+                if kept > 0 {
+                    return Poll::Ready(Ok(kept));
+                }
+                continue;
+            }
             match self.inner.poll_recv(cx, bufs, meta) {
                 Poll::Ready(Ok(n)) => {
                     self.last_rx_us.store((self.clock)(), Relaxed);
@@ -390,6 +595,13 @@ impl AsyncUdpSocket for VirtualSocket {
                         return Poll::Ready(Ok(kept));
                     }
                     // Everything was STUN or rejected: poll again so a waker stays registered.
+                }
+                Poll::Pending => {
+                    let mut w = self.recv_waker.lock().unwrap();
+                    if !w.as_ref().is_some_and(|w| w.will_wake(cx.waker())) {
+                        *w = Some(cx.waker().clone());
+                    }
+                    return Poll::Pending;
                 }
                 other => return other,
             }

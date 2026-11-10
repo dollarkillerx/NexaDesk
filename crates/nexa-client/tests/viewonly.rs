@@ -169,6 +169,10 @@ async fn view_only_real_pipeline_on_loopback() {
             caps: probed.clone(),
             timeouts: Timeouts::default(),
             signal: None,
+            files: nexa_agent::FileSettings {
+                downloads: dir.path().join("Downloads/NexaDesk"),
+                limits: Default::default(),
+            },
         },
         identity,
         store,
@@ -183,6 +187,7 @@ async fn view_only_real_pipeline_on_loopback() {
     let cfg = nexa_client::proto::ClientConfig {
         device_name: "view-only viewer".into(),
         data_dir: dir.path().join("viewer").to_string_lossy().into_owned(),
+        ..Default::default()
     }
     .encode_to_vec();
     let mut client = std::ptr::null_mut();

@@ -122,6 +122,84 @@ impl VideoShardHeader {
     }
 }
 
+pub mod audio_flags {
+    /// First packet after the host (re)started capture: the receiver resets its
+    /// jitter buffer and decoder instead of concealing a gap.
+    pub const RESTART: u8 = 1 << 0;
+}
+
+/// AudioPacket (§3.1 type 0x02). §3.1 reserves the type; the layout is defined here:
+///
+/// ```text
+///  0 u8  type          0x02
+///  1 u8  stream        audio stream, 0 for system audio
+///  2 u8  flags         bit0 RESTART (see `audio_flags`)
+///  3 u8  frame_10ms    duration of the payload in 10 ms units (always 1 today)
+///  4 u32 tx_seq        the transport sequence shared with VideoShard (§3.2), so the
+///                      viewer's TransportFeedback covers audio and video alike
+///  8 u32 seq           audio packet number, +1 per packet; gaps are losses
+/// 12 u32 capture_ts_us host monotonic clock, low 32 bits, same clock as VideoShard
+/// 16 u8[] payload      exactly one Opus packet (RFC 6716), 48 kHz stereo, 1..=1275 bytes
+/// ```
+///
+/// One Opus packet per datagram keeps a loss to one 10 ms frame that the decoder can
+/// conceal; there is no FEC or retransmission for audio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AudioHeader {
+    pub stream: u8,
+    pub flags: u8,
+    pub frame_10ms: u8,
+    pub tx_seq: u32,
+    pub seq: u32,
+    pub capture_ts_us: u32,
+}
+
+impl AudioHeader {
+    pub const LEN: usize = 16;
+    /// RFC 6716 §3.4: an Opus packet is at most 1275 bytes.
+    pub const MAX_PAYLOAD: usize = 1275;
+
+    pub fn write(&self, out: &mut [u8; Self::LEN]) {
+        out[0] = TYPE_AUDIO;
+        out[1] = self.stream;
+        out[2] = self.flags;
+        out[3] = self.frame_10ms;
+        out[4..8].copy_from_slice(&self.tx_seq.to_le_bytes());
+        out[8..12].copy_from_slice(&self.seq.to_le_bytes());
+        out[12..16].copy_from_slice(&self.capture_ts_us.to_le_bytes());
+    }
+
+    /// The whole datagram: header followed by `payload`.
+    pub fn encode(&self, payload: &[u8], out: &mut Vec<u8>) {
+        let mut h = [0u8; Self::LEN];
+        self.write(&mut h);
+        out.extend_from_slice(&h);
+        out.extend_from_slice(payload);
+    }
+
+    /// Parses and validates a whole datagram, returning the header and the Opus packet.
+    pub fn parse(buf: &[u8]) -> Result<(Self, &[u8])> {
+        expect_type(buf, TYPE_AUDIO)?;
+        need(buf, Self::LEN + 1)?;
+        let h = Self {
+            stream: buf[1],
+            flags: buf[2],
+            frame_10ms: buf[3],
+            tx_seq: u32_at(buf, 4),
+            seq: u32_at(buf, 8),
+            capture_ts_us: u32_at(buf, 12),
+        };
+        if h.frame_10ms == 0 || h.frame_10ms > 12 {
+            return Err(WireError::Invalid("audio frame duration"));
+        }
+        let payload = &buf[Self::LEN..];
+        if payload.len() > Self::MAX_PAYLOAD {
+            return Err(WireError::Invalid("audio payload length"));
+        }
+        Ok((h, payload))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PacketStatus {
     NotReceived,
@@ -425,7 +503,8 @@ mod tests {
 
     #[test]
     fn video_rejects_inconsistent_fields() {
-        let cases: Vec<(&str, fn(&mut VideoShardHeader))> = vec![
+        type Mutate = fn(&mut VideoShardHeader);
+        let cases: Vec<(&str, Mutate)> = vec![
             ("k zero", |h| h.k = 0),
             ("index out of range", |h| h.shard_index = 5),
             ("odd shard_len", |h| h.shard_len = 1133),
@@ -521,6 +600,52 @@ mod tests {
         }
     }
 
+    #[test]
+    fn audio_layout_is_as_documented_and_round_trips() {
+        let h = AudioHeader {
+            stream: 0,
+            flags: audio_flags::RESTART,
+            frame_10ms: 1,
+            tx_seq: 0x0102_0304,
+            seq: 77,
+            capture_ts_us: 0xDEAD_BEEF,
+        };
+        let mut b = Vec::new();
+        h.encode(&[1, 2, 3], &mut b);
+        assert_eq!(b.len(), AudioHeader::LEN + 3);
+        assert_eq!(b[0], TYPE_AUDIO);
+        assert_eq!(
+            &b[4..8],
+            &0x0102_0304u32.to_le_bytes(),
+            "tx_seq where VideoShard has it"
+        );
+        assert_eq!(&b[8..12], &77u32.to_le_bytes());
+        let (parsed, payload) = AudioHeader::parse(&b).unwrap();
+        assert_eq!(parsed, h);
+        assert_eq!(payload, &[1, 2, 3]);
+    }
+
+    #[test]
+    fn audio_rejects_empty_oversized_and_bad_durations() {
+        let h = AudioHeader {
+            stream: 0,
+            flags: 0,
+            frame_10ms: 1,
+            tx_seq: 1,
+            seq: 1,
+            capture_ts_us: 1,
+        };
+        let mut empty = Vec::new();
+        h.encode(&[], &mut empty);
+        assert!(AudioHeader::parse(&empty).is_err());
+        let mut big = Vec::new();
+        h.encode(&[0; AudioHeader::MAX_PAYLOAD + 1], &mut big);
+        assert!(AudioHeader::parse(&big).is_err());
+        let mut zero = Vec::new();
+        AudioHeader { frame_10ms: 0, ..h }.encode(&[1], &mut zero);
+        assert!(AudioHeader::parse(&zero).is_err());
+    }
+
     /// Parsers face the network: arbitrary bytes must never panic.
     #[test]
     fn parsers_survive_garbage() {
@@ -543,6 +668,7 @@ mod tests {
             let _ = Pointer::parse(&b);
             let _ = Nack::parse(&b);
             let _ = Clock::parse(&b);
+            let _ = AudioHeader::parse(&b);
         }
     }
 }

@@ -28,6 +28,7 @@ use objc2_video_toolbox::{
     VTCompressionSession, VTEncodeInfoFlags, VTSessionSetProperty, kVTCompressionPropertyKey_AllowFrameReordering,
     kVTCompressionPropertyKey_AverageBitRate, kVTCompressionPropertyKey_ColorPrimaries,
     kVTCompressionPropertyKey_EnableLTR, kVTCompressionPropertyKey_ExpectedFrameRate,
+    kVTCompressionPropertyKey_MaxAllowedFrameQP, kVTCompressionPropertyKey_Quality,
     kVTCompressionPropertyKey_ProfileLevel, kVTCompressionPropertyKey_RealTime,
     kVTCompressionPropertyKey_TransferFunction, kVTCompressionPropertyKey_YCbCrMatrix,
     kVTEncodeFrameOptionKey_AcknowledgedLTRTokens, kVTEncodeFrameOptionKey_ForceKeyFrame,
@@ -252,6 +253,31 @@ impl VtEncoder {
     /// The codec actually in use.
     pub fn codec(&self) -> Codec {
         self.codec
+    }
+
+    /// Sets `MaxAllowedFrameQP` on the running session. Returns the OS status; `None`
+    /// passes NULL to ask for the default.
+    ///
+    /// For the §6.8 experiment only (`tests/vt_refine.rs`); the pipeline does not use
+    /// it. Measured on macOS 27: accepted live without an IDR and it does sharpen a
+    /// static frame, but there is no clean way back. Raising the cap to 51 leaves an
+    /// H.264 session dropping every other 60 fps frame, and NULL is refused (-50).
+    pub fn set_max_frame_qp(&mut self, qp: Option<u32>) -> i32 {
+        let value = qp.map(|q| number_i64(i64::from(q.min(51))));
+        // SAFETY: the key is a VideoToolbox static and the value a CFNumber or
+        // NULL, which asks for the default.
+        unsafe { VTSessionSetProperty(&self.session, kVTCompressionPropertyKey_MaxAllowedFrameQP, value.as_deref()) }
+    }
+
+    /// Sets `Quality` (0.0–1.0) on the running session. Returns the OS status.
+    /// Low-latency sessions refuse it (-12900); kept for the same experiment.
+    pub fn set_quality(&mut self, quality: f32) -> i32 {
+        // SAFETY: the key is a VideoToolbox static and the value a CFNumber.
+        unsafe {
+            let n: CFRetained<CFType> =
+                CFRetained::cast_unchecked(CFNumber::new_f32(quality.clamp(0.0, 1.0)));
+            VTSessionSetProperty(&self.session, kVTCompressionPropertyKey_Quality, Some(&n))
+        }
     }
 
     /// Properties the session rejected, for diagnostics. `MaxFrameDelayCount` and

@@ -7,6 +7,8 @@
 //! them, so it adds no way in.
 
 mod agent;
+mod host_audio;
+mod host_cursor;
 pub mod ipc;
 mod session;
 pub mod signal;
@@ -15,7 +17,9 @@ mod ui_host;
 use std::net::SocketAddr;
 
 use nexa_clip::ClipNotice;
-use nexa_media::{CaptureConfig, Capturer, Encoder, EncoderConfig};
+use nexa_media::{
+    AudioCapture, AudioEncoder, CaptureConfig, Capturer, CursorSource, Encoder, EncoderConfig,
+};
 use nexa_session::{
     clip::{ClipPlatform, PromiseResolver},
     handshake::Consent,
@@ -23,7 +27,7 @@ use nexa_session::{
 };
 use nexa_wire::control::Permissions;
 
-pub use agent::{Agent, AgentConfig, AgentError, start};
+pub use agent::{Agent, AgentConfig, AgentError, FileSettings, start};
 pub use signal::{SignalSetup, SignalState, SignalStatus};
 pub use ui_host::{UiChain, UiHost, UiHostError, start_with_ui};
 
@@ -42,7 +46,27 @@ pub struct ScreenInfo {
 
 /// The real world, or a test's fake of it.
 pub trait Platform: Send + Sync + 'static {
+    /// The main display.
     fn screen(&self) -> Result<ScreenInfo, String>;
+    /// Every display a viewer may pick (§6.7), main display first. Read again for
+    /// every session and every switch, since monitors come and go.
+    fn displays(&self) -> Result<Vec<ScreenInfo>, String> {
+        self.screen().map(|s| vec![s])
+    }
+    /// The host cursor (§6.9). Only asked for in sessions with the input permission.
+    /// `None` keeps the cursor drawn into the video in every mode.
+    fn cursor_source(&self) -> Option<Box<dyn CursorSource>> {
+        None
+    }
+    /// Starts system-audio capture. Only called for sessions granted `audio`, and
+    /// only while the viewer has it switched on.
+    fn audio_capture(&self, display_id: u32) -> Result<Box<dyn AudioCapture>, String> {
+        let _ = display_id;
+        Err("system audio is not available on this host".into())
+    }
+    fn audio_encoder(&self) -> Result<Box<dyn AudioEncoder>, String> {
+        Err("no audio encoder on this host".into())
+    }
     fn capturer(&self, config: CaptureConfig) -> nexa_media::Result<Box<dyn Capturer>>;
     fn encoder(&self, config: EncoderConfig) -> nexa_media::Result<Box<dyn Encoder>>;
     /// Whether injected input would actually work (macOS: Accessibility is granted).
@@ -91,6 +115,11 @@ pub enum AgentEvent {
     Warning(String),
     /// Reachability by ID changed (§4.3).
     Signal(SignalStatus),
+    /// A file transfer of session `session` moved on.
+    Transfer {
+        session: u64,
+        event: nexa_session::transfer::TransferEvent,
+    },
 }
 
 /// The person at the host. §9.3's "always shows who is connected" lives here.

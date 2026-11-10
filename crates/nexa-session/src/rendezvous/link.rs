@@ -11,6 +11,16 @@
 //! [`Link::take_switches`]); the host follows only [`Link::apply_remote_switch`].
 //! Before the first `PathSwitch` the host answers on whichever validated path
 //! the viewer's QUIC packets last came from; STUN never moves the active path.
+//!
+//! Also here (§4.2, §4.5, §4.6, §4.7):
+//! - one dual-stack socket, so IPv4 and IPv6 candidates pair in their own family;
+//! - a port mapping (PCP / NAT-PMP / UPnP) as one more candidate, released on drop;
+//! - the WSS relay: when the UDP relay never answers our bind, the same frames
+//!   and token go over a WebSocket to the signaling server, as another path;
+//! - network changes: rebind the relay, check every pair again, gather again,
+//!   and hand the new candidates to the session for a `CandidateUpdate` on the
+//!   control stream ([`Link::take_candidate_updates`], [`Link::apply_candidate_update`]);
+//! - Tailscale paths are marked DERP when the LocalAPI says the peer is relayed.
 
 use std::{
     collections::HashMap,
@@ -22,12 +32,15 @@ use std::{
 
 use nexa_net::{
     check::{
-        CheckEvent, Checker, Credentials, PathClass, PeerNat, RemoteCandidate, kind_of_unlisted,
+        CheckEvent, Checker, Credentials, Families, PathClass, PeerNat, RemoteCandidate,
+        kind_of_unlisted,
     },
-    gather::{local_candidates, nat_from_mappings, system_addresses},
+    gather::{local_candidates_for, nat_from_mappings, system_addresses},
     path::{CandKind, PathDecision, PathId, PathManager, Role},
+    portmap::{PortMapConfig, PortMapping},
     stun::{StunClass, StunMessage, TransactionId, encode_binding_request},
-    vsock::{Inbound, PathSink, PathTarget, VirtualSocket, bind_media_socket},
+    tailscale::TailnetMonitor,
+    vsock::{Inbound, PathSink, PathTarget, STREAM_RELAY_ADDR, VirtualSocket, bind_media_socket},
 };
 use nexa_wire::signal::{
     BindRefusal, MAX_CANDIDATES, MAX_PWD, MAX_UFRAG, MIN_PWD, MIN_UFRAG, NatKind, RelayGrant,
@@ -36,6 +49,8 @@ use nexa_wire::signal::{
 };
 use quinn::{AsyncUdpSocket, Endpoint, EndpointConfig, Runtime, TokioRuntime};
 use tokio::sync::{mpsc, oneshot, watch};
+
+use super::{signal::SignalConfig, wss::StreamRelay};
 
 /// §4.4 Gathering: 1 s, then go with what we have; later answers are trickled.
 pub const GATHER_TIMEOUT: Duration = Duration::from_secs(1);
@@ -57,23 +72,66 @@ pub const REPUNCH_EVERY: Duration = Duration::from_secs(30);
 /// consent prompt can keep QUIC quiet for a minute).
 const LIVENESS_PROBE_AFTER: Duration = Duration::from_millis(250);
 const STUN_QUEUE: usize = 1024;
+/// §4.6: our UDP relay bind went unanswered this long, so try the WebSocket.
+pub const WSS_FALLBACK_AFTER: Duration = Duration::from_secs(1);
+/// Network events come in bursts (an interface goes down, another comes up).
+const NETWORK_SETTLE: Duration = Duration::from_millis(300);
+/// How often Tailscale paths are checked for a move between direct and DERP.
+const TAILNET_RECHECK: Duration = Duration::from_secs(2);
+/// Each `CandidateUpdate` sets off up to 64 pairs of checks to addresses the
+/// peer names: even an authenticated peer gets that at most once a second.
+const PEER_UPDATE_EVERY: Duration = Duration::from_secs(1);
 
 pub type SocketFactory =
     Arc<dyn Fn(SocketAddr) -> io::Result<Arc<dyn AsyncUdpSocket>> + Send + Sync>;
 
 /// Which local addresses to offer.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum Interfaces {
     /// Enumerate this machine's interfaces (§4.2).
     System,
     /// Exactly these, e.g. in tests.
     Fixed(Vec<IpAddr>),
+    /// Asked again at every gathering, e.g. a simulated machine that moves.
+    Dynamic(Arc<dyn Fn() -> Vec<IpAddr> + Send + Sync>),
 }
+
+impl std::fmt::Debug for Interfaces {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Interfaces::System => write!(f, "System"),
+            Interfaces::Fixed(ips) => f.debug_tuple("Fixed").field(ips).finish(),
+            Interfaces::Dynamic(_) => write!(f, "Dynamic"),
+        }
+    }
+}
+
+/// Where port-mapping requests go (§4.2 Portmap).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PortMap {
+    /// This machine's default gateways, looked up again after a network change.
+    System,
+    /// Exactly this (fake gateways in tests).
+    Fixed(PortMapConfig),
+}
+
+impl PortMap {
+    fn config(&self) -> PortMapConfig {
+        match self {
+            PortMap::System => PortMapConfig::system(),
+            PortMap::Fixed(c) => c.clone(),
+        }
+    }
+}
+
+/// Bumped by whoever watches the network ([`system_network_changes`] for the real one).
+pub type NetworkChanges = watch::Receiver<u64>;
 
 #[derive(Clone)]
 pub struct LinkOptions {
     /// Local address for the session socket. An unspecified IP means all
-    /// interfaces; a specific one is also the only host candidate.
+    /// interfaces (`[::]` is dual-stack); a specific one is also the only host
+    /// candidate.
     pub bind: SocketAddr,
     pub interfaces: Interfaces,
     /// Offer no direct candidates and answer no direct checks: the peer only
@@ -83,6 +141,14 @@ pub struct LinkOptions {
     pub socket_factory: Option<SocketFactory>,
     /// §5.3's 30 s; shorter in tests.
     pub repunch_every: Duration,
+    /// The signaling server, for the WSS relay fallback (§4.6). `dial` fills it in.
+    pub wss_relay: Option<SignalConfig>,
+    /// Off unless set: a mapping changes the user's router.
+    pub portmap: Option<PortMap>,
+    /// Off unless set.
+    pub network_changes: Option<NetworkChanges>,
+    /// Tailscale's view of its peers, for direct vs DERP (§4.7). Off unless set.
+    pub tailnet: Option<Arc<TailnetMonitor>>,
 }
 
 impl std::fmt::Debug for LinkOptions {
@@ -92,20 +158,73 @@ impl std::fmt::Debug for LinkOptions {
             .field("interfaces", &self.interfaces)
             .field("relay_only", &self.relay_only)
             .field("repunch_every", &self.repunch_every)
+            .field("wss_relay", &self.wss_relay.as_ref().map(|c| &c.url))
+            .field("portmap", &self.portmap)
+            .field("network_changes", &self.network_changes.is_some())
+            .field("tailnet", &self.tailnet.is_some())
             .finish_non_exhaustive()
     }
 }
 
 impl Default for LinkOptions {
+    /// All interfaces, dual-stack, and nothing that reaches beyond the peer and
+    /// the signaling server: no port mapping, no network or Tailscale watching.
     fn default() -> Self {
         Self {
-            bind: SocketAddr::from(([0, 0, 0, 0], 0)),
+            bind: SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0)),
             interfaces: Interfaces::System,
             relay_only: false,
             socket_factory: None,
             repunch_every: REPUNCH_EVERY,
+            wss_relay: None,
+            portmap: None,
+            network_changes: None,
+            tailnet: None,
         }
     }
+}
+
+impl LinkOptions {
+    /// What the shipped apps use: the defaults plus port mapping on this
+    /// machine's gateway, network-change watching and the Tailscale LocalAPI.
+    pub fn system() -> Self {
+        Self {
+            portmap: Some(PortMap::System),
+            network_changes: Some(system_network_changes()),
+            tailnet: Some(system_tailnet()),
+            ..Self::default()
+        }
+    }
+}
+
+/// This machine's network changes, watched once per process.
+pub fn system_network_changes() -> NetworkChanges {
+    use std::sync::OnceLock;
+    static WATCH: OnceLock<(watch::Sender<u64>, nexa_net::netwatch::NetWatcher)> = OnceLock::new();
+    WATCH
+        .get_or_init(|| {
+            let (tx, _) = watch::channel(0u64);
+            let bump = tx.clone();
+            let watcher = nexa_net::netwatch::NetWatcher::start(Arc::new(move || {
+                bump.send_modify(|v| *v += 1);
+            }));
+            (tx, watcher)
+        })
+        .0
+        .subscribe()
+}
+
+/// tailscaled's status, polled once per process. Fails silently (§4.7).
+pub fn system_tailnet() -> Arc<TailnetMonitor> {
+    use std::sync::OnceLock;
+    static MON: OnceLock<Arc<TailnetMonitor>> = OnceLock::new();
+    MON.get_or_init(|| {
+        TailnetMonitor::spawn(
+            nexa_net::tailscale::LocalApi::System,
+            Duration::from_secs(10),
+        )
+    })
+    .clone()
 }
 
 /// A validated path as reported to the session.
@@ -128,6 +247,14 @@ pub struct LinkState {
     /// Checks are over and nothing was validated.
     pub failed: bool,
     pub switches: u32,
+    /// Our relay seat is on the WebSocket fallback, not UDP.
+    pub relay_over_wss: bool,
+    /// Where the gateway forwards to us, if a port mapping was granted.
+    pub port_mapping: Option<SocketAddr>,
+    /// Local network changes handled so far.
+    pub network_changes: u32,
+    /// `CandidateUpdate`s received from the peer.
+    pub peer_updates: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -248,6 +375,12 @@ enum Cmd {
     RemoteSwitch(u32),
     /// Viewer: the QUIC handshake is stuck; try the next validated path.
     Rotate,
+    /// The peer's `CandidateUpdate`, from the authenticated control stream.
+    PeerUpdate(Vec<RemoteCandidate>),
+    /// The WebSocket relay came up (or did not).
+    StreamRelay(Option<StreamRelay>),
+    /// A port-mapping attempt finished.
+    Mapped(Option<PortMapping>),
 }
 
 /// See the module docs. Dropping the last handle stops the driver.
@@ -255,10 +388,14 @@ pub struct Link {
     pub vsock: Arc<VirtualSocket>,
     pub endpoint: Endpoint,
     role: Role,
+    families: Families,
     cmd: mpsc::UnboundedSender<Cmd>,
     state: watch::Receiver<LinkState>,
     switches: Mutex<Option<mpsc::UnboundedReceiver<u32>>>,
     late: Mutex<Option<mpsc::UnboundedReceiver<Vec<WireCandidate>>>>,
+    updates: Mutex<Option<mpsc::UnboundedReceiver<Vec<WireCandidate>>>>,
+    /// Shared with the driver so that dropping the link releases it.
+    mapping: Arc<Mutex<Option<PortMapping>>>,
     driver: tokio::task::JoinHandle<()>,
 }
 
@@ -266,7 +403,22 @@ impl Drop for Link {
     fn drop(&mut self) {
         self.driver.abort();
         self.endpoint.close(0u32.into(), b"link closed");
+        if let Some(m) = self
+            .mapping
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            release_mapping(m);
+        }
     }
+}
+
+/// Releases on a thread of its own: dropping a link must not block.
+fn release_mapping(m: PortMapping) {
+    let _ = std::thread::Builder::new()
+        .name("portmap-release".into())
+        .spawn(move || nexa_net::portmap::release(&m));
 }
 
 impl std::fmt::Debug for Link {
@@ -295,9 +447,19 @@ impl Link {
     ) -> io::Result<Self> {
         let inner: Arc<dyn AsyncUdpSocket> = match &opts.socket_factory {
             Some(f) => f(opts.bind)?,
-            None => TokioRuntime.wrap_udp_socket(bind_media_socket(opts.bind)?)?,
+            None => {
+                let std = match bind_media_socket(opts.bind) {
+                    // No IPv6 on this machine: IPv4 only.
+                    Err(_) if opts.bind.is_ipv6() && opts.bind.ip().is_unspecified() => {
+                        bind_media_socket(SocketAddr::from(([0, 0, 0, 0], opts.bind.port())))?
+                    }
+                    r => r?,
+                };
+                TokioRuntime.wrap_udp_socket(std)?
+            }
         };
         let local = inner.local_addr()?;
+        let families = Families::of(local);
         let (stun_tx, stun_rx) = mpsc::channel::<(Inbound2, Vec<u8>)>(STUN_QUEUE);
         let sink: PathSink = Box::new(move |inbound| {
             let item = match inbound {
@@ -317,6 +479,10 @@ impl Link {
             Box::new(move || start.elapsed().as_micros() as u64);
         let vsock = Arc::new(VirtualSocket::unrouted(inner, sink, clock));
         vsock.set_follow_source(role == Role::Host);
+        if role == Role::Host {
+            // §4.5's failover silence: the viewer has moved on, so answer where it is.
+            vsock.set_follow_after_silence(Some(nexa_net::path::FAILOVER_SILENCE));
+        }
         let endpoint = Endpoint::new_with_abstract_socket(
             EndpointConfig::default(),
             server,
@@ -327,14 +493,36 @@ impl Link {
         let (state_tx, state_rx) = watch::channel(LinkState::default());
         let (switch_tx, switch_rx) = mpsc::unbounded_channel();
         let (late_tx, late_rx) = mpsc::unbounded_channel();
+        let (update_tx, update_rx) = mpsc::unbounded_channel();
+        let mapping: Arc<Mutex<Option<PortMapping>>> = Arc::default();
         let creds = Credentials::generate(&mut os_random);
+        let network = opts.network_changes.clone();
         let driver = Driver {
             role,
-            opts,
             local,
+            families,
             start,
             vsock: vsock.clone(),
-            checker: Checker::new(role, creds, local.is_ipv4(), Box::new(os_random)),
+            checker: Checker::new(role, creds, families, Box::new(os_random)),
+            cmd: cmd_tx.downgrade(),
+            updates: update_tx,
+            mapping: mapping.clone(),
+            mapping_pending: false,
+            portmap_nonce: {
+                let mut n = [0u8; 12];
+                os_random(&mut n);
+                n
+            },
+            mapped_external: None,
+            stream_relay: None,
+            pending_change: None,
+            network_changes: 0,
+            peer_updates: 0,
+            pending_peer_update: None,
+            last_peer_update: None,
+            last_tailnet_check: None,
+            last_offer: Vec::new(),
+            opts,
             pm: PathManager::new(role),
             paths: HashMap::new(),
             by_target: HashMap::new(),
@@ -352,17 +540,48 @@ impl Link {
             remote_set: false,
             switches_done: 0,
         };
-        let task = tokio::spawn(driver.run(stun_rx, cmd_rx));
+        let task = tokio::spawn(driver.run(stun_rx, cmd_rx, network));
         Ok(Self {
             vsock,
             endpoint,
             role,
+            families,
             cmd: cmd_tx,
             state: state_rx,
             switches: Mutex::new(Some(switch_rx)),
             late: Mutex::new(Some(late_rx)),
+            updates: Mutex::new(Some(update_rx)),
+            mapping,
             driver: task,
         })
+    }
+
+    /// What QUIC must dial on [`endpoint`](Self::endpoint): the virtual peer,
+    /// IPv4-mapped on a dual-stack socket. quinn maps it itself, so
+    /// `VIRTUAL_PEER` works too.
+    pub fn quic_peer(&self) -> SocketAddr {
+        self.vsock.quic_peer()
+    }
+
+    /// Which address families the session socket carries.
+    pub fn families(&self) -> Families {
+        self.families
+    }
+
+    /// Candidates gathered again after a network change, for a
+    /// `CandidateUpdate` on the authenticated control stream (§4.5).
+    pub fn take_candidate_updates(&self) -> Option<mpsc::UnboundedReceiver<Vec<WireCandidate>>> {
+        self.updates
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+    }
+
+    /// The peer's `CandidateUpdate`. Only call with what arrived on the
+    /// authenticated control stream; the candidates are still only checked.
+    pub fn apply_candidate_update(&self, candidates: &[WireCandidate]) {
+        let c = remote_candidates(candidates);
+        let _ = self.cmd.send(Cmd::PeerUpdate(c));
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -388,10 +607,9 @@ impl Link {
         let Ok(token) = RelayToken::decode(&grant.token) else {
             return false;
         };
-        if server.port() == 0
-            || server.ip().is_unspecified()
-            || server.is_ipv4() != self.local_addr().map(|a| a.is_ipv4()).unwrap_or(true)
-        {
+        // A relay we cannot reach over UDP is still worth binding: the
+        // WebSocket fallback uses the same grant.
+        if server.port() == 0 || server.ip().is_unspecified() || server.ip().is_multicast() {
             return false;
         }
         let _ = self
@@ -470,6 +688,9 @@ struct Gathering {
     next: Instant,
     deadline: Instant,
     reply: Option<oneshot::Sender<LocalOffer>>,
+    /// Gathering again after a network change: the result is a `CandidateUpdate`.
+    update: bool,
+    done: bool,
     host: Vec<(SocketAddr, CandKind)>,
     note: Option<String>,
 }
@@ -480,6 +701,8 @@ struct RelayBinding {
     state: RelayState,
     next: Instant,
     since: Instant,
+    /// The WebSocket fallback was tried for this seat.
+    tried_wss: bool,
 }
 
 struct PathEntry {
@@ -490,6 +713,7 @@ struct Driver {
     role: Role,
     opts: LinkOptions,
     local: SocketAddr,
+    families: Families,
     start: Instant,
     vsock: Arc<VirtualSocket>,
     checker: Checker,
@@ -502,6 +726,24 @@ struct Driver {
     state: watch::Sender<LinkState>,
     switches: mpsc::UnboundedSender<u32>,
     late: mpsc::UnboundedSender<Vec<WireCandidate>>,
+    updates: mpsc::UnboundedSender<Vec<WireCandidate>>,
+    /// For work that finishes off the driver (WebSocket, port mapping). Weak,
+    /// so the driver does not keep its own command channel open.
+    cmd: mpsc::WeakUnboundedSender<Cmd>,
+    mapping: Arc<Mutex<Option<PortMapping>>>,
+    mapping_pending: bool,
+    /// One PCP mapping per socket (RFC 6887 §11.1): the same nonce every time.
+    portmap_nonce: [u8; 12],
+    mapped_external: Option<SocketAddr>,
+    stream_relay: Option<StreamRelay>,
+    pending_change: Option<Instant>,
+    network_changes: u32,
+    peer_updates: u32,
+    pending_peer_update: Option<Vec<RemoteCandidate>>,
+    last_peer_update: Option<Instant>,
+    last_tailnet_check: Option<Instant>,
+    /// What the peer has from us, to send an update only when it changed.
+    last_offer: Vec<SocketAddr>,
     remote_switched: bool,
     last_repunch: Option<Instant>,
     last_rx_seen: HashMap<PathId, u64>,
@@ -511,12 +753,27 @@ struct Driver {
     switches_done: u32,
 }
 
+async fn changed(rx: &mut Option<NetworkChanges>) {
+    match rx {
+        Some(r) => {
+            if r.changed().await.is_err() {
+                *rx = None;
+            }
+        }
+        None => std::future::pending().await,
+    }
+}
+
 impl Driver {
     async fn run(
         mut self,
         mut stun: mpsc::Receiver<(Inbound2, Vec<u8>)>,
         mut cmds: mpsc::UnboundedReceiver<Cmd>,
+        mut network: Option<NetworkChanges>,
     ) {
+        if let Some(n) = &mut network {
+            n.mark_unchanged();
+        }
         let mut tick = tokio::time::interval(TICK);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -537,6 +794,10 @@ impl Driver {
                     }
                     None => return,
                 },
+                _ = changed(&mut network) => {
+                    let now = Instant::now();
+                    self.pending_change.get_or_insert(now + NETWORK_SETTLE);
+                }
                 _ = tick.tick() => {
                     let now = Instant::now();
                     self.on_tick(now);
@@ -552,7 +813,7 @@ impl Driver {
 
     fn on_cmd(&mut self, cmd: Cmd, now: Instant) {
         match cmd {
-            Cmd::Gather { stun, reply } => self.start_gathering(stun, reply, now),
+            Cmd::Gather { stun, reply } => self.start_gathering(stun, Some(reply), now),
             Cmd::Relay(server, session, token) => {
                 self.vsock.add_relay_server(server);
                 let target = PathTarget::Relay { server, session };
@@ -562,6 +823,7 @@ impl Driver {
                     state: RelayState::Binding,
                     next: now,
                     since: now,
+                    tried_wss: false,
                 });
             }
             Cmd::Remote(r) => {
@@ -586,6 +848,15 @@ impl Driver {
                     self.checker.add_candidates(&c);
                 }
             }
+            Cmd::PeerUpdate(c) => {
+                if !self.opts.relay_only && !c.is_empty() {
+                    // The latest one wins; applied at most once per PEER_UPDATE_EVERY.
+                    self.pending_peer_update = Some(c);
+                    self.apply_peer_update(now);
+                }
+            }
+            Cmd::StreamRelay(relay) => self.on_stream_relay(relay, now),
+            Cmd::Mapped(m) => self.on_mapped(m, now),
             Cmd::RemoteSwitch(tag) => {
                 let Some(target) = self.checker.target_of_tag(tag) else {
                     return;
@@ -619,36 +890,48 @@ impl Driver {
         }
     }
 
+    /// Host candidates: the bound address, or every interface address.
+    fn host_candidates(&self) -> Vec<(SocketAddr, CandKind)> {
+        if self.opts.relay_only {
+            return Vec::new();
+        }
+        if !self.opts.bind.ip().is_unspecified() && !self.local.ip().is_unspecified() {
+            let kind =
+                nexa_net::gather::classify_local("", self.local.ip()).unwrap_or(CandKind::Host);
+            return vec![(self.local, kind)];
+        }
+        let addrs: Vec<(String, IpAddr)> = match &self.opts.interfaces {
+            Interfaces::System => system_addresses(),
+            Interfaces::Fixed(ips) => ips.iter().map(|ip| (String::new(), *ip)).collect(),
+            Interfaces::Dynamic(f) => f().into_iter().map(|ip| (String::new(), ip)).collect(),
+        };
+        local_candidates_for(&addrs, self.local.port(), self.families)
+    }
+
     fn start_gathering(
         &mut self,
         stun: Vec<SocketAddr>,
-        reply: oneshot::Sender<LocalOffer>,
+        reply: Option<oneshot::Sender<LocalOffer>>,
         now: Instant,
     ) {
-        let host = if self.opts.relay_only {
-            Vec::new()
-        } else if !self.local.ip().is_unspecified() {
-            let kind =
-                nexa_net::gather::classify_local("", self.local.ip()).unwrap_or(CandKind::Host);
-            vec![(self.local, kind)]
-        } else {
-            let addrs: Vec<(String, IpAddr)> = match &self.opts.interfaces {
-                Interfaces::System => system_addresses(),
-                Interfaces::Fixed(ips) => ips.iter().map(|ip| (String::new(), *ip)).collect(),
-            };
-            local_candidates(&addrs, self.local.port(), self.local.is_ipv4())
-        };
+        let host = self.host_candidates();
         let servers: Vec<SocketAddr> = if self.opts.relay_only {
             Vec::new()
         } else {
-            stun.into_iter()
-                .filter(|s| s.is_ipv4() == self.local.is_ipv4())
-                .take(2)
-                .collect()
+            // Two per family: §4.2 needs two answers to tell the NAT's mapping.
+            let v4 = stun
+                .iter()
+                .filter(|s| s.is_ipv4() && self.families.v4)
+                .take(2);
+            let v6 = stun
+                .iter()
+                .filter(|s| s.is_ipv6() && self.families.v6)
+                .take(2);
+            v4.chain(v6).copied().collect()
         };
-        let note = match servers.len() {
-            0 => Some("no STUN server".to_owned()),
-            1 => Some("one STUN server: NAT type not measured".to_owned()),
+        let note = match servers.iter().filter(|s| s.is_ipv4()).count() {
+            0 if servers.is_empty() => Some("no STUN server".to_owned()),
+            0 | 1 => Some("one STUN server: NAT type not measured".to_owned()),
             _ => None,
         };
         let mut txids = Vec::new();
@@ -657,6 +940,7 @@ impl Driver {
             os_random(&mut id);
             txids.push(TransactionId(id));
         }
+        let update = reply.is_none();
         self.gathering = Some(Gathering {
             mapped: vec![None; servers.len()],
             servers,
@@ -664,22 +948,75 @@ impl Driver {
             sends: 0,
             next: now,
             deadline: now + GATHER_TIMEOUT,
-            reply: Some(reply),
+            reply,
+            update,
+            done: false,
             host,
             note,
         });
+        self.start_mapping();
         self.gather_tick(now);
+    }
+
+    /// §4.2 Portmap, off the driver: at most 800 ms of blocking I/O.
+    fn start_mapping(&mut self) {
+        let Some(pm) = self.opts.portmap.clone() else {
+            return;
+        };
+        if self.opts.relay_only || self.mapping_pending || !self.families.v4 {
+            return;
+        }
+        let Some(cmd) = self.cmd.upgrade() else {
+            return;
+        };
+        self.mapping_pending = true;
+        let port = self.local.port();
+        let nonce = self.portmap_nonce;
+        tokio::task::spawn_blocking(move || {
+            let m = nexa_net::portmap::map_udp(&pm.config(), port, nonce);
+            let _ = cmd.send(Cmd::Mapped(m));
+        });
+    }
+
+    fn on_mapped(&mut self, m: Option<PortMapping>, now: Instant) {
+        self.mapping_pending = false;
+        let old = {
+            let mut slot = self.mapping.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::replace(&mut *slot, m.clone())
+        };
+        // Asking the same gateway again renewed the same mapping; only one on
+        // a gateway we have left (or a different method) is released.
+        if let Some(old) = old
+            && m.as_ref()
+                .is_none_or(|n| n.protocol != old.protocol || n.server() != old.server())
+        {
+            release_mapping(old);
+        }
+        self.mapped_external = m.map(|m| m.external);
+        if self.gathering.as_ref().is_some_and(|g| g.done) {
+            // Gathering is over: the mapping goes out late, like a slow STUN answer.
+            self.send_late(now);
+        }
+        self.publish();
     }
 
     fn gather_tick(&mut self, now: Instant) {
         let Some(g) = &mut self.gathering else { return };
-        let all = g.mapped.iter().all(Option::is_some);
-        if g.reply.is_some() && (all || now >= g.deadline) {
-            let offer = Self::offer_of(g, &self.checker);
+        let all = g.mapped.iter().all(Option::is_some) && !self.mapping_pending;
+        if !g.done && (all || now >= g.deadline) {
+            g.done = true;
+            let offer = Self::offer_of(g, &self.checker, self.mapped_external);
             if let Some(r) = g.reply.take() {
-                let _ = r.send(offer);
+                let _ = r.send(offer.clone());
+            }
+            let update = g.update;
+            self.last_offer = offer_addrs(&offer.candidates);
+            if update && !self.opts.relay_only {
+                let _ = self.updates.send(offer.candidates);
             }
         }
+        let Some(g) = &mut self.gathering else { return };
+        let all = g.mapped.iter().all(Option::is_some);
         if all || g.sends > GATHER_RETX.len() || now < g.next {
             return;
         }
@@ -694,11 +1031,40 @@ impl Driver {
         g.sends += 1;
     }
 
-    fn offer_of(g: &Gathering, checker: &Checker) -> LocalOffer {
+    /// Something arrived after gathering ended: a trickle during the rendezvous,
+    /// a `CandidateUpdate` after a network change.
+    fn send_late(&mut self, _now: Instant) {
+        let Some(g) = &self.gathering else { return };
+        let offer = Self::offer_of(g, &self.checker, self.mapped_external);
+        let addrs = offer_addrs(&offer.candidates);
+        if addrs == self.last_offer || self.opts.relay_only {
+            return;
+        }
+        let new: Vec<WireCandidate> = offer
+            .candidates
+            .iter()
+            .filter(|c| c.addr().is_ok_and(|a| !self.last_offer.contains(&a)))
+            .cloned()
+            .collect();
+        self.last_offer = addrs;
+        if g.update {
+            let _ = self.updates.send(offer.candidates);
+        } else if !new.is_empty() {
+            let _ = self.late.send(new);
+        }
+    }
+
+    fn offer_of(g: &Gathering, checker: &Checker, mapped_port: Option<SocketAddr>) -> LocalOffer {
         let mut candidates: Vec<WireCandidate> = Vec::new();
         let mut foundation = 1;
         for (a, kind) in &g.host {
             candidates.push(WireCandidate::new(*a, wire_kind(*kind), foundation));
+            foundation += 1;
+        }
+        if let Some(m) = mapped_port
+            && !candidates.iter().any(|c| c.addr().ok() == Some(m))
+        {
+            candidates.push(WireCandidate::new(m, WireCandKind::Portmap, foundation));
             foundation += 1;
         }
         for m in g.mapped.iter().flatten() {
@@ -707,8 +1073,16 @@ impl Driver {
                 foundation += 1;
             }
         }
-        let mapped: Vec<SocketAddr> = g.mapped.iter().flatten().copied().collect();
-        let nat = if g.mapped.iter().all(Option::is_some) {
+        candidates.truncate(MAX_CANDIDATES);
+        let mapped: Vec<SocketAddr> = g
+            .mapped
+            .iter()
+            .zip(&g.servers)
+            .filter(|(_, s)| s.is_ipv4())
+            .filter_map(|(m, _)| *m)
+            .collect();
+        let v4_servers = g.servers.iter().filter(|s| s.is_ipv4()).count();
+        let nat = if v4_servers >= 2 && mapped.len() == v4_servers {
             nat_from_mappings(&mapped)
         } else {
             PeerNat::Unknown
@@ -730,14 +1104,11 @@ impl Driver {
             && m.txid == g.txids[i]
         {
             if g.mapped[i].is_none()
-                && let Some(mapped) = m.mapped.filter(|a| a.is_ipv4() == self.local.is_ipv4())
+                && let Some(mapped) = m.mapped.filter(|a| a.is_ipv4() == addr.is_ipv4())
             {
                 g.mapped[i] = Some(mapped);
-                if g.reply.is_none() {
-                    // Gathering already ended: trickle it.
-                    let _ =
-                        self.late
-                            .send(vec![WireCandidate::new(mapped, WireCandKind::Srflx, 99)]);
+                if g.done {
+                    self.send_late(now);
                 }
             }
             return;
@@ -747,6 +1118,132 @@ impl Driver {
         }
         if let Some(reply) = self.checker.on_stun(bytes, from, now) {
             self.send(&reply.to, &reply.bytes);
+        }
+    }
+
+    /// §4.6: our UDP relay bind is going unanswered; try the WebSocket.
+    fn maybe_open_stream_relay(&mut self, now: Instant) {
+        let Some(cfg) = self.opts.wss_relay.clone() else {
+            return;
+        };
+        let Some(rb) = &mut self.relay else { return };
+        if rb.tried_wss
+            || rb.state != RelayState::Binding
+            || rb.target.is_stream_relay()
+            || now.saturating_duration_since(rb.since) < WSS_FALLBACK_AFTER
+        {
+            return;
+        }
+        let Some(cmd) = self.cmd.upgrade() else {
+            return;
+        };
+        rb.tried_wss = true;
+        let vsock = self.vsock.clone();
+        tokio::spawn(async move {
+            let relay = super::wss::open(&cfg, vsock).await.ok();
+            let _ = cmd.send(Cmd::StreamRelay(relay));
+        });
+    }
+
+    fn on_stream_relay(&mut self, relay: Option<StreamRelay>, now: Instant) {
+        let Some(relay) = relay else { return };
+        let Some(rb) = &mut self.relay else { return };
+        if rb.state == RelayState::Bound {
+            // UDP made it after all; keep it.
+            return;
+        }
+        let PathTarget::Relay { session, .. } = rb.target else {
+            return;
+        };
+        rb.target = PathTarget::Relay {
+            server: STREAM_RELAY_ADDR,
+            session,
+        };
+        rb.state = RelayState::Binding;
+        rb.next = now;
+        rb.since = now;
+        self.stream_relay = Some(relay);
+        self.publish();
+    }
+
+    /// §4.5: the local network changed.
+    fn on_network_change(&mut self, now: Instant) {
+        self.network_changes += 1;
+        // The relay must learn our new address before it can forward to us.
+        if let Some(rb) = &mut self.relay
+            && matches!(rb.state, RelayState::Binding | RelayState::Bound)
+        {
+            rb.next = now;
+        }
+        self.checker.restart(now);
+        if self.remote_set {
+            let stun: Vec<SocketAddr> = self
+                .gathering
+                .as_ref()
+                .map(|g| g.servers.clone())
+                .unwrap_or_default();
+            self.start_gathering(stun, None, now);
+        }
+        self.publish();
+    }
+
+    fn apply_peer_update(&mut self, now: Instant) {
+        if self
+            .last_peer_update
+            .is_some_and(|t| now.saturating_duration_since(t) < PEER_UPDATE_EVERY)
+        {
+            return;
+        }
+        let Some(c) = self.pending_peer_update.take() else {
+            return;
+        };
+        self.last_peer_update = Some(now);
+        self.peer_updates += 1;
+        self.checker.add_update(&c, now);
+        self.publish();
+    }
+
+    /// §4.7: a Tailscale path is DERP when the LocalAPI says the peer is relayed.
+    fn tailnet_kind(&self, ip: IpAddr) -> CandKind {
+        match self.opts.tailnet.as_ref().and_then(|t| t.direct(ip)) {
+            Some(false) => CandKind::TailnetDerp,
+            _ => CandKind::TailnetDirect,
+        }
+    }
+
+    fn recheck_tailnet(&mut self, now: Instant) {
+        if self.opts.tailnet.is_none()
+            || self
+                .last_tailnet_check
+                .is_some_and(|t| now.saturating_duration_since(t) < TAILNET_RECHECK)
+        {
+            return;
+        }
+        self.last_tailnet_check = Some(now);
+        let mut changed = false;
+        let ids: Vec<PathId> = self.paths.keys().copied().collect();
+        for id in ids {
+            let Some(p) = self.paths.get(&id) else {
+                continue;
+            };
+            let PathTarget::Direct(a) = p.info.target else {
+                continue;
+            };
+            if !matches!(p.info.kind, CandKind::TailnetDirect | CandKind::TailnetDerp) {
+                continue;
+            }
+            let kind = self.tailnet_kind(a.ip());
+            if let Some(p) = self.paths.get_mut(&id)
+                && p.info.kind != kind
+            {
+                p.info.kind = kind;
+                p.info.class = PathClass::of(kind);
+                self.pm.set_kind(id, kind);
+                changed = true;
+            }
+        }
+        if changed {
+            self.publish();
         }
     }
 
@@ -787,7 +1284,14 @@ impl Driver {
     }
 
     fn on_tick(&mut self, now: Instant) {
+        if self.pending_change.is_some_and(|t| now >= t) {
+            self.pending_change = None;
+            self.on_network_change(now);
+        }
         self.gather_tick(now);
+        self.maybe_open_stream_relay(now);
+        self.recheck_tailnet(now);
+        self.apply_peer_update(now);
         if let Some(rb) = &mut self.relay
             && rb.state == RelayState::Binding
             && now.saturating_duration_since(rb.since) >= RELAY_BIND_GIVE_UP
@@ -866,7 +1370,13 @@ impl Driver {
             }
         }
 
-        if !self.failed && self.paths.is_empty() && self.checker.finished(now) {
+        // A relay seat still being bound (over UDP, or the WebSocket still to come)
+        // is a path that may yet work: not failed until it gives up too.
+        let relay_pending = self
+            .relay
+            .as_ref()
+            .is_some_and(|r| r.state == RelayState::Binding);
+        if !self.failed && self.paths.is_empty() && !relay_pending && self.checker.finished(now) {
             self.failed = true;
             self.publish();
         }
@@ -915,10 +1425,8 @@ impl Driver {
                         self.pm.on_rtt(id, rtt, now);
                         if let Some(p) = self.paths.get_mut(&id) {
                             p.info.rtt = Some(rtt);
-                            if remote_tag.is_some() {
-                                p.info.remote_tag = remote_tag;
-                            }
                         }
+                        self.update_remote_tag(id, remote_tag);
                         changed = true;
                     }
                 }
@@ -947,22 +1455,23 @@ impl Driver {
         }
         self.vsock.validate_path(target);
         if let Some(&id) = self.by_target.get(&target) {
-            if let Some(p) = self.paths.get_mut(&id) {
-                if rtt.is_some() {
-                    p.info.rtt = rtt;
-                }
-                if remote_tag.is_some() {
-                    p.info.remote_tag = remote_tag;
-                }
+            if let Some(p) = self.paths.get_mut(&id)
+                && rtt.is_some()
+            {
+                p.info.rtt = rtt;
             }
+            self.update_remote_tag(id, remote_tag);
             if let Some(r) = rtt {
                 self.pm.on_rtt(id, r, now);
             }
             return true;
         }
         let kind = match target {
+            PathTarget::Relay { server, .. } if server == STREAM_RELAY_ADDR => CandKind::WssRelay,
             PathTarget::Relay { .. } => CandKind::Relay,
-            PathTarget::Direct(a) if nexa_net::check::is_tailnet(a.ip()) => CandKind::TailnetDirect,
+            PathTarget::Direct(a) if nexa_net::check::is_tailnet(a.ip()) => {
+                self.tailnet_kind(a.ip())
+            }
             PathTarget::Direct(_) => kind,
         };
         // The host names paths by its own tag, so a PathSwitch maps straight to an id.
@@ -1006,6 +1515,21 @@ impl Driver {
         true
     }
 
+    /// The peer labels a path by where our packets come from, so after our
+    /// address changes the same target gets a new label: the host must hear it
+    /// again or it keeps answering on the old path.
+    fn update_remote_tag(&mut self, id: PathId, tag: Option<u32>) {
+        let Some(tag) = tag else { return };
+        let Some(p) = self.paths.get_mut(&id) else {
+            return;
+        };
+        let changed = p.info.remote_tag.is_some_and(|old| old != tag);
+        p.info.remote_tag = Some(tag);
+        if changed && self.role == Role::Viewer && self.pm.active() == Some(id) {
+            let _ = self.switches.send(tag);
+        }
+    }
+
     fn activate(&mut self, id: PathId) {
         if let Some(p) = self.paths.get(&id) {
             self.vsock.switch_to(p.info.target);
@@ -1037,23 +1561,34 @@ impl Driver {
             .find(|p| Some(p.target) == active_target)
             .copied();
         let relay = self.relay.as_ref().map_or(RelayState::None, |r| r.state);
-        let failed = self.failed;
-        let switches = self.switches_done;
+        let relay_over_wss = self
+            .relay
+            .as_ref()
+            .is_some_and(|r| r.target.is_stream_relay());
         self.state.send_replace(LinkState {
             validated,
             active,
             relay,
-            failed,
-            switches,
+            failed: self.failed,
+            switches: self.switches_done,
+            relay_over_wss,
+            port_mapping: self.mapped_external,
+            network_changes: self.network_changes,
+            peer_updates: self.peer_updates,
         });
     }
 }
 
+fn offer_addrs(c: &[WireCandidate]) -> Vec<SocketAddr> {
+    c.iter().filter_map(|c| c.addr().ok()).collect()
+}
+
 /// How a path is described for diagnostics.
 pub fn describe(info: &PathInfo) -> String {
-    match info.target {
-        PathTarget::Direct(a) => a.to_string(),
-        PathTarget::Relay { server, .. } => format!("relay {server}"),
+    match (info.target, info.kind) {
+        (PathTarget::Direct(a), CandKind::TailnetDerp) => format!("{a} (DERP)"),
+        (PathTarget::Direct(a), _) => a.to_string(),
+        (t, _) => t.to_string(),
     }
 }
 

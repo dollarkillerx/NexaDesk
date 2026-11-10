@@ -47,6 +47,10 @@ pub struct SignalSetup {
     pub paired_only: bool,
     /// §9.4: never offer a direct address; everything goes through the relay.
     pub relay_only: bool,
+    /// Port mapping on this machine's gateway, network-change watching and the
+    /// Tailscale LocalAPI (§4.2, §4.5, §4.7). The binary turns it on; tests
+    /// must not, since a mapping changes the real router.
+    pub system_services: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -76,6 +80,11 @@ impl SignalStatus {
 }
 
 pub(crate) fn link_options(setup: &SignalSetup) -> LinkOptions {
+    let base = if setup.system_services {
+        LinkOptions::system()
+    } else {
+        LinkOptions::default()
+    };
     LinkOptions {
         bind: std::net::SocketAddr::new(setup.bind_ip, 0),
         interfaces: match &setup.interfaces {
@@ -83,7 +92,9 @@ pub(crate) fn link_options(setup: &SignalSetup) -> LinkOptions {
             None => Interfaces::System,
         },
         relay_only: setup.relay_only,
-        ..LinkOptions::default()
+        // §4.6: the relay over WebSocket goes to the server we are registered with.
+        wss_relay: Some(setup.server.clone()),
+        ..base
     }
 }
 

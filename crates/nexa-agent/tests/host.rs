@@ -99,6 +99,7 @@ async fn begin_stream(accepted: &mut ViewerAccepted) -> StreamConfig {
         .send(ControlBody::Request(StreamRequest {
             mode: Mode::Balanced as i32,
             fps: 0,
+            display: 0,
         }))
         .await
         .unwrap();
@@ -125,7 +126,8 @@ async fn correct_code_with_consent_is_accepted_and_negotiates_a_stream() {
     assert_eq!(accepted.host, h.agent.public_key());
     assert_eq!(ui.prompts(), 1, "a correct code still needs consent (§9.3)");
     assert_eq!(accepted.accept.perms, Some(perms(true, false, false)));
-    assert_eq!(accepted.accept.displays[0].name, "fake host");
+    assert_eq!(accepted.accept.host_name, "fake host");
+    assert_eq!(accepted.accept.displays[0].name, "fake");
 
     let config = begin_stream(&mut accepted).await;
     assert_eq!((config.w, config.h), (1920, 1080));
@@ -521,6 +523,7 @@ async fn a_requested_mode_change_rebuilds_and_announces() {
         .send(ControlBody::Request(StreamRequest {
             mode: Mode::Game as i32,
             fps: 0,
+            display: 0,
         }))
         .await
         .unwrap();
@@ -593,5 +596,157 @@ async fn a_display_change_rebuilds_and_clicks_follow_the_new_geometry() {
         })
     })
     .await;
+    conn.close(3u32.into(), b"bye");
+}
+
+// ---------------------------------------------------------------------------------
+// Files (§3.1 stream 4): only with the `file` permission, enforced here both ways
+// ---------------------------------------------------------------------------------
+
+fn with_file(view: bool) -> nexa_wire::control::Permissions {
+    nexa_wire::control::Permissions {
+        file: true,
+        ..perms(view, false, false)
+    }
+}
+
+type Log = Arc<std::sync::Mutex<Vec<nexa_session::transfer::TransferEvent>>>;
+
+/// The viewer's half of file transfer, receiving into `dir`.
+fn viewer_transfers(
+    conn: &Connection,
+    dir: &std::path::Path,
+) -> (nexa_session::transfer::Transfers, Log) {
+    use nexa_session::{
+        bulk::BulkLimiter,
+        transfer::{TransferConfig, Transfers},
+    };
+    let log: Log = Arc::default();
+    let l = log.clone();
+    let t = Transfers::new(
+        conn.clone(),
+        TransferConfig {
+            downloads: dir.to_path_buf(),
+            limits: Default::default(),
+            bulk: BulkLimiter::fixed(400_000_000),
+            confirm_timeout: Duration::from_secs(5),
+        },
+        Arc::new(move |e| l.lock().unwrap().push(e)),
+    );
+    let (c, accept) = (conn.clone(), t.clone());
+    tokio::spawn(async move {
+        while let Ok((kind, send, recv)) = nexa_session::framed::accept_bi(&c).await {
+            if kind == StreamType::File {
+                accept.accept(send, recv);
+            }
+        }
+    });
+    (t, log)
+}
+
+fn host_transfer_done(ui: &FakeUi, outgoing: bool) -> bool {
+    use nexa_session::transfer::{Direction, TransferState};
+    ui.saw(|e| {
+        matches!(e, AgentEvent::Transfer { event, .. }
+            if matches!(event.state, TransferState::Done { .. })
+                && (event.direction == Direction::Outgoing) == outgoing)
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn with_the_file_permission_files_go_both_ways() {
+    let ui = FakeUi::allowing(with_file(true), false);
+    let h = host_with(ui.clone()).await;
+    let me = DeviceIdentity::generate();
+    let (_ep, conn, result) = connect_with_code(&h, &me).await;
+    let mut accepted = result.unwrap();
+    assert!(accepted.accept.perms.as_ref().unwrap().file);
+    begin_stream(&mut accepted).await;
+    let dir = tempfile::tempdir().unwrap();
+    let viewer_downloads = dir.path().join("viewer-downloads");
+    let (transfers, log) = viewer_transfers(&conn, &viewer_downloads);
+
+    // Viewer → host.
+    let src = dir.path().join("from viewer.txt");
+    std::fs::write(&src, b"hello host").unwrap();
+    let id = transfers.send_file(src);
+    until("received by the host", WAIT, || {
+        host_transfer_done(&ui, false)
+    })
+    .await;
+    assert_eq!(
+        std::fs::read(h.downloads.join("from viewer.txt")).unwrap(),
+        b"hello host"
+    );
+    until("sender done", WAIT, || {
+        log.lock()
+            .unwrap()
+            .iter()
+            .any(|e| e.id == id && e.state.is_final())
+    })
+    .await;
+
+    // Host → viewer: what the person at the host dropped on the banner.
+    let src = dir.path().join("from host.txt");
+    std::fs::write(&src, b"hello viewer").unwrap();
+    let ids = h.agent.send_files(vec![src]).unwrap();
+    assert_eq!(ids.len(), 1);
+    until("sent by the host", WAIT, || host_transfer_done(&ui, true)).await;
+    until("received by the viewer", WAIT, || {
+        viewer_downloads.join("from host.txt").exists()
+    })
+    .await;
+    assert_eq!(
+        std::fs::read(viewer_downloads.join("from host.txt")).unwrap(),
+        b"hello viewer"
+    );
+    assert!(h.agent.send_files(vec!["relative.txt".into()]).is_err());
+    conn.close(3u32.into(), b"bye");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn without_the_file_permission_nothing_is_written_either_way() {
+    use nexa_session::transfer::{FileBody, FileChunk, FileMsg, FileOffer};
+    let ui = FakeUi::allowing(perms(true, true, true), false);
+    let h = host_with(ui.clone()).await;
+    let me = DeviceIdentity::generate();
+    let (_ep, conn, result) = connect_with_code(&h, &me).await;
+    let mut accepted = result.unwrap();
+    assert!(!accepted.accept.perms.as_ref().unwrap().file);
+    begin_stream(&mut accepted).await;
+
+    // A viewer that tries anyway is refused before the host reads a byte.
+    let (mut send, mut recv) = open_bi(&conn, StreamType::File).await.unwrap();
+    let _ = send
+        .send(&FileMsg::from(FileBody::Offer(FileOffer {
+            name: "x.txt".into(),
+            size: 3,
+        })))
+        .await;
+    let _ = send
+        .send(&FileMsg::from(FileBody::Chunk(FileChunk {
+            offset: 0,
+            data: Bytes::from_static(b"abc"),
+        })))
+        .await;
+    let answer = tokio::time::timeout(WAIT, recv.next::<FileMsg>())
+        .await
+        .unwrap();
+    assert!(
+        !matches!(answer, Ok(Some(_))),
+        "refused without an answer: {answer:?}"
+    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !h.downloads.exists(),
+        "nothing written, not even the folder"
+    );
+
+    // And the host cannot send either.
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("a.txt");
+    std::fs::write(&src, b"a").unwrap();
+    assert!(h.agent.send_files(vec![src]).is_err());
+    assert!(!ui.saw(|e| matches!(e, AgentEvent::Transfer { .. })));
     conn.close(3u32.into(), b"bye");
 }

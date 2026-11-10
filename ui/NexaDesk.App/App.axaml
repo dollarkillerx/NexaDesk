@@ -100,6 +100,12 @@
       <Setter Property="Foreground" Value="{DynamicResource MutedBrush}" />
       <Setter Property="TextWrapping" Value="Wrap" />
     </Style>
+    <Style Selector="TextBlock.muted.problem">
+      <Setter Property="Foreground" Value="{DynamicResource ErrorBrush}" />
+    </Style>
+    <Style Selector="TextBlock.muted.ok">
+      <Setter Property="Foreground" Value="{DynamicResource OkBrush}" />
+    </Style>
     <Style Selector="TextBlock.errorTitle">
       <Setter Property="FontWeight" Value="SemiBold" />
       <Setter Property="Foreground" Value="{DynamicResource ErrorBrush}" />

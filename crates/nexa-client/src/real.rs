@@ -13,12 +13,12 @@ use nexa_clip::{
     platform::macos::MacClipboardBackend,
 };
 use nexa_input::platform::macos::{
-    CaptureError, CaptureEvent, KeyCapture, KeyCaptureConfig, LocalKeyMonitor,
-    accessibility_granted,
+    CaptureError, CaptureEvent, KeyCapture, KeyCaptureConfig, LocalKeyMonitor, PointerCapture,
+    SystemAssociation, accessibility_granted,
 };
 use nexa_media::{
-    Decoder, PresentMode, Presenter,
-    macos::{DecoderOutput, MetalPresenter, VtDecoder, probe_caps},
+    AudioDecoder, Decoder, PresentMode, Presenter,
+    macos::{AudioOutputUnit, DecoderOutput, MetalPresenter, OpusDecoder, VtDecoder, probe_caps},
 };
 use nexa_session::clip::ClipPlatform;
 use nexa_wire::control::{Caps, Codec, Os};
@@ -26,8 +26,12 @@ use objc2::MainThreadMarker;
 
 use crate::{
     abi::NEXA_VIEW_NSVIEW,
-    deps::{Deps, KeySource, KeySourceError},
+    deps::{
+        AudioOutput, AudioRender, CursorDisplay, Deps, KeySource, KeySourceError, NoCursor,
+        PointerLock,
+    },
     input::InputCmd,
+    real_cursor::MacCursorDisplay,
 };
 
 pub struct RealDeps;
@@ -102,6 +106,16 @@ impl Drop for MonitorSource {
     }
 }
 
+/// Game mode's lock: a listen-only pointer tap with the mouse dissociated from the
+/// cursor. Dropping the capture re-associates first, then stops the tap.
+struct GameLock(#[allow(dead_code)] PointerCapture<SystemAssociation>);
+
+impl PointerLock for GameLock {}
+
+struct Speaker(#[allow(dead_code)] AudioOutputUnit);
+
+impl AudioOutput for Speaker {}
+
 struct GeneralClipboard(MacClipboardBackend);
 
 impl ClipboardBackend for GeneralClipboard {
@@ -144,7 +158,11 @@ impl Deps for RealDeps {
     }
 
     fn caps(&self) -> Caps {
-        probe_caps()
+        // §3.5: shared with the agent, keyed by OS build and GPU.
+        match nexa_media::caps_cache::default_path() {
+            Some(path) => nexa_media::macos::cached_caps(&path),
+            None => probe_caps(),
+        }
     }
 
     fn decoder(&self, codec: Codec) -> Result<Box<dyn Decoder>, String> {
@@ -191,6 +209,53 @@ impl Deps for RealDeps {
         unsafe { MetalPresenter::attach(handle, width_px, height_px, scale, mode) }
             .map(|p| Box::new(p) as Box<dyn Presenter>)
             .map_err(|e| e.to_string())
+    }
+
+    unsafe fn cursor_display(&self, handle: *mut c_void, kind: u32) -> Box<dyn CursorDisplay> {
+        if kind != NEXA_VIEW_NSVIEW {
+            return Box::new(NoCursor);
+        }
+        // SAFETY: forwarded from the caller (main thread, a valid NSView).
+        match unsafe { MacCursorDisplay::attach(handle) } {
+            Some(d) => Box::new(d),
+            None => Box::new(NoCursor),
+        }
+    }
+
+    fn pointer_lock(&self, tx: Sender<InputCmd>) -> Result<Box<dyn PointerLock>, String> {
+        let (capture, motion) = PointerCapture::start(0).map_err(|e| format!("{e:?}"))?;
+        thread::Builder::new()
+            .name("pointer-bridge".into())
+            .spawn(move || {
+                // Ends when the capture is dropped and its tap stops.
+                while let Ok(p) = motion.recv() {
+                    if tx.send(InputCmd::Relative(p.x, p.y)).is_err() {
+                        return;
+                    }
+                }
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(Box::new(GameLock(capture)))
+    }
+
+    fn audio_decoder(&self) -> Result<Box<dyn AudioDecoder>, String> {
+        OpusDecoder::new()
+            .map(|d| Box::new(d) as Box<dyn AudioDecoder>)
+            .map_err(|e| e.to_string())
+    }
+
+    fn audio_output(&self, render: AudioRender) -> Result<Box<dyn AudioOutput>, String> {
+        AudioOutputUnit::start(render)
+            .map(|o| Box::new(Speaker(o)) as Box<dyn AudioOutput>)
+            .map_err(|e| e.to_string())
+    }
+
+    fn link_options(&self) -> nexa_session::rendezvous::link::LinkOptions {
+        nexa_session::rendezvous::link::LinkOptions::system()
+    }
+
+    fn tailnet(&self) -> Option<Arc<nexa_net::tailscale::TailnetMonitor>> {
+        Some(nexa_session::rendezvous::link::system_tailnet())
     }
 
     fn thread_init(&self) -> Option<fn()> {

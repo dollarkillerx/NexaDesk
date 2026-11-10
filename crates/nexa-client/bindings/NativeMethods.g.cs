@@ -111,6 +111,38 @@ namespace NexaDesk.Native
         public static extern int nexa_session_command(NexaSession* s, byte* cmd, nuint len);
 
         /// <summary>
+        ///  Lists the rules of one profile for the keyboard settings (§11.2): the built-in
+        ///  ones, switched on or off by keymap.toml, then the user's. `req` is a protobuf
+        ///  `KeymapRequest`; `out` receives a `KeymapView`. Needs no client handle.
+        ///
+        ///  # Safety
+        ///  `req` valid for `len` bytes, `out` writable for `cap` bytes, `written` writable.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "nexa_keymap_rules", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int nexa_keymap_rules(byte* req, nuint len, byte* @out, nuint cap, nuint* written);
+
+        /// <summary>
+        ///  Saves `req.rules` (the whole list as shown) for one profile to keymap.toml,
+        ///  atomically. Refused with `NEXA_E_INVALID_ARG` and nothing written if a rule is
+        ///  invalid. Sessions started afterwards use it.
+        ///
+        ///  # Safety
+        ///  `req` must be valid for `len` bytes.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "nexa_keymap_save", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int nexa_keymap_save(byte* req, nuint len);
+
+        /// <summary>
+        ///  "按下 → 发送": runs the real rewriter on `req.chord` and writes a `KeyPreview`.
+        ///  Nothing is sent anywhere and no session is involved.
+        ///
+        ///  # Safety
+        ///  `req` valid for `len` bytes, `out` writable for `cap` bytes, `written` writable.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "nexa_keymap_preview", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int nexa_keymap_preview(byte* req, nuint len, byte* @out, nuint cap, nuint* written);
+
+        /// <summary>
         ///  Copies this thread's last error message as UTF-8 and reports its full length in
         ///  `written`. Returns `NEXA_E_BUFFER_TOO_SMALL` if it had to truncate.
         ///

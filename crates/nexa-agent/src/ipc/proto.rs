@@ -81,6 +81,28 @@ pub struct Decide {
     pub skip_next_time: bool,
 }
 
+/// Files the person at the host dropped on the banner, to send to the viewer.
+#[derive(Clone, PartialEq, Message)]
+pub struct SendFiles {
+    #[prost(string, repeated, tag = "1")]
+    pub paths: Vec<String>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct CancelTransfer {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+}
+
+/// The answer to a `Transfer` in state `NeedsConfirm`.
+#[derive(Clone, PartialEq, Message)]
+pub struct AnswerTransfer {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    #[prost(bool, tag = "2")]
+    pub accept: bool,
+}
+
 #[derive(Clone, PartialEq, Oneof)]
 pub enum UiBody {
     #[prost(message, tag = "1")]
@@ -101,11 +123,17 @@ pub enum UiBody {
     Decide(Decide),
     #[prost(message, tag = "9")]
     Shutdown(Empty),
+    #[prost(message, tag = "10")]
+    SendFiles(SendFiles),
+    #[prost(message, tag = "11")]
+    CancelTransfer(CancelTransfer),
+    #[prost(message, tag = "12")]
+    AnswerTransfer(AnswerTransfer),
 }
 
 #[derive(Clone, PartialEq, Message)]
 pub struct UiToAgent {
-    #[prost(oneof = "UiBody", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9")]
+    #[prost(oneof = "UiBody", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
     pub body: Option<UiBody>,
 }
 
@@ -292,6 +320,131 @@ pub struct Refused {
     pub reason: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Enumeration)]
+#[repr(i32)]
+pub enum TransferState {
+    Waiting = 0,
+    NeedsConfirm = 1,
+    Running = 2,
+    Done = 3,
+    Failed = 4,
+    Cancelled = 5,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Enumeration)]
+#[repr(i32)]
+pub enum FailReason {
+    None = 0,
+    Declined = 1,
+    TooLarge = 2,
+    NotPermitted = 3,
+    Invalid = 4,
+    HashMismatch = 5,
+    NoSpace = 6,
+    Io = 7,
+    ConnectionLost = 8,
+    Timeout = 9,
+    NotAFile = 10,
+    Busy = 11,
+}
+
+/// A file transfer of the running session moved on (§3.1 stream 4).
+#[derive(Clone, PartialEq, Message)]
+pub struct Transfer {
+    #[prost(uint64, tag = "1")]
+    pub session_id: u64,
+    #[prost(uint64, tag = "2")]
+    pub id: u64,
+    /// From this Mac to the viewer.
+    #[prost(bool, tag = "3")]
+    pub outgoing: bool,
+    #[prost(string, tag = "4")]
+    pub name: String,
+    #[prost(uint64, tag = "5")]
+    pub size: u64,
+    #[prost(uint64, tag = "6")]
+    pub done: u64,
+    #[prost(enumeration = "TransferState", tag = "7")]
+    pub state: i32,
+    #[prost(enumeration = "FailReason", tag = "8")]
+    pub reason: i32,
+    /// Where a received file was saved.
+    #[prost(string, tag = "9")]
+    pub path: String,
+    #[prost(bool, tag = "10")]
+    pub by_peer: bool,
+}
+
+impl Transfer {
+    pub fn of(session_id: u64, e: &nexa_session::transfer::TransferEvent) -> Self {
+        use nexa_session::transfer::{Direction, FailReason as R, TransferState as S};
+        let (state, reason, path, by_peer) = match &e.state {
+            S::Waiting => (
+                TransferState::Waiting,
+                FailReason::None,
+                String::new(),
+                false,
+            ),
+            S::NeedsConfirm => (
+                TransferState::NeedsConfirm,
+                FailReason::None,
+                String::new(),
+                false,
+            ),
+            S::Running => (
+                TransferState::Running,
+                FailReason::None,
+                String::new(),
+                false,
+            ),
+            S::Done { path } => (
+                TransferState::Done,
+                FailReason::None,
+                path.as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
+                false,
+            ),
+            S::Cancelled { by_peer } => (
+                TransferState::Cancelled,
+                FailReason::None,
+                String::new(),
+                *by_peer,
+            ),
+            S::Failed(r) => (
+                TransferState::Failed,
+                match r {
+                    R::Declined => FailReason::Declined,
+                    R::TooLarge => FailReason::TooLarge,
+                    R::NotPermitted => FailReason::NotPermitted,
+                    R::Invalid => FailReason::Invalid,
+                    R::HashMismatch => FailReason::HashMismatch,
+                    R::NoSpace => FailReason::NoSpace,
+                    R::Io => FailReason::Io,
+                    R::ConnectionLost => FailReason::ConnectionLost,
+                    R::Timeout => FailReason::Timeout,
+                    R::NotAFile => FailReason::NotAFile,
+                    R::Busy => FailReason::Busy,
+                },
+                String::new(),
+                false,
+            ),
+        };
+        Self {
+            session_id,
+            id: e.id,
+            outgoing: e.direction == Direction::Outgoing,
+            name: e.name.clone(),
+            size: e.size,
+            done: e.done,
+            state: state as i32,
+            reason: reason as i32,
+            path,
+            by_peer,
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Oneof)]
 pub enum AgentBody {
     #[prost(message, tag = "1")]
@@ -310,11 +463,13 @@ pub enum AgentBody {
     Notice(Notice),
     #[prost(message, tag = "8")]
     Refused(Refused),
+    #[prost(message, tag = "9")]
+    Transfer(Transfer),
 }
 
 #[derive(Clone, PartialEq, Message)]
 pub struct AgentToUi {
-    #[prost(oneof = "AgentBody", tags = "1, 2, 3, 4, 5, 6, 7, 8")]
+    #[prost(oneof = "AgentBody", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9")]
     pub body: Option<AgentBody>,
 }
 
@@ -395,6 +550,34 @@ mod tests {
         assert_eq!(
             hex(&status.encode_to_vec()),
             "0a15 0801 120161 4a09313233343536373839 5002 5a016e".replace(' ', "")
+        );
+        let transfer = AgentToUi::from(AgentBody::Transfer(Transfer {
+            session_id: 1,
+            id: 2,
+            outgoing: true,
+            name: "a".into(),
+            size: 300,
+            done: 5,
+            state: TransferState::Failed as i32,
+            reason: FailReason::HashMismatch as i32,
+            path: String::new(),
+            by_peer: false,
+        }));
+        assert_eq!(
+            hex(&transfer.encode_to_vec()),
+            "4a12 0801 1002 1801 220161 28ac02 3005 3804 4005".replace(' ', "")
+        );
+        let send = UiToAgent::from(UiBody::SendFiles(SendFiles {
+            paths: vec!["/a".into()],
+        }));
+        assert_eq!(hex(&send.encode_to_vec()), "5204 0a022f61".replace(' ', ""));
+        let answer = UiToAgent::from(UiBody::AnswerTransfer(AnswerTransfer {
+            id: 3,
+            accept: true,
+        }));
+        assert_eq!(
+            hex(&answer.encode_to_vec()),
+            "6204 0803 1001".replace(' ', "")
         );
         assert_eq!(
             hex(&incoming.encode_to_vec()),

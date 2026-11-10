@@ -12,15 +12,16 @@ use nexa_input::{
     platform::macos::{EventTarget, HidTarget, Injector, accessibility_granted},
 };
 use nexa_media::{
-    CaptureConfig, Capturer, Encoder, EncoderConfig,
-    macos::{ScreenCapturer, VtEncoder},
+    AudioCapture, AudioEncoder, CaptureConfig, Capturer, CursorSource, Encoder, EncoderConfig,
+    macos::{OpusEncoder, ScreenCapturer, SystemAudioCapture, SystemCursorSource, VtEncoder},
 };
 use nexa_session::{
     clip::{ClipPlatform, PromiseResolver},
     input::InputSink,
 };
 use objc2_core_graphics::{
-    CGDisplayBounds, CGDisplayCopyDisplayMode, CGDisplayMode, CGMainDisplayID,
+    CGDirectDisplayID, CGDisplayBounds, CGDisplayCopyDisplayMode, CGDisplayIsBuiltin,
+    CGDisplayMode, CGGetActiveDisplayList, CGMainDisplayID,
 };
 
 use nexa_agent::{Platform, ScreenInfo};
@@ -91,24 +92,68 @@ fn qos_user_interactive() {
     }
 }
 
+fn describe(display_id: CGDirectDisplayID, index: usize) -> Result<ScreenInfo, String> {
+    let bounds = CGDisplayBounds(display_id);
+    let mode = CGDisplayCopyDisplayMode(display_id)
+        .ok_or_else(|| format!("display {display_id} has no current mode"))?;
+    let size_pixels = (
+        CGDisplayMode::pixel_width(Some(&mode)) as u32,
+        CGDisplayMode::pixel_height(Some(&mode)) as u32,
+    );
+    // NSScreen's localized names need the main thread; these are enough to tell apart.
+    let name = if CGDisplayIsBuiltin(display_id) {
+        "Built-in display".to_owned()
+    } else {
+        format!("Display {}", index + 1)
+    };
+    Ok(ScreenInfo {
+        display_id,
+        origin_points: (bounds.origin.x, bounds.origin.y),
+        size_points: (bounds.size.width, bounds.size.height),
+        size_pixels,
+        refresh_hz: CGDisplayMode::refresh_rate(Some(&mode)).round() as u32,
+        name,
+    })
+}
+
 impl Platform for RealPlatform {
     fn screen(&self) -> Result<ScreenInfo, String> {
-        let display_id = CGMainDisplayID();
-        let bounds = CGDisplayBounds(display_id);
-        let mode = CGDisplayCopyDisplayMode(display_id)
-            .ok_or_else(|| "the main display has no current mode".to_owned())?;
-        let size_pixels = (
-            CGDisplayMode::pixel_width(Some(&mode)) as u32,
-            CGDisplayMode::pixel_height(Some(&mode)) as u32,
-        );
-        Ok(ScreenInfo {
-            display_id,
-            origin_points: (bounds.origin.x, bounds.origin.y),
-            size_points: (bounds.size.width, bounds.size.height),
-            size_pixels,
-            refresh_hz: CGDisplayMode::refresh_rate(Some(&mode)).round() as u32,
-            name: "main display".into(),
-        })
+        describe(CGMainDisplayID(), 0)
+    }
+
+    fn displays(&self) -> Result<Vec<ScreenInfo>, String> {
+        let mut ids = [0 as CGDirectDisplayID; 16];
+        let mut count = 0u32;
+        // SAFETY: both pointers are valid for the array's length.
+        let status =
+            unsafe { CGGetActiveDisplayList(ids.len() as u32, ids.as_mut_ptr(), &mut count) };
+        if status.0 != 0 {
+            return Err(format!("CGGetActiveDisplayList failed: {}", status.0));
+        }
+        let main = CGMainDisplayID();
+        let mut ids: Vec<CGDirectDisplayID> = ids[..count as usize].to_vec();
+        // The main display is always index 0, which is what a viewer starts on.
+        ids.sort_by_key(|id| *id != main);
+        ids.iter()
+            .enumerate()
+            .map(|(i, id)| describe(*id, i))
+            .collect()
+    }
+
+    fn cursor_source(&self) -> Option<Box<dyn CursorSource>> {
+        Some(Box::new(SystemCursorSource::new()))
+    }
+
+    fn audio_capture(&self, display_id: u32) -> Result<Box<dyn AudioCapture>, String> {
+        SystemAudioCapture::start(display_id)
+            .map(|c| Box::new(c) as Box<dyn AudioCapture>)
+            .map_err(|e| e.to_string())
+    }
+
+    fn audio_encoder(&self) -> Result<Box<dyn AudioEncoder>, String> {
+        OpusEncoder::new(nexa_session::audio::OPUS_BITRATE)
+            .map(|e| Box::new(e) as Box<dyn AudioEncoder>)
+            .map_err(|e| e.to_string())
     }
 
     fn capturer(&self, config: CaptureConfig) -> nexa_media::Result<Box<dyn Capturer>> {

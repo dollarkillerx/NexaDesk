@@ -71,6 +71,26 @@ public abstract record UiRequest
     {
         protected override void Write(ProtoWriter w) => w.Message(9, _ => { });
     }
+
+    /// <summary>Files the person at this Mac dropped on the banner, for the viewer. Needs the session's file permission.</summary>
+    public sealed record SendFiles(IReadOnlyList<string> Paths) : UiRequest
+    {
+        protected override void Write(ProtoWriter w) => w.Message(10, m =>
+        {
+            foreach (var p in Paths) m.String(1, p);
+        });
+    }
+
+    public sealed record CancelTransfer(ulong Id) : UiRequest
+    {
+        protected override void Write(ProtoWriter w) => w.Message(11, m => m.UInt64(1, Id));
+    }
+
+    /// <summary>The answer to a transfer waiting in <see cref="TransferState.NeedsConfirm"/>.</summary>
+    public sealed record AnswerTransfer(ulong Id, bool Accept) : UiRequest
+    {
+        protected override void Write(ProtoWriter w) => w.Message(12, m => m.UInt64(1, Id).Bool(2, Accept));
+    }
 }
 
 public enum AuthKind { Unspecified = 0, Paired = 1, Code = 2, Password = 3 }
@@ -101,6 +121,8 @@ public abstract record AgentMessage
     public sealed record RequestClosed(ulong ReqId, string Reason) : AgentMessage;
     public sealed record Notice(NoticeKind Kind, string Text) : AgentMessage;
     public sealed record Refused(string Command, string Reason) : AgentMessage;
+    /// <summary>A file transfer of session <paramref name="SessionId"/> moved on.</summary>
+    public sealed record Transfer(ulong SessionId, TransferInfo Info) : AgentMessage;
     public sealed record Unknown : AgentMessage;
 
     public static AgentMessage Decode(ReadOnlySpan<byte> data)
@@ -119,6 +141,7 @@ public abstract record AgentMessage
                 case 6: result = DecodeClosed(r.Bytes()); break;
                 case 7: result = DecodeNotice(r.Bytes()); break;
                 case 8: result = DecodeRefused(r.Bytes()); break;
+                case 9: result = DecodeTransfer(r.Bytes()); break;
                 default: r.Skip(); break;
             }
         }
@@ -310,6 +333,35 @@ public abstract record AgentMessage
             }
         }
         return new Notice(kind, text);
+    }
+
+    /// <summary>Same fields as the client ABI's Transfer, shifted by one for session_id.</summary>
+    static Transfer DecodeTransfer(ReadOnlySpan<byte> data)
+    {
+        ulong session = 0;
+        var r = new ProtoReader(data);
+        ulong id = 0, size = 0, done = 0;
+        bool outgoing = false, byPeer = false;
+        string name = "", path = "";
+        int state = 0, reason = 0;
+        while (r.Next(out var f))
+        {
+            switch (f)
+            {
+                case 1: session = r.UInt64(); break;
+                case 2: id = r.UInt64(); break;
+                case 3: outgoing = r.Bool(); break;
+                case 4: name = r.String(); break;
+                case 5: size = r.UInt64(); break;
+                case 6: done = r.UInt64(); break;
+                case 7: state = r.Int32(); break;
+                case 8: reason = r.Int32(); break;
+                case 9: path = r.String(); break;
+                case 10: byPeer = r.Bool(); break;
+                default: r.Skip(); break;
+            }
+        }
+        return new Transfer(session, TransferInfo.Of(id, outgoing, name, size, done, state, reason, path, byPeer));
     }
 
     static Refused DecodeRefused(ReadOnlySpan<byte> data)

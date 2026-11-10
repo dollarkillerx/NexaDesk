@@ -226,6 +226,13 @@ impl PathManager {
         });
     }
 
+    /// A path turned out to be another kind, e.g. Tailscale moved it onto DERP.
+    pub fn set_kind(&mut self, id: PathId, kind: CandKind) {
+        if let Some(p) = self.path_mut(id) {
+            p.kind = kind;
+        }
+    }
+
     pub fn remove_path(&mut self, id: PathId) {
         self.paths.retain(|p| p.id != id);
         if self.active == Some(id) {

@@ -139,11 +139,11 @@ fn current_mode(display: u32) -> Option<DisplayMode> {
     })
 }
 
-fn apple_error(what: &'static str, error: &NSError) -> MediaError {
+pub(super) fn apple_error(what: &'static str, error: &NSError) -> MediaError {
     MediaError::Os { what, status: error.code() as i32 }
 }
 
-fn shareable_content() -> Result<Retained<SCShareableContent>> {
+pub(super) fn shareable_content() -> Result<Retained<SCShareableContent>> {
     let (tx, rx) = mpsc::channel();
     let handler = RcBlock::new(move |content: *mut SCShareableContent, error: *mut NSError| {
         // SAFETY: both are valid or null; content is retained by the wrapper.
@@ -162,7 +162,7 @@ fn shareable_content() -> Result<Retained<SCShareableContent>> {
         .map_err(|_| MediaError::Other("timed out listing shareable content".into()))?
 }
 
-fn start_stream(stream: &SCStream) -> Result<()> {
+pub(super) fn start_stream(stream: &SCStream) -> Result<()> {
     let (tx, rx) = mpsc::channel();
     let handler = RcBlock::new(move |error: *mut NSError| {
         // SAFETY: valid or null for the duration of the block.
@@ -178,7 +178,7 @@ fn start_stream(stream: &SCStream) -> Result<()> {
     }
 }
 
-fn stop_stream(stream: &SCStream) {
+pub(super) fn stop_stream(stream: &SCStream) {
     let (tx, rx) = mpsc::channel();
     let handler = RcBlock::new(move |_error: *mut NSError| {
         let _ = tx.send(());

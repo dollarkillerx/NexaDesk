@@ -1,7 +1,12 @@
-//! The UDP relay (§4.6). It forwards opaque payloads between the two addresses
-//! that bound a session with server-signed tokens, and nothing else: no answer
-//! to anything unbound, so it cannot be used to reflect traffic, and a
+//! The relay (§4.6). It forwards opaque payloads between the two ends that
+//! bound a session with server-signed tokens, and nothing else: no answer to
+//! anything unbound, so it cannot be used to reflect traffic, and a
 //! per-session byte budget.
+//!
+//! An end is a UDP address or, for networks that block UDP, a WebSocket to
+//! `/relay` on the signaling port (the WSS fallback) that carries the same
+//! frames, one per binary message, bound with the same tokens. The two ends of
+//! a session may use different transports.
 
 use std::{
     collections::HashMap,
@@ -11,17 +16,53 @@ use std::{
 };
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use futures_util::{SinkExt, StreamExt};
 use nexa_net::udp::UdpIo;
 use nexa_wire::signal::{
     BindRefusal, RelayKind, RelayRole, RelaySession, RelayToken, parse_relay_frame, relay_frame,
 };
 use rand_core::{OsRng, RngCore};
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    sync::mpsc,
+};
+use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 
 use crate::limit::{Bucket, Keyed, Rate};
 
 /// A session nobody sent anything on for this long is forgotten.
 const IDLE: Duration = Duration::from_secs(60);
 const SWEEP_EVERY: Duration = Duration::from_secs(5);
+/// Frames queued for one WebSocket end; more are dropped, as on UDP.
+const STREAM_QUEUE: usize = 512;
+/// A relay WebSocket that sends nothing (not even a bind) for this long is closed.
+const STREAM_IDLE: Duration = Duration::from_secs(90);
+
+/// One end of a relay session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Peer {
+    Udp(SocketAddr),
+    /// A WebSocket connection, by the server's connection number.
+    Stream {
+        conn: u64,
+        ip: IpAddr,
+    },
+}
+
+impl Peer {
+    pub fn ip(&self) -> IpAddr {
+        match self {
+            Peer::Udp(a) => a.ip().to_canonical(),
+            Peer::Stream { ip, .. } => ip.to_canonical(),
+        }
+    }
+}
+
+impl From<SocketAddr> for Peer {
+    fn from(a: SocketAddr) -> Self {
+        Peer::Udp(a)
+    }
+}
 
 pub fn unix_now() -> u64 {
     SystemTime::now()
@@ -91,8 +132,8 @@ pub struct RelayLimits {
 }
 
 struct Session {
-    viewer: Option<SocketAddr>,
-    host: Option<SocketAddr>,
+    viewer: Option<Peer>,
+    host: Option<Peer>,
     bucket: Bucket,
     last_active: Instant,
 }
@@ -119,7 +160,7 @@ pub struct Relay {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
     None,
-    Send(SocketAddr, Vec<u8>),
+    Send(Peer, Vec<u8>),
 }
 
 impl Relay {
@@ -142,10 +183,11 @@ impl Relay {
     pub fn handle(
         &mut self,
         packet: &[u8],
-        from: SocketAddr,
+        from: impl Into<Peer>,
         now: Instant,
         now_unix: u64,
     ) -> Action {
+        let from = from.into();
         let Ok((kind, sid, payload)) = parse_relay_frame(packet) else {
             self.stats.dropped += 1;
             return Action::None;
@@ -164,11 +206,11 @@ impl Relay {
         &mut self,
         sid: RelaySession,
         payload: &[u8],
-        from: SocketAddr,
+        from: Peer,
         now: Instant,
         now_unix: u64,
     ) -> Action {
-        if !self.bind_limiter.allow(&from.ip().to_canonical(), now) {
+        if !self.bind_limiter.allow(&from.ip(), now) {
             self.stats.refused += 1;
             return Action::None;
         }
@@ -209,13 +251,7 @@ impl Relay {
         Action::Send(from, relay_frame(RelayKind::BindOk, &sid, &[]))
     }
 
-    fn forward(
-        &mut self,
-        sid: RelaySession,
-        packet: &[u8],
-        from: SocketAddr,
-        now: Instant,
-    ) -> Action {
+    fn forward(&mut self, sid: RelaySession, packet: &[u8], from: Peer, now: Instant) -> Action {
         let rate = self.byte_rate();
         let Some(s) = self.sessions.get_mut(&sid) else {
             self.stats.dropped += 1;
@@ -254,7 +290,66 @@ impl Relay {
     }
 }
 
-pub async fn serve(socket: Arc<UdpIo>, relay: Arc<Mutex<Relay>>) {
+/// Where the relay's output goes: its UDP socket and its WebSocket ends.
+#[derive(Default)]
+pub struct RelayIo {
+    pub udp: Option<Arc<UdpIo>>,
+    streams: Mutex<HashMap<u64, mpsc::Sender<Vec<u8>>>>,
+}
+
+impl RelayIo {
+    pub fn new(udp: Option<Arc<UdpIo>>) -> Self {
+        Self {
+            udp,
+            streams: Mutex::default(),
+        }
+    }
+
+    fn send(&self, action: Action) {
+        let Action::Send(to, bytes) = action else {
+            return;
+        };
+        match to {
+            Peer::Udp(a) => {
+                if let Some(s) = &self.udp {
+                    let _ = s.try_send_to(&bytes, a);
+                }
+            }
+            Peer::Stream { conn, .. } => {
+                let tx = self
+                    .streams
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(&conn)
+                    .cloned();
+                if let Some(tx) = tx {
+                    let _ = tx.try_send(bytes);
+                }
+            }
+        }
+    }
+
+    pub fn stream_count(&self) -> usize {
+        self.streams.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+}
+
+fn handle_locked(
+    relay: &Mutex<Relay>,
+    last_sweep: &mut Instant,
+    packet: &[u8],
+    from: Peer,
+) -> Action {
+    let now = Instant::now();
+    let mut r = relay.lock().unwrap_or_else(|e| e.into_inner());
+    if now.saturating_duration_since(*last_sweep) >= SWEEP_EVERY {
+        r.sweep(now);
+        *last_sweep = now;
+    }
+    r.handle(packet, from, now, unix_now())
+}
+
+pub async fn serve(socket: Arc<UdpIo>, relay: Arc<Mutex<Relay>>, io: Arc<RelayIo>) {
     let mut buf = vec![0u8; 2048];
     let mut last_sweep = Instant::now();
     loop {
@@ -262,19 +357,60 @@ pub async fn serve(socket: Arc<UdpIo>, relay: Arc<Mutex<Relay>>) {
             Ok(r) => r,
             Err(_) => continue,
         };
-        let now = Instant::now();
-        let action = {
-            let mut r = relay.lock().unwrap_or_else(|e| e.into_inner());
-            if now.saturating_duration_since(last_sweep) >= SWEEP_EVERY {
-                r.sweep(now);
-                last_sweep = now;
+        io.send(handle_locked(
+            &relay,
+            &mut last_sweep,
+            &buf[..n],
+            Peer::Udp(from),
+        ));
+    }
+}
+
+/// One WebSocket end (§4.6 WSS fallback): each binary message is one relay
+/// frame, handled exactly as a datagram from that end would be.
+pub async fn serve_stream<S>(
+    ws: WebSocketStream<S>,
+    conn: u64,
+    ip: IpAddr,
+    relay: Arc<Mutex<Relay>>,
+    io: Arc<RelayIo>,
+) where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let (mut sink, mut stream) = ws.split();
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(STREAM_QUEUE);
+    io.streams
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(conn, tx);
+    let writer = tokio::spawn(async move {
+        while let Some(frame) = rx.recv().await {
+            if sink.send(Message::binary(frame)).await.is_err() {
+                break;
             }
-            r.handle(&buf[..n], from, now, unix_now())
+        }
+        let _ = sink.close().await;
+    });
+    let peer = Peer::Stream { conn, ip };
+    let mut last_sweep = Instant::now();
+    loop {
+        let msg = match tokio::time::timeout(STREAM_IDLE, stream.next()).await {
+            Ok(Some(Ok(m))) => m,
+            _ => break,
         };
-        if let Action::Send(to, bytes) = action {
-            let _ = socket.try_send_to(&bytes, to);
+        match msg {
+            Message::Binary(b) if b.len() <= 2048 => {
+                io.send(handle_locked(&relay, &mut last_sweep, &b, peer));
+            }
+            Message::Ping(_) | Message::Pong(_) => {}
+            _ => break,
         }
     }
+    io.streams
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&conn);
+    writer.abort();
 }
 
 #[cfg(test)]
@@ -319,7 +455,7 @@ mod tests {
         let ok = relay_frame(RelayKind::BindOk, &sid, &[]);
         assert_eq!(
             bind(&mut r, &issuer, sid, RelayRole::Viewer, "198.51.100.1:1"),
-            Action::Send(sa("198.51.100.1:1"), ok.clone())
+            Action::Send(sa("198.51.100.1:1").into(), ok.clone())
         );
         let data = relay_frame(RelayKind::Data, &sid, b"quic");
         // The other side is not bound yet.
@@ -330,11 +466,11 @@ mod tests {
         bind(&mut r, &issuer, sid, RelayRole::Host, "198.51.100.2:2");
         assert_eq!(
             r.handle(&data, sa("198.51.100.1:1"), Instant::now(), unix_now()),
-            Action::Send(sa("198.51.100.2:2"), data.clone())
+            Action::Send(sa("198.51.100.2:2").into(), data.clone())
         );
         assert_eq!(
             r.handle(&data, sa("198.51.100.2:2"), Instant::now(), unix_now()),
-            Action::Send(sa("198.51.100.1:1"), data.clone())
+            Action::Send(sa("198.51.100.1:1").into(), data.clone())
         );
         // A stranger who knows the session id gets nothing through, and no answer.
         assert_eq!(
@@ -358,7 +494,7 @@ mod tests {
                 now,
                 unix_now()
             ),
-            Action::Send(from, refused(BindRefusal::BadToken))
+            Action::Send(from.into(), refused(BindRefusal::BadToken))
         );
         let expired = issuer.issue(sid, RelayRole::Viewer, unix_now() - 1);
         assert_eq!(
@@ -368,7 +504,7 @@ mod tests {
                 now,
                 unix_now()
             ),
-            Action::Send(from, refused(BindRefusal::Expired))
+            Action::Send(from.into(), refused(BindRefusal::Expired))
         );
         let elsewhere = issuer.issue([8; 8], RelayRole::Viewer, unix_now() + 60);
         assert_eq!(
@@ -378,7 +514,7 @@ mod tests {
                 now,
                 unix_now()
             ),
-            Action::Send(from, refused(BindRefusal::BadToken))
+            Action::Send(from.into(), refused(BindRefusal::BadToken))
         );
         let mut tampered = issuer.issue(sid, RelayRole::Viewer, unix_now() + 60);
         tampered.role = RelayRole::Host;
@@ -389,7 +525,7 @@ mod tests {
                 now,
                 unix_now()
             ),
-            Action::Send(from, refused(BindRefusal::BadToken))
+            Action::Send(from.into(), refused(BindRefusal::BadToken))
         );
         assert_eq!(r.session_count(), 0);
     }
@@ -403,7 +539,7 @@ mod tests {
         assert_eq!(
             third,
             Action::Send(
-                sa("198.51.100.1:3"),
+                sa("198.51.100.1:3").into(),
                 relay_frame(RelayKind::BindRefused, &[3; 8], &[BindRefusal::Full as u8])
             )
         );
@@ -421,6 +557,45 @@ mod tests {
         }
         // 1 MB/s with a 256 KB burst: roughly 210 frames at once, not 1000.
         assert!((150..300).contains(&sent), "{sent}");
+    }
+
+    #[test]
+    fn stream_and_udp_ends_share_a_session() {
+        let (issuer, mut r, sid) = setup();
+        let ws = Peer::Stream {
+            conn: 9,
+            ip: "198.51.100.1".parse().unwrap(),
+        };
+        let token = issuer.issue(sid, RelayRole::Viewer, unix_now() + 60);
+        let bound = r.handle(
+            &relay_frame(RelayKind::Bind, &sid, &token.encode()),
+            ws,
+            Instant::now(),
+            unix_now(),
+        );
+        assert_eq!(
+            bound,
+            Action::Send(ws, relay_frame(RelayKind::BindOk, &sid, &[]))
+        );
+        bind(&mut r, &issuer, sid, RelayRole::Host, "198.51.100.2:2");
+        let data = relay_frame(RelayKind::Data, &sid, b"quic");
+        assert_eq!(
+            r.handle(&data, ws, Instant::now(), unix_now()),
+            Action::Send(sa("198.51.100.2:2").into(), data.clone())
+        );
+        assert_eq!(
+            r.handle(&data, sa("198.51.100.2:2"), Instant::now(), unix_now()),
+            Action::Send(ws, data.clone())
+        );
+        // Another WebSocket that knows the session id gets nothing.
+        let other = Peer::Stream {
+            conn: 10,
+            ip: "198.51.100.1".parse().unwrap(),
+        };
+        assert_eq!(
+            r.handle(&data, other, Instant::now(), unix_now()),
+            Action::None
+        );
     }
 
     #[test]

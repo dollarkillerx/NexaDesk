@@ -106,6 +106,10 @@ async fn rig_with(fallback: Option<Arc<FakeUi>>, tweak: impl FnOnce(&mut IpcConf
             caps: caps(),
             timeouts: timeouts(),
             signal: None,
+            files: nexa_agent::FileSettings {
+                downloads: dir.path().join("Downloads/NexaDesk"),
+                limits: Default::default(),
+            },
         },
         identity,
         store,
@@ -281,6 +285,7 @@ async fn begin_stream(accepted: &mut ViewerAccepted) {
         .send(ControlBody::Request(StreamRequest {
             mode: Mode::Balanced as i32,
             fps: 0,
+            display: 0,
         }))
         .await
         .unwrap();

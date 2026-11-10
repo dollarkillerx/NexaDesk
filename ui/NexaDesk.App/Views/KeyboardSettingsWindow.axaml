@@ -1,0 +1,87 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:NexaDesk.ViewModels"
+        x:Class="NexaDesk.Views.KeyboardSettingsWindow"
+        x:DataType="vm:KeyboardSettingsViewModel"
+        Title="键盘设置"
+        Width="760" Height="760" MinWidth="640" MinHeight="560">
+  <Grid RowDefinitions="Auto,*,Auto,Auto,Auto" Margin="22,18,22,18">
+    <StackPanel Spacing="6">
+      <Grid ColumnDefinitions="*,Auto">
+        <TextBlock Classes="h1" Text="键盘设置" />
+        <ComboBox Grid.Column="1" Name="TargetPicker" ItemsSource="{Binding Targets}" SelectedItem="{Binding Target}" MinWidth="200">
+          <ComboBox.ItemTemplate>
+            <DataTemplate x:DataType="vm:KeyTarget">
+              <TextBlock Text="{Binding Label}" />
+            </DataTemplate>
+          </ComboBox.ItemTemplate>
+        </ComboBox>
+      </Grid>
+      <TextBlock Classes="muted"
+                 Text="控制对方时，这些组合键会按规则改写后发送。可以关闭内置规则或添加自己的规则；保存后，之后开始的会话生效。具体规则优先于 Cmd+* 这类通用规则。" />
+    </StackPanel>
+
+    <Border Grid.Row="1" Classes="card" Padding="0" Margin="0,12,0,0">
+      <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <ItemsControl Name="RuleList" ItemsSource="{Binding Rules}" Margin="12,6,12,6">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="vm:KeyRuleViewModel">
+              <Grid ColumnDefinitions="Auto,170,24,*,Auto,Auto" Margin="0,3">
+                <CheckBox IsChecked="{Binding IsEnabled}" VerticalAlignment="Center" MinWidth="0" Margin="0,0,6,0" />
+                <TextBlock Grid.Column="1" Classes="mono" Text="{Binding When}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                <TextBlock Grid.Column="2" Classes="label" Text="→" VerticalAlignment="Center" />
+                <StackPanel Grid.Column="3" VerticalAlignment="Center">
+                  <TextBlock Classes="mono" Text="{Binding Then}" TextTrimming="CharacterEllipsis" />
+                  <TextBlock Classes="muted" Text="{Binding Notes}" IsVisible="{Binding Notes, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                </StackPanel>
+                <Border Grid.Column="4" Classes="badge" Margin="8,0,0,0">
+                  <TextBlock Text="{Binding Source}" FontSize="11" />
+                </Border>
+                <Button Grid.Column="5" Classes="small" Content="删除" Command="{Binding RemoveCommand}" IsVisible="{Binding IsUser}" Margin="6,0,0,0" />
+              </Grid>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </ScrollViewer>
+    </Border>
+
+    <Border Grid.Row="2" Classes="subtle" Margin="0,12,0,0">
+      <StackPanel Spacing="6">
+        <TextBlock Classes="label" Text="添加规则" />
+        <Grid ColumnDefinitions="200,Auto,*,Auto,Auto">
+          <TextBox Name="NewWhenBox" Text="{Binding NewWhen}" PlaceholderText="按下，例如 Cmd+K" FontFamily="{StaticResource MonoFont}" />
+          <TextBlock Grid.Column="1" Classes="label" Text="→" VerticalAlignment="Center" Margin="8,0" />
+          <TextBox Grid.Column="2" Name="NewThenBox" Text="{Binding NewThen}" PlaceholderText="发送，例如 Ctrl+K；多步用逗号分隔"
+                   FontFamily="{StaticResource MonoFont}" />
+          <CheckBox Grid.Column="3" Content="仅终端" IsChecked="{Binding NewTerminalOnly}" Margin="10,0,0,0" />
+          <Button Grid.Column="4" Name="AddRuleButton" Classes="small" Content="添加" Command="{Binding AddRuleCommand}" Margin="6,0,0,0" />
+        </Grid>
+      </StackPanel>
+    </Border>
+
+    <Border Grid.Row="3" Classes="card" Margin="0,12,0,0" Padding="16,12">
+      <StackPanel Spacing="6">
+        <Grid ColumnDefinitions="*,Auto">
+          <TextBlock Classes="label" Text="实时预览：点一下下面的框，按下组合键，看会发送什么（不会真的发送）" />
+          <CheckBox Grid.Column="1" Content="在终端里" IsChecked="{Binding PreviewInTerminal}" />
+        </Grid>
+        <Border Name="PreviewBox" Focusable="True" Classes="subtle" MinHeight="44" Cursor="Hand">
+          <TextBlock Name="PreviewText" Text="{Binding PreviewText}" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center"
+                     Classes.problem="{Binding PreviewIsError}" TextWrapping="Wrap" />
+        </Border>
+        <TextBlock Name="PreviewDetail" Classes="muted mono" Text="{Binding PreviewDetail}" />
+      </StackPanel>
+    </Border>
+
+    <Grid Grid.Row="4" ColumnDefinitions="*,Auto" Margin="0,12,0,0">
+      <StackPanel VerticalAlignment="Center">
+        <TextBlock Classes="errorText" Text="{Binding Error}" IsVisible="{Binding HasError}" />
+        <TextBlock Classes="muted ok" Text="{Binding Status}" IsVisible="{Binding Status, Converter={x:Static ObjectConverters.IsNotNull}}" />
+      </StackPanel>
+      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+        <Button Content="还原" Command="{Binding RevertCommand}" />
+        <Button Name="SaveKeymapButton" Classes="accent" Content="保存" Command="{Binding SaveCommand}" />
+      </StackPanel>
+    </Grid>
+  </Grid>
+</Window>

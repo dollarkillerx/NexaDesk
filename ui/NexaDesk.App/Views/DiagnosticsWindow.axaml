@@ -7,7 +7,7 @@
         Width="440" SizeToContent="Height" CanResize="False">
   <StackPanel Margin="20" Spacing="10">
     <TextBlock Classes="h2" Text="连接诊断" />
-    <Grid ColumnDefinitions="Auto,16,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto">
+    <Grid ColumnDefinitions="Auto,16,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto">
       <TextBlock Classes="label" Text="路径" />
       <TextBlock Grid.Column="2" Name="PathValue" Text="{Binding PathText}" TextWrapping="Wrap" />
       <TextBlock Grid.Row="1" Classes="label" Text="往返延迟" Margin="0,6,0,0" />
@@ -24,6 +24,8 @@
       <TextBlock Grid.Row="6" Grid.Column="2" Text="{Binding RecoveryText}" TextWrapping="Wrap" Margin="0,6,0,0" />
       <TextBlock Grid.Row="7" Classes="label" Text="粘贴闸门" Margin="0,6,0,0" />
       <TextBlock Grid.Row="7" Grid.Column="2" Text="{Binding PasteText}" TextWrapping="Wrap" Margin="0,6,0,0" />
+      <TextBlock Grid.Row="8" Classes="label" Text="声音" Margin="0,6,0,0" />
+      <TextBlock Grid.Row="8" Grid.Column="2" Name="AudioValue" Text="{Binding AudioText}" TextWrapping="Wrap" Margin="0,6,0,0" />
     </Grid>
     <TextBlock Classes="muted" Text="每秒更新一次。帧率按实际显示的帧计算，码率按收到的全部 UDP 数据计算。" />
   </StackPanel>

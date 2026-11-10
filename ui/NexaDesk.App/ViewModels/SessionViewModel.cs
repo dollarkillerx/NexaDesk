@@ -15,6 +15,7 @@ public interface IWindowService
     void HideBanner();
     void ShowPermissionGuide(PermissionGuideViewModel guide);
     void ShowDiagnostics(DiagnosticsViewModel diagnostics);
+    void ShowKeyboardSettings(KeyboardSettingsViewModel settings);
 }
 
 /// <summary>
@@ -35,10 +36,19 @@ public sealed partial class SessionViewModel : ObservableObject
     public string HostKey { get; }
     public Permissions Perms { get; }
     public DiagnosticsViewModel Diagnostics { get; }
+    /// <summary>Files to and from the host; only with the file permission.</summary>
+    public TransferListViewModel Transfers { get; }
+    public HudViewModel Hud { get; } = new();
+    public bool CanSendFiles => Perms.File;
     public string Title => $"{HostName} — NexaDesk";
     public string PermsText => Texts.Permissions(Perms);
     public string HostKeyHint => "按 ⌃⌥⌘G 释放键盘并显示工具条";
     public bool CanControl => Perms.Input;
+    /// <summary>The host shared its sound: the toolbar offers mute.</summary>
+    public bool CanHearAudio => Perms.Audio;
+    /// <summary>The host's displays, for the toolbar's picker.</summary>
+    public IReadOnlyList<DisplayChoice> Displays { get; }
+    public bool HasManyDisplays => Displays.Count > 1;
     public bool IsEnded { get; private set; }
 
     /// <summary>The session ended; the windows close. Not raised twice.</summary>
@@ -62,7 +72,31 @@ public sealed partial class SessionViewModel : ObservableObject
     private bool _isSuspended;
 
     [ObservableProperty] private string _streamText = "等待画面…";
-    [ObservableProperty] private string? _warning;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasWarning))]
+    private string? _warning;
+
+    public bool HasWarning => Warning != null && !IsReconnecting;
+
+    /// <summary>§4.4: the transport dropped; the window stays while the library reconnects.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CaptureText), nameof(HasWarning))]
+    private bool _isReconnecting;
+
+    [ObservableProperty] private string? _reconnectText;
+
+    /// <summary>The library starts sound playing when the host shares it.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(AudioText), nameof(MuteLabel))]
+    private bool _isMuted;
+
+    [ObservableProperty] private DisplayChoice? _selectedDisplay;
+
+    /// <summary>The latency overlay over the video (toolbar → HUD).</summary>
+    [ObservableProperty] private bool _isHudVisible;
+
+    [RelayCommand]
+    private void ToggleHud() => IsHudVisible = !IsHudVisible;
 
     public SessionViewModel(ISession session, ConnectedEvent connected, string address, Func<DateTimeOffset>? now = null)
     {
@@ -73,7 +107,32 @@ public sealed partial class SessionViewModel : ObservableObject
         Perms = connected.Perms;
         _now = now ?? (() => DateTimeOffset.Now);
         Diagnostics = new DiagnosticsViewModel(address);
+        Transfers = new TransferListViewModel(new SessionTransfers(session));
         _clipboardText = Perms.Clipboard ? "剪贴板：双向同步" : "剪贴板：对方未允许";
+        Displays = (connected.Displays ?? []).Select(DisplayChoice.Of).ToList();
+        _displayFromHost = true;
+        SelectedDisplay = Displays.FirstOrDefault();
+        _displayFromHost = false;
+    }
+
+    public string AudioText => !Perms.Audio ? "声音：对方未共享" : IsMuted ? "声音：已静音" : "声音：播放中";
+    public string MuteLabel => IsMuted ? "取消静音" : "静音";
+
+    [RelayCommand]
+    private void ToggleMute() => IsMuted = !IsMuted;
+
+    partial void OnIsMutedChanged(bool value)
+    {
+        if (IsEnded || !Perms.Audio) return;
+        Session.Send(new SessionCommand.SetAudio(!value));
+    }
+
+    bool _displayFromHost;
+
+    partial void OnSelectedDisplayChanged(DisplayChoice? value)
+    {
+        if (_displayFromHost || IsEnded || value == null) return;
+        Session.Send(new SessionCommand.SelectDisplay(value.Id));
     }
 
     public bool IsOffice { get => Mode == StreamMode.Office; set { if (value) Mode = StreamMode.Office; } }
@@ -81,9 +140,11 @@ public sealed partial class SessionViewModel : ObservableObject
     public bool IsGame { get => Mode == StreamMode.Game; set { if (value) Mode = StreamMode.Game; } }
     public string ModeText => Texts.Mode(Mode);
 
-    public string CaptureText => IsSuspended && Perms.Input
-        ? "已释放键盘：点击画面或“继续控制”恢复"
-        : Texts.Capture(Capture, Perms.Input);
+    public string CaptureText => IsReconnecting
+        ? "已释放键盘：重新连上后自动恢复"
+        : IsSuspended && Perms.Input
+            ? "已释放键盘：点击画面或“继续控制”恢复"
+            : Texts.Capture(Capture, Perms.Input);
 
     public bool CaptureNeedsPermission => Perms.Input && Capture is CaptureState.Degraded or CaptureState.Unavailable;
 
@@ -134,7 +195,7 @@ public sealed partial class SessionViewModel : ObservableObject
 
     void UpdateCapture()
     {
-        var want = Perms.Input && _windowActive && !IsSuspended && !IsEnded;
+        var want = Perms.Input && _windowActive && !IsSuspended && !IsEnded && !IsReconnecting;
         if (_inputSent == want) return;
         _inputSent = want;
         var rc = Session.SetInputActive(want);
@@ -197,6 +258,10 @@ public sealed partial class SessionViewModel : ObservableObject
                 _modeFromHost = true;
                 Mode = s.Mode;
                 _modeFromHost = false;
+                // What the host streams is the truth, whoever asked for it.
+                _displayFromHost = true;
+                SelectedDisplay = Displays.FirstOrDefault(d => d.Id == s.Display) ?? SelectedDisplay;
+                _displayFromHost = false;
                 StreamText = $"{Texts.Codec(s.Codec)} · {s.Width}×{s.Height} · {s.Fps} fps";
                 Diagnostics.OnStream(s);
                 break;
@@ -212,13 +277,32 @@ public sealed partial class SessionViewModel : ObservableObject
                 ClipboardText = $"剪贴板：{n.Text}";
                 break;
             case StatsEvent s:
-                Diagnostics.Update(s.Stats, _now());
+                var at = _now();
+                Diagnostics.Update(s.Stats, at);
+                Hud.Update(s.Stats, at);
+                break;
+            case TransferEvent t:
+                Transfers.OnUpdate(t.Info);
                 break;
             case HostKeyEvent:
                 OnHostKey();
                 break;
             case WarningEvent w:
                 Warning = w.Text;
+                break;
+            case ReconnectingEvent r:
+                IsReconnecting = true;
+                ReconnectText = Texts.Reconnecting(r.Attempt, r.RemainingMs);
+                IsToolbarVisible = true;
+                Diagnostics.OnReconnecting();
+                UpdateCapture();
+                break;
+            case ConnectedEvent when IsReconnecting:
+                IsReconnecting = false;
+                ReconnectText = null;
+                // The old path's warning may no longer hold; a new one comes with the stats.
+                Warning = null;
+                UpdateCapture();
                 break;
             case DisconnectedEvent d:
                 Finish(d.Reason, d.Message);
@@ -235,6 +319,14 @@ public sealed partial class SessionViewModel : ObservableObject
         _inputSent = false;
         Ended?.Invoke(this, reason, message);
     }
+}
+
+/// <summary>The viewer's transfers go through the session handle.</summary>
+sealed class SessionTransfers(ISession session) : ITransferControl
+{
+    public void Send(IReadOnlyList<string> paths) => session.Send(new SessionCommand.SendFiles(paths));
+    public void Cancel(ulong id) => session.Send(new SessionCommand.CancelTransfer(id));
+    public void Answer(ulong id, bool accept) => session.Send(new SessionCommand.AnswerTransfer(id, accept));
 }
 
 /// <summary>Connection diagnostics from the once-a-second Stats event.</summary>
@@ -259,6 +351,9 @@ public sealed partial class DiagnosticsViewModel(string address) : ObservableObj
     [ObservableProperty] private string _streamText = "—";
     [ObservableProperty] private string _recoveryText = "—";
     [ObservableProperty] private string _pasteText = "—";
+    [ObservableProperty] private string _audioText = "—";
+
+    public void OnReconnecting() => PathText = "连接中断，正在重新连接…";
 
     public void OnStream(StreamChangedEvent s) =>
         StreamText = $"{Texts.Codec(s.Codec)} · {s.Width}×{s.Height} · 目标 {s.Fps} fps · {Texts.Mode(s.Mode)}模式";
@@ -273,6 +368,8 @@ public sealed partial class DiagnosticsViewModel(string address) : ObservableObj
         }
         RecoveryText = $"FEC 恢复 {s.FecRecovered} 帧 · 解码错误 {s.DecodeErrors}";
         PasteText = $"{s.GatePastes} 次粘贴 · {s.GateHeld} 次等待剪贴板 · {s.GateTimeouts} 次超时";
+        if (s.AudioPlayed > 0 || s.AudioConcealed > 0)
+            AudioText = $"缓冲 {s.AudioBufferUs / 1000.0:F0} ms · 补帧 {s.AudioConcealed} / {s.AudioPlayed + s.AudioConcealed}";
         var last = _last;
         var lastAt = _lastAt;
         _last = s;
@@ -289,4 +386,13 @@ public sealed partial class DiagnosticsViewModel(string address) : ObservableObj
         var mbps = (s.RxBytes - last.RxBytes) * 8 / dt / 1e6;
         BitrateText = mbps >= 1 ? $"{mbps:F1} Mbps" : $"{mbps * 1000:F0} kbps";
     }
+}
+
+/// <summary>A display in the toolbar's picker.</summary>
+public sealed record DisplayChoice(uint Id, string Label)
+{
+    public static DisplayChoice Of(DisplayInfo d) =>
+        new(d.Id, string.IsNullOrWhiteSpace(d.Name) ? $"显示器 {d.Id + 1}" : $"{d.Name} · {d.Width}×{d.Height}");
+
+    public override string ToString() => Label;
 }

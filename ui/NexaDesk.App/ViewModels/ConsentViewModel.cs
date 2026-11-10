@@ -38,6 +38,11 @@ public sealed partial class ConsentViewModel : ObservableObject
 
     [ObservableProperty] private bool _allowInput;
     [ObservableProperty] private bool _allowClipboard;
+    /// <summary>Off unless the request proposes it (a device saved with sound).</summary>
+    [ObservableProperty] private bool _allowAudio;
+    /// <summary>Always starts unticked, even for a device saved with it: files are opt-in each time.</summary>
+    [ObservableProperty] private bool _allowFile;
+    public string FileNote => $"双方可互相发送文件，收到的文件保存在 {Texts.DownloadsFolder}；对方不能浏览本机文件";
     [ObservableProperty] private bool _saveDevice;
     [ObservableProperty] private bool _skipNextTime;
 
@@ -64,6 +69,7 @@ public sealed partial class ConsentViewModel : ObservableObject
         Fingerprint = Texts.Fingerprint(req.DeviceKey);
         _allowInput = req.Perms.Input && req.InputAvailable;
         _allowClipboard = req.Perms.Clipboard;
+        _allowAudio = req.Perms.Audio;
         _saveDevice = req.OfferSave && req.SaveDefault;
         _skipNextTime = false;
         MarkShown(now);
@@ -93,7 +99,8 @@ public sealed partial class ConsentViewModel : ObservableObject
     private void Allow()
     {
         if (!CanAllow()) return;
-        var perms = new Permissions(View: true, Input: AllowInput && InputAvailable, Clipboard: AllowClipboard);
+        var perms = new Permissions(View: true, Input: AllowInput && InputAvailable, Clipboard: AllowClipboard,
+            File: AllowFile, Audio: AllowAudio);
         Finish(new UiRequest.Decide(ReqId, true, perms, OfferSave && SaveDevice, OfferSkipNextTime && SkipNextTime), "已允许");
     }
 

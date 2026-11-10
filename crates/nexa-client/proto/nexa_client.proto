@@ -3,10 +3,12 @@
 syntax = "proto3";
 package nexa.client;
 
-// nexa_init(cfg). data_dir defaults to ~/Library/Application Support/NexaDesk.
+// nexa_init(cfg). data_dir defaults to ~/Library/Application Support/NexaDesk,
+// downloads_dir (where files from hosts are saved) to ~/Downloads/NexaDesk.
 message ClientConfig {
   string device_name = 1;
   string data_dir = 2;
+  string downloads_dir = 3;
 }
 
 enum Mode { MODE_OFFICE = 0; MODE_BALANCED = 1; MODE_GAME = 2; }
@@ -34,6 +36,11 @@ message SessionCommand {
     SendText text = 4;
     SetMode mode = 5;
     SetClipboardPolicy clipboard = 6;
+    SetAudio audio = 20;
+    SelectDisplay display = 21;
+    SendFiles send_files = 22;
+    CancelTransfer cancel_transfer = 23;
+    AnswerTransfer answer_transfer = 24;
   }
 }
 message PointerMove { double x = 1; double y = 2; }
@@ -42,6 +49,12 @@ message PointerWheel { sint32 dx = 1; sint32 dy = 2; }         // 1/120 notch; +
 message SendText { string utf8 = 1; }
 message SetMode { Mode mode = 1; uint32 fps = 2; }
 message SetClipboardPolicy { bool outbound = 1; bool inbound = 2; }
+message SetAudio { bool enabled = 1; }                         // mute is false; needs Permissions.audio
+message SelectDisplay { uint32 display = 1; }                  // a DisplayInfo.id from Connected
+// §3.1 stream 4. Needs Permissions.file; only this side's own files can be sent.
+message SendFiles { repeated string paths = 1; }               // absolute paths, at most 100
+message CancelTransfer { uint64 id = 1; }                      // a Transfer.id, either direction
+message AnswerTransfer { uint64 id = 1; bool accept = 2; }     // to TRANSFER_NEEDS_CONFIRM
 
 message Permissions {
   bool view = 1; bool input = 2; bool clipboard = 3; bool file = 4; bool audio = 5;
@@ -64,6 +77,9 @@ message Event {
     Disconnected disconnected = 9;
     HostKeyPressed host_key = 10;
     Warning warning = 11;
+    Reconnecting reconnecting = 40;  // the transport dropped; the session window stays
+    TailnetDevices tailnet = 41;     // tag 0: Tailscale peers that answer on the NexaDesk port
+    Transfer transfer = 42;          // a file transfer of this session moved on
   }
 }
 
@@ -71,14 +87,16 @@ message Event {
 message Ready { string this_device_key = 1; repeated KnownHost hosts = 2; string error = 3; }
 enum ConnectStage { STAGE_QUIC = 0; STAGE_RESOLVING = 1; STAGE_GATHERING = 2; STAGE_CHECKING = 3; }
 message Connecting { ConnectStage stage = 1; }
+message DisplayInfo { uint32 id = 1; string name = 2; uint32 w = 3; uint32 h = 4; }
 message Connected {
   string host_key = 1;
   string host_name = 2;
   Permissions perms = 3;
   uint32 host_os = 4;          // 0 unknown, 1 windows, 2 macos, 3 linux
   bool paired_now = 5;         // this connection added or replaced the pin
+  repeated DisplayInfo displays = 20;
 }
-message StreamChanged { uint32 codec = 1; Mode mode = 2; uint32 w = 3; uint32 h = 4; uint32 fps = 5; }
+message StreamChanged { uint32 codec = 1; Mode mode = 2; uint32 w = 3; uint32 h = 4; uint32 fps = 5; uint32 display = 20; }
 enum CaptureState {
   CAPTURE_INACTIVE = 0;
   CAPTURE_ACTIVE = 1;
@@ -96,8 +114,26 @@ message Stats {
   PathKind path = 12;
   string path_detail = 13;     // "203.0.113.5:4000" or "relay 198.51.100.1:3480"
   uint64 path_rtt_us = 14;     // from connectivity probes; 0 when unknown
+  uint64 audio_played = 30;    // audio packets played
+  uint64 audio_concealed = 31; // 10 ms frames made up for lost or late packets
+  uint32 audio_buffer_us = 32; // mean wait in the jitter buffer
+  repeated LatencySegment latency = 40;  // §6.1 segments over the last frames presented
 }
-enum PathKind { PATH_UNKNOWN = 0; PATH_DIRECT = 1; PATH_PUNCHED = 2; PATH_RELAY = 3; PATH_TAILSCALE = 4; }
+enum Segment {
+  SEGMENT_HOST_AND_NETWORK = 0;  // capture at the host → last shard here (clock offset, §3.3)
+  SEGMENT_RECEIVE = 1;           // first shard → last
+  SEGMENT_DECODE_QUEUE = 2;
+  SEGMENT_DECODE = 3;
+  SEGMENT_PRESENT_QUEUE = 4;
+  SEGMENT_PRESENT = 5;
+  SEGMENT_TOTAL = 6;             // capture → presented
+}
+message LatencySegment { Segment segment = 1; uint32 p50_us = 2; uint32 p99_us = 3; }
+enum PathKind {
+  PATH_UNKNOWN = 0; PATH_DIRECT = 1; PATH_PUNCHED = 2; PATH_RELAY = 3; PATH_TAILSCALE = 4;
+  PATH_RELAY_WSS = 5;          // the relay over WebSocket/TCP (UDP blocked)
+  PATH_TAILSCALE_DERP = 6;     // Tailscale, relayed through DERP
+}
 enum DisconnectReason {
   DISCONNECT_UNSPECIFIED = 0;
   DISCONNECT_CLOSED_LOCALLY = 1;
@@ -122,3 +158,33 @@ enum DisconnectReason {
 message Disconnected { DisconnectReason reason = 1; string message = 2; }
 message HostKeyPressed {}
 message Warning { string text = 1; }
+// §4.4 Reconnecting: attempt n started; the 30 s window has remaining_ms left.
+// A Connected event for the same tag ends it; Disconnected means it gave up.
+message Reconnecting { uint32 attempt = 1; string reason = 2; uint32 remaining_ms = 3; }
+message TailnetDevice {
+  string name = 1;
+  string address = 2;          // "100.x.y.z:47800": connect to it as ip:port
+  bool direct = 3;             // false: through DERP
+  string os = 4;
+  string dns_name = 5;
+}
+message TailnetDevices { repeated TailnetDevice devices = 1; }
+
+enum TransferState {
+  TRANSFER_WAITING = 0; TRANSFER_NEEDS_CONFIRM = 1; TRANSFER_RUNNING = 2;
+  TRANSFER_DONE = 3; TRANSFER_FAILED = 4; TRANSFER_CANCELLED = 5;
+}
+enum FailReason {
+  FAIL_NONE = 0; FAIL_DECLINED = 1; FAIL_TOO_LARGE = 2; FAIL_NOT_PERMITTED = 3; FAIL_INVALID = 4;
+  FAIL_HASH_MISMATCH = 5; FAIL_NO_SPACE = 6; FAIL_IO = 7; FAIL_CONNECTION_LOST = 8; FAIL_TIMEOUT = 9;
+  FAIL_NOT_A_FILE = 10; FAIL_BUSY = 11;
+}
+// Ids are unique in the process.
+message Transfer {
+  uint64 id = 1;
+  bool outgoing = 2;             // from this Mac to the host
+  string name = 3; uint64 size = 4; uint64 done = 5;
+  TransferState state = 6; FailReason reason = 7;
+  string path = 8;               // where a received file was saved
+  bool by_peer = 9;
+}

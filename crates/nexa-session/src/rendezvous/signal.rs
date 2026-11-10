@@ -173,8 +173,45 @@ impl SignalSender {
     }
 }
 
-trait Io: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+pub(crate) trait Io: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> Io for T {}
+
+pub(crate) type WsStream = tokio_tungstenite::WebSocketStream<Box<dyn Io>>;
+
+/// TCP, TLS when the URL says so, and the WebSocket upgrade on `path`.
+pub(crate) async fn connect_ws(
+    cfg: &SignalConfig,
+    path: &str,
+    ws: WebSocketConfig,
+) -> Result<(WsStream, Endpoint), SignalError> {
+    let ep = parse_url(&cfg.url)?;
+    let tcp = TcpStream::connect((ep.host.as_str(), ep.port))
+        .await
+        .map_err(|e| SignalError::Unreachable(e.to_string()))?;
+    let _ = tcp.set_nodelay(true);
+    let stream: Box<dyn Io> = if ep.tls {
+        let name = ServerName::try_from(ep.host.clone())
+            .map_err(|_| SignalError::BadUrl(cfg.url.clone()))?;
+        let tls = tokio_rustls::TlsConnector::from(tls_config(cfg)?)
+            .connect(name, tcp)
+            .await
+            .map_err(|e| SignalError::Tls(e.to_string()))?;
+        Box::new(tls)
+    } else {
+        Box::new(tcp)
+    };
+    let scheme = if ep.tls { "wss" } else { "ws" };
+    let host = if ep.host.contains(':') {
+        format!("[{}]", ep.host)
+    } else {
+        ep.host.clone()
+    };
+    let url = format!("{scheme}://{host}:{}{path}", ep.port);
+    let (ws, _) = tokio_tungstenite::client_async_with_config(url, stream, Some(ws))
+        .await
+        .map_err(|e| SignalError::Unreachable(e.to_string()))?;
+    Ok((ws, ep))
+}
 
 fn tls_config(cfg: &SignalConfig) -> Result<Arc<rustls::ClientConfig>, SignalError> {
     let mut roots = rustls::RootCertStore::empty();
@@ -233,32 +270,7 @@ impl SignalClient {
     }
 
     async fn connect_inner(cfg: &SignalConfig, keys: &SignalKeys) -> Result<Self, SignalError> {
-        let ep = parse_url(&cfg.url)?;
-        let tcp = TcpStream::connect((ep.host.as_str(), ep.port))
-            .await
-            .map_err(|e| SignalError::Unreachable(e.to_string()))?;
-        let _ = tcp.set_nodelay(true);
-        let stream: Box<dyn Io> = if ep.tls {
-            let name = ServerName::try_from(ep.host.clone())
-                .map_err(|_| SignalError::BadUrl(cfg.url.clone()))?;
-            let tls = tokio_rustls::TlsConnector::from(tls_config(cfg)?)
-                .connect(name, tcp)
-                .await
-                .map_err(|e| SignalError::Tls(e.to_string()))?;
-            Box::new(tls)
-        } else {
-            Box::new(tcp)
-        };
-        let scheme = if ep.tls { "wss" } else { "ws" };
-        let host = if ep.host.contains(':') {
-            format!("[{}]", ep.host)
-        } else {
-            ep.host.clone()
-        };
-        let url = format!("{scheme}://{host}:{}/", ep.port);
-        let (ws, _) = tokio_tungstenite::client_async_with_config(url, stream, Some(ws_config()))
-            .await
-            .map_err(|e| SignalError::Unreachable(e.to_string()))?;
+        let (ws, ep) = connect_ws(cfg, "/", ws_config()).await?;
         let (mut sink, mut stream) = ws.split();
 
         let nonce = loop {

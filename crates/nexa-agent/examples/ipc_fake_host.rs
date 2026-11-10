@@ -57,6 +57,10 @@ async fn main() {
             caps: caps(),
             timeouts,
             signal: None,
+            files: nexa_agent::FileSettings {
+                downloads: dir.join("Downloads/NexaDesk"),
+                limits: Default::default(),
+            },
         },
         identity,
         store,
@@ -125,6 +129,7 @@ async fn main() {
         .send(ControlBody::Request(StreamRequest {
             mode: Mode::Balanced as i32,
             fps: 0,
+            display: 0,
         }))
         .await
         .unwrap();

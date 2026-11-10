@@ -150,3 +150,54 @@ pub fn probe_caps() -> Caps {
         max_fps,
     }
 }
+
+/// What [`crate::caps_cache`] keys this Mac by: the OS build (the drivers ship
+/// with it) and the default Metal device.
+pub fn system_key() -> crate::caps_cache::CapsKey {
+    use objc2_metal::{MTLCreateSystemDefaultDevice, MTLDevice};
+    let os_build = {
+        let mut buf = [0u8; 64];
+        let mut len = buf.len();
+        // SAFETY: the name is a valid C string and `buf`/`len` describe a writable buffer.
+        let rc = unsafe {
+            libc::sysctlbyname(
+                c"kern.osversion".as_ptr(),
+                buf.as_mut_ptr().cast(),
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if rc == 0 {
+            String::from_utf8_lossy(&buf[..len.min(buf.len())])
+                .trim_end_matches('\0')
+                .to_owned()
+        } else {
+            String::new()
+        }
+    };
+    let gpu = MTLCreateSystemDefaultDevice()
+        .map(|d| d.name().to_string())
+        .unwrap_or_default();
+    crate::caps_cache::CapsKey { os_build, gpu }
+}
+
+/// [`probe_caps`] through `caps.json` at `path` (§3.5): probes only on a new OS
+/// build or GPU. Without a usable key (no build string) it always probes.
+pub fn cached_caps(path: &std::path::Path) -> Caps {
+    let key = system_key();
+    if key.os_build.is_empty() {
+        return probe_caps();
+    }
+    crate::caps_cache::cached(path, &key, probe_caps)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn this_mac_has_a_cache_key() {
+        let key = super::system_key();
+        assert!(!key.os_build.is_empty() && key.os_build.chars().all(|c| c.is_ascii_alphanumeric()), "{key:?}");
+        assert!(!key.gpu.is_empty(), "{key:?}");
+    }
+}

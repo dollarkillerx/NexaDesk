@@ -145,6 +145,10 @@ pub struct SessionAccept {
     pub caps: Option<Caps>,
     #[prost(enumeration = "Os", tag = "4")]
     pub os: i32,
+    /// The host's device name. Older hosts left it empty and put it in
+    /// `displays[0].name` instead, which viewers still fall back to.
+    #[prost(string, tag = "5")]
+    pub host_name: String,
 }
 
 #[derive(Clone, PartialEq, Message)]

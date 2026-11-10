@@ -362,6 +362,8 @@ pub struct Host {
     pub platform: FakePlatform,
     pub ui: Arc<FakeUi>,
     pub addr: SocketAddr,
+    /// Where files sent to this host land: inside the temporary directory.
+    pub downloads: std::path::PathBuf,
     _dir: tempfile::TempDir,
 }
 
@@ -388,6 +390,10 @@ pub async fn host_with(
             caps: caps(),
             timeouts,
             signal,
+            files: nexa_agent::FileSettings {
+                downloads: dir.path().join("Downloads/NexaDesk"),
+                limits: Default::default(),
+            },
         },
         identity,
         store,
@@ -402,6 +408,7 @@ pub async fn host_with(
         platform,
         ui,
         addr,
+        downloads: dir.path().join("Downloads/NexaDesk"),
         _dir: dir,
     }
 }

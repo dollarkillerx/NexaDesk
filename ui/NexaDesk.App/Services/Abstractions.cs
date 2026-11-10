@@ -96,3 +96,27 @@ public sealed class MemorySettings(AppSettings? initial = null) : ISettingsStore
     public AppSettings Load() => Current;
     public void Save(AppSettings settings) => Current = settings;
 }
+
+/// <summary>Keyboard rules (§11.2) through libnexa_client's nexa_keymap_* calls. This Mac is the local side.</summary>
+public interface IKeymapService
+{
+    KeymapView Rules(RemoteOs remote);
+    /// <summary>Null when saved, else why not (nothing is written then).</summary>
+    string? Save(RemoteOs remote, IReadOnlyList<KeymapRule> rules);
+    /// <summary>Runs the real rewriter on a chord with <paramref name="rules"/> in place of the file. Sends nothing.</summary>
+    KeyPreview Preview(RemoteOs remote, string chord, KeyContext ctx, IReadOnlyList<KeymapRule> rules);
+}
+
+/// <summary>SMAppService.mainApp's status (macOS 13+); Unsupported elsewhere.</summary>
+public enum LoginItemStatus { NotRegistered = 0, Enabled = 1, RequiresApproval = 2, NotFound = 3, Unsupported = 4 }
+
+/// <summary>"登录时启动". Only the real app registers anything; tests use a fake.</summary>
+public interface ILoginItem
+{
+    LoginItemStatus Status { get; }
+    /// <summary>Null on success, else why not.</summary>
+    string? Register();
+    string? Unregister();
+    /// <summary>System Settings → General → Login Items.</summary>
+    void OpenSettings();
+}

@@ -205,10 +205,16 @@ public static partial class Texts
             PathKind.Punched => "打洞",
             PathKind.Relay => "中继",
             PathKind.Tailscale => "Tailscale",
+            PathKind.RelayWss => "中继（WSS，UDP 被阻断）",
+            PathKind.TailscaleDerp => "Tailscale（DERP 中继）",
             _ => "正在建立",
         };
         return string.IsNullOrEmpty(detail) ? what : $"{what} · {detail}";
     }
+
+    /// <summary>§4.4 Reconnecting, as the session window shows it.</summary>
+    public static string Reconnecting(uint attempt, uint remainingMs) =>
+        $"连接中断，正在重新连接（第 {attempt} 次，最多再等 {(remainingMs + 999) / 1000} 秒）…";
 
     public static string Stage(ConnectStage stage, string target) => stage switch
     {

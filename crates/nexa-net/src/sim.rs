@@ -15,6 +15,11 @@
 //!
 //! Latency is one-way and per link; delivery uses tokio timers, so tests need a
 //! tokio runtime (paused time works).
+//!
+//! Also modelled: dual-stack sockets (IPv4 peers appear IPv4-mapped, as from a
+//! real `[::]` socket), public hosts behind a stateful firewall (IPv6 without
+//! NAT), static NAT entries (what PCP / NAT-PMP / UPnP create), and a machine
+//! changing address under a live socket.
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -107,6 +112,7 @@ pub struct SimStats {
     pub dropped_unroutable: u64,
     pub dropped_firewall: u64,
     pub mappings_created: u64,
+    pub dropped_no_route: u64,
 }
 
 struct Nat {
@@ -117,6 +123,8 @@ struct Nat {
     by_key: HashMap<(SocketAddr, Option<SocketAddr>), u16>,
     /// public port → (internal, permitted remotes).
     by_port: HashMap<u16, (SocketAddr, HashSet<SocketAddr>)>,
+    /// Port-mapping protocol entries: internal → public port, open to anyone.
+    statics: HashMap<SocketAddr, u16>,
     next_port: u16,
     rng: u64,
 }
@@ -157,7 +165,8 @@ impl Nat {
             Mapping::EndpointIndependent => (from, None),
             Mapping::AddressAndPortDependent => (from, Some(to)),
         };
-        let port = match self.by_key.get(&key) {
+        // A static entry is endpoint-independent for its internal port (RFC 6887 §11).
+        let port = match self.statics.get(&from).or_else(|| self.by_key.get(&key)) {
             Some(&p) => p,
             None => {
                 let p = self.allocate(from)?;
@@ -178,11 +187,13 @@ impl Nat {
             stats.dropped_no_mapping += 1;
             return None;
         };
-        let ok = match self.cfg.filtering {
-            Filtering::EndpointIndependent => true,
-            Filtering::AddressDependent => permitted.iter().any(|p| p.ip() == from.ip()),
-            Filtering::AddressAndPortDependent => permitted.contains(&from),
-        };
+        let open = self.statics.get(internal) == Some(&to_port);
+        let ok = open
+            || match self.cfg.filtering {
+                Filtering::EndpointIndependent => true,
+                Filtering::AddressDependent => permitted.iter().any(|p| p.ip() == from.ip()),
+                Filtering::AddressAndPortDependent => permitted.contains(&from),
+            };
         if !ok {
             stats.dropped_filtered += 1;
             return None;
@@ -200,6 +211,12 @@ struct NetState {
     nats: Vec<Nat>,
     /// Public hosts (no NAT) and their uplink latency.
     public: HashMap<IpAddr, Duration>,
+    /// Public hosts behind a stateful firewall: inbound only from where they sent.
+    firewalled: HashSet<IpAddr>,
+    /// (local, remote) pairs a firewalled host has sent on.
+    permits: HashSet<(SocketAddr, SocketAddr)>,
+    /// Public hosts whose outbound traffic is all dropped (an outage).
+    blocked: HashSet<IpAddr>,
     sockets: HashMap<SocketAddr, Weak<SimSocketShared>>,
     lan_latency: Duration,
     stats: SimStats,
@@ -230,6 +247,9 @@ impl SimNet {
             state: Arc::new(Mutex::new(NetState {
                 nats: Vec::new(),
                 public: HashMap::new(),
+                firewalled: HashSet::new(),
+                permits: HashSet::new(),
+                blocked: HashSet::new(),
                 sockets: HashMap::new(),
                 lan_latency: Duration::from_millis(1),
                 stats: SimStats::default(),
@@ -247,6 +267,89 @@ impl SimNet {
         self.lock().public.insert(ip, uplink);
     }
 
+    /// A public host behind a stateful firewall, like most IPv6 home routers:
+    /// inbound UDP only from addresses it has sent to (address and port).
+    pub fn add_firewalled_host(&self, ip: IpAddr, uplink: Duration) {
+        let mut st = self.lock();
+        st.public.insert(ip, uplink);
+        st.firewalled.insert(ip);
+    }
+
+    /// Drops everything a public host sends (`true`) or lets it through again.
+    pub fn set_host_blocked(&self, ip: IpAddr, blocked: bool) {
+        let mut st = self.lock();
+        if blocked {
+            st.blocked.insert(ip);
+        } else {
+            st.blocked.remove(&ip);
+        }
+    }
+
+    /// What a port-mapping protocol does: `internal` is reachable from anyone at
+    /// `public_ip:external`. False if the port is taken or there is no such NAT.
+    pub fn add_static_mapping(
+        &self,
+        public_ip: IpAddr,
+        internal: SocketAddr,
+        external: u16,
+    ) -> bool {
+        let mut st = self.lock();
+        let Some(n) = st.nats.iter_mut().find(|n| n.cfg.public_ip == public_ip) else {
+            return false;
+        };
+        if n.by_port
+            .get(&external)
+            .is_some_and(|(i, _)| *i != internal)
+        {
+            return false;
+        }
+        n.by_port.insert(external, (internal, HashSet::new()));
+        n.statics.insert(internal, external);
+        true
+    }
+
+    pub fn remove_static_mapping(&self, public_ip: IpAddr, external: u16) {
+        let mut st = self.lock();
+        if let Some(n) = st.nats.iter_mut().find(|n| n.cfg.public_ip == public_ip)
+            && let Some((internal, _)) = n.by_port.remove(&external)
+        {
+            n.statics.remove(&internal);
+            n.by_key.retain(|_, p| *p != external);
+        }
+    }
+
+    pub fn has_static_mapping(&self, public_ip: IpAddr, external: u16) -> bool {
+        self.lock()
+            .nats
+            .iter()
+            .any(|n| n.cfg.public_ip == public_ip && n.statics.values().any(|p| *p == external))
+    }
+
+    /// The machine at `old` now has address `new` (moved to another network):
+    /// its sockets keep their ports and now send from, and receive at, `new`.
+    /// Put `new` behind a NAT or on the core first.
+    pub fn change_address(&self, old: IpAddr, new: IpAddr) -> usize {
+        let mut st = self.lock();
+        let moving: Vec<(SocketAddr, Weak<SimSocketShared>)> = st
+            .sockets
+            .iter()
+            .filter(|(a, _)| a.ip() == old)
+            .map(|(a, w)| (*a, w.clone()))
+            .collect();
+        for (a, w) in &moving {
+            st.sockets.remove(a);
+            let to = SocketAddr::new(new, a.port());
+            if let Some(sock) = w.upgrade() {
+                let mut addrs = sock.addrs.lock().unwrap_or_else(|e| e.into_inner());
+                for x in addrs.iter_mut().filter(|x| **x == *a) {
+                    *x = to;
+                }
+            }
+            st.sockets.insert(to, w.clone());
+        }
+        moving.len()
+    }
+
     /// A NAT with the given machines behind it.
     pub fn add_nat(&self, cfg: NatConfig, lan: &[IpAddr]) {
         let seed = match cfg.alloc {
@@ -258,6 +361,7 @@ impl SimNet {
             lan: lan.iter().copied().collect(),
             by_key: HashMap::new(),
             by_port: HashMap::new(),
+            statics: HashMap::new(),
             next_port: 30_000,
             rng: seed,
         });
@@ -276,30 +380,59 @@ impl SimNet {
     }
 
     /// Binds a socket. Port 0 picks a free one.
-    pub fn bind(&self, mut addr: SocketAddr) -> io::Result<Arc<SimSocket>> {
+    pub fn bind(&self, addr: SocketAddr) -> io::Result<Arc<SimSocket>> {
+        self.bind_ips(&[addr.ip()], addr.port(), addr)
+    }
+
+    /// A dual-stack socket (`[::]:port`) on a machine with these addresses.
+    /// IPv4 peers show up IPv4-mapped, as on a real dual-stack socket.
+    pub fn bind_dual(&self, ips: &[IpAddr], port: u16) -> io::Result<Arc<SimSocket>> {
+        let local = SocketAddr::new(IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED), port);
+        self.bind_ips(ips, port, local)
+    }
+
+    fn bind_ips(
+        &self,
+        ips: &[IpAddr],
+        mut port: u16,
+        local: SocketAddr,
+    ) -> io::Result<Arc<SimSocket>> {
         let mut st = self.lock();
-        if addr.port() == 0 {
+        let free = |st: &NetState, p: u16| {
+            ips.iter().all(|ip| {
+                st.sockets
+                    .get(&SocketAddr::new(*ip, p))
+                    .is_none_or(|w| w.strong_count() == 0)
+            })
+        };
+        if port == 0 {
             loop {
                 let p = st.next_ephemeral;
                 st.next_ephemeral = if p >= 60_000 { 40_000 } else { p + 1 };
-                let candidate = SocketAddr::new(addr.ip(), p);
-                if !st.sockets.contains_key(&candidate) {
-                    addr = candidate;
+                if free(&st, p) {
+                    port = p;
                     break;
                 }
             }
         }
-        if st.sockets.get(&addr).is_some_and(|w| w.strong_count() > 0) {
+        if !free(&st, port) {
             return Err(io::Error::new(io::ErrorKind::AddrInUse, "address in use"));
         }
+        let addrs: Vec<SocketAddr> = ips.iter().map(|ip| SocketAddr::new(*ip, port)).collect();
+        let local = SocketAddr::new(local.ip(), port);
+        let dual = local.is_ipv6() && local.ip().is_unspecified();
         let shared = Arc::new(SimSocketShared {
-            addr,
+            addrs: Mutex::new(addrs.clone()),
+            local,
+            dual,
             state: Mutex::new(SocketState {
                 queue: VecDeque::new(),
                 waker: None,
             }),
         });
-        st.sockets.insert(addr, Arc::downgrade(&shared));
+        for a in addrs {
+            st.sockets.insert(a, Arc::downgrade(&shared));
+        }
         Ok(Arc::new(SimSocket {
             net: self.clone(),
             shared,
@@ -322,6 +455,14 @@ impl SimNet {
         let mut delay = Duration::ZERO;
         let mut src = from;
 
+        if st.blocked.contains(&from.ip()) {
+            stats.dropped_firewall += 1;
+            st.stats = stats;
+            return;
+        }
+        if st.firewalled.contains(&from.ip()) {
+            st.permits.insert((from, to));
+        }
         let src_nat = Self::nat_of(st, from.ip());
         let same_lan = src_nat.is_some() && src_nat == Self::nat_of(st, to.ip());
         let dst: Option<SocketAddr> = if same_lan || from.ip() == to.ip() {
@@ -360,7 +501,12 @@ impl SimNet {
             // The core: deliver to a public host or through the destination's NAT.
             if let Some(up) = st.public.get(&to.ip()) {
                 delay += *up;
-                Some(to)
+                if st.firewalled.contains(&to.ip()) && !st.permits.contains(&(to, src)) {
+                    stats.dropped_filtered += 1;
+                    None
+                } else {
+                    Some(to)
+                }
             } else if let Some(j) = Self::nat_by_public(st, to.ip()) {
                 delay += st.nats[j].cfg.uplink;
                 st.nats[j].inbound(src, to.port(), &mut stats)
@@ -394,12 +540,27 @@ impl SimNet {
 }
 
 struct SimSocketShared {
-    addr: SocketAddr,
+    /// One per address family the machine has; they move with `change_address`.
+    addrs: Mutex<Vec<SocketAddr>>,
+    /// What `local_addr` reports.
+    local: SocketAddr,
+    dual: bool,
     state: Mutex<SocketState>,
 }
 
 impl SimSocketShared {
+    fn source_for(&self, to: SocketAddr) -> Option<SocketAddr> {
+        let addrs = self.addrs.lock().unwrap_or_else(|e| e.into_inner());
+        addrs.iter().find(|a| a.is_ipv4() == to.is_ipv4()).copied()
+    }
+
     fn push(&self, from: SocketAddr, payload: Vec<u8>) {
+        let from = match from {
+            SocketAddr::V4(v4) if self.dual => {
+                SocketAddr::new(IpAddr::V6(v4.ip().to_ipv6_mapped()), v4.port())
+            }
+            other => other,
+        };
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if st.queue.len() >= 4096 {
             return; // a full receive buffer drops, like a real one
@@ -419,13 +580,23 @@ pub struct SimSocket {
 
 impl fmt::Debug for SimSocket {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "SimSocket({})", self.shared.addr)
+        write!(f, "SimSocket({})", self.shared.local)
     }
 }
 
 impl SimSocket {
+    /// The address it was bound to (`[::]:port` for a dual-stack socket).
     pub fn addr(&self) -> SocketAddr {
-        self.shared.addr
+        self.shared.local
+    }
+
+    /// Its current real addresses.
+    pub fn addrs(&self) -> Vec<SocketAddr> {
+        self.shared
+            .addrs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 }
 
@@ -444,10 +615,21 @@ impl AsyncUdpSocket for SimSocket {
     }
 
     fn try_send(&self, t: &Transmit<'_>) -> io::Result<()> {
+        if t.destination.is_ipv4() && self.shared.dual {
+            // A real dual-stack socket wants IPv4 destinations IPv4-mapped.
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "IPv4 address on an IPv6 socket",
+            ));
+        }
+        let to = crate::vsock::canonical(t.destination);
+        let Some(from) = self.shared.source_for(to) else {
+            self.net.lock().stats.dropped_no_route += 1;
+            return Ok(());
+        };
         let seg = t.segment_size.unwrap_or(t.contents.len()).max(1);
         for chunk in t.contents.chunks(seg) {
-            self.net
-                .route(self.shared.addr, t.destination, chunk.to_vec());
+            self.net.route(from, to, chunk.to_vec());
         }
         Ok(())
     }
@@ -482,7 +664,7 @@ impl AsyncUdpSocket for SimSocket {
     }
 
     fn local_addr(&self) -> io::Result<SocketAddr> {
-        Ok(self.shared.addr)
+        Ok(self.shared.local)
     }
 
     fn max_transmit_segments(&self) -> usize {

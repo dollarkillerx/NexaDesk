@@ -13,7 +13,11 @@
         <TextBlock Classes="label" VerticalAlignment="Bottom" Margin="0,0,0,2"
                    Text="{Binding DeviceName, StringFormat='本机：{0}'}" />
       </StackPanel>
-      <Button Grid.Column="1" Classes="small" Content="权限设置…" Command="{Binding ShowViewerPermissionsCommand}" />
+      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+        <Button Name="KeyboardSettingsButton" Classes="small" Content="键盘设置…" Command="{Binding ShowKeyboardSettingsCommand}"
+                IsVisible="{Binding HasKeyboardSettings}" />
+        <Button Classes="small" Content="权限设置…" Command="{Binding ShowViewerPermissionsCommand}" />
+      </StackPanel>
     </Grid>
 
     <!-- 信令服务器：按设备 ID 连接时使用 -->
@@ -26,6 +30,15 @@
           <TextBlock Classes="muted" Name="ServerStatusText" Text="{Binding ServerStatus}" VerticalAlignment="Center" />
         </StackPanel>
         <TextBlock Classes="errorText" Text="{Binding ServerHint}" IsVisible="{Binding ServerHint, Converter={x:Static ObjectConverters.IsNotNull}}" />
+        <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,4,0,0"
+                    DataContext="{Binding $parent[Window].((vm:MainViewModel)DataContext).LoginItem}" x:DataType="vm:LoginItemViewModel">
+          <CheckBox Name="LoginItemBox" Content="登录时启动" IsChecked="{Binding IsEnabled}" IsEnabled="{Binding IsSupported}" />
+          <TextBlock Classes="muted" Name="LoginItemStatus" Text="{Binding StatusText}" VerticalAlignment="Center" />
+          <Button Classes="small" Content="打开登录项设置" Command="{Binding OpenSettingsCommand}" IsVisible="{Binding NeedsApproval}" />
+          <TextBlock Classes="errorText" Text="{Binding Error}" VerticalAlignment="Center"
+                     IsVisible="{Binding Error, Converter={x:Static ObjectConverters.IsNotNull}}" />
+        </StackPanel>
+        <TextBlock Classes="muted" Text="关闭这个窗口后，NexaDesk 仍在菜单栏运行：允许控制、连接确认和顶部提示条都照常工作；从菜单栏选“退出”才会停止。" />
       </StackPanel>
     </Border>
 
@@ -65,6 +78,31 @@
             <Border Classes="error" IsVisible="{Binding IdentityError, Converter={x:Static ObjectConverters.IsNotNull}}">
               <TextBlock Classes="errorText" Text="{Binding IdentityError}" />
             </Border>
+
+            <StackPanel Name="TailnetSection" Spacing="4" Margin="0,12,0,0" IsVisible="{Binding HasTailnet}">
+              <TextBlock Classes="label" Text="Tailscale 网络中的 NexaDesk 设备" />
+              <ItemsControl Name="TailnetList" ItemsSource="{Binding Tailnet}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="vm:TailnetDeviceViewModel">
+                    <Border Classes="subtle" Margin="0,0,0,6">
+                      <Grid ColumnDefinitions="*,Auto">
+                        <StackPanel Spacing="2">
+                          <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                            <Border Classes="badge">
+                              <TextBlock Text="{Binding PathText}" FontSize="11" />
+                            </Border>
+                          </StackPanel>
+                          <TextBlock Classes="muted" Text="{Binding Detail}" />
+                        </StackPanel>
+                        <Button Grid.Column="1" Classes="small" Content="连接" Command="{Binding ConnectCommand}"
+                                VerticalAlignment="Center" />
+                      </Grid>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
 
             <TextBlock Classes="label" Text="最近的设备" Margin="0,12,0,0" />
             <TextBlock Classes="muted" Text="还没有连接过任何设备。" IsVisible="{Binding !HasRecent}" />

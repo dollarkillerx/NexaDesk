@@ -233,6 +233,7 @@ mod tests {
             capture_ts_us: 0,
             data: vec![1],
             recovered_shards: 0,
+            arrival: None,
         })
     }
 
@@ -245,6 +246,7 @@ mod tests {
             capture_ts_us: 0,
             data: vec![1],
             recovered_shards: 0,
+            arrival: None,
         })
     }
 
@@ -456,6 +458,7 @@ mod tests {
             capture_ts_us: 0,
             data: vec![1],
             recovered_shards: 0,
+            arrival: None,
         });
         assert!(decoded(&r.on_event(key, t)));
         assert!(!r.is_waiting());

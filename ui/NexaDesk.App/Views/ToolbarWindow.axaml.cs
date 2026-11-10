@@ -1,6 +1,8 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Platform.Storage;
 using NexaDesk.ViewModels;
 
 namespace NexaDesk.Views;
@@ -18,6 +20,23 @@ public partial class ToolbarWindow : Window
     public ToolbarWindow()
     {
         InitializeComponent();
+        DragDrop.SetAllowDrop(this, true);
+        AddHandler(DragDrop.DragOverEvent, (_, e) => FileDrop.Over(this, e));
+        AddHandler(DragDrop.DropEvent, (_, e) => FileDrop.Drop(this, e));
+    }
+
+    SessionViewModel? Vm => DataContext as SessionViewModel;
+
+    async void OnSendFiles(object? sender, RoutedEventArgs e)
+    {
+        if (Vm is not { CanSendFiles: true } vm) return;
+        var picked = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = $"发送文件到 {vm.HostName}",
+            AllowMultiple = true,
+        });
+        var paths = picked.Select(f => f.TryGetLocalPath()).OfType<string>().ToList();
+        if (paths.Count > 0) vm.Transfers.SendFiles(paths);
     }
 
     public void Follow(Window session)

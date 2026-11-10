@@ -36,11 +36,19 @@ public sealed partial class BannerViewModel : ObservableObject
         _link = link;
         _startedAt = startedAt;
         _session = session;
+        Transfers = new TransferListViewModel(new AgentTransfers(link));
     }
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(Headline), nameof(PermsText), nameof(Detail), nameof(HasInput))]
+    [NotifyPropertyChangedFor(nameof(Headline), nameof(PermsText), nameof(Detail), nameof(HasInput), nameof(CanSendFiles), nameof(DropHint))]
     private HostSession _session;
+
+    /// <summary>Files dropped here go to the viewer; files from it are listed here too.</summary>
+    public TransferListViewModel Transfers { get; }
+    public bool CanSendFiles => Session.Perms.File;
+    public string DropHint => CanSendFiles
+        ? $"把文件拖到这里发给对方 · 收到的文件在 {Texts.DownloadsFolder}"
+        : "";
 
     [ObservableProperty] private string _durationText = "00:00";
     [ObservableProperty] private bool _isDisconnecting;
@@ -59,6 +67,14 @@ public sealed partial class BannerViewModel : ObservableObject
         IsDisconnecting = true;
         _link.Send(new UiRequest.Disconnect());
     }
+}
+
+/// <summary>The host's transfers go to the agent, which checks the session's permission.</summary>
+sealed class AgentTransfers(IAgentLink link) : ITransferControl
+{
+    public void Send(IReadOnlyList<string> paths) => link.Send(new UiRequest.SendFiles(paths));
+    public void Cancel(ulong id) => link.Send(new UiRequest.CancelTransfer(id));
+    public void Answer(ulong id, bool accept) => link.Send(new UiRequest.AnswerTransfer(id, accept));
 }
 
 /// <summary>"允许别人控制本机": the agent, its code, and the devices paired with it.</summary>
@@ -322,6 +338,12 @@ public sealed partial class HostViewModel : ObservableObject
             case AgentMessage.Notice n:
                 Notice = n.Text;
                 break;
+            case AgentMessage.Transfer t:
+                if (_banner?.SessionId == t.SessionId) _banner.Transfers.OnUpdate(t.Info);
+                break;
+            case AgentMessage.Refused { Command: "files" } r when _banner != null:
+                _banner.Transfers.Error = $"无法发送：{r.Reason}";
+                break;
             case AgentMessage.Refused r:
                 Error = r.Command == "policy"
                     ? "只能在连接确认时开启“下次无需确认”。"
@@ -408,6 +430,15 @@ public sealed partial class HostViewModel : ObservableObject
 
 public enum PermissionContext { Hosting, Viewing }
 
+/// <summary>Where there is no SMAppService (and in tests that do not care).</summary>
+sealed class NoLoginItem : ILoginItem
+{
+    public LoginItemStatus Status => LoginItemStatus.Unsupported;
+    public string? Register() => "需要 macOS 13 或更新版本";
+    public string? Unregister() => null;
+    public void OpenSettings() { }
+}
+
 /// <summary>Where to switch on Screen Recording and Accessibility, and whether they are on.</summary>
 public sealed partial class PermissionGuideViewModel : ObservableObject
 {
@@ -480,8 +511,10 @@ public sealed partial class MainViewModel : ObservableObject
 
     public MainViewModel(IClientCore core, IRecentStore recent, IAgentLink link, IAgentProcess process,
         IPermissionProbe permissions, IWindowService windows, ILocalAddresses addresses, string deviceName,
-        Func<DateTimeOffset>? now = null, ISettingsStore? settings = null)
+        Func<DateTimeOffset>? now = null, ISettingsStore? settings = null, ILoginItem? loginItem = null,
+        IKeymapService? keymap = null)
     {
+        _keymap = keymap;
         _core = core;
         DeviceName = deviceName;
         Settings = new SettingsViewModel(settings ?? new MemorySettings());
@@ -494,9 +527,24 @@ public sealed partial class MainViewModel : ObservableObject
         };
         _permissions = permissions;
         _windows = windows;
+        LoginItem = new LoginItemViewModel(loginItem ?? new NoLoginItem());
+        Tray = new TrayViewModel(Host);
     }
 
+    readonly IKeymapService? _keymap;
     readonly IPermissionProbe _permissions;
+
+    /// <summary>"登录时启动".</summary>
+    public LoginItemViewModel LoginItem { get; }
+    /// <summary>The menu-bar item that keeps NexaDesk running with its window closed.</summary>
+    public TrayViewModel Tray { get; }
+    public bool HasKeyboardSettings => _keymap != null;
+
+    [RelayCommand]
+    private void ShowKeyboardSettings()
+    {
+        if (_keymap != null) _windows.ShowKeyboardSettings(new KeyboardSettingsViewModel(_keymap));
+    }
     readonly IWindowService _windows;
 
     public string DeviceName { get; }

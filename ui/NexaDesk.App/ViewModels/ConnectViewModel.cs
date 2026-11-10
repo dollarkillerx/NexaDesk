@@ -32,6 +32,19 @@ public sealed partial class RecentDeviceViewModel(ConnectViewModel owner, Recent
     private void Remove() => owner.RemoveRecent(this);
 }
 
+/// <summary>A NexaDesk host in this machine's tailnet (§4.7), from the Tailscale LocalAPI.</summary>
+public sealed partial class TailnetDeviceViewModel(ConnectViewModel owner, TailnetDevice device) : ObservableObject
+{
+    public TailnetDevice Device { get; } = device;
+    public string Name => string.IsNullOrWhiteSpace(Device.Name) ? Device.Address : Device.Name;
+    public string Address => Device.Address;
+    public string PathText => Device.Direct ? "直连" : "经 DERP 中继";
+    public string Detail => string.IsNullOrEmpty(Device.Os) ? Device.Address : $"{Device.Address} · {Device.Os}";
+
+    [RelayCommand]
+    private void Connect() => owner.UseTailnet(this);
+}
+
 /// <summary>"连接到设备": address, one-time code, recent devices, and the attempt in flight.</summary>
 public sealed partial class ConnectViewModel : ObservableObject
 {
@@ -47,6 +60,8 @@ public sealed partial class ConnectViewModel : ObservableObject
     (ulong Tag, ISession Session, string Address)? _pending;
 
     public ObservableCollection<RecentDeviceViewModel> Recent { get; } = new();
+    public ObservableCollection<TailnetDeviceViewModel> Tailnet { get; } = new();
+    public bool HasTailnet => Tailnet.Count > 0;
     public IReadOnlyCollection<SessionViewModel> Sessions => _sessions.Values;
 
     /// <summary>Asks the view to put the cursor in the code box.</summary>
@@ -145,6 +160,22 @@ public sealed partial class ConnectViewModel : ObservableObject
         FocusCodeRequested?.Invoke();
     }
 
+    /// <summary>A tailnet device: a paired one connects at once, anything else needs its code.</summary>
+    internal void UseTailnet(TailnetDeviceViewModel device)
+    {
+        if (IsConnecting) return;
+        var known = _recent.FirstOrDefault(r => r.Address == device.Address && IsPaired(r.HostKey));
+        if (known != null)
+        {
+            Start(known.Address, new ConnectAuth.KnownHost(known.HostKey));
+            return;
+        }
+        Address = device.Address;
+        Code = "";
+        Error = null;
+        FocusCodeRequested?.Invoke();
+    }
+
     internal void RemoveRecent(RecentDeviceViewModel device)
     {
         _recent.RemoveAll(r => r.Address == device.Device.Address && r.HostKey == device.HostKey);
@@ -193,6 +224,13 @@ public sealed partial class ConnectViewModel : ObservableObject
         if (ev is ReadyEvent ready)
         {
             OnReady(ready);
+            return;
+        }
+        if (ev is TailnetDevicesEvent tailnet)
+        {
+            Tailnet.Clear();
+            foreach (var d in tailnet.Devices) Tailnet.Add(new TailnetDeviceViewModel(this, d));
+            OnPropertyChanged(nameof(HasTailnet));
             return;
         }
         if (_pending is { } p && p.Tag == ev.Tag)

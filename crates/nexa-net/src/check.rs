@@ -81,6 +81,43 @@ impl Credentials {
     }
 }
 
+/// Which address families a session socket carries (§4.4: only same-family pairs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Families {
+    pub v4: bool,
+    pub v6: bool,
+}
+
+impl Families {
+    pub const DUAL: Self = Self { v4: true, v6: true };
+
+    /// What a socket bound to `local` can reach: an unspecified IPv6 bind is dual-stack.
+    pub fn of(local: SocketAddr) -> Self {
+        match local.ip() {
+            IpAddr::V4(_) => Self {
+                v4: true,
+                v6: false,
+            },
+            IpAddr::V6(v6) if v6.is_unspecified() => Self::DUAL,
+            IpAddr::V6(_) => Self {
+                v4: false,
+                v6: true,
+            },
+        }
+    }
+
+    pub fn allows(&self, a: SocketAddr) -> bool {
+        if a.is_ipv4() { self.v4 } else { self.v6 }
+    }
+}
+
+/// `true`: IPv4 only; `false`: IPv6 only.
+impl From<bool> for Families {
+    fn from(v4: bool) -> Self {
+        Self { v4, v6: !v4 }
+    }
+}
+
 /// What a peer told us about its NAT (§4.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PeerNat {
@@ -204,8 +241,8 @@ pub struct Checker {
     role: Role,
     local: Credentials,
     remote: Option<Credentials>,
-    /// Address family of the local socket; other families are never paired.
-    family_v4: bool,
+    /// Address families of the local socket; other families are never paired.
+    families: Families,
     pairs: Vec<Pair>,
     /// Indexes into `pairs` checked out of turn (triggered checks).
     triggered: VecDeque<usize>,
@@ -235,12 +272,12 @@ impl std::fmt::Debug for Checker {
 
 impl Checker {
     /// `rng` must be a CSPRNG: it draws transaction ids.
-    pub fn new(role: Role, local: Credentials, family_v4: bool, rng: Rng) -> Self {
+    pub fn new(role: Role, local: Credentials, families: impl Into<Families>, rng: Rng) -> Self {
         Self {
             role,
             local,
             remote: None,
-            family_v4,
+            families: families.into(),
             pairs: Vec::new(),
             triggered: VecDeque::new(),
             pending: HashMap::new(),
@@ -285,7 +322,7 @@ impl Checker {
     pub fn add_candidates(&mut self, candidates: &[RemoteCandidate]) {
         let mut sorted: Vec<RemoteCandidate> = candidates
             .iter()
-            .filter(|c| c.addr.is_ipv4() == self.family_v4)
+            .filter(|c| self.families.allows(c.addr))
             .copied()
             .collect();
         sorted.sort_by_key(|c| priority(c.kind));
@@ -430,6 +467,59 @@ impl Checker {
             self.started = Some(now);
             self.next_send = Some(now);
         }
+    }
+
+    /// Drops pairs that failed and never validated, to make room under
+    /// [`MAX_PAIRS`] for candidates learned after a network change.
+    fn prune_failed(&mut self) {
+        let validated = &self.validated;
+        let before = self.pairs.len();
+        self.pairs
+            .retain(|p| p.state != PairState::Failed || validated.contains(&p.target));
+        if self.pairs.len() != before {
+            // Indexes moved; anything still worth checking is re-triggered by its requests.
+            self.triggered.clear();
+        }
+    }
+
+    /// Candidates from the peer's `CandidateUpdate` (§4.5 network change): checked
+    /// now, whatever the original deadline.
+    pub fn add_update(&mut self, candidates: &[RemoteCandidate], now: Instant) {
+        if self.remote.is_none() {
+            return;
+        }
+        self.prune_failed();
+        self.add_candidates(candidates);
+        self.restart_timers(now);
+    }
+
+    /// Our own network changed (§4.5): every pair is checked again from the new
+    /// address, the ones that passed before included, since they may be dead now.
+    pub fn restart(&mut self, now: Instant) {
+        if self.remote.is_none() {
+            return;
+        }
+        self.prune_failed();
+        for p in &mut self.pairs {
+            p.state = PairState::Waiting;
+            p.sends = 0;
+            p.next_retx = None;
+        }
+        self.triggered.clear();
+        self.started = Some(now);
+        self.next_send = Some(now);
+    }
+
+    fn restart_timers(&mut self, now: Instant) {
+        for p in &mut self.pairs {
+            if p.state == PairState::Failed {
+                p.state = PairState::Waiting;
+                p.sends = 0;
+                p.next_retx = None;
+            }
+        }
+        self.started = Some(now);
+        self.next_send = Some(now);
     }
 
     fn request(&mut self, target: PathTarget, probe: bool, now: Instant) -> Option<Outgoing> {
@@ -580,7 +670,7 @@ impl Checker {
         }
         msg.verify_integrity(self.local.pwd.as_bytes()).ok()?;
         if let PathTarget::Direct(a) = from
-            && a.is_ipv4() != self.family_v4
+            && !self.families.allows(a)
         {
             return None;
         }
@@ -988,6 +1078,73 @@ mod tests {
         assert!(
             matches!(ev[..], [CheckEvent::ProbeAnswered { rtt, .. }] if rtt == Duration::from_millis(12))
         );
+    }
+
+    #[test]
+    fn dual_stack_pairs_both_families_but_never_across() {
+        let t = Instant::now();
+        let mut r = rng(21);
+        let mut v = Checker::new(Role::Viewer, creds(&mut r), Families::DUAL, rng(22));
+        v.set_remote(
+            creds(&mut r),
+            &[
+                RemoteCandidate {
+                    addr: sa("10.0.0.2:2000"),
+                    kind: CandKind::Host,
+                },
+                RemoteCandidate {
+                    addr: sa("[2001:db8::2]:2000"),
+                    kind: CandKind::Ipv6,
+                },
+            ],
+            PeerNat::Unknown,
+            t,
+        );
+        assert_eq!(v.pairs.len(), 2);
+        let mut only6 = Checker::new(
+            Role::Viewer,
+            creds(&mut r),
+            Families::of(sa("[2001:db8::1]:5")),
+            rng(23),
+        );
+        only6.set_remote(
+            creds(&mut r),
+            &[RemoteCandidate {
+                addr: sa("10.0.0.2:2000"),
+                kind: CandKind::Host,
+            }],
+            PeerNat::Unknown,
+            t,
+        );
+        assert!(only6.pairs.is_empty());
+        assert_eq!(Families::of(sa("[::]:5")), Families::DUAL);
+        assert_eq!(Families::of(sa("0.0.0.0:5")), Families::from(true));
+    }
+
+    #[test]
+    fn updates_are_checked_past_the_deadline_and_make_room() {
+        let t = Instant::now();
+        let (mut v, _) = pair(t);
+        // Everything fails.
+        for ms in (0..6000).step_by(10) {
+            v.poll(t + Duration::from_millis(ms));
+        }
+        assert!(v.finished(t + Duration::from_secs(6)));
+        let later = t + Duration::from_secs(20);
+        let fresh = RemoteCandidate {
+            addr: sa("10.0.9.9:2000"),
+            kind: CandKind::Host,
+        };
+        v.add_update(&[fresh], later);
+        let out = v.poll(later);
+        assert!(
+            out.iter().any(|o| o.to == PathTarget::Direct(fresh.addr)),
+            "{out:?}"
+        );
+        // The failed pair was pruned; a pair that passed is checked again on restart.
+        assert_eq!(v.pairs.len(), 1);
+        v.restart(later + Duration::from_secs(1));
+        assert_eq!(v.poll(later + Duration::from_secs(1)).len(), 1);
     }
 
     #[test]

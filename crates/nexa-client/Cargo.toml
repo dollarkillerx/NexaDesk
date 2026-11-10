@@ -25,6 +25,9 @@ zeroize = "1"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-app-kit = "0.3"
+objc2-foundation = "0.3"
+objc2-core-foundation = "0.3"
+objc2-core-graphics = "0.3"
 dispatch2 = "0.3"
 libc = "0.2"
 
@@ -36,5 +39,3 @@ nexa-agent = { path = "../nexa-agent" }
 nexa-signal = { path = "../nexa-signal" }
 tempfile = "3"
 
-[target.'cfg(target_os = "macos")'.dev-dependencies]
-objc2-core-graphics = "0.3"

@@ -5,6 +5,10 @@ mod capture;
 mod caps;
 mod decoder;
 mod encoder;
+mod opus;
+mod audio_capture;
+mod audio_output;
+mod cursor;
 mod present;
 
 use std::ffi::c_void;
@@ -25,9 +29,13 @@ use objc2_core_video::{
 use crate::{CpuFrame, MediaError, Result};
 
 pub use capture::{ScreenCapturer, has_screen_capture_permission};
-pub use caps::probe_caps;
+pub use caps::{cached_caps, probe_caps, system_key};
 pub use decoder::{DecoderOutput, VtDecoder};
 pub use encoder::VtEncoder;
+pub use opus::{OpusDecoder, OpusEncoder};
+pub use audio_capture::SystemAudioCapture;
+pub use audio_output::{AudioOutputUnit, RenderFn};
+pub use cursor::SystemCursorSource;
 pub use present::{MetalPresenter, fit_viewport};
 
 /// A retained CVPixelBuffer.

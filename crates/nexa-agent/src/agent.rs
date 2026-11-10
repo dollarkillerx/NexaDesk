@@ -38,6 +38,14 @@ const MAX_HANDSHAKES: usize = 8;
 const REPLACE_WAIT: Duration = Duration::from_secs(5);
 const CLOSE_LINGER: Duration = Duration::from_millis(500);
 
+/// Where files sent to this Mac go, and how large they may be (§3.1 stream 4).
+#[derive(Clone, Debug)]
+pub struct FileSettings {
+    /// `~/Downloads/NexaDesk` in the app; tests always pass a temporary directory.
+    pub downloads: std::path::PathBuf,
+    pub limits: nexa_session::transfer::TransferLimits,
+}
+
 pub struct AgentConfig {
     pub listen: SocketAddr,
     pub device_name: String,
@@ -46,6 +54,7 @@ pub struct AgentConfig {
     pub timeouts: Timeouts,
     /// Also be reachable by device ID through this signaling server (§4.3).
     pub signal: Option<SignalSetup>,
+    pub files: FileSettings,
 }
 
 #[derive(Debug, Error)]
@@ -66,6 +75,8 @@ struct ActiveSession {
     info: SessionInfo,
     stop: watch::Sender<Option<CloseReason>>,
     done: watch::Receiver<bool>,
+    /// Present while the session runs and only if it was granted `file`.
+    files: session::FileSlot,
 }
 
 pub(crate) struct Shared {
@@ -103,6 +114,19 @@ impl Shared {
             .is_some()
     }
 
+    /// Whether accepting `peer` would take over someone else's session. The
+    /// same device coming back (§4.4 reconnect, its old connection not yet
+    /// timed out here) replaces only its own session: no takeover prompt. The
+    /// access decision itself is unchanged and may still ask.
+    fn session_active_for_other(&self, peer: &nexa_auth::DevicePublicKey) -> bool {
+        let key = peer.to_hex();
+        self.slot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|a| a.info.device_key != key)
+    }
+
     fn end_active(&self, reason: CloseReason) {
         self.end_active_if(reason, |_| true);
     }
@@ -125,6 +149,7 @@ impl Shared {
         &self,
         info: SessionInfo,
         stop: watch::Sender<Option<CloseReason>>,
+        files: session::FileSlot,
     ) -> watch::Sender<bool> {
         let _guard = self.replacing.lock().await;
         let old = {
@@ -142,6 +167,7 @@ impl Shared {
             info,
             stop,
             done: done_rx,
+            files,
         });
         done_tx
     }
@@ -257,7 +283,9 @@ impl Agent {
             s.device_key == hex
                 && ((s.perms.view && !narrowed.view)
                     || (s.perms.input && !narrowed.input)
-                    || (s.perms.clipboard && !narrowed.clipboard))
+                    || (s.perms.clipboard && !narrowed.clipboard)
+                    || (s.perms.file && !narrowed.file)
+                    || (s.perms.audio && !narrowed.audio))
         });
         Ok(true)
     }
@@ -271,6 +299,40 @@ impl Agent {
     pub fn rotate_code(&self) {
         self.shared.code.rotate();
         self.shared.report_code();
+    }
+
+    /// The running session's transfers, if it may transfer files.
+    fn transfers(&self) -> Option<nexa_session::transfer::Transfers> {
+        let slot = self.shared.slot.lock().unwrap_or_else(|e| e.into_inner());
+        let active = slot.as_ref()?;
+        let files = active.files.lock().unwrap_or_else(|e| e.into_inner());
+        files.clone()
+    }
+
+    /// Sends files from this Mac to the viewer: the person at the host dropped them
+    /// on the banner. Refused unless the running session was granted `file`.
+    pub fn send_files(&self, paths: Vec<std::path::PathBuf>) -> Result<Vec<u64>, String> {
+        const MAX_FILES: usize = 100;
+        if paths.is_empty() || paths.len() > MAX_FILES {
+            return Err(format!("send between 1 and {MAX_FILES} files at a time"));
+        }
+        if paths.iter().any(|p| !p.is_absolute()) {
+            return Err("file paths must be absolute".into());
+        }
+        let transfers = self
+            .transfers()
+            .ok_or("no running session may transfer files")?;
+        Ok(paths.into_iter().map(|p| transfers.send_file(p)).collect())
+    }
+
+    /// Stops a transfer of the running session.
+    pub fn cancel_transfer(&self, id: u64) -> bool {
+        self.transfers().is_some_and(|t| t.cancel(id))
+    }
+
+    /// Accepts or declines a large incoming file of the running session.
+    pub fn answer_transfer(&self, id: u64, accept: bool) -> bool {
+        self.transfers().is_some_and(|t| t.answer(id, accept))
     }
 
     /// The host's way out: ends the running session.
@@ -326,7 +388,8 @@ pub async fn start(
         source,
     })?;
 
-    let screen = platform.screen().map_err(AgentError::Screen)?;
+    // There must be something to share before anyone is invited to look.
+    platform.screen().map_err(AgentError::Screen)?;
     let (focus_tx, focus_rx) = watch::channel(None);
     let code = OneTimeCode::generate();
     let (shutdown, _) = watch::channel(false);
@@ -336,6 +399,7 @@ pub async fn start(
         focus: focus_rx,
         caps: config.caps.clone(),
         device: nexa_clip::DeviceId(*identity.device_id().as_bytes()),
+        files: config.files.clone(),
     });
     let signal_setup = config.signal.clone();
     let shared = Arc::new(Shared {
@@ -359,17 +423,11 @@ pub async fn start(
             },
             caps: config.caps,
             os: config.os,
-            displays: vec![Display {
-                // Pointer.display is one byte, so this is an index, not a CGDirectDisplayID.
-                id: 0,
-                x: 0,
-                y: 0,
-                w: screen.size_pixels.0,
-                h: screen.size_pixels.1,
-                // Shown by the viewer; SessionAccept has no field for the host's name.
-                name: config.device_name.clone(),
-                refresh_hz: screen.refresh_hz,
-            }],
+            host_name: config.device_name.clone(),
+            displays: {
+                let platform = platform.clone();
+                Arc::new(move || describe_displays(&*platform))
+            },
             timeouts: config.timeouts,
         },
         ui: ui.clone(),
@@ -396,6 +454,27 @@ pub async fn start(
         done,
         focus: focus_tx,
     })
+}
+
+/// `SessionAccept.displays` (§3.4, §3.6): `id` is the index a viewer asks for,
+/// `x`/`y` the origin in points (so the layout can be drawn), `w`/`h` pixels.
+pub(crate) fn describe_displays(platform: &dyn Platform) -> Vec<Display> {
+    platform
+        .displays()
+        .unwrap_or_default()
+        .into_iter()
+        .enumerate()
+        .take(usize::from(u8::MAX))
+        .map(|(i, s)| Display {
+            id: i as u32,
+            x: s.origin_points.0.round() as i32,
+            y: s.origin_points.1.round() as i32,
+            w: s.size_pixels.0,
+            h: s.size_pixels.1,
+            name: s.name,
+            refresh_hz: s.refresh_hz,
+        })
+        .collect()
 }
 
 async fn accept_loop(endpoint: Endpoint, shared: Arc<Shared>, done: watch::Sender<bool>) {
@@ -461,7 +540,11 @@ async fn handle_connection(
 ) {
     let result = {
         let probe = shared.clone();
-        let active = move || probe.session_active();
+        let peer = nexa_auth::peer_public_key(&conn).ok();
+        let active = move || match &peer {
+            Some(p) => probe.session_active_for_other(p),
+            None => probe.session_active(),
+        };
         host_handshake_from(&conn, &shared.host, &active, remote).await
     };
     shared.report_code();
@@ -501,14 +584,24 @@ async fn run_session(
         remote,
         perms: accepted.perms.clone(),
     };
-    let done = shared.take_slot(info.clone(), stop_tx).await;
+    let files = session::FileSlot::default();
+    let done = shared.take_slot(info.clone(), stop_tx, files.clone()).await;
     if let Some(warning) = accepted.warning.clone() {
         shared.ui.event(AgentEvent::Warning(format!(
             "could not save the device: {warning}"
         )));
     }
     let device_name = info.device_name.clone();
-    let reason = session::run(conn, accepted, shared.env.clone(), stop_rx, info, link).await;
+    let reason = session::run(
+        conn,
+        accepted,
+        shared.env.clone(),
+        stop_rx,
+        info,
+        link,
+        files,
+    )
+    .await;
     shared.clear_slot(id);
     let _ = done.send(true);
     shared.ui.event(AgentEvent::SessionEnded {

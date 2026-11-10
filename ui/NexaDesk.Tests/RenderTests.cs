@@ -293,4 +293,129 @@ public class RenderTests
                 w.Close();
             });
     }
+
+    // ----- file transfer, HUD, keyboard settings, background --------------------------
+
+    static SessionViewModel SessionWithFiles()
+    {
+        var t = Samples.T0;
+        var connected = new ConnectedEvent(1, Samples.HostKey, "工作室 Mac mini", new Permissions(true, true, true, File: true), 2, true);
+        var vm = new SessionViewModel(new FakeSession(1), connected, "192.168.1.20:47800", () => t = t.AddSeconds(1));
+        vm.OnEvent(new StreamChangedEvent(1, 2, StreamMode.Balanced, 3024, 1964, 60));
+        vm.OnEvent(new InputCaptureEvent(1, CaptureState.Active));
+        vm.OnEvent(new TransferEvent(1, new TransferInfo(1, true, "季度报告 Q3.pdf", 4_200_000, 4_200_000, TransferState.Done)));
+        vm.OnEvent(new TransferEvent(1, new TransferInfo(2, true, "设计稿-最终版.sketch", 86_000_000, 31_500_000, TransferState.Running)));
+        vm.OnEvent(new TransferEvent(1, new TransferInfo(3, false, "虚拟机镜像.iso", 3_400_000_000, 0, TransferState.NeedsConfirm)));
+        vm.OnEvent(new TransferEvent(1, new TransferInfo(4, false, "notes.txt", 2_048, 1_024, TransferState.Failed, TransferFail.HashMismatch)));
+        SegmentLatency[] segs =
+        [
+            new(LatencySegment.HostAndNetwork, 14_800, 23_600), new(LatencySegment.Receive, 1_900, 4_200),
+            new(LatencySegment.DecodeQueue, 300, 1_100), new(LatencySegment.Decode, 3_100, 6_800),
+            new(LatencySegment.PresentQueue, 4_200, 8_300), new(LatencySegment.Present, 600, 1_400),
+            new(LatencySegment.Total, 25_400, 41_900),
+        ];
+        vm.OnEvent(new StatsEvent(1, new StreamStats(1000, 0, 2, 1000, 0, 990, 3400, 0, 0, 0, 50_000_000, PathKind.Punched,
+            "198.51.100.7:40211", 21_000, Latency: segs)));
+        vm.OnEvent(new StatsEvent(1, new StreamStats(1060, 0, 2, 1060, 0, 1050, 3400, 0, 0, 0, 52_400_000, PathKind.Punched,
+            "198.51.100.7:40211", 21_000, Latency: segs)));
+        return vm;
+    }
+
+    [AvaloniaFact]
+    public void Toolbar_with_files_and_the_hud()
+    {
+        foreach (var theme in Themes())
+            WithTheme(theme, () =>
+            {
+                var vm = SessionWithFiles();
+                vm.ToggleHudCommand.Execute(null);
+                var t = new ToolbarWindow { DataContext = vm };
+                t.Show();
+                Save(t, "toolbar-files", theme);
+                t.Close();
+                var h = new HudWindow { DataContext = vm.Hud };
+                h.Show();
+                Save(h, "hud", theme);
+                h.Close();
+            });
+    }
+
+    [AvaloniaFact]
+    public void Banner_with_files()
+    {
+        foreach (var theme in Themes())
+            WithTheme(theme, () =>
+            {
+                var session = Samples.Session() with { Perms = new Permissions(true, true, true, File: true) };
+                var vm = new BannerViewModel(session, new FakeLink(), Samples.T0);
+                vm.Tick(Samples.T0.AddMinutes(12).AddSeconds(5));
+                vm.Transfers.OnUpdate(new TransferInfo(1, true, "合同扫描件.pdf", 12_600_000, 5_100_000, TransferState.Running));
+                vm.Transfers.OnUpdate(new TransferInfo(2, false, "截图 2026-11-10.png", 840_000, 840_000, TransferState.Done,
+                    Path: "/Users/me/Downloads/NexaDesk/截图 2026-11-10.png"));
+                vm.Transfers.OnUpdate(new TransferInfo(3, false, "备份.zip", 2_100_000_000, 0, TransferState.NeedsConfirm));
+                var w = new ControlBanner { DataContext = vm };
+                w.Show();
+                Save(w, "banner-files", theme);
+                w.MayClose = true;
+                w.Close();
+            });
+    }
+
+    [AvaloniaFact]
+    public void Consent_dialog_with_the_file_box()
+    {
+        foreach (var theme in Themes())
+            WithTheme(theme, () =>
+            {
+                var vm = new ConsentViewModel(Samples.Request(input: true), new FakeLink(), DateTimeOffset.Now) { AllowFile = true };
+                var w = new ConsentDialog { DataContext = vm };
+                w.Show();
+                Save(w, "consent-file", theme);
+                w.Close();
+            });
+    }
+
+    [AvaloniaFact]
+    public void Keyboard_settings_with_a_preview()
+    {
+        foreach (var theme in Themes())
+            WithTheme(theme, () =>
+            {
+                var keymap = new FakeKeymap();
+                keymap.Saved[RemoteOs.Windows].InsertRange(3,
+                [
+                    new KeymapRule(true, "", "Cmd+Tab", ["Alt+Tab"], "Alt", "", true),
+                    new KeymapRule(true, "", "Cmd+Q", ["Alt+F4"], "", "", true),
+                    new KeymapRule(true, "", "Cmd+Backspace", ["Shift+Home", "Delete"], "", "", true),
+                ]);
+                var vm = new KeyboardSettingsViewModel(keymap);
+                vm.Rules.First(r => r.When == "Cmd+Q").IsEnabled = false;
+                vm.NewWhen = "Cmd+K";
+                vm.NewThen = "Ctrl+Shift+K";
+                vm.AddRuleCommand.Execute(null);
+                vm.OnChord("Cmd+Shift+Z");
+                var w = new KeyboardSettingsWindow { DataContext = vm, Height = 820 };
+                w.Show();
+                Save(w, "keyboard-settings", theme);
+                w.Close();
+            });
+    }
+
+    [AvaloniaFact]
+    public void Main_window_with_login_and_menu_bar_settings()
+    {
+        foreach (var theme in Themes())
+            WithTheme(theme, () =>
+            {
+                var login = new FakeLoginItem { AfterRegister = LoginItemStatus.RequiresApproval };
+                var vm = new MainViewModel(new FakeClient(), new MemoryRecent(), new FakeLink(), new FakeProcess(), new FakePermissions(),
+                    new RecordingWindows(), new FakeAddresses("192.168.1.35", "127.0.0.1"), "王小明的 MacBook Pro", () => Samples.T0,
+                    loginItem: login, keymap: new FakeKeymap());
+                vm.LoginItem.IsEnabled = true;
+                var w = new MainWindow { DataContext = vm };
+                w.Show();
+                Save(w, "main-background", theme);
+                w.Close();
+            });
+    }
 }

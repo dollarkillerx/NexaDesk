@@ -38,6 +38,8 @@ const WAIT: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
 struct ViewerProbe {
+    /// Drops every datagram on the viewer's ID-mode sockets while set: an outage.
+    cut: Arc<AtomicBool>,
     active_changes: Mutex<Vec<bool>>,
     key_tx: Mutex<Option<Sender<InputCmd>>>,
     decoded: Arc<AtomicU32>,
@@ -100,7 +102,65 @@ impl Deps for FakeDeps {
         Ok(Box::new(NullPresenter))
     }
     fn link_options(&self) -> nexa_session::rendezvous::link::LinkOptions {
-        loopback_link()
+        let cut = self.probe.cut.clone();
+        let factory: nexa_session::rendezvous::link::SocketFactory = Arc::new(move |addr| {
+            use quinn::Runtime;
+            let std = nexa_net::vsock::bind_media_socket(addr)?;
+            let inner = quinn::TokioRuntime.wrap_udp_socket(std)?;
+            let s: Arc<dyn quinn::AsyncUdpSocket> = Arc::new(Cuttable {
+                inner,
+                cut: cut.clone(),
+            });
+            Ok(s)
+        });
+        nexa_session::rendezvous::link::LinkOptions {
+            socket_factory: Some(factory),
+            ..loopback_link()
+        }
+    }
+}
+
+/// A real loopback socket that loses everything while `cut` is set.
+#[derive(Debug)]
+struct Cuttable {
+    inner: Arc<dyn quinn::AsyncUdpSocket>,
+    cut: Arc<AtomicBool>,
+}
+
+impl quinn::AsyncUdpSocket for Cuttable {
+    fn create_io_poller(self: Arc<Self>) -> std::pin::Pin<Box<dyn quinn::UdpPoller>> {
+        self.inner.clone().create_io_poller()
+    }
+    fn try_send(&self, t: &quinn::udp::Transmit<'_>) -> std::io::Result<()> {
+        if self.cut.load(SeqCst) {
+            return Ok(());
+        }
+        self.inner.try_send(t)
+    }
+    fn poll_recv(
+        &self,
+        cx: &mut std::task::Context<'_>,
+        bufs: &mut [std::io::IoSliceMut<'_>],
+        meta: &mut [quinn::udp::RecvMeta],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        loop {
+            match self.inner.poll_recv(cx, bufs, meta) {
+                std::task::Poll::Ready(Ok(_)) if self.cut.load(SeqCst) => continue,
+                other => return other,
+            }
+        }
+    }
+    fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
+        self.inner.local_addr()
+    }
+    fn max_transmit_segments(&self) -> usize {
+        self.inner.max_transmit_segments()
+    }
+    fn max_receive_segments(&self) -> usize {
+        self.inner.max_receive_segments()
+    }
+    fn may_fragment(&self) -> bool {
+        self.inner.may_fragment()
     }
 }
 
@@ -150,6 +210,7 @@ impl Viewer {
         let cfg = nexa_client::proto::ClientConfig {
             device_name: "fake viewer".into(),
             data_dir: dir.path().to_string_lossy().into_owned(),
+            ..Default::default()
         }
         .encode_to_vec();
         let mut client = std::ptr::null_mut();
@@ -841,6 +902,7 @@ async fn host_by_id(
         interfaces: None,
         paired_only: false,
         relay_only,
+        system_services: false,
     };
     let h = common::host_with(FakeUi::allowing(p, true), Timeouts::default(), Some(setup)).await;
     until("registered", WAIT, || {
@@ -1036,4 +1098,122 @@ async fn the_direct_address_mode_still_reports_its_path() {
     let (kind, detail) = last_path(&viewer, 3).unwrap();
     assert_eq!(kind, nexa_client::proto::PathKind::Direct as i32);
     assert_eq!(detail, h.addr.to_string());
+}
+
+fn count(v: &Viewer, tag: u64, f: impl Fn(&EventBody) -> bool) -> usize {
+    lock(&v.events.0)
+        .iter()
+        .filter(|e| e.tag == tag && e.body.as_ref().is_some_and(&f))
+        .count()
+}
+
+/// Cuts the viewer's network until it starts reconnecting (§4.4), then gives
+/// it back, and waits for the session to come back on the same tag.
+async fn drop_and_recover(viewer: &Viewer, tag: u64) {
+    viewer.probe.cut.store(true, SeqCst);
+    until("Reconnecting", Duration::from_secs(20), || {
+        count(viewer, tag, |b| matches!(b, EventBody::Reconnecting(_))) > 0
+    })
+    .await;
+    // The window stays: nothing said the session ended.
+    assert_eq!(
+        count(viewer, tag, |b| matches!(b, EventBody::Disconnected(_))),
+        0
+    );
+    viewer.probe.cut.store(false, SeqCst);
+    until("Connected again", Duration::from_secs(30), || {
+        count(viewer, tag, |b| matches!(b, EventBody::Connected(_))) == 2
+            || count(viewer, tag, |b| matches!(b, EventBody::Disconnected(_))) > 0
+    })
+    .await;
+    let ended = lock(&viewer.events.0).iter().find_map(|e| match &e.body {
+        Some(EventBody::Disconnected(d)) if e.tag == tag => Some(d.clone()),
+        _ => None,
+    });
+    assert!(ended.is_none(), "{ended:?}");
+}
+
+/// Pairs by code, then connects as a known host; `unattended` answers the
+/// second prompt with "don't ask next time".
+async fn paired_by_id(unattended: bool) -> (nexa_signal::Server, Host, String, Viewer) {
+    let server = signal_server().await;
+    let (h, id) = host_by_id(&server, perms(true, false, false), false).await;
+    let viewer = Viewer::new();
+    let s = viewer.connect(by_id(
+        &id,
+        &server,
+        1,
+        ConnectAuth::Code(h.agent.current_code().to_string()),
+    ));
+    assert!(viewer.wait_connected().await.paired_now);
+    // SAFETY: handles are registry ids.
+    unsafe { abi::nexa_session_close(s) };
+    until("first session gone", WAIT, || !h.agent.session_active()).await;
+    lock(&h.ui.answer).skip_next_time = unattended;
+    let s = viewer.connect(by_id(
+        &id,
+        &server,
+        2,
+        ConnectAuth::KnownHost(h.agent.public_key().to_hex()),
+    ));
+    until("second Connected", WAIT, || {
+        count(&viewer, 2, |b| matches!(b, EventBody::Connected(_))) == 1
+    })
+    .await;
+    // SAFETY: handles are registry ids.
+    unsafe { abi::nexa_session_close(s) };
+    until("second session gone", WAIT, || !h.agent.session_active()).await;
+    assert_eq!(h.ui.prompts(), 2);
+    (server, h, id, viewer)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_dropped_session_reconnects_without_asking_an_unattended_host() {
+    let (server, h, id, viewer) = paired_by_id(true).await;
+    let key = h.agent.public_key().to_hex();
+    let _s = viewer.connect(by_id(&id, &server, 3, ConnectAuth::KnownHost(key.clone())));
+    until("third Connected", WAIT, || {
+        count(&viewer, 3, |b| matches!(b, EventBody::Connected(_))) == 1
+    })
+    .await;
+    assert_eq!(h.ui.prompts(), 2, "unattended: nobody asked");
+    drop_and_recover(&viewer, 3).await;
+    assert_eq!(h.ui.prompts(), 2, "the reconnect asked nobody either");
+    let again = lock(&viewer.events.0)
+        .iter()
+        .rev()
+        .find_map(|e| match &e.body {
+            Some(EventBody::Connected(c)) if e.tag == 3 => Some(c.clone()),
+            _ => None,
+        });
+    assert_eq!(again.unwrap().host_key, key, "the same device");
+    let before = viewer.probe.decoded.load(SeqCst);
+    until("frames after the reconnect", WAIT, || {
+        viewer.probe.decoded.load(SeqCst) > before + 5
+    })
+    .await;
+    assert!(h.agent.session_active());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_dropped_session_of_a_device_that_needs_consent_asks_again() {
+    let (server, h, id, viewer) = paired_by_id(false).await;
+    let _s = viewer.connect(by_id(
+        &id,
+        &server,
+        3,
+        ConnectAuth::KnownHost(h.agent.public_key().to_hex()),
+    ));
+    until("third Connected", WAIT, || {
+        count(&viewer, 3, |b| matches!(b, EventBody::Connected(_))) == 1
+    })
+    .await;
+    assert_eq!(h.ui.prompts(), 3);
+    drop_and_recover(&viewer, 3).await;
+    assert_eq!(h.ui.prompts(), 4, "the person at the host was asked again");
+    let last = lock(&h.ui.asked).last().cloned().unwrap();
+    assert!(
+        !last.takeover,
+        "its own dropped session is not someone else's"
+    );
 }
