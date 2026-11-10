@@ -8,12 +8,12 @@
         Width="290" SizeToContent="Height" CanResize="False"
         Topmost="True" ShowInTaskbar="False" ShowActivated="False" Focusable="False"
         WindowDecorations="None" IsHitTestVisible="False"
-        Background="#E6111318">
+        Background="#E6161616">
   <!-- §10.3: an owned, borderless, click-through window over the native video. Always dark. -->
   <StackPanel Margin="12,10,12,10" Spacing="3">
     <Grid ColumnDefinitions="*,Auto">
-      <TextBlock Text="{l:T Hud.Header}" Foreground="#E5E7EB" FontWeight="SemiBold" FontSize="12" />
-      <TextBlock Grid.Column="1" Name="HudFps" Text="{Binding FpsText}" Foreground="#86EFAC" FontFamily="{DynamicResource MonoFont}" FontSize="12" />
+      <TextBlock Text="{l:T Hud.Header}" Foreground="#F4F4F4" FontWeight="SemiBold" FontSize="12" />
+      <TextBlock Grid.Column="1" Name="HudFps" Text="{Binding FpsText}" Foreground="#42BE65" FontFamily="{DynamicResource MonoFont}" FontSize="12" />
     </Grid>
     <ItemsControl Name="HudSegments" ItemsSource="{Binding Segments}">
       <ItemsControl.ItemTemplate>
@@ -25,7 +25,7 @@
         </DataTemplate>
       </ItemsControl.ItemTemplate>
     </ItemsControl>
-    <TextBlock Name="HudPath" Text="{Binding PathText}" Foreground="#E5E7EB" FontSize="12" TextWrapping="Wrap" Margin="0,3,0,0" />
+    <TextBlock Name="HudPath" Text="{Binding PathText}" Foreground="#F4F4F4" FontSize="12" TextWrapping="Wrap" Margin="0,3,0,0" />
     <TextBlock Text="{Binding Note}" Foreground="#8B93A1" FontSize="11" TextWrapping="Wrap" />
   </StackPanel>
 </Window>

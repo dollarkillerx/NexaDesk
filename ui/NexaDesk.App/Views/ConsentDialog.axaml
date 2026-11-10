@@ -7,10 +7,12 @@
         Title="{l:T Consent.WindowTitle}"
         Width="540" SizeToContent="Height" CanResize="False"
         Topmost="True" ShowInTaskbar="True"
-        WindowStartupLocation="CenterScreen">
-  <StackPanel Margin="24,20,24,20" Spacing="12">
+        WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource CardBrush}">
+  <Grid RowDefinitions="Auto,Auto">
+  <StackPanel Margin="16,16,16,20" Spacing="12">
     <TextBlock Classes="h1" Text="{Binding Headline}" TextWrapping="Wrap" />
-    <TextBlock Classes="muted" FontSize="13"
+    <TextBlock Classes="muted" FontSize="14" LetterSpacing="0.16"
                Text="{l:T Consent.Intro}" />
 
     <Border Classes="subtle">
@@ -34,7 +36,7 @@
     </StackPanel>
 
     <Border Classes="warn" IsVisible="{Binding IsTakeover}">
-      <TextBlock Foreground="{DynamicResource WarnBrush}" TextWrapping="Wrap"
+      <TextBlock TextWrapping="Wrap"
                  Text="{l:T Consent.Takeover}" />
     </Border>
 
@@ -58,15 +60,15 @@
                  Text="{l:T Consent.SkipNextTimeNote}" />
     </StackPanel>
 
-    <Grid ColumnDefinitions="*,Auto" Margin="0,8,0,0">
-      <TextBlock Classes="muted" VerticalAlignment="Center" Text="{Binding CountdownText}" />
-      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10">
-        <!-- Deny is the default and cancel button, and has focus: Enter, Space and Escape all deny. -->
-        <Button Name="DenyButton" Classes="accent wide" Content="{l:T Consent.Deny}"
-                IsDefault="True" IsCancel="True" Command="{Binding DenyCommand}" />
-        <Button Name="AllowButton" Classes="wide" Content="{l:T Consent.Allow}"
-                Command="{Binding AllowCommand}" />
-      </StackPanel>
-    </Grid>
+    <TextBlock Classes="muted" Margin="0,4,0,0" Text="{Binding CountdownText}" />
   </StackPanel>
+
+  <!-- Deny is the default and cancel button, and has focus: Enter, Space and Escape all deny. -->
+  <Grid Grid.Row="1" ColumnDefinitions="*,1,*">
+    <Button Name="AllowButton" Classes="footer" Content="{l:T Consent.Allow}"
+            Command="{Binding AllowCommand}" />
+    <Button Grid.Column="2" Name="DenyButton" Classes="accent footer" Content="{l:T Consent.Deny}"
+            IsDefault="True" IsCancel="True" Command="{Binding DenyCommand}" />
+  </Grid>
+  </Grid>
 </Window>

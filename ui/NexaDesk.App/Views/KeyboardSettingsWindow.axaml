@@ -46,7 +46,7 @@
       </ScrollViewer>
     </Border>
 
-    <Border Grid.Row="2" Classes="subtle" Margin="0,12,0,0">
+    <Border Grid.Row="2" Classes="card" Margin="0,12,0,0">
       <StackPanel Spacing="6">
         <TextBlock Classes="label" Text="{l:T Keyboard.AddRuleLabel}" />
         <Grid ColumnDefinitions="200,Auto,*,Auto,Auto">
@@ -80,7 +80,7 @@
         <TextBlock Classes="muted ok" Text="{Binding Status}" IsVisible="{Binding Status, Converter={x:Static ObjectConverters.IsNotNull}}" />
       </StackPanel>
       <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-        <Button Content="{l:T Keyboard.Revert}" Command="{Binding RevertCommand}" />
+        <Button Classes="wide" Content="{l:T Keyboard.Revert}" Command="{Binding RevertCommand}" />
         <Button Name="SaveKeymapButton" Classes="accent wide" Content="{l:T Keyboard.Save}" Command="{Binding SaveCommand}" />
       </StackPanel>
     </Grid>

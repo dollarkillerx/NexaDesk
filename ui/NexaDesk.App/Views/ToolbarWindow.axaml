@@ -8,9 +8,9 @@
         Title="{l:T Toolbar.Title}"
         Width="980" SizeToContent="Height" CanResize="False"
         Topmost="True" ShowInTaskbar="False" ShowActivated="False"
-        WindowDecorations="None"
+        WindowDecorations="None" RequestedThemeVariant="Dark"
         Background="{DynamicResource ToolbarBrush}">
-  <Border BorderBrush="{DynamicResource CardBorderBrush}" BorderThickness="1" Padding="14,10,12,9">
+  <Border BorderBrush="{DynamicResource CardBorderBrush}" BorderThickness="1" Padding="16,8,8,8">
     <Grid RowDefinitions="Auto,Auto,Auto,Auto">
       <Grid ColumnDefinitions="Auto,*,Auto">
         <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
@@ -28,7 +28,7 @@
           </Border>
           <TextBlock Classes="label" Text="{l:T Toolbar.Display}" VerticalAlignment="Center" IsVisible="{Binding HasManyDisplays}" />
           <ComboBox Name="DisplayPicker" ItemsSource="{Binding Displays}" SelectedItem="{Binding SelectedDisplay}"
-                    IsVisible="{Binding HasManyDisplays}" MaxWidth="210" VerticalAlignment="Center">
+                    IsVisible="{Binding HasManyDisplays}" MaxWidth="210" MinHeight="32" VerticalAlignment="Center">
             <ComboBox.ItemTemplate>
               <DataTemplate x:DataType="vm:DisplayChoice">
                 <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" />
@@ -36,22 +36,22 @@
             </ComboBox.ItemTemplate>
           </ComboBox>
         </StackPanel>
-        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
           <Button Name="ResumeButton" Classes="small accent" Content="{l:T Toolbar.Resume}" Command="{Binding ResumeCommand}"
                   IsVisible="{Binding IsSuspended}" />
-          <Button Name="MuteButton" Classes="small" Content="{Binding MuteLabel}" Command="{Binding ToggleMuteCommand}"
+          <Button Name="MuteButton" Classes="small quiet" Content="{Binding MuteLabel}" Command="{Binding ToggleMuteCommand}"
                   IsVisible="{Binding CanHearAudio}" />
-          <Button Name="SendFilesButton" Classes="small" Content="{l:T Toolbar.SendFiles}" Click="OnSendFiles"
+          <Button Name="SendFilesButton" Classes="small quiet" Content="{l:T Toolbar.SendFiles}" Click="OnSendFiles"
                   IsVisible="{Binding CanSendFiles}" ToolTip.Tip="{l:T Toolbar.SendFilesTip}" />
           <ToggleButton Name="HudButton" Classes="small" Content="HUD" IsChecked="{Binding IsHudVisible}"
                         ToolTip.Tip="{l:T Toolbar.HudTip}" />
-          <Button Name="DiagnosticsButton" Classes="small" Content="{l:T Toolbar.Diagnostics}" Click="OnDiagnostics" />
-          <Button Name="FullScreenButton" Classes="small" Content="{l:T Toolbar.FullScreen}" Click="OnFullScreen" />
-          <Button Name="HideButton" Classes="small ghost" Content="{l:T Toolbar.Hide}" Command="{Binding ToggleToolbarCommand}" />
-          <Button Name="ToolbarDisconnectButton" Classes="small danger" Content="{l:T Toolbar.Disconnect}" Command="{Binding DisconnectCommand}" />
+          <Button Name="DiagnosticsButton" Classes="small quiet" Content="{l:T Toolbar.Diagnostics}" Click="OnDiagnostics" />
+          <Button Name="FullScreenButton" Classes="small quiet" Content="{l:T Toolbar.FullScreen}" Click="OnFullScreen" />
+          <Button Name="HideButton" Classes="small quiet" Content="{l:T Toolbar.Hide}" Command="{Binding ToggleToolbarCommand}" />
+          <Button Name="ToolbarDisconnectButton" Classes="small danger" Margin="6,0,0,0" Content="{l:T Toolbar.Disconnect}" Command="{Binding DisconnectCommand}" />
         </StackPanel>
       </Grid>
-      <Grid Grid.Row="1" ColumnDefinitions="*,Auto,Auto" Margin="0,8,0,0">
+      <Grid Grid.Row="1" ColumnDefinitions="*,Auto,Auto" Margin="0,6,8,0">
         <TextBlock Name="CaptureText" Classes="muted" Text="{Binding CaptureText}" TextTrimming="CharacterEllipsis"
                    TextWrapping="NoWrap" IsVisible="{Binding !IsReconnecting}" />
         <TextBlock Name="ReconnectText" Text="{Binding ReconnectText}" Foreground="{DynamicResource WarnBrush}"
@@ -64,7 +64,7 @@
       </Grid>
       <TextBlock Grid.Row="2" Name="WarningText" Text="{Binding Warning}" Foreground="{DynamicResource WarnBrush}"
                  TextWrapping="Wrap" FontSize="12" Margin="0,4,0,0" IsVisible="{Binding HasWarning}" />
-      <Border Grid.Row="3" Name="TransferPanel" BorderBrush="{DynamicResource CardBorderBrush}" BorderThickness="1" CornerRadius="10" Padding="12,8" Margin="0,8,0,0" IsVisible="{Binding Transfers.HasItems}">
+      <Border Grid.Row="3" Name="TransferPanel" Background="{DynamicResource CardBrush}" Padding="16,10" Margin="0,8,8,0" IsVisible="{Binding Transfers.HasItems}">
         <views:TransferListView DataContext="{Binding Transfers}" />
       </Border>
     </Grid>

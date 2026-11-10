@@ -6,8 +6,10 @@
         x:DataType="vm:PermissionGuideViewModel"
         Title="{l:T Permissions.WindowTitle}"
         Width="560" SizeToContent="Height" CanResize="False"
-        WindowStartupLocation="CenterOwner">
-  <StackPanel Margin="24,20" Spacing="12">
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource CardBrush}">
+  <Grid RowDefinitions="Auto,Auto">
+  <StackPanel Margin="16,16,16,24" Spacing="12">
     <TextBlock Classes="h1" Text="{Binding Title}" />
     <TextBlock TextWrapping="Wrap" Text="{Binding Intro}" />
 
@@ -42,21 +44,26 @@
       <TextBlock Classes="muted" Text="{Binding RestartNote}" />
     </StackPanel>
 
-    <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Right">
-      <Button Name="RecheckButton" Content="{l:T Permissions.Recheck}" Command="{Binding RecheckCommand}" />
-      <Button Classes="accent wide" Content="{l:T Permissions.Done}" Command="{Binding CloseCommand}" />
-    </StackPanel>
   </StackPanel>
+
+  <Grid Grid.Row="1" ColumnDefinitions="*,1,*">
+    <Button Name="RecheckButton" Classes="footer" Content="{l:T Permissions.Recheck}" Command="{Binding RecheckCommand}" />
+    <Button Grid.Column="2" Classes="accent footer" Content="{l:T Permissions.Done}" Command="{Binding CloseCommand}" />
+  </Grid>
+  </Grid>
 
   <Window.Styles>
     <Style Selector="TextBlock">
-      <Setter Property="FontSize" Value="13" />
+      <Setter Property="FontSize" Value="14" />
     </Style>
     <Style Selector="TextBlock.ok">
       <Setter Property="Foreground" Value="{DynamicResource OkBrush}" />
     </Style>
     <Style Selector="TextBlock.h1">
       <Setter Property="FontSize" Value="20" />
+    </Style>
+    <Style Selector="TextBlock.section, TextBlock.muted">
+      <Setter Property="FontSize" Value="12" />
     </Style>
   </Window.Styles>
 </Window>

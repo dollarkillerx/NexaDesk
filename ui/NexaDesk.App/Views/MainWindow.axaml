@@ -6,46 +6,42 @@
         x:DataType="vm:MainViewModel"
         Title="NexaDesk"
         Width="1040" Height="760" MinWidth="860" MinHeight="600">
-  <Grid RowDefinitions="Auto,*,Auto" Margin="24,16,24,18">
-    <!-- Header: the app, this Mac, and window-wide settings -->
-    <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,16">
-      <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-        <Border Width="32" Height="32" CornerRadius="9" VerticalAlignment="Center">
-          <Border.Background>
-            <LinearGradientBrush StartPoint="0%,0%" EndPoint="100%,100%">
-              <GradientStop Offset="0" Color="#6A86FF" />
-              <GradientStop Offset="1" Color="#3348C8" />
-            </LinearGradientBrush>
-          </Border.Background>
-          <Path Classes="icon" Data="{StaticResource IconScreens}" Stroke="White" StrokeThickness="1.9" />
-        </Border>
-        <TextBlock Classes="h1" Text="NexaDesk" VerticalAlignment="Center" />
-        <Border Classes="pill" Margin="4,0,0,0">
-          <TextBlock Classes="label" FontSize="12" Text="{Binding DeviceName, StringFormat={l:T Settings.ThisDevice}}" />
-        </Border>
-      </StackPanel>
-      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center"
-                    DataContext="{Binding Settings}" x:DataType="vm:SettingsViewModel">
-          <TextBlock Classes="muted" Name="LanguageRestartText" Text="{l:T Settings.LanguageRestart}" VerticalAlignment="Center"
-                     IsVisible="{Binding LanguageRestartNeeded}" />
-          <Path Classes="icon muted" Data="{StaticResource IconGlobe}" Width="15" Height="15" />
-          <TextBlock Classes="label" Text="{l:T Settings.Language}" VerticalAlignment="Center" />
-          <ComboBox Name="LanguageBox" ItemsSource="{Binding LanguageOptions}" SelectedItem="{Binding SelectedLanguage}" MinWidth="120">
-            <ComboBox.ItemTemplate>
-              <DataTemplate x:DataType="vm:LanguageOption">
-                <TextBlock Text="{Binding Name}" />
-              </DataTemplate>
-            </ComboBox.ItemTemplate>
-          </ComboBox>
-        </StackPanel>
-        <Button Name="KeyboardSettingsButton" Classes="small" Content="{l:T Main.KeyboardSettings}" Command="{Binding ShowKeyboardSettingsCommand}"
-                IsVisible="{Binding HasKeyboardSettings}" VerticalAlignment="Center" />
-        <Button Classes="small" Content="{l:T Main.Permissions}" Command="{Binding ShowViewerPermissionsCommand}" VerticalAlignment="Center" />
-      </StackPanel>
-    </Grid>
+  <Grid RowDefinitions="Auto,*,Auto">
+    <!-- UI shell header: dark in both themes, as in IBM's products. -->
+    <ThemeVariantScope RequestedThemeVariant="Dark">
+      <Border Background="{DynamicResource PageBrush}" BorderBrush="{DynamicResource CardBorderBrush}" BorderThickness="0,0,0,1" Height="48">
+        <Grid ColumnDefinitions="Auto,Auto,*,Auto">
+          <TextBlock VerticalAlignment="Center" Margin="16,0" FontSize="14" LetterSpacing="0.1">
+            <Run Text="Nexa" /><Run Text="Desk" FontWeight="SemiBold" />
+          </TextBlock>
+          <Border Grid.Column="1" Classes="pill" BorderBrush="{DynamicResource CardBorderBrush}" BorderThickness="1,0,0,0" Padding="16,0" Height="48">
+            <TextBlock Classes="label" VerticalAlignment="Center" Text="{Binding DeviceName, StringFormat={l:T Settings.ThisDevice}}" />
+          </Border>
+          <StackPanel Grid.Column="3" Orientation="Horizontal">
+            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center" Margin="0,0,8,0"
+                        DataContext="{Binding Settings}" x:DataType="vm:SettingsViewModel">
+              <TextBlock Classes="muted" Name="LanguageRestartText" Text="{l:T Settings.LanguageRestart}" VerticalAlignment="Center"
+                         IsVisible="{Binding LanguageRestartNeeded}" />
+              <Path Classes="icon muted" Data="{StaticResource IconGlobe}" Width="16" Height="16" />
+              <TextBlock Classes="label" Text="{l:T Settings.Language}" VerticalAlignment="Center" />
+              <ComboBox Name="LanguageBox" ItemsSource="{Binding LanguageOptions}" SelectedItem="{Binding SelectedLanguage}" MinWidth="140"
+                        MinHeight="32" VerticalAlignment="Center">
+                <ComboBox.ItemTemplate>
+                  <DataTemplate x:DataType="vm:LanguageOption">
+                    <TextBlock Text="{Binding Name}" />
+                  </DataTemplate>
+                </ComboBox.ItemTemplate>
+              </ComboBox>
+            </StackPanel>
+            <Button Name="KeyboardSettingsButton" Classes="shell" Content="{l:T Main.KeyboardSettings}" Command="{Binding ShowKeyboardSettingsCommand}"
+                    IsVisible="{Binding HasKeyboardSettings}" />
+            <Button Classes="shell" Content="{l:T Main.Permissions}" Command="{Binding ShowViewerPermissionsCommand}" />
+          </StackPanel>
+        </Grid>
+      </Border>
+    </ThemeVariantScope>
 
-    <Grid Grid.Row="1" ColumnDefinitions="*,16,*">
+    <Grid Grid.Row="1" ColumnDefinitions="*,16,*" Margin="16,16,16,0">
       <!-- 连接到设备 -->
       <Border Classes="card" DataContext="{Binding Connect}" x:DataType="vm:ConnectViewModel">
         <ScrollViewer VerticalScrollBarVisibility="Auto">
@@ -57,14 +53,14 @@
               </Border>
               <TextBlock Classes="h2" Text="{l:T Connect.Title}" VerticalAlignment="Center" />
             </StackPanel>
-            <TextBlock Classes="muted" TextWrapping="Wrap" Text="{Binding Intro}" Margin="0,2,0,0" />
+            <TextBlock Classes="muted" TextWrapping="Wrap" Text="{Binding Intro}" Margin="0,4,0,0" />
 
-            <TextBlock Classes="section" Text="{l:T Connect.Address}" Margin="0,8,0,0" />
+            <TextBlock Classes="label" Text="{l:T Connect.Address}" Margin="0,12,0,0" />
             <TextBox Name="AddressBox" Text="{Binding Address}" PlaceholderText="{Binding AddressPlaceholder}"
                      IsEnabled="{Binding !IsConnecting}" />
             <TextBlock Classes="errorText" Text="{Binding AddressHint}" IsVisible="{Binding AddressHint, Converter={x:Static ObjectConverters.IsNotNull}}" />
 
-            <TextBlock Classes="section" Text="{l:T Main.OneTimeCode}" Margin="0,6,0,0" />
+            <TextBlock Classes="label" Text="{l:T Main.OneTimeCode}" Margin="0,6,0,0" />
             <TextBox Name="CodeBox" Text="{Binding Code}" PlaceholderText="ABCD-2345" MaxLength="12"
                      FontFamily="{DynamicResource MonoFont}" FontSize="16" IsEnabled="{Binding !IsConnecting}" />
             <TextBlock Classes="errorText" Text="{Binding CodeHint}" IsVisible="{Binding CodeHint, Converter={x:Static ObjectConverters.IsNotNull}}" />
@@ -102,7 +98,7 @@
                           <TextBlock Classes="itemTitle" Text="{Binding Name}" />
                           <TextBlock Classes="muted" Text="{Binding Detail}" />
                         </StackPanel>
-                        <Button Grid.Column="2" Classes="small" Content="{l:T Main.Connect}" Command="{Binding ConnectCommand}"
+                        <Button Grid.Column="2" Classes="small tertiary" Content="{l:T Main.Connect}" Command="{Binding ConnectCommand}"
                                 VerticalAlignment="Center" />
                       </Grid>
                     </Border>
@@ -130,7 +126,7 @@
                           </StackPanel>
                           <TextBlock Classes="muted" Text="{Binding Detail}" />
                         </StackPanel>
-                        <Button Grid.Column="2" Classes="small" Content="{l:T Main.Connect}" Command="{Binding ConnectCommand}"
+                        <Button Grid.Column="2" Classes="small tertiary" Content="{l:T Main.Connect}" Command="{Binding ConnectCommand}"
                                 VerticalAlignment="Center" />
                       </Grid>
                     </Border>
@@ -171,7 +167,7 @@
                         <TextBlock Classes="muted" Text="{Binding LastSeen, StringFormat={l:T Main.LastConnected}}" />
                       </StackPanel>
                       <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
-                        <Button Classes="small" Content="{l:T Main.Connect}" Command="{Binding ConnectCommand}" />
+                        <Button Classes="small tertiary" Content="{l:T Main.Connect}" Command="{Binding ConnectCommand}" />
                         <Button Classes="small ghost" Content="{l:T Connect.Remove}" Command="{Binding RemoveCommand}" />
                       </StackPanel>
                     </Grid>
@@ -215,7 +211,7 @@
             <!-- Tailscale: how people outside the LAN get here, with no server of ours -->
             <Border Name="HostTailscaleStatus" Classes="ok" IsVisible="{Binding Tailscale.IsPresent}">
               <StackPanel Spacing="2">
-                <TextBlock Foreground="{DynamicResource OkBrush}" FontWeight="SemiBold" Text="{Binding Tailscale.StatusText}" />
+                <TextBlock FontWeight="SemiBold" Text="{Binding Tailscale.StatusText}" />
                 <TextBlock Classes="muted" TextWrapping="Wrap"
                            Text="{l:T Host.TailscaleStatus}" />
               </StackPanel>
@@ -295,11 +291,10 @@
               <TextBlock Classes="errorText" TextWrapping="Wrap" IsVisible="{Binding RestartNeeded}"
                          Text="{l:T Host.RestartNeeded}" />
               <TextBlock Classes="section" Text="{l:T Main.OneTimeCode}" Margin="0,10,0,2" />
-              <Border Classes="tint" Padding="18,12,14,12">
+              <Border Classes="subtle" Padding="16,14,14,14">
                 <Grid ColumnDefinitions="*,Auto">
                   <SelectableTextBlock Name="CodeText" Text="{Binding CodeDisplay}" FontFamily="{DynamicResource MonoFont}"
-                                       FontSize="42" FontWeight="Bold" LetterSpacing="3" VerticalAlignment="Center"
-                                       Foreground="{DynamicResource AccentStrongBrush}" />
+                                       FontSize="42" FontWeight="Light" LetterSpacing="4" VerticalAlignment="Center" />
                   <Button Grid.Column="1" Name="RotateButton" Classes="small onTint" Content="{l:T Host.RotateCode}" Command="{Binding RotateCodeCommand}"
                           VerticalAlignment="Center" Margin="10,0,0,0" />
                 </Grid>
@@ -307,8 +302,7 @@
               <TextBlock Classes="muted" Margin="2,2,0,0" Text="{l:T Host.ConfirmNote}" />
               <Border Classes="warn" IsVisible="{Binding !InputAvailable}" Margin="0,6,0,0">
                 <StackPanel Spacing="4">
-                  <TextBlock Foreground="{DynamicResource WarnBrush}" TextWrapping="Wrap" FontSize="12.5"
-                             Text="{l:T Host.NoAccessibility}" />
+                  <TextBlock TextWrapping="Wrap" Text="{l:T Host.NoAccessibility}" />
                   <Button Classes="small onTint" Content="{l:T Host.HowToGrant}" Command="{Binding ShowPermissionGuideCommand}" HorizontalAlignment="Left" />
                 </StackPanel>
               </Border>
@@ -356,7 +350,7 @@
     </Grid>
 
     <!-- 通用设置。不需要服务器：局域网直接连接，跨网络推荐 Tailscale；自建信令服务器收在“高级”里 -->
-    <Border Grid.Row="2" Classes="card" Padding="16,12" Margin="0,16,0,0">
+    <Border Grid.Row="2" Classes="card" Padding="16,12" Margin="16">
       <StackPanel Spacing="6">
         <StackPanel Orientation="Horizontal" Spacing="14"
                     DataContext="{Binding LoginItem}" x:DataType="vm:LoginItemViewModel">

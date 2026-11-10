@@ -24,17 +24,19 @@ public partial class App : Application
 
     /// <summary>
     /// Han characters look different in Chinese and Japanese fonts (the same code points), so
-    /// Japanese text needs a Japanese font first. Chinese and English keep the defaults.
+    /// Japanese text needs a Japanese font ahead of any Chinese one. Chinese and English keep the defaults.
     /// </summary>
     internal static void UseFontsFor(Application app, string language)
     {
         var japanese = language == Localization.L.Japanese;
+        // IBM Plex first (the IBM Design Language typeface) when it is installed; Latin falls
+        // back to Helvetica Neue and Han to the system font for the language, in list order.
         app.Resources["UiFont"] = new Avalonia.Media.FontFamily(japanese
-            ? "Hiragino Sans, Hiragino Kaku Gothic ProN, PingFang SC, sans-serif"
-            : "PingFang SC, Hiragino Sans GB, Heiti SC, sans-serif");
+            ? "IBM Plex Sans JP, IBM Plex Sans, Helvetica Neue, Hiragino Sans, Hiragino Kaku Gothic ProN, PingFang SC, sans-serif"
+            : "IBM Plex Sans, Helvetica Neue, PingFang SC, Hiragino Sans GB, Heiti SC, sans-serif");
         app.Resources["MonoFont"] = new Avalonia.Media.FontFamily(japanese
-            ? "Menlo, SF Mono, Hiragino Sans, monospace"
-            : "Menlo, SF Mono, PingFang SC, monospace");
+            ? "IBM Plex Mono, Menlo, SF Mono, Hiragino Sans, monospace"
+            : "IBM Plex Mono, Menlo, SF Mono, PingFang SC, monospace");
     }
 
     public override void OnFrameworkInitializationCompleted()
