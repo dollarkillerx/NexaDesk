@@ -170,7 +170,8 @@ impl Settle for CodeShared {
 
 /// The one-time code shown on the host. Single use, and replaced after
 /// [`MAX_ATTEMPTS`] failures, of which one [`Source`] may cause at most
-/// [`CODE_ATTEMPTS_PER_SOURCE`]. Clones share state.
+/// [`CODE_ATTEMPTS_PER_SOURCE`]. Clones share state, so native viewers and browsers
+/// (`nexa-web`) draw on the same limits.
 #[derive(Clone)]
 pub struct OneTimeCode {
     shared: Arc<CodeShared>,

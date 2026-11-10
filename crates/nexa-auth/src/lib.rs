@@ -14,6 +14,7 @@
 //! security review before release. See the note on [`pairing`].
 
 pub mod access;
+pub mod browser;
 mod fsio;
 pub mod identity;
 pub mod keystore;

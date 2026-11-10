@@ -396,6 +396,7 @@ pub async fn host_on(
     let agent = start(
         AgentConfig {
             lan_discovery: false,
+            web: None,
             listen,
             device_name: "fake host".into(),
             os: Os::Macos,

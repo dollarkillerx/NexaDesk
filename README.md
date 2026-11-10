@@ -2,7 +2,7 @@
 
 轻量的远程控制软件。目标是高清、低延迟，粘贴可靠，键盘对 Win / Mac 友好，能自己打洞，也能借助 Tailscale。界面用 Avalonia，后端用 Rust。
 
-> **状态**：macOS ↔ macOS 的功能已经写完，自动化测试全部通过，但**还没在两台真实的 Mac、真实的网络上验证过**。Windows 端和 Web 端尚未开始。暂时不建议用在重要场合。
+> **状态**：macOS ↔ macOS 的功能已经写完，自动化测试全部通过，但**还没在两台真实的 Mac、真实的网络上验证过**。Web 端（桌面浏览器查看和控制）已完成第一版，只用演示主机在浏览器里验证过；Windows 端尚未开始。暂时不建议用在重要场合。
 
 ## 特点
 
@@ -15,6 +15,7 @@
 - **键盘**：按物理键码传输，控制端改写组合键意图。例如在 Mac 上按 ⌘C 控制 Windows 时发出 Ctrl+C，而不是全局对调 Ctrl 和 Cmd。映射表可以编辑和预览。
 - **剪贴板与粘贴**：按代际同步。远端粘贴前先等剪贴板到达对端，再放行粘贴键，避免粘贴出旧内容。
 - **游戏模式**：锁定指针，发送相对移动；FEC 更强，延迟更低。
+- **浏览器控制**：对方不用安装任何软件，用浏览器打开本机地址的 47801 端口，输入一次性码即可查看和控制。页面和 WebRTC 都由本机提供，不需要服务器；适合局域网和 Tailscale。默认关闭，在主窗口底部打开“允许浏览器连接”。
 - **其他**：光标形状、声音（Opus）、文件收发、多显示器、断线 30 秒内自动重连、HUD 与连接诊断。
 - **多语言**：简体中文、English、日本語。默认跟随 macOS 的语言设置，也可以在主窗口右上角切换（重启后生效）。
 - **安全**：
@@ -37,6 +38,8 @@
 | `crates/nexa-agent` | 被控端进程 `nexa-agent` |
 | `crates/nexa-client` | 控制端动态库 `libnexa_client`（C ABI，供 UI 调用） |
 | `crates/nexa-signal` | 信令 + STUN + 中继服务器 `nexa-signal` |
+| `crates/nexa-web` | 浏览器访问：网页、信令和 WebRTC（str0m），由被控端直接提供 |
+| `crates/nexa-web-pake` | 浏览器一侧的配对（SPAKE2），编译为 WebAssembly |
 | `ui/` | Avalonia 桌面应用（.NET 10，NativeAOT）与测试 |
 | `deploy/` | 服务器的 systemd 单元、Docker 镜像与 Compose、配置模板、证书续期钩子 |
 | `docs/` | 设计文档、部署说明、M0 验证报告 |
@@ -99,17 +102,26 @@ dotnet test ui/NexaDesk.Tests
 
 需要真实硬件或网络的测试默认忽略，例如真实组播、屏幕采集，以及会触发系统权限提示的测试。
 
+试用浏览器端，不需要屏幕录制权限（合成画面，经真实 H.264 编码器；收到的鼠标和按键会画进画面）：
+
+```bash
+cargo run -p nexa-web --example demo
+```
+
+然后在另一台设备的浏览器，或本机浏览器，打开本机的局域网地址（不要用 127.0.0.1）的 47801 端口，输入终端里显示的一次性码。改了 `crates/nexa-web-pake` 之后，运行 `scripts/build-web-pake.sh` 重新生成 `crates/nexa-web/web/pake.wasm`。
+
 ## 文档
 
 - [docs/DESIGN.md](docs/DESIGN.md)：总体设计与里程碑
 - [docs/DETAILED_DESIGN.md](docs/DETAILED_DESIGN.md)：详细设计，各章末尾的“实现修订”记录了实际实现与设计的差异
 - [docs/DEPLOY.md](docs/DEPLOY.md)：部署信令、STUN 和中继服务器
-- [docs/WEB_CLIENT.md](docs/WEB_CLIENT.md)：Web 控制端方案（未开发）
+- [docs/WEB_CLIENT.md](docs/WEB_CLIENT.md)：Web 控制端的方案与第一版实现
 - [docs/spikes/M0-report.md](docs/spikes/M0-report.md)：M0 验证报告
 
 ## 尚未完成
 
 - **验证**：两台 Mac 的实机联调；真实 NAT 环境下的打洞测试。
 - **macOS 发布**：Developer ID 签名与公证、安装包、自动更新，以及登录界面和锁屏前的远程访问。
-- **其他平台**：Windows 端（被控与控制）；Web 控制端。
+- **其他平台**：Windows 端（被控与控制）。
+- **Web 端后续**：手机手势和虚拟键盘、输入法、剪贴板、跨公网（TURN）、HTTPS；真实浏览器和手机上的延迟实测。
 - **产品决定**：无人值守机器的首次配对方式；知道 ID 的人默认能做什么；文件权限是否按方向拆开。

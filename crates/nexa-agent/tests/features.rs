@@ -132,6 +132,7 @@ async fn host(p: Permissions) -> Host {
     let agent = start(
         AgentConfig {
             lan_discovery: false,
+            web: None,
             listen: "127.0.0.1:0".parse().unwrap(),
             device_name: "rig".into(),
             os: Os::Macos,

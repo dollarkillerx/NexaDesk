@@ -44,12 +44,12 @@ use crate::{
 pub const PROTOCOL_VERSION: u32 = 1;
 
 /// One SPAKE2 side byte plus one Ed25519 point.
-const SPAKE_MSG_LEN: usize = 33;
-const CONFIRM_LEN: usize = 32;
+pub(crate) const SPAKE_MSG_LEN: usize = 33;
+pub(crate) const CONFIRM_LEN: usize = 32;
 const CONFIRM_KEY_INFO: &[u8] = b"nexa/1 pair confirm key";
 const TRANSCRIPT_LABEL: &[u8] = b"nexa/1 pair transcript";
-const VIEWER_TAG: &[u8] = b"nexa/1 confirm viewer";
-const HOST_TAG: &[u8] = b"nexa/1 confirm host";
+pub(crate) const VIEWER_TAG: &[u8] = b"nexa/1 confirm viewer";
+pub(crate) const HOST_TAG: &[u8] = b"nexa/1 confirm host";
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum PairError {
@@ -135,7 +135,7 @@ impl PairingContext {
     }
 }
 
-fn confirm_key(spake_key: &[u8], exporter: &[u8; 32]) -> Zeroizing<[u8; 32]> {
+pub(crate) fn confirm_key(spake_key: &[u8], exporter: &[u8; 32]) -> Zeroizing<[u8; 32]> {
     let mut key = Zeroizing::new([0u8; 32]);
     Hkdf::<Sha256>::new(Some(exporter), spake_key)
         .expand(CONFIRM_KEY_INFO, key.as_mut_slice())
@@ -150,12 +150,32 @@ fn transcript(
     viewer_msg: &[u8],
     host_msg: &[u8],
 ) -> Vec<u8> {
+    transcript_of(
+        ctx.viewer.as_bytes(),
+        ctx.host.as_bytes(),
+        method,
+        salt,
+        viewer_msg,
+        host_msg,
+    )
+}
+
+/// The transcript both confirmations cover, for any pair of 32-byte identities: device
+/// keys here, DTLS certificate fingerprints for a browser ([`crate::browser`]).
+pub(crate) fn transcript_of(
+    viewer_id: &[u8],
+    host_id: &[u8],
+    method: AuthMethod,
+    salt: &[u8],
+    viewer_msg: &[u8],
+    host_msg: &[u8],
+) -> Vec<u8> {
     let fields: [&[u8]; 7] = [
         TRANSCRIPT_LABEL,
         &[method as u8],
         salt,
-        ctx.viewer.as_bytes(),
-        ctx.host.as_bytes(),
+        viewer_id,
+        host_id,
         viewer_msg,
         host_msg,
     ];
@@ -175,7 +195,7 @@ fn confirm_mac(key: &[u8; 32], role: &[u8], transcript: &[u8]) -> Hmac<Sha256> {
     mac
 }
 
-fn confirm_tag(key: &[u8; 32], role: &[u8], transcript: &[u8]) -> Vec<u8> {
+pub(crate) fn confirm_tag(key: &[u8; 32], role: &[u8], transcript: &[u8]) -> Vec<u8> {
     confirm_mac(key, role, transcript)
         .finalize()
         .into_bytes()
@@ -183,7 +203,7 @@ fn confirm_tag(key: &[u8; 32], role: &[u8], transcript: &[u8]) -> Vec<u8> {
 }
 
 /// Constant-time: `verify_slice` compares with `subtle`.
-fn confirm_ok(key: &[u8; 32], role: &[u8], transcript: &[u8], tag: &[u8]) -> bool {
+pub(crate) fn confirm_ok(key: &[u8; 32], role: &[u8], transcript: &[u8], tag: &[u8]) -> bool {
     confirm_mac(key, role, transcript).verify_slice(tag).is_ok()
 }
 

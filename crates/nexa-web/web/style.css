@@ -1,0 +1,230 @@
+/* IBM Carbon, as in the desktop app: Gray 10 / Gray 100, Blue 60, square, flat. */
+:root {
+  --background: #f4f4f4;
+  --layer: #ffffff;
+  --field: #f4f4f4;
+  --border-strong: #8d8d8d;
+  --border-subtle: #e0e0e0;
+  --text: #161616;
+  --text-secondary: #525252;
+  --text-helper: #6f6f6f;
+  --interactive: #0f62fe;
+  --interactive-hover: #0050e6;
+  --interactive-active: #002d9c;
+  --disabled: #c6c6c6;
+  --disabled-text: #8d8d8d;
+  --focus: #0f62fe;
+  --error: #da1e28;
+  --error-bg: #fff1f1;
+  --info: #0043ce;
+  --info-bg: #edf5ff;
+  --tag-bg: #d0e2ff;
+  --tag-text: #0043ce;
+  --font: "IBM Plex Sans", "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans", "Microsoft YaHei", sans-serif;
+  --mono: "IBM Plex Mono", Menlo, Consolas, monospace;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #161616;
+    --layer: #262626;
+    --field: #393939;
+    --border-strong: #8d8d8d;
+    --border-subtle: #393939;
+    --text: #f4f4f4;
+    --text-secondary: #c6c6c6;
+    --text-helper: #a8a8a8;
+    --disabled: #525252;
+    --disabled-text: #8d8d8d;
+    --focus: #ffffff;
+    --error: #ff8389;
+    --error-bg: #393939;
+    --info: #4589ff;
+    --info-bg: #393939;
+    --tag-bg: #0043ce;
+    --tag-text: #d0e2ff;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--background);
+  color: var(--text);
+  font: 14px/1.43 var(--font);
+  letter-spacing: 0.16px;
+  display: flex;
+  flex-direction: column;
+  -webkit-font-smoothing: antialiased;
+}
+[hidden] { display: none !important; }
+
+/* Shell header: dark in both themes. */
+.shell {
+  flex: none;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  background: #161616;
+  border-bottom: 1px solid #393939;
+  color: #f4f4f4;
+  padding-left: 16px;
+}
+.shell-name { font-size: 14px; }
+.shell-name b { font-weight: 600; }
+.shell-divider { width: 1px; height: 100%; background: #393939; margin: 0 16px; }
+.shell-label { color: #c6c6c6; font-size: 14px; }
+.shell-spacer { flex: 1; }
+.shell-action {
+  height: 48px;
+  padding: 0 16px;
+  border: 0;
+  background: transparent;
+  color: #c6c6c6;
+  font: inherit;
+  cursor: pointer;
+}
+.shell-action:hover { background: #2c2c2c; color: #f4f4f4; }
+.shell .tag { margin-right: 16px; }
+
+/* Connect page */
+.page {
+  flex: 1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 64px 16px;
+}
+.tile {
+  width: 100%;
+  max-width: 480px;
+  background: var(--layer);
+  padding: 16px 16px 24px;
+}
+h1 { font-size: 28px; font-weight: 400; line-height: 36px; margin: 0 0 8px; letter-spacing: 0; }
+.body-secondary { color: var(--text-secondary); margin: 0 0 32px; }
+.label { display: block; font-size: 12px; letter-spacing: 0.32px; color: var(--text-secondary); margin-bottom: 8px; }
+.helper { font-size: 12px; letter-spacing: 0.32px; color: var(--text-helper); margin: 4px 0 0; }
+.helper.invalid { color: var(--error); }
+.security { margin-top: 24px; }
+.mono { font-family: var(--mono); }
+
+.field {
+  width: 100%;
+  height: 48px;
+  padding: 0 16px;
+  border: 0;
+  border-bottom: 1px solid var(--border-strong);
+  background: var(--field);
+  color: var(--text);
+  font-size: 20px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  outline: 2px solid transparent;
+  outline-offset: -2px;
+  border-radius: 0;
+}
+.field::placeholder { color: var(--disabled-text); letter-spacing: 2px; }
+.field:focus { outline-color: var(--focus); }
+.field.invalid { outline-color: var(--error); }
+
+button { font: inherit; letter-spacing: 0.16px; border-radius: 0; }
+.primary, .danger {
+  height: 48px;
+  min-width: 160px;
+  border: 0;
+  padding: 0 64px 0 16px;
+  text-align: left;
+  color: #ffffff;
+  cursor: pointer;
+}
+.primary { background: var(--interactive); margin-top: 24px; }
+.primary:hover { background: var(--interactive-hover); }
+.primary:active { background: var(--interactive-active); }
+.primary:disabled { background: var(--disabled); color: var(--disabled-text); cursor: not-allowed; }
+.primary:focus-visible, .danger:focus-visible, .shell-action:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 3px var(--layer);
+}
+.danger { background: #da1e28; }
+.danger:hover { background: #b81921; }
+.shell .danger { height: 48px; min-width: 128px; }
+
+/* Inline notification: 3 px stripe on the left. */
+.notification {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 24px;
+  padding: 14px 16px 14px 13px;
+  border-left: 3px solid var(--info);
+  background: var(--info-bg);
+}
+.notification.error { border-left-color: var(--error); background: var(--error-bg); }
+.progress {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--interactive);
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.69s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .progress { animation-duration: 2s; } }
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 12px;
+  background: var(--tag-bg);
+  color: var(--tag-text);
+  font-size: 12px;
+  letter-spacing: 0.32px;
+}
+.shell .tag { background: #393939; color: #f4f4f4; }
+.shell .tag.control { background: #0043ce; color: #d0e2ff; }
+
+/* Session */
+.stage {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+  background: #000000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#screen {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  outline: none;
+  cursor: default;
+  touch-action: none;
+}
+.stage.control #screen { cursor: none; }
+.stage-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  max-width: min(640px, calc(100% - 32px));
+  margin: 0;
+  padding: 12px 16px;
+  background: rgba(22, 22, 22, 0.9);
+  color: #f4f4f4;
+  font-size: 12px;
+  letter-spacing: 0.32px;
+  pointer-events: none;
+}
+
+@media (max-width: 480px) {
+  .page { padding: 24px 0; }
+  .shell-label, .shell-divider { display: none; }
+  .shell .danger { min-width: 0; padding: 0 16px; }
+}

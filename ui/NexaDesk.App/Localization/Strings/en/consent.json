@@ -26,5 +26,7 @@
   "Consent.TimedOut": "Timed out, denied automatically",
   "Consent.Allowed": "Allowed",
   "Consent.Denied": "Denied",
-  "Consent.Cancelled": "They canceled the request"
+  "Consent.Cancelled": "They canceled the request",
+  "Consent.HeadlineBrowser": "The browser “{0}” wants to connect to this Mac",
+  "Consent.BrowserNote": "This is a web browser, not the NexaDesk app. It can only see the screen and use the keyboard and mouse. It is never saved: it needs a one-time code every time."
 }

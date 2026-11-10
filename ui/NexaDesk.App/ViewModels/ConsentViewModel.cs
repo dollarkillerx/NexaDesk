@@ -31,7 +31,10 @@ public sealed partial class ConsentViewModel : ObservableObject
     public bool OfferSave => _req.OfferSave;
     public bool OfferSkipNextTime => _req.OfferSkipNextTime;
     public bool InputAvailable => _req.InputAvailable;
-    public string Headline => L.Format("Consent.Headline", DeviceName);
+    /// <summary>A web browser: it can only view and control, and is never saved.</summary>
+    public bool IsBrowser => _req.Browser;
+    public bool IsDevice => !_req.Browser;
+    public string Headline => L.Format(IsBrowser ? "Consent.HeadlineBrowser" : "Consent.Headline", DeviceName);
     public string InputNote => InputAvailable ? L.Get("Consent.InputAvailable") : L.Get("Consent.InputUnavailable");
 
     /// <summary>Raised once, when the dialog should close.</summary>
@@ -100,8 +103,10 @@ public sealed partial class ConsentViewModel : ObservableObject
     private void Allow()
     {
         if (!CanAllow()) return;
-        var perms = new Permissions(View: true, Input: AllowInput && InputAvailable, Clipboard: AllowClipboard,
-            File: AllowFile, Audio: AllowAudio);
+        var perms = IsBrowser
+            ? new Permissions(View: true, Input: AllowInput && InputAvailable, Clipboard: false, File: false, Audio: false)
+            : new Permissions(View: true, Input: AllowInput && InputAvailable, Clipboard: AllowClipboard,
+                File: AllowFile, Audio: AllowAudio);
         Finish(new UiRequest.Decide(ReqId, true, perms, OfferSave && SaveDevice, OfferSkipNextTime && SkipNextTime), L.Get("Consent.Allowed"));
     }
 

@@ -113,7 +113,7 @@ public abstract record AgentMessage
 
     public sealed record IncomingRequest(ulong ReqId, string DeviceName, string DeviceId, string DeviceKey,
         string Remote, AuthKind Auth, Permissions Perms, bool OfferSave, bool SaveDefault, bool OfferSkipNextTime,
-        bool Takeover, uint TimeoutMs, bool InputAvailable) : AgentMessage;
+        bool Takeover, uint TimeoutMs, bool InputAvailable, bool Browser = false) : AgentMessage;
 
     public sealed record SessionStarted(HostSession Session) : AgentMessage;
     public sealed record SessionEnded(ulong Id, string DeviceName, string Reason) : AgentMessage;
@@ -222,7 +222,7 @@ public abstract record AgentMessage
         string name = "", did = "", key = "", remote = "";
         var auth = AuthKind.Unspecified;
         var perms = Permissions.None;
-        bool offerSave = false, saveDefault = false, offerSkip = false, takeover = false, input = false;
+        bool offerSave = false, saveDefault = false, offerSkip = false, takeover = false, input = false, browser = false;
         uint timeout = 0;
         var r = new ProtoReader(data);
         while (r.Next(out var f))
@@ -242,10 +242,11 @@ public abstract record AgentMessage
                 case 11: takeover = r.Bool(); break;
                 case 12: timeout = r.UInt32(); break;
                 case 13: input = r.Bool(); break;
+                case 14: browser = r.Bool(); break;
                 default: r.Skip(); break;
             }
         }
-        return new IncomingRequest(id, name, did, key, remote, auth, perms, offerSave, saveDefault, offerSkip, takeover, timeout, input);
+        return new IncomingRequest(id, name, did, key, remote, auth, perms, offerSave, saveDefault, offerSkip, takeover, timeout, input, browser);
     }
 
     static SessionEnded DecodeEnded(ReadOnlySpan<byte> data)

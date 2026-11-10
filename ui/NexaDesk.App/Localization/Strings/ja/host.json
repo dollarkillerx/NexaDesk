@@ -62,5 +62,7 @@
   "Host.PermScreenRecordingUse": "画面収録（必須）：相手があなたの画面を見られるようにします",
   "Host.PermAccessibilityUseHosting": "アクセシビリティ：相手があなたのキーボードとマウスを操作できるようにします。許可しない場合は表示のみです",
   "Host.PermAccessibilityUseViewing": "アクセシビリティ：ほかのデバイスを操作するときにすべてのキーを取り込みます",
-  "Host.PermRestartNote": "スイッチをオンにした後、反映するにはNexaDeskを終了して開き直すようmacOSから求められる場合があります。"
+  "Host.PermRestartNote": "スイッチをオンにした後、反映するにはNexaDeskを終了して開き直すようmacOSから求められる場合があります。",
+  "Host.KindBrowser": "ブラウザ",
+  "Host.BrowserDetail": "ブラウザで開くだけ、インストール不要"
 }

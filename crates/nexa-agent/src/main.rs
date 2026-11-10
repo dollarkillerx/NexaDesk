@@ -22,7 +22,7 @@ fn main() {
 #[cfg(target_os = "macos")]
 const USAGE: &str = "usage: nexa-agent --listen <ip:port> [--name <device name>] [--data-dir <dir>] [--consent terminal|ui]\n\
                  [--signal <wss://server[:port]>] [--signal-ca <pem>] [--paired-only] [--relay-only]\n\
-                 [--downloads <dir>] [--no-lan-discovery]\n\
+                 [--downloads <dir>] [--no-lan-discovery] [--web <ip:port>]\n\
   --listen    UDP address to listen on; use a LAN or Tailscale address, or 127.0.0.1\n\
   --name      name shown to viewers (default: this Mac's host name)\n\
   --data-dir  where pairings.json and agent.sock live (default: ~/Library/Application Support/NexaDesk)\n\
@@ -36,6 +36,8 @@ const USAGE: &str = "usage: nexa-agent --listen <ip:port> [--name <device name>]
   --relay-only   never offer a direct address to connecting devices; always use the relay.\n\
                  Also turns off the LAN announcement.\n\
   --no-lan-discovery  do not announce this Mac to viewers on the local network (mDNS)\n\
+  --web       also let web browsers connect: serve the page and WebRTC on this TCP address\n\
+              (e.g. [::]:47801); the same one-time code and consent apply. Off by default.\n\
   --downloads where files sent to this Mac are saved (default: ~/Downloads/NexaDesk)";
 
 #[cfg(target_os = "macos")]
@@ -57,6 +59,7 @@ struct Args {
     relay_only: bool,
     lan_discovery: bool,
     downloads: std::path::PathBuf,
+    web: Option<std::net::SocketAddr>,
 }
 
 #[cfg(target_os = "macos")]
@@ -70,6 +73,7 @@ fn parse_args() -> Result<Args, String> {
     let mut paired_only = false;
     let mut relay_only = false;
     let mut lan_discovery = true;
+    let mut web = None;
     let mut downloads = None;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
@@ -99,6 +103,13 @@ fn parse_args() -> Result<Args, String> {
             "--paired-only" => paired_only = true,
             "--relay-only" => relay_only = true,
             "--no-lan-discovery" => lan_discovery = false,
+            "--web" => {
+                web = Some(
+                    value()?
+                        .parse()
+                        .map_err(|_| format!("--web needs an ip:port\n{USAGE}"))?,
+                )
+            }
             "--downloads" => downloads = Some(std::path::PathBuf::from(value()?)),
             "-h" | "--help" => return Err(USAGE.to_owned()),
             other => return Err(format!("unknown argument: {other}\n{USAGE}")),
@@ -132,6 +143,8 @@ fn parse_args() -> Result<Args, String> {
         relay_only,
         lan_discovery: lan_discovery && !relay_only,
         downloads,
+        // A browser connects directly to an address of this Mac: not with --relay-only.
+        web: web.filter(|_| !relay_only),
     })
 }
 
@@ -245,6 +258,7 @@ fn run() -> Result<(), String> {
             limits: Default::default(),
         },
         lan_discovery: args.lan_discovery,
+        web: args.web,
     };
     // Held until exit: dropping it removes the socket.
     let mut _ipc = None;

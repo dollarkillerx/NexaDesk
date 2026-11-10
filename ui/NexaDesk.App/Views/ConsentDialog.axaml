@@ -14,6 +14,9 @@
     <TextBlock Classes="h1" Text="{Binding Headline}" TextWrapping="Wrap" />
     <TextBlock Classes="muted" FontSize="14" LetterSpacing="0.16"
                Text="{l:T Consent.Intro}" />
+    <Border Name="BrowserNote" Classes="tint" IsVisible="{Binding IsBrowser}">
+      <TextBlock TextWrapping="Wrap" Text="{l:T Consent.BrowserNote}" />
+    </Border>
 
     <Border Classes="subtle">
       <Grid ColumnDefinitions="Auto,14,*" RowDefinitions="Auto,Auto,Auto,Auto" >
@@ -23,12 +26,12 @@
         <TextBlock Grid.Row="1" Grid.Column="2" Text="{Binding AuthText}" Margin="0,4,0,0" />
         <TextBlock Grid.Row="2" Classes="label" Text="{l:T Consent.Remote}" Margin="0,4,0,0" />
         <TextBlock Grid.Row="2" Grid.Column="2" Text="{Binding Remote}" Margin="0,4,0,0" />
-        <TextBlock Grid.Row="3" Classes="label" Text="{l:T Consent.DeviceId}" Margin="0,4,0,0" />
-        <TextBlock Grid.Row="3" Grid.Column="2" Text="{Binding DeviceId}" FontFamily="{DynamicResource MonoFont}" FontSize="12" Margin="0,4,0,0" />
+        <TextBlock Grid.Row="3" Classes="label" Text="{l:T Consent.DeviceId}" Margin="0,4,0,0" IsVisible="{Binding IsDevice}" />
+        <TextBlock Grid.Row="3" Grid.Column="2" Text="{Binding DeviceId}" FontFamily="{DynamicResource MonoFont}" FontSize="12" Margin="0,4,0,0" IsVisible="{Binding IsDevice}" />
       </Grid>
     </Border>
 
-    <StackPanel Spacing="4">
+    <StackPanel Spacing="4" IsVisible="{Binding IsDevice}">
       <TextBlock Classes="section" Text="{l:T Consent.FingerprintLabel}" />
       <Border Classes="subtle">
         <TextBlock Name="FingerprintText" Text="{Binding Fingerprint}" FontFamily="{DynamicResource MonoFont}" FontSize="14" />
@@ -45,10 +48,10 @@
       <CheckBox IsChecked="True" IsEnabled="False" Content="{l:T Consent.PermView}" />
       <CheckBox Name="InputBox" IsChecked="{Binding AllowInput}" IsEnabled="{Binding InputAvailable}" Content="{l:T Consent.PermInput}" />
       <TextBlock Classes="muted" Margin="28,-4,0,2" Text="{Binding InputNote}" />
-      <CheckBox Name="ClipboardBox" IsChecked="{Binding AllowClipboard}" Content="{l:T Consent.PermClipboard}" />
-      <CheckBox Name="AudioBox" IsChecked="{Binding AllowAudio}" Content="{l:T Consent.PermAudio}" />
-      <CheckBox Name="FileBox" IsChecked="{Binding AllowFile}" Content="{l:T Consent.PermFile}" />
-      <TextBlock Classes="muted" Margin="28,-4,0,2" Text="{Binding FileNote}" TextWrapping="Wrap" />
+      <CheckBox Name="ClipboardBox" IsChecked="{Binding AllowClipboard}" Content="{l:T Consent.PermClipboard}" IsVisible="{Binding IsDevice}" />
+      <CheckBox Name="AudioBox" IsChecked="{Binding AllowAudio}" Content="{l:T Consent.PermAudio}" IsVisible="{Binding IsDevice}" />
+      <CheckBox Name="FileBox" IsChecked="{Binding AllowFile}" Content="{l:T Consent.PermFile}" IsVisible="{Binding IsDevice}" />
+      <TextBlock Classes="muted" Margin="28,-4,0,2" Text="{Binding FileNote}" TextWrapping="Wrap" IsVisible="{Binding IsDevice}" />
     </StackPanel>
 
     <StackPanel Spacing="2" IsVisible="{Binding OfferSave}">

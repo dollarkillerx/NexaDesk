@@ -45,5 +45,7 @@
   "Agent.Closed": "The host service closed the connection",
   "Platform.AgentMissing": "Could not find nexa-agent. Use the packaged NexaDesk.app.",
   "Platform.AgentStartFailed": "Could not start nexa-agent: {0}",
-  "Keymap.CannotRead": "Could not read the keyboard rules: {0}"
+  "Keymap.CannotRead": "Could not read the keyboard rules: {0}",
+  "Main.AllowBrowsers": "Allow browsers to connect",
+  "Main.AllowBrowsersTip": "The other person opens port 47801 of this Mac's address in a browser, with nothing to install. The one-time code and your confirmation still apply. Best kept to your LAN or Tailscale. Takes effect the next time you allow remote control."
 }

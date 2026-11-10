@@ -98,6 +98,7 @@ public sealed partial class HostViewModel : ObservableObject
     readonly string _deviceName;
     readonly Func<string> _signalServer;
     readonly Func<bool> _announceOnLan;
+    readonly Func<bool> _allowBrowsers;
     readonly ILocalAddresses _addresses;
     BannerViewModel? _banner;
     ConsentViewModel? _consent;
@@ -181,9 +182,25 @@ public sealed partial class HostViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(RestartNeeded))]
     private bool? _startedWithAnnounce;
 
+    /// <summary>The browser setting the running agent was started with; null as for the server.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(RestartNeeded))]
+    private bool? _startedWithBrowsers;
+
     public bool RestartNeeded => IsHosting &&
         ((StartedWithServer != null && StartedWithServer != _signalServer()) ||
-         (StartedWithAnnounce != null && StartedWithAnnounce != _announceOnLan()));
+         (StartedWithAnnounce != null && StartedWithAnnounce != _announceOnLan()) ||
+         (StartedWithBrowsers != null && StartedWithBrowsers != _allowBrowsers()));
+
+    /// <summary>The port browsers connect to, next to the native one.</summary>
+    public const int WebPort = 47801;
+
+    /// <summary>The <c>--web</c> address for a native listen address: same host, <see cref="WebPort"/>.</summary>
+    public static string WebListen(string listen)
+    {
+        var (host, _) = SplitListen(listen);
+        return host.Contains(':') ? $"[{host}]:{WebPort}" : $"{host}:{WebPort}";
+    }
 
     public void OnServerChanged() => OnPropertyChanged(nameof(RestartNeeded));
     [ObservableProperty] private string _hostFingerprint = "—";
@@ -197,7 +214,7 @@ public sealed partial class HostViewModel : ObservableObject
 
     public HostViewModel(IAgentLink link, IAgentProcess process, IPermissionProbe permissions, IWindowService windows,
         ILocalAddresses addresses, string deviceName, Func<DateTimeOffset>? now = null, Func<string>? signalServer = null,
-        Func<bool>? announceOnLan = null, TailscaleViewModel? tailscale = null)
+        Func<bool>? announceOnLan = null, TailscaleViewModel? tailscale = null, Func<bool>? allowBrowsers = null)
     {
         Tailscale = tailscale ?? new TailscaleViewModel(windows);
         Tailscale.Changed += () =>
@@ -208,6 +225,7 @@ public sealed partial class HostViewModel : ObservableObject
         _addresses = addresses;
         _signalServer = signalServer ?? (() => "");
         _announceOnLan = announceOnLan ?? (() => true);
+        _allowBrowsers = allowBrowsers ?? (() => false);
         _link = link;
         _process = process;
         _permissions = permissions;
@@ -264,6 +282,15 @@ public sealed partial class HostViewModel : ObservableObject
         foreach (var ip in ips.Where(ip => !IsTailnet(ip)))
             ConnectOptions.Add(new ConnectOption(ip == "127.0.0.1" || ip == "::1" ? L.Get("Host.KindLocalOnly") : L.Get("Host.KindLan"), Bracket(ip) + suffix));
         if (HasDeviceId) ConnectOptions.Add(new ConnectOption(L.Get("Host.KindDeviceId"), DeviceIdDisplay, L.Get("Host.ViaServer")));
+        // Browser access: the page is served on the same addresses, MagicDNS name first.
+        if (StartedWithBrowsers == true)
+        {
+            var web = tailnet.Count > 0 && Tailscale.DnsName.Length > 0
+                ? [Tailscale.DnsName, .. ips.Where(ip => !IsTailnet(ip))]
+                : ips;
+            foreach (var h in web.Where(h => h != "127.0.0.1" && h != "::1"))
+                ConnectOptions.Add(new ConnectOption(L.Get("Host.KindBrowser"), $"http://{Bracket(h)}:{WebPort}", L.Get("Host.BrowserDetail")));
+        }
     }
 
     partial void OnStateChanged(HostState value) => RebuildOptions();
@@ -310,9 +337,11 @@ public sealed partial class HostViewModel : ObservableObject
             }
             var server = _signalServer();
             var announce = _announceOnLan();
+            var browsers = _allowBrowsers();
             StartedWithServer = server;
             StartedWithAnnounce = announce;
-            var why = _process.Start(listen, _deviceName, server, announce);
+            StartedWithBrowsers = browsers;
+            var why = _process.Start(listen, _deviceName, server, announce, browsers ? WebListen(listen) : null);
             if (why != null)
             {
                 State = HostState.Stopped;
@@ -626,13 +655,14 @@ public sealed partial class MainViewModel : ObservableObject
         Tailscale = new TailscaleViewModel(windows);
         Connect = new ConnectViewModel(core, recent, windows, now, () => Settings.SavedServer, Tailscale);
         Host = new HostViewModel(link, process, permissions, windows, addresses, deviceName, now, () => Settings.SavedServer,
-            () => Settings.AnnounceOnLan, Tailscale);
+            () => Settings.AnnounceOnLan, Tailscale, () => Settings.AllowBrowsers);
         Settings.ServerChanged += _ =>
         {
             Connect.OnServerChanged();
             Host.OnServerChanged();
         };
         Settings.AnnounceChanged += _ => Host.OnServerChanged();
+        Settings.BrowsersChanged += _ => Host.OnServerChanged();
         _permissions = permissions;
         _windows = windows;
         LoginItem = new LoginItemViewModel(loginItem ?? new NoLoginItem());

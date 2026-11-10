@@ -62,5 +62,7 @@
   "Host.PermScreenRecordingUse": "Screen Recording (required): lets the other person see your screen",
   "Host.PermAccessibilityUseHosting": "Accessibility: lets the other person use your keyboard and mouse; without it they can only watch",
   "Host.PermAccessibilityUseViewing": "Accessibility: captures every key while you control another device",
-  "Host.PermRestartNote": "After you turn a switch on, macOS may ask you to quit and reopen NexaDesk before it takes effect."
+  "Host.PermRestartNote": "After you turn a switch on, macOS may ask you to quit and reopen NexaDesk before it takes effect.",
+  "Host.KindBrowser": "Browser",
+  "Host.BrowserDetail": "Open in a browser, nothing to install"
 }

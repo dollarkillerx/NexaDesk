@@ -45,5 +45,7 @@
   "Agent.Closed": "被控服务关闭了连接",
   "Platform.AgentMissing": "找不到 nexa-agent。请使用打包好的 NexaDesk.app。",
   "Platform.AgentStartFailed": "无法启动 nexa-agent：{0}",
-  "Keymap.CannotRead": "无法读取键盘规则：{0}"
+  "Keymap.CannotRead": "无法读取键盘规则：{0}",
+  "Main.AllowBrowsers": "允许浏览器连接",
+  "Main.AllowBrowsersTip": "对方不用安装 NexaDesk，在浏览器打开本机地址的 47801 端口即可连接；同样需要一次性码和你的确认。只建议在局域网或 Tailscale 中开启。下次开始允许控制时生效。"
 }

@@ -26,6 +26,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         _savedServer = loaded.SignalServer;
         _serverInput = _savedServer;
         _announceOnLan = loaded.AnnounceOnLan;
+        _allowBrowsers = loaded.AllowBrowsers;
         _startupLanguage = loaded.Language;
         LanguageOptions = [new LanguageOption("", L.Get("Settings.LanguageSystem")), .. L.Languages.Select(l => new LanguageOption(l.Code, l.Name))];
         _selectedLanguage = LanguageOptions.FirstOrDefault(o => o.Code == loaded.Language) ?? LanguageOptions[0];
@@ -45,7 +46,24 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     partial void OnSelectedLanguageChanged(LanguageOption value) => Persist();
 
-    void Persist() => _store.Save(new AppSettings(SavedServer, AnnounceOnLan, SelectedLanguage?.Code ?? ""));
+    void Persist() => _store.Save(new AppSettings(SavedServer, AnnounceOnLan, SelectedLanguage?.Code ?? "", AllowBrowsers));
+
+    /// <summary>
+    /// Whether web browsers may connect (crates/nexa-web): the agent then also serves a page
+    /// on port 47801 of the addresses it listens on. Off by default. Saved at once; applies
+    /// on the next start.
+    /// </summary>
+    [ObservableProperty]
+    private bool _allowBrowsers;
+
+    /// <summary>Raised after AllowBrowsers is saved.</summary>
+    public event Action<bool>? BrowsersChanged;
+
+    partial void OnAllowBrowsersChanged(bool value)
+    {
+        Persist();
+        BrowsersChanged?.Invoke(value);
+    }
 
     /// <summary>Whether this Mac's host is announced on the LAN (§4.11). Saved at once; applies on the next start.</summary>
     [ObservableProperty]

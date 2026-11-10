@@ -62,5 +62,7 @@
   "Host.PermScreenRecordingUse": "屏幕录制（必需）：让对方看到你的屏幕",
   "Host.PermAccessibilityUseHosting": "辅助功能：让对方操作你的键盘和鼠标；不授予则只能查看",
   "Host.PermAccessibilityUseViewing": "辅助功能：控制别人时捕获全部按键",
-  "Host.PermRestartNote": "打开开关后，macOS 可能要求退出并重新打开 NexaDesk 才会生效。"
+  "Host.PermRestartNote": "打开开关后，macOS 可能要求退出并重新打开 NexaDesk 才会生效。",
+  "Host.KindBrowser": "浏览器",
+  "Host.BrowserDetail": "在浏览器中打开，不需要安装"
 }

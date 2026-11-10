@@ -246,6 +246,9 @@ pub struct IncomingRequest {
     pub timeout_ms: u32,
     #[prost(bool, tag = "13")]
     pub input_available: bool,
+    /// A web browser (`nexa-web`): it can only view and control, and is never saved.
+    #[prost(bool, tag = "14")]
+    pub browser: bool,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -551,6 +554,7 @@ mod tests {
             takeover: true,
             timeout_ms: 60_000,
             input_available: true,
+            browser: false,
         }));
         let status = AgentToUi::from(AgentBody::Status(Status {
             version: 1,

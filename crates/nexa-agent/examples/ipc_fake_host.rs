@@ -52,6 +52,7 @@ async fn main() {
     let host = start_with_ui(
         AgentConfig {
             lan_discovery: false,
+            web: None,
             listen: "127.0.0.1:0".parse().unwrap(),
             device_name: "fake host".into(),
             os: Os::Macos,

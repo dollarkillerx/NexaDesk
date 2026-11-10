@@ -45,5 +45,7 @@
   "Agent.Closed": "ホストサービスが接続を閉じました",
   "Platform.AgentMissing": "nexa-agentが見つかりません。パッケージ版のNexaDesk.appを使用してください。",
   "Platform.AgentStartFailed": "nexa-agentを起動できません：{0}",
-  "Keymap.CannotRead": "キーボードのルールを読み込めません：{0}"
+  "Keymap.CannotRead": "キーボードのルールを読み込めません：{0}",
+  "Main.AllowBrowsers": "ブラウザからの接続を許可",
+  "Main.AllowBrowsersTip": "相手は NexaDesk をインストールせずに、ブラウザでこの Mac のアドレスのポート 47801 を開いて接続できます。ワンタイムコードとあなたの確認は同じく必要です。LAN または Tailscale での使用をおすすめします。次に操作を許可したときから有効になります。"
 }

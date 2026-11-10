@@ -176,7 +176,7 @@ sealed class Process : IAgentProcess
 {
     public bool IsRunning => false;
     public event Action<AgentExit>? Exited { add { } remove { } }
-    public string? Start(string l, string n, string s, bool a) => null;
+    public string? Start(string l, string n, string s, bool a, string? w = null) => null;
     public void Kill() { }
 }
 

@@ -58,6 +58,9 @@ pub struct AgentConfig {
     /// Announce this host on the LAN over mDNS (§4.11). Never on a loopback address.
     /// Off with `--relay-only`, which must not reveal a direct address.
     pub lan_discovery: bool,
+    /// Also let web browsers connect: serve the page, signaling and WebRTC on this TCP
+    /// address (`nexa-web`). Off unless set.
+    pub web: Option<SocketAddr>,
 }
 
 #[derive(Debug, Error)]
@@ -98,10 +101,12 @@ pub(crate) struct Shared {
     pub(crate) shutdown: watch::Sender<bool>,
     /// The mDNS announcement, withdrawn on shutdown.
     lan: Mutex<Option<nexa_net::discovery::Advertiser>>,
+    /// Browser access, when on.
+    web: Mutex<Option<nexa_web::WebGateway>>,
 }
 
 impl Shared {
-    fn report_code(&self) {
+    pub(crate) fn report_code(&self) {
         let code = self.code.current();
         let mut shown = self.shown_code.lock().unwrap_or_else(|e| e.into_inner());
         if *shown != *code.as_str() {
@@ -112,7 +117,7 @@ impl Shared {
         }
     }
 
-    fn session_active(&self) -> bool {
+    pub(crate) fn session_active(&self) -> bool {
         self.slot
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -340,9 +345,22 @@ impl Agent {
         self.transfers().is_some_and(|t| t.answer(id, accept))
     }
 
-    /// The host's way out: ends the running session.
+    /// The host's way out: ends the running session, native or browser.
     pub fn disconnect(&self) {
         self.shared.end_active(CloseReason::HostEnded);
+        if let Some(web) = self.shared.web.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            web.disconnect();
+        }
+    }
+
+    /// Where browsers connect, when browser access is on.
+    pub fn web_addr(&self) -> Option<SocketAddr> {
+        self.shared
+            .web
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|w| w.local_addr())
     }
 
     /// Feeds the frontmost-application context to whichever session is running.
@@ -362,6 +380,8 @@ impl Agent {
         );
         let _ = self.shared.shutdown.send(true);
         self.shared.end_active(CloseReason::Shutdown);
+        // Dropping the gateway stops accepting and ends a browser session.
+        drop(self.shared.web.lock().unwrap_or_else(|e| e.into_inner()).take());
     }
 
     /// Completes once the agent has shut down and closed its session.
@@ -403,6 +423,7 @@ pub async fn start(
 
     // There must be something to share before anyone is invited to look.
     platform.screen().map_err(AgentError::Screen)?;
+    let web = config.web;
     let (focus_tx, focus_rx) = watch::channel(None);
     let code = OneTimeCode::generate();
     let (shutdown, _) = watch::channel(false);
@@ -451,6 +472,7 @@ pub async fn start(
         next_id: AtomicU64::new(1),
         shutdown,
         lan: Mutex::new(None),
+        web: Mutex::new(None),
     });
 
     ui.event(AgentEvent::Listening(local));
@@ -466,6 +488,19 @@ pub async fn start(
             Ok(a) => *shared.lan.lock().unwrap_or_else(|e| e.into_inner()) = Some(a),
             Err(e) => ui.event(AgentEvent::Warning(format!(
                 "not announced on the local network: {e}"
+            ))),
+        }
+    }
+    if let Some(addr) = web {
+        let host = Arc::new(crate::web::AgentWeb {
+            platform: platform.clone(),
+            ui: ui.clone(),
+            shared: Arc::downgrade(&shared),
+        });
+        match nexa_web::WebGateway::bind(addr, host, shared.code.clone(), Default::default()).await {
+            Ok(g) => *shared.web.lock().unwrap_or_else(|e| e.into_inner()) = Some(g),
+            Err(e) => ui.event(AgentEvent::Warning(format!(
+                "browser access is off: cannot listen on {addr}: {e}"
             ))),
         }
     }
@@ -579,6 +614,22 @@ async fn handle_connection(
     origin: IpAddr,
     link: Option<Arc<Link>>,
 ) {
+    // One session at a time: a browser has the screen (see crate::web).
+    let browser_busy = shared
+        .web
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|w| w.busy());
+    if browser_busy {
+        shared.ui.event(AgentEvent::ConnectionFailed {
+            remote,
+            reason: "a browser session is running".into(),
+        });
+        conn.close(1u32.into(), b"busy");
+        drop(permit);
+        return;
+    }
     let result = {
         let probe = shared.clone();
         let peer = nexa_auth::peer_public_key(&conn).ok();

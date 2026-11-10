@@ -72,10 +72,41 @@ pub enum AuthKind {
     Password,
 }
 
+/// Who is asking: a NexaDesk device, or a web browser (`nexa-web`), which has no device
+/// key and is known only by the DTLS certificate its pairing was bound to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConsentPeer {
+    Device(DevicePublicKey),
+    Browser([u8; 32]),
+}
+
+impl ConsentPeer {
+    /// The short identifier shown to the person: the device ID, or for a browser the
+    /// first half of its certificate fingerprint.
+    pub fn id_text(&self) -> String {
+        match self {
+            Self::Device(key) => key.device_id().to_string(),
+            Self::Browser(fp) => fp[..16].iter().map(|b| format!("{b:02x}")).collect(),
+        }
+    }
+
+    /// The full key, hex: the fingerprint the person can compare.
+    pub fn key_hex(&self) -> String {
+        match self {
+            Self::Device(key) => key.to_hex(),
+            Self::Browser(fp) => fp.iter().map(|b| format!("{b:02x}")).collect(),
+        }
+    }
+
+    pub fn is_browser(&self) -> bool {
+        matches!(self, Self::Browser(_))
+    }
+}
+
 /// What a person is being asked (§9.3). `device_name` has been sanitized for display.
 #[derive(Clone, Debug)]
 pub struct ConsentRequest {
-    pub peer: DevicePublicKey,
+    pub peer: ConsentPeer,
     pub device_name: String,
     pub remote: SocketAddr,
     pub auth: AuthKind,
@@ -511,7 +542,7 @@ pub async fn host_handshake_from(
             conn,
             cfg,
             ConsentRequest {
-                peer,
+                peer: ConsentPeer::Device(peer),
                 device_name: device_name.clone(),
                 remote,
                 auth,

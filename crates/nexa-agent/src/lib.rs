@@ -13,6 +13,7 @@ pub mod ipc;
 mod session;
 pub mod signal;
 mod ui_host;
+mod web;
 
 use std::net::SocketAddr;
 

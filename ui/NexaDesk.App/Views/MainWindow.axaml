@@ -357,6 +357,9 @@
           <CheckBox Name="AnnounceOnLanBox" Content="{l:T Main.AnnounceOnLan}"
                     IsChecked="{Binding $parent[Window].((vm:MainViewModel)DataContext).Settings.AnnounceOnLan}"
                     ToolTip.Tip="{l:T Main.AnnounceOnLanTip}" />
+          <CheckBox Name="AllowBrowsersBox" Content="{l:T Main.AllowBrowsers}"
+                    IsChecked="{Binding $parent[Window].((vm:MainViewModel)DataContext).Settings.AllowBrowsers}"
+                    ToolTip.Tip="{l:T Main.AllowBrowsersTip}" />
           <CheckBox Name="LoginItemBox" Content="{l:T Main.LoginItem}" IsChecked="{Binding IsEnabled}" IsEnabled="{Binding IsSupported}" />
           <TextBlock Classes="muted" Name="LoginItemStatus" Text="{Binding StatusText}" VerticalAlignment="Center" />
           <Button Classes="small" Content="{l:T Main.OpenLoginItems}" Command="{Binding OpenSettingsCommand}" IsVisible="{Binding NeedsApproval}" />

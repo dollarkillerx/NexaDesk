@@ -26,5 +26,7 @@
   "Consent.TimedOut": "タイムアウトしたため、自動的に拒否しました",
   "Consent.Allowed": "許可しました",
   "Consent.Denied": "拒否しました",
-  "Consent.Cancelled": "相手がリクエストをキャンセルしました"
+  "Consent.Cancelled": "相手がリクエストをキャンセルしました",
+  "Consent.HeadlineBrowser": "ブラウザ「{0}」がこのMacへの接続を求めています",
+  "Consent.BrowserNote": "これは NexaDesk アプリではなく Web ブラウザです。画面の表示とキーボード・マウスの操作のみが可能で、保存されません。毎回ワンタイムコードが必要です。"
 }

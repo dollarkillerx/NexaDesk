@@ -26,5 +26,7 @@
   "Consent.TimedOut": "已超时，自动拒绝",
   "Consent.Allowed": "已允许",
   "Consent.Denied": "已拒绝",
-  "Consent.Cancelled": "对方取消了请求"
+  "Consent.Cancelled": "对方取消了请求",
+  "Consent.HeadlineBrowser": "浏览器「{0}」请求连接本机",
+  "Consent.BrowserNote": "这是一个网页浏览器，不是 NexaDesk 应用。它只能查看屏幕和操作键盘鼠标，不会被保存，下次仍需一次性码。"
 }

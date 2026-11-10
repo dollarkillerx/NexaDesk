@@ -54,7 +54,7 @@ public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
         return null;
     }
 
-    public string? Start(string listen, string deviceName, string signalServer, bool announceOnLan)
+    public string? Start(string listen, string deviceName, string signalServer, bool announceOnLan, string? web = null)
     {
         var path = Locate();
         if (path == null) return L.Get("Platform.AgentMissing");
@@ -77,6 +77,11 @@ public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
             info.ArgumentList.Add(signalServer);
         }
         if (!announceOnLan) info.ArgumentList.Add("--no-lan-discovery");
+        if (!string.IsNullOrEmpty(web))
+        {
+            info.ArgumentList.Add("--web");
+            info.ArgumentList.Add(web);
+        }
         Process process;
         try
         {
@@ -197,7 +202,7 @@ public sealed class SettingsStore(string path) : ISettingsStore
             var s = JsonSerializer.Deserialize(f, SettingsJson.Default.AppSettings) ?? new AppSettings();
             // Only what the app itself would have written is honoured.
             return new AppSettings(ViewModels.Texts.NormalizeServer(s.SignalServer) ?? "", s.AnnounceOnLan,
-                Localization.L.IsSupported(s.Language ?? "") ? s.Language! : "");
+                Localization.L.IsSupported(s.Language ?? "") ? s.Language! : "", s.AllowBrowsers);
         }
         catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException)
         {

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>NexaDesk</title>
+  <link rel="icon" href="/icon.png">
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header class="shell">
+    <span class="shell-name">Nexa<b>Desk</b></span>
+    <span class="shell-divider"></span>
+    <span class="shell-label" data-t="tagline"></span>
+    <span class="shell-spacer"></span>
+    <span class="tag" id="mode-tag" hidden></span>
+    <button class="shell-action" id="fullscreen" type="button" data-t="fullscreen" hidden></button>
+    <button class="danger" id="disconnect" type="button" data-t="disconnect" hidden></button>
+  </header>
+
+  <main id="connect-view" class="page">
+    <section class="tile">
+      <h1 data-t="title"></h1>
+      <p class="body-secondary" data-t="intro"></p>
+      <form id="connect-form" autocomplete="off" novalidate>
+        <label class="label" for="code" data-t="codeLabel"></label>
+        <input id="code" class="field mono" inputmode="text" autocapitalize="characters"
+               spellcheck="false" maxlength="12" placeholder="ABCD-2345" required>
+        <p class="helper" id="code-help" data-t="codeHelp"></p>
+        <button class="primary" id="connect" type="submit">
+          <span data-t="connect"></span>
+        </button>
+      </form>
+      <div class="notification" id="status" role="status" hidden>
+        <span class="progress" id="spinner" hidden></span>
+        <span id="status-text"></span>
+      </div>
+      <p class="helper security" data-t="security"></p>
+    </section>
+  </main>
+
+  <main id="session-view" class="stage" hidden>
+    <video id="screen" autoplay playsinline muted tabindex="0"></video>
+    <p class="stage-hint" id="keys-hint" data-t="keysHint"></p>
+  </main>
+</body>
+</html>

@@ -164,6 +164,7 @@ async fn view_only_real_pipeline_on_loopback() {
     let agent = start(
         AgentConfig {
             lan_discovery: false,
+            web: None,
             listen: "127.0.0.1:0".parse().unwrap(),
             device_name: "view-only test".into(),
             os: Os::Macos,

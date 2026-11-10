@@ -52,7 +52,8 @@ public interface IAgentProcess
     event Action<AgentExit>? Exited;
     /// <summary>Null on success, else why it could not start. An empty signalServer means not reachable by ID.</summary>
     /// <param name="announceOnLan">Announce this Mac to viewers on the LAN over mDNS (§4.11).</param>
-    string? Start(string listen, string deviceName, string signalServer, bool announceOnLan);
+    /// <param name="web">Where browsers connect (<c>--web</c>), or null to keep browser access off.</param>
+    string? Start(string listen, string deviceName, string signalServer, bool announceOnLan, string? web = null);
     void Kill();
 }
 
@@ -85,7 +86,8 @@ public interface ILocalAddresses
 /// <summary>Preferences kept in settings.json. SignalServer is already normalized, or empty.
 /// AnnounceOnLan: whether the host is announced to viewers on the LAN (§4.11).
 /// Language: a supported language code, or empty to follow macOS; applies at the next start.</summary>
-public sealed record AppSettings(string SignalServer = "", bool AnnounceOnLan = true, string Language = "");
+public sealed record AppSettings(string SignalServer = "", bool AnnounceOnLan = true, string Language = "",
+    bool AllowBrowsers = false);
 
 public interface ISettingsStore
 {

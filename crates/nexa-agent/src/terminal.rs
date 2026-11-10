@@ -219,7 +219,7 @@ impl Consent for TerminalUi {
         terminal.say(&format!(
             "Connection request from \"{}\" (device {}) at {}",
             request.device_name,
-            request.peer.device_id(),
+            request.peer.id_text(),
             request.remote
         ));
         terminal.say(&format!("Verified by: {method}"));

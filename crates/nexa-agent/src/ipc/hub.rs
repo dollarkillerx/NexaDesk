@@ -258,8 +258,8 @@ impl Consent for IpcHub {
         let question = IncomingRequest {
             req_id,
             device_name: request.device_name.clone(),
-            device_id: request.peer.device_id().to_string(),
-            device_key: request.peer.to_hex(),
+            device_id: request.peer.id_text(),
+            device_key: request.peer.key_hex(),
             remote: request.remote.to_string(),
             auth: auth_kind(request.auth) as i32,
             perms: Some((&request.prompt.perms).into()),
@@ -269,6 +269,7 @@ impl Consent for IpcHub {
             takeover: request.takeover,
             timeout_ms: timeout.as_millis().min(u128::from(u32::MAX)) as u32,
             input_available: self.input_available(),
+            browser: request.peer.is_browser(),
         };
         {
             let mut state = lock(&self.state);
