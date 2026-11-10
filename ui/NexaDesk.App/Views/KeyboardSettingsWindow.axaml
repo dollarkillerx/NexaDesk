@@ -55,7 +55,7 @@
           <TextBox Grid.Column="2" Name="NewThenBox" Text="{Binding NewThen}" PlaceholderText="{l:T Keyboard.ThenPlaceholder}"
                    FontFamily="{DynamicResource MonoFont}" />
           <CheckBox Grid.Column="3" Content="{l:T Keyboard.TerminalOnly}" IsChecked="{Binding NewTerminalOnly}" Margin="10,0,0,0" />
-          <Button Grid.Column="4" Name="AddRuleButton" Classes="small" Content="{l:T Keyboard.Add}" Command="{Binding AddRuleCommand}" Margin="6,0,0,0" />
+          <Button Grid.Column="4" Name="AddRuleButton" Classes="small onTint" Content="{l:T Keyboard.Add}" Command="{Binding AddRuleCommand}" Margin="6,0,0,0" />
         </Grid>
       </StackPanel>
     </Border>
@@ -81,7 +81,7 @@
       </StackPanel>
       <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
         <Button Content="{l:T Keyboard.Revert}" Command="{Binding RevertCommand}" />
-        <Button Name="SaveKeymapButton" Classes="accent" Content="{l:T Keyboard.Save}" Command="{Binding SaveCommand}" />
+        <Button Name="SaveKeymapButton" Classes="accent wide" Content="{l:T Keyboard.Save}" Command="{Binding SaveCommand}" />
       </StackPanel>
     </Grid>
   </Grid>

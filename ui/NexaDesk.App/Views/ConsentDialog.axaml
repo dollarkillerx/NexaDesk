@@ -27,7 +27,7 @@
     </Border>
 
     <StackPanel Spacing="4">
-      <TextBlock Classes="label" Text="{l:T Consent.FingerprintLabel}" />
+      <TextBlock Classes="section" Text="{l:T Consent.FingerprintLabel}" />
       <Border Classes="subtle">
         <TextBlock Name="FingerprintText" Text="{Binding Fingerprint}" FontFamily="{DynamicResource MonoFont}" FontSize="14" />
       </Border>
@@ -39,7 +39,7 @@
     </Border>
 
     <StackPanel Spacing="2">
-      <TextBlock Classes="label" Text="{l:T Consent.AllowThem}" />
+      <TextBlock Classes="section" Text="{l:T Consent.AllowThem}" Margin="0,0,0,2" />
       <CheckBox IsChecked="True" IsEnabled="False" Content="{l:T Consent.PermView}" />
       <CheckBox Name="InputBox" IsChecked="{Binding AllowInput}" IsEnabled="{Binding InputAvailable}" Content="{l:T Consent.PermInput}" />
       <TextBlock Classes="muted" Margin="28,-4,0,2" Text="{Binding InputNote}" />
@@ -62,9 +62,9 @@
       <TextBlock Classes="muted" VerticalAlignment="Center" Text="{Binding CountdownText}" />
       <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10">
         <!-- Deny is the default and cancel button, and has focus: Enter, Space and Escape all deny. -->
-        <Button Name="DenyButton" Classes="accent" Content="{l:T Consent.Deny}" MinWidth="96" HorizontalContentAlignment="Center"
+        <Button Name="DenyButton" Classes="accent wide" Content="{l:T Consent.Deny}"
                 IsDefault="True" IsCancel="True" Command="{Binding DenyCommand}" />
-        <Button Name="AllowButton" Content="{l:T Consent.Allow}" MinWidth="96" HorizontalContentAlignment="Center"
+        <Button Name="AllowButton" Classes="wide" Content="{l:T Consent.Allow}"
                 Command="{Binding AllowCommand}" />
       </StackPanel>
     </Grid>

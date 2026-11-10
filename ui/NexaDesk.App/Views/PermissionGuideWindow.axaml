@@ -17,8 +17,8 @@
         <TextBlock Grid.Column="1" Name="ScreenRecordingState" Text="{Binding ScreenRecordingStatus}" Margin="12,0,0,0"
                    Classes.ok="{Binding ScreenRecording}" />
         <StackPanel Grid.Row="1" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
-          <Button Classes="small" Content="{l:T Permissions.Request}" Command="{Binding RequestScreenRecordingCommand}" />
-          <Button Classes="small" Content="{l:T Permissions.OpenScreenRecording}" Command="{Binding OpenScreenRecordingCommand}" />
+          <Button Classes="small onTint" Content="{l:T Permissions.Request}" Command="{Binding RequestScreenRecordingCommand}" />
+          <Button Classes="small onTint" Content="{l:T Permissions.OpenScreenRecording}" Command="{Binding OpenScreenRecordingCommand}" />
         </StackPanel>
       </Grid>
     </Border>
@@ -29,13 +29,13 @@
         <TextBlock Grid.Column="1" Name="AccessibilityState" Text="{Binding AccessibilityStatus}" Margin="12,0,0,0"
                    Classes.ok="{Binding Accessibility}" />
         <StackPanel Grid.Row="1" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
-          <Button Classes="small" Content="{l:T Permissions.OpenAccessibility}" Command="{Binding OpenAccessibilityCommand}" />
+          <Button Classes="small onTint" Content="{l:T Permissions.OpenAccessibility}" Command="{Binding OpenAccessibilityCommand}" />
         </StackPanel>
       </Grid>
     </Border>
 
     <StackPanel Spacing="4">
-      <TextBlock Classes="label" Text="{l:T Permissions.Steps}" />
+      <TextBlock Classes="section" Text="{l:T Permissions.Steps}" />
       <TextBlock TextWrapping="Wrap" Text="{l:T Permissions.Step1}" />
       <TextBlock TextWrapping="Wrap" Text="{l:T Permissions.Step2}" />
       <TextBlock TextWrapping="Wrap" Text="{l:T Permissions.Step3}" />
@@ -44,7 +44,7 @@
 
     <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Right">
       <Button Name="RecheckButton" Content="{l:T Permissions.Recheck}" Command="{Binding RecheckCommand}" />
-      <Button Classes="accent" Content="{l:T Permissions.Done}" Command="{Binding CloseCommand}" />
+      <Button Classes="accent wide" Content="{l:T Permissions.Done}" Command="{Binding CloseCommand}" />
     </StackPanel>
   </StackPanel>
 

@@ -5,20 +5,31 @@
         x:Class="NexaDesk.Views.MainWindow"
         x:DataType="vm:MainViewModel"
         Title="NexaDesk"
-        Width="1040" Height="720" MinWidth="860" MinHeight="560">
-  <Grid RowDefinitions="Auto,Auto,*" Margin="24,18,24,24">
-    <!-- Header -->
-    <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,14">
+        Width="1040" Height="760" MinWidth="860" MinHeight="600">
+  <Grid RowDefinitions="Auto,*,Auto" Margin="24,16,24,18">
+    <!-- Header: the app, this Mac, and window-wide settings -->
+    <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,16">
       <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-        <TextBlock Classes="h1" Text="NexaDesk" />
-        <TextBlock Classes="label" VerticalAlignment="Bottom" Margin="0,0,0,2"
-                   Text="{Binding DeviceName, StringFormat={l:T Settings.ThisDevice}}" />
+        <Border Width="32" Height="32" CornerRadius="9" VerticalAlignment="Center">
+          <Border.Background>
+            <LinearGradientBrush StartPoint="0%,0%" EndPoint="100%,100%">
+              <GradientStop Offset="0" Color="#6A86FF" />
+              <GradientStop Offset="1" Color="#3348C8" />
+            </LinearGradientBrush>
+          </Border.Background>
+          <Path Classes="icon" Data="{StaticResource IconScreens}" Stroke="White" StrokeThickness="1.9" />
+        </Border>
+        <TextBlock Classes="h1" Text="NexaDesk" VerticalAlignment="Center" />
+        <Border Classes="pill" Margin="4,0,0,0">
+          <TextBlock Classes="label" FontSize="12" Text="{Binding DeviceName, StringFormat={l:T Settings.ThisDevice}}" />
+        </Border>
       </StackPanel>
       <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
         <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center"
                     DataContext="{Binding Settings}" x:DataType="vm:SettingsViewModel">
           <TextBlock Classes="muted" Name="LanguageRestartText" Text="{l:T Settings.LanguageRestart}" VerticalAlignment="Center"
                      IsVisible="{Binding LanguageRestartNeeded}" />
+          <Path Classes="icon muted" Data="{StaticResource IconGlobe}" Width="15" Height="15" />
           <TextBlock Classes="label" Text="{l:T Settings.Language}" VerticalAlignment="Center" />
           <ComboBox Name="LanguageBox" ItemsSource="{Binding LanguageOptions}" SelectedItem="{Binding SelectedLanguage}" MinWidth="120">
             <ComboBox.ItemTemplate>
@@ -29,69 +40,37 @@
           </ComboBox>
         </StackPanel>
         <Button Name="KeyboardSettingsButton" Classes="small" Content="{l:T Main.KeyboardSettings}" Command="{Binding ShowKeyboardSettingsCommand}"
-                IsVisible="{Binding HasKeyboardSettings}" />
-        <Button Classes="small" Content="{l:T Main.Permissions}" Command="{Binding ShowViewerPermissionsCommand}" />
+                IsVisible="{Binding HasKeyboardSettings}" VerticalAlignment="Center" />
+        <Button Classes="small" Content="{l:T Main.Permissions}" Command="{Binding ShowViewerPermissionsCommand}" VerticalAlignment="Center" />
       </StackPanel>
     </Grid>
 
-    <!-- 通用设置。不需要服务器：局域网直接连接，跨网络推荐 Tailscale；自建信令服务器收在“高级”里 -->
-    <Border Grid.Row="1" Classes="subtle" Margin="0,0,0,14">
-      <StackPanel Spacing="4">
-        <StackPanel Orientation="Horizontal" Spacing="10"
-                    DataContext="{Binding LoginItem}" x:DataType="vm:LoginItemViewModel">
-          <CheckBox Name="AnnounceOnLanBox" Content="{l:T Main.AnnounceOnLan}"
-                    IsChecked="{Binding $parent[Window].((vm:MainViewModel)DataContext).Settings.AnnounceOnLan}"
-                    ToolTip.Tip="{l:T Main.AnnounceOnLanTip}" />
-          <CheckBox Name="LoginItemBox" Content="{l:T Main.LoginItem}" IsChecked="{Binding IsEnabled}" IsEnabled="{Binding IsSupported}" />
-          <TextBlock Classes="muted" Name="LoginItemStatus" Text="{Binding StatusText}" VerticalAlignment="Center" />
-          <Button Classes="small" Content="{l:T Main.OpenLoginItems}" Command="{Binding OpenSettingsCommand}" IsVisible="{Binding NeedsApproval}" />
-          <TextBlock Classes="errorText" Text="{Binding Error}" VerticalAlignment="Center"
-                     IsVisible="{Binding Error, Converter={x:Static ObjectConverters.IsNotNull}}" />
-        </StackPanel>
-        <TextBlock Classes="muted" TextWrapping="Wrap" Text="{l:T Main.MenuBarNote}" />
-        <Expander Name="AdvancedExpander" Margin="0,4,0,0" HorizontalAlignment="Stretch"
-                  DataContext="{Binding Settings}" x:DataType="vm:SettingsViewModel">
-          <Expander.Header>
-            <StackPanel Orientation="Horizontal" Spacing="10">
-              <TextBlock Classes="label" Text="{l:T Main.Advanced}" VerticalAlignment="Center" />
-              <TextBlock Classes="muted" Name="ServerStatusText" Text="{Binding ServerStatus}" VerticalAlignment="Center" />
-            </StackPanel>
-          </Expander.Header>
-          <StackPanel Spacing="6">
-            <TextBlock Classes="muted" TextWrapping="Wrap"
-                       Text="{l:T Main.AdvancedHelp}" />
-            <StackPanel Orientation="Horizontal" Spacing="10">
-              <TextBlock Classes="label" Text="{l:T Main.SignalServer}" VerticalAlignment="Center" />
-              <TextBox Name="ServerBox" Text="{Binding ServerInput}" Width="320" PlaceholderText="wss://signal.example.com" />
-              <Button Name="SaveServerButton" Classes="small" Content="{l:T Main.Save}" Command="{Binding SaveCommand}" />
-            </StackPanel>
-            <TextBlock Classes="errorText" Text="{Binding ServerHint}" IsVisible="{Binding ServerHint, Converter={x:Static ObjectConverters.IsNotNull}}" />
-          </StackPanel>
-        </Expander>
-      </StackPanel>
-    </Border>
-
-    <Grid Grid.Row="2" ColumnDefinitions="*,20,*">
+    <Grid Grid.Row="1" ColumnDefinitions="*,16,*">
       <!-- 连接到设备 -->
       <Border Classes="card" DataContext="{Binding Connect}" x:DataType="vm:ConnectViewModel">
         <ScrollViewer VerticalScrollBarVisibility="Auto">
           <!-- Room for the scroll bar, which floats over the content. -->
           <StackPanel Spacing="8" Margin="0,0,14,0">
-            <TextBlock Classes="h2" Text="{l:T Connect.Title}" />
-            <TextBlock Classes="muted" TextWrapping="Wrap" Text="{Binding Intro}" />
+            <StackPanel Orientation="Horizontal" Spacing="12">
+              <Border Classes="iconTile">
+                <Path Classes="icon" Data="{StaticResource IconConnect}" />
+              </Border>
+              <TextBlock Classes="h2" Text="{l:T Connect.Title}" VerticalAlignment="Center" />
+            </StackPanel>
+            <TextBlock Classes="muted" TextWrapping="Wrap" Text="{Binding Intro}" Margin="0,2,0,0" />
 
-            <TextBlock Classes="label" Text="{l:T Connect.Address}" Margin="0,6,0,0" />
+            <TextBlock Classes="section" Text="{l:T Connect.Address}" Margin="0,8,0,0" />
             <TextBox Name="AddressBox" Text="{Binding Address}" PlaceholderText="{Binding AddressPlaceholder}"
                      IsEnabled="{Binding !IsConnecting}" />
             <TextBlock Classes="errorText" Text="{Binding AddressHint}" IsVisible="{Binding AddressHint, Converter={x:Static ObjectConverters.IsNotNull}}" />
 
-            <TextBlock Classes="label" Text="{l:T Main.OneTimeCode}" Margin="0,4,0,0" />
+            <TextBlock Classes="section" Text="{l:T Main.OneTimeCode}" Margin="0,6,0,0" />
             <TextBox Name="CodeBox" Text="{Binding Code}" PlaceholderText="ABCD-2345" MaxLength="12"
                      FontFamily="{DynamicResource MonoFont}" FontSize="16" IsEnabled="{Binding !IsConnecting}" />
             <TextBlock Classes="errorText" Text="{Binding CodeHint}" IsVisible="{Binding CodeHint, Converter={x:Static ObjectConverters.IsNotNull}}" />
 
             <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,8,0,0">
-              <Button Name="ConnectButton" Classes="accent" Content="{l:T Main.Connect}" Command="{Binding ConnectCommand}" IsDefault="True"
+              <Button Name="ConnectButton" Classes="accent wide" Content="{l:T Main.Connect}" Command="{Binding ConnectCommand}" IsDefault="True"
                       IsVisible="{Binding !IsConnecting}" />
               <ProgressBar IsIndeterminate="True" Width="80" IsVisible="{Binding IsConnecting}" VerticalAlignment="Center" />
               <TextBlock Classes="muted" Text="{Binding ProgressText}" VerticalAlignment="Center" MaxWidth="300"
@@ -109,18 +88,21 @@
               <TextBlock Classes="errorText" Text="{Binding IdentityError}" />
             </Border>
 
-            <StackPanel Name="LanSection" Spacing="4" Margin="0,12,0,0" IsVisible="{Binding HasLan}">
-              <TextBlock Classes="label" Text="{l:T Connect.LanDevices}" />
+            <StackPanel Name="LanSection" Spacing="4" Margin="0,14,0,0" IsVisible="{Binding HasLan}">
+              <TextBlock Classes="section" Text="{l:T Connect.LanDevices}" Margin="0,0,0,2" />
               <ItemsControl Name="LanList" ItemsSource="{Binding Lan}">
                 <ItemsControl.ItemTemplate>
                   <DataTemplate x:DataType="vm:LanDeviceViewModel">
-                    <Border Classes="subtle" Margin="0,0,0,6">
-                      <Grid ColumnDefinitions="*,Auto">
-                        <StackPanel Spacing="2">
-                          <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                    <Border Classes="item" Margin="0,0,0,6">
+                      <Grid ColumnDefinitions="Auto,*,Auto">
+                        <Border Classes="iconTile small" Margin="0,0,10,0">
+                          <Path Classes="icon" Data="{StaticResource IconMonitor}" />
+                        </Border>
+                        <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                          <TextBlock Classes="itemTitle" Text="{Binding Name}" />
                           <TextBlock Classes="muted" Text="{Binding Detail}" />
                         </StackPanel>
-                        <Button Grid.Column="1" Classes="small" Content="{l:T Main.Connect}" Command="{Binding ConnectCommand}"
+                        <Button Grid.Column="2" Classes="small" Content="{l:T Main.Connect}" Command="{Binding ConnectCommand}"
                                 VerticalAlignment="Center" />
                       </Grid>
                     </Border>
@@ -129,23 +111,26 @@
               </ItemsControl>
             </StackPanel>
 
-            <StackPanel Name="TailnetSection" Spacing="4" Margin="0,12,0,0" IsVisible="{Binding HasTailnet}">
-              <TextBlock Classes="label" Text="{l:T Connect.TailnetDevices}" />
+            <StackPanel Name="TailnetSection" Spacing="4" Margin="0,14,0,0" IsVisible="{Binding HasTailnet}">
+              <TextBlock Classes="section" Text="{l:T Connect.TailnetDevices}" Margin="0,0,0,2" />
               <ItemsControl Name="TailnetList" ItemsSource="{Binding Tailnet}">
                 <ItemsControl.ItemTemplate>
                   <DataTemplate x:DataType="vm:TailnetDeviceViewModel">
-                    <Border Classes="subtle" Margin="0,0,0,6">
-                      <Grid ColumnDefinitions="*,Auto">
-                        <StackPanel Spacing="2">
+                    <Border Classes="item" Margin="0,0,0,6">
+                      <Grid ColumnDefinitions="Auto,*,Auto">
+                        <Border Classes="iconTile small" Margin="0,0,10,0">
+                          <Path Classes="icon" Data="{StaticResource IconMonitor}" />
+                        </Border>
+                        <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
                           <StackPanel Orientation="Horizontal" Spacing="8">
-                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                            <TextBlock Classes="itemTitle" Text="{Binding Name}" />
                             <Border Classes="badge">
-                              <TextBlock Text="{Binding PathText}" FontSize="11" />
+                              <TextBlock Text="{Binding PathText}" />
                             </Border>
                           </StackPanel>
                           <TextBlock Classes="muted" Text="{Binding Detail}" />
                         </StackPanel>
-                        <Button Grid.Column="1" Classes="small" Content="{l:T Main.Connect}" Command="{Binding ConnectCommand}"
+                        <Button Grid.Column="2" Classes="small" Content="{l:T Main.Connect}" Command="{Binding ConnectCommand}"
                                 VerticalAlignment="Center" />
                       </Grid>
                     </Border>
@@ -154,37 +139,40 @@
               </ItemsControl>
             </StackPanel>
 
-            <Border Name="ConnectTailscaleAdvice" Classes="subtle" Background="{DynamicResource BadgeBrush}" Margin="0,12,0,0"
+            <Border Name="ConnectTailscaleAdvice" Classes="tint" Margin="0,14,0,0"
                     IsVisible="{Binding ShowTailscaleAdvice}">
               <StackPanel Spacing="6">
                 <TextBlock FontWeight="SemiBold" Text="{l:T Connect.TailscaleAdviceTitle}" />
                 <TextBlock Classes="muted" TextWrapping="Wrap"
                            Text="{l:T Connect.TailscaleAdvice}" />
-                <Button Classes="small" Content="{l:T Main.DownloadTailscale}" Command="{Binding Tailscale.DownloadCommand}" HorizontalAlignment="Left" />
+                <Button Classes="small onTint" Content="{l:T Main.DownloadTailscale}" Command="{Binding Tailscale.DownloadCommand}" HorizontalAlignment="Left" />
               </StackPanel>
             </Border>
 
-            <TextBlock Classes="label" Text="{l:T Connect.Recent}" Margin="0,12,0,0" />
+            <TextBlock Classes="section" Text="{l:T Connect.Recent}" Margin="0,14,0,2" />
             <TextBlock Classes="muted" Text="{l:T Connect.NoRecent}" IsVisible="{Binding !HasRecent}" />
 
             <ItemsControl Name="RecentList" ItemsSource="{Binding Recent}">
               <ItemsControl.ItemTemplate>
                 <DataTemplate x:DataType="vm:RecentDeviceViewModel">
-                  <Border Classes="subtle" Margin="0,0,0,6">
-                    <Grid ColumnDefinitions="*,Auto">
-                      <StackPanel Spacing="2">
+                  <Border Classes="item" Margin="0,0,0,6">
+                    <Grid ColumnDefinitions="Auto,*,Auto">
+                      <Border Classes="iconTile small" Margin="0,0,10,0">
+                        <Path Classes="icon" Data="{StaticResource IconMonitor}" />
+                      </Border>
+                      <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
                         <StackPanel Orientation="Horizontal" Spacing="8">
-                          <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                          <TextBlock Classes="itemTitle" Text="{Binding Name}" />
                           <Border Classes="badge">
-                            <TextBlock Text="{Binding PairedText}" FontSize="11" />
+                            <TextBlock Text="{Binding PairedText}" />
                           </Border>
                         </StackPanel>
                         <TextBlock Classes="muted" Text="{Binding Address}" />
                         <TextBlock Classes="muted" Text="{Binding LastSeen, StringFormat={l:T Main.LastConnected}}" />
                       </StackPanel>
-                      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                      <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
                         <Button Classes="small" Content="{l:T Main.Connect}" Command="{Binding ConnectCommand}" />
-                        <Button Classes="small" Content="{l:T Connect.Remove}" Command="{Binding RemoveCommand}" />
+                        <Button Classes="small ghost" Content="{l:T Connect.Remove}" Command="{Binding RemoveCommand}" />
                       </StackPanel>
                     </Grid>
                   </Border>
@@ -192,8 +180,8 @@
               </ItemsControl.ItemTemplate>
             </ItemsControl>
 
-            <StackPanel Spacing="3" Margin="0,10,0,0">
-              <TextBlock Classes="label" TextWrapping="Wrap" Text="{l:T Connect.Fingerprint}" />
+            <StackPanel Spacing="3" Margin="0,12,0,0">
+              <TextBlock Classes="section" TextWrapping="Wrap" Text="{l:T Connect.Fingerprint}" />
               <TextBlock Classes="mono" FontSize="12" Text="{Binding ThisDeviceFingerprint}" Foreground="{DynamicResource MutedBrush}" />
             </StackPanel>
           </StackPanel>
@@ -206,30 +194,39 @@
           <!-- Room for the scroll bar, which floats over the content. -->
           <StackPanel Spacing="8" Margin="0,0,14,0">
             <Grid ColumnDefinitions="*,Auto">
-              <TextBlock Classes="h2" Text="{l:T Main.HostTitle}" VerticalAlignment="Center" />
+              <StackPanel Orientation="Horizontal" Spacing="12">
+                <Border Classes="iconTile">
+                  <Path Classes="icon" Data="{StaticResource IconMonitor}" />
+                </Border>
+                <TextBlock Classes="h2" Text="{l:T Main.HostTitle}" VerticalAlignment="Center" />
+              </StackPanel>
               <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
                 <Button Name="StartHostingButton" Classes="accent" Content="{l:T Host.Start}" Command="{Binding StartCommand}" IsVisible="{Binding IsStopped}" />
                 <ProgressBar IsIndeterminate="True" Width="80" IsVisible="{Binding IsStarting}" VerticalAlignment="Center" />
-                <Button Name="StopHostingButton" Content="{l:T Host.Stop}" Command="{Binding StopCommand}" IsVisible="{Binding IsHosting}" />
+                <Button Name="StopHostingButton" Classes="danger" Content="{l:T Host.Stop}" Command="{Binding StopCommand}" IsVisible="{Binding IsHosting}" />
               </StackPanel>
             </Grid>
-            <TextBlock Classes="muted" TextWrapping="Wrap" Text="{Binding StateText}" />
+            <Grid ColumnDefinitions="Auto,*" Margin="0,2,0,0">
+              <!-- Green while others can connect. -->
+              <Ellipse Width="8" Height="8" Margin="1,4,8,0" VerticalAlignment="Top" Fill="{DynamicResource OkBrush}" IsVisible="{Binding IsHosting}" />
+              <TextBlock Grid.Column="1" Classes="muted" TextWrapping="Wrap" Text="{Binding StateText}" />
+            </Grid>
 
             <!-- Tailscale: how people outside the LAN get here, with no server of ours -->
-            <Border Name="HostTailscaleStatus" Classes="subtle" IsVisible="{Binding Tailscale.IsPresent}">
+            <Border Name="HostTailscaleStatus" Classes="ok" IsVisible="{Binding Tailscale.IsPresent}">
               <StackPanel Spacing="2">
                 <TextBlock Foreground="{DynamicResource OkBrush}" FontWeight="SemiBold" Text="{Binding Tailscale.StatusText}" />
                 <TextBlock Classes="muted" TextWrapping="Wrap"
                            Text="{l:T Host.TailscaleStatus}" />
               </StackPanel>
             </Border>
-            <Border Name="HostTailscaleAdvice" Classes="subtle" Background="{DynamicResource BadgeBrush}"
+            <Border Name="HostTailscaleAdvice" Classes="tint"
                     IsVisible="{Binding ShowTailscaleAdvice}">
               <StackPanel Spacing="6">
                 <TextBlock FontWeight="SemiBold" Text="{l:T Host.TailscaleAdviceTitle}" />
                 <TextBlock Classes="muted" TextWrapping="Wrap"
                            Text="{l:T Host.TailscaleAdvice}" />
-                <Button Classes="small" Content="{l:T Main.DownloadTailscale}" Command="{Binding Tailscale.DownloadCommand}" HorizontalAlignment="Left" />
+                <Button Classes="small onTint" Content="{l:T Main.DownloadTailscale}" Command="{Binding Tailscale.DownloadCommand}" HorizontalAlignment="Left" />
               </StackPanel>
             </Border>
 
@@ -270,13 +267,13 @@
 
             <!-- Hosting: every way in, then the code -->
             <StackPanel Spacing="4" IsVisible="{Binding IsHosting}">
-              <TextBlock Classes="label" Text="{l:T Host.AddressesTitle}" Margin="0,6,0,0" />
+              <TextBlock Classes="section" Text="{l:T Host.AddressesTitle}" Margin="0,6,0,2" />
               <ItemsControl Name="ConnectOptionsList" ItemsSource="{Binding ConnectOptions}">
                 <ItemsControl.ItemTemplate>
                   <DataTemplate x:DataType="vm:ConnectOption">
                     <Grid ColumnDefinitions="88,*" Margin="0,0,0,6">
                       <Border Classes="badge" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="0,3,0,0">
-                        <TextBlock Text="{Binding Kind}" FontSize="11" />
+                        <TextBlock Text="{Binding Kind}" />
                       </Border>
                       <StackPanel Grid.Column="1" Spacing="1">
                         <SelectableTextBlock Text="{Binding Address}" FontFamily="{DynamicResource MonoFont}" FontSize="16" />
@@ -297,20 +294,22 @@
               <TextBlock Classes="errorText" TextWrapping="Wrap" Text="{Binding SignalText}" IsVisible="{Binding SignalProblem}" />
               <TextBlock Classes="errorText" TextWrapping="Wrap" IsVisible="{Binding RestartNeeded}"
                          Text="{l:T Host.RestartNeeded}" />
-              <TextBlock Classes="label" Text="{l:T Main.OneTimeCode}" Margin="0,10,0,0" />
-              <Border Classes="subtle" Padding="16,10" HorizontalAlignment="Left">
-                <SelectableTextBlock Name="CodeText" Text="{Binding CodeDisplay}" FontFamily="{DynamicResource MonoFont}"
-                                     FontSize="46" FontWeight="Bold" LetterSpacing="4" />
+              <TextBlock Classes="section" Text="{l:T Main.OneTimeCode}" Margin="0,10,0,2" />
+              <Border Classes="tint" Padding="18,12,14,12">
+                <Grid ColumnDefinitions="*,Auto">
+                  <SelectableTextBlock Name="CodeText" Text="{Binding CodeDisplay}" FontFamily="{DynamicResource MonoFont}"
+                                       FontSize="42" FontWeight="Bold" LetterSpacing="3" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource AccentStrongBrush}" />
+                  <Button Grid.Column="1" Name="RotateButton" Classes="small onTint" Content="{l:T Host.RotateCode}" Command="{Binding RotateCodeCommand}"
+                          VerticalAlignment="Center" Margin="10,0,0,0" />
+                </Grid>
               </Border>
-              <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,4,0,0">
-                <Button Name="RotateButton" Classes="small" Content="{l:T Host.RotateCode}" Command="{Binding RotateCodeCommand}" />
-                <TextBlock Classes="muted" VerticalAlignment="Center" Text="{l:T Host.ConfirmNote}" />
-              </StackPanel>
+              <TextBlock Classes="muted" Margin="2,2,0,0" Text="{l:T Host.ConfirmNote}" />
               <Border Classes="warn" IsVisible="{Binding !InputAvailable}" Margin="0,6,0,0">
                 <StackPanel Spacing="4">
                   <TextBlock Foreground="{DynamicResource WarnBrush}" TextWrapping="Wrap" FontSize="12.5"
                              Text="{l:T Host.NoAccessibility}" />
-                  <Button Classes="small" Content="{l:T Host.HowToGrant}" Command="{Binding ShowPermissionGuideCommand}" />
+                  <Button Classes="small onTint" Content="{l:T Host.HowToGrant}" Command="{Binding ShowPermissionGuideCommand}" HorizontalAlignment="Left" />
                 </StackPanel>
               </Border>
             </StackPanel>
@@ -324,24 +323,27 @@
             <TextBlock Classes="muted" Text="{Binding Notice}" IsVisible="{Binding Notice, Converter={x:Static ObjectConverters.IsNotNull}}" />
 
             <Grid ColumnDefinitions="*,Auto" Margin="0,12,0,0" IsVisible="{Binding IsHosting}">
-              <TextBlock Classes="label" Text="{l:T Host.PairedDevices}" VerticalAlignment="Center" />
-              <Button Grid.Column="1" Classes="small" Content="{l:T Host.Refresh}" Command="{Binding RefreshPairingsCommand}" />
+              <TextBlock Classes="section" Text="{l:T Host.PairedDevices}" VerticalAlignment="Center" />
+              <Button Grid.Column="1" Classes="small ghost" Content="{l:T Host.Refresh}" Command="{Binding RefreshPairingsCommand}" />
             </Grid>
             <ItemsControl Name="PairedList" ItemsSource="{Binding Paired}" IsVisible="{Binding IsHosting}">
               <ItemsControl.ItemTemplate>
                 <DataTemplate x:DataType="vm:PairedDeviceViewModel">
-                  <Border Classes="subtle" Margin="0,0,0,6">
-                    <Grid ColumnDefinitions="*,Auto">
-                      <StackPanel Spacing="2">
-                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                  <Border Classes="item" Margin="0,0,0,6">
+                    <Grid ColumnDefinitions="Auto,*,Auto">
+                      <Border Classes="iconTile small" Margin="0,0,10,0" VerticalAlignment="Top">
+                        <Path Classes="icon" Data="{StaticResource IconMonitor}" />
+                      </Border>
+                      <StackPanel Grid.Column="1" Spacing="2">
+                        <TextBlock Classes="itemTitle" Text="{Binding Name}" />
                         <TextBlock Classes="muted" Text="{Binding PermsText, StringFormat={l:T Host.Perms}}" />
                         <TextBlock Classes="muted" Text="{Binding ConsentText}" />
                         <TextBlock Classes="muted" FontFamily="{DynamicResource MonoFont}" Text="{Binding Fingerprint, StringFormat={l:T Host.Fingerprint}}" />
                         <TextBlock Classes="muted" Text="{Binding LastSeen, StringFormat={l:T Main.LastConnected}}" />
                       </StackPanel>
-                      <StackPanel Grid.Column="1" Spacing="6" VerticalAlignment="Center">
-                        <Button Classes="small" Content="{l:T Host.Revoke}" Command="{Binding RevokeCommand}" />
-                        <Button Classes="small" Content="{l:T Host.RequireConsent}" Command="{Binding RequireConsentCommand}" IsVisible="{Binding Unattended}" />
+                      <StackPanel Grid.Column="2" Spacing="6" VerticalAlignment="Center" Margin="8,0,0,0">
+                        <Button Classes="small danger" Content="{l:T Host.Revoke}" Command="{Binding RevokeCommand}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                        <Button Classes="small onTint" Content="{l:T Host.RequireConsent}" Command="{Binding RequireConsentCommand}" IsVisible="{Binding Unattended}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
                       </StackPanel>
                     </Grid>
                   </Border>
@@ -352,5 +354,42 @@
         </ScrollViewer>
       </Border>
     </Grid>
+
+    <!-- 通用设置。不需要服务器：局域网直接连接，跨网络推荐 Tailscale；自建信令服务器收在“高级”里 -->
+    <Border Grid.Row="2" Classes="card" Padding="16,12" Margin="0,16,0,0">
+      <StackPanel Spacing="6">
+        <StackPanel Orientation="Horizontal" Spacing="14"
+                    DataContext="{Binding LoginItem}" x:DataType="vm:LoginItemViewModel">
+          <CheckBox Name="AnnounceOnLanBox" Content="{l:T Main.AnnounceOnLan}"
+                    IsChecked="{Binding $parent[Window].((vm:MainViewModel)DataContext).Settings.AnnounceOnLan}"
+                    ToolTip.Tip="{l:T Main.AnnounceOnLanTip}" />
+          <CheckBox Name="LoginItemBox" Content="{l:T Main.LoginItem}" IsChecked="{Binding IsEnabled}" IsEnabled="{Binding IsSupported}" />
+          <TextBlock Classes="muted" Name="LoginItemStatus" Text="{Binding StatusText}" VerticalAlignment="Center" />
+          <Button Classes="small" Content="{l:T Main.OpenLoginItems}" Command="{Binding OpenSettingsCommand}" IsVisible="{Binding NeedsApproval}" />
+          <TextBlock Classes="errorText" Text="{Binding Error}" VerticalAlignment="Center"
+                     IsVisible="{Binding Error, Converter={x:Static ObjectConverters.IsNotNull}}" />
+        </StackPanel>
+        <TextBlock Classes="muted" TextWrapping="Wrap" Text="{l:T Main.MenuBarNote}" />
+        <Expander Name="AdvancedExpander" Margin="0,2,0,0" HorizontalAlignment="Stretch"
+                  DataContext="{Binding Settings}" x:DataType="vm:SettingsViewModel">
+          <Expander.Header>
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <TextBlock Classes="label" Text="{l:T Main.Advanced}" VerticalAlignment="Center" />
+              <TextBlock Classes="muted" Name="ServerStatusText" Text="{Binding ServerStatus}" VerticalAlignment="Center" />
+            </StackPanel>
+          </Expander.Header>
+          <StackPanel Spacing="6">
+            <TextBlock Classes="muted" TextWrapping="Wrap"
+                       Text="{l:T Main.AdvancedHelp}" />
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <TextBlock Classes="label" Text="{l:T Main.SignalServer}" VerticalAlignment="Center" />
+              <TextBox Name="ServerBox" Text="{Binding ServerInput}" Width="320" PlaceholderText="wss://signal.example.com" />
+              <Button Name="SaveServerButton" Classes="small" Content="{l:T Main.Save}" Command="{Binding SaveCommand}" />
+            </StackPanel>
+            <TextBlock Classes="errorText" Text="{Binding ServerHint}" IsVisible="{Binding ServerHint, Converter={x:Static ObjectConverters.IsNotNull}}" />
+          </StackPanel>
+        </Expander>
+      </StackPanel>
+    </Border>
   </Grid>
 </Window>

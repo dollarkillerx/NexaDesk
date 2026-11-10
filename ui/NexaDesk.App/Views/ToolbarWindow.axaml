@@ -6,25 +6,29 @@
         x:Class="NexaDesk.Views.ToolbarWindow"
         x:DataType="vm:SessionViewModel"
         Title="{l:T Toolbar.Title}"
-        Width="940" SizeToContent="Height" CanResize="False"
+        Width="980" SizeToContent="Height" CanResize="False"
         Topmost="True" ShowInTaskbar="False" ShowActivated="False"
         WindowDecorations="None"
         Background="{DynamicResource ToolbarBrush}">
-  <Border BorderBrush="{DynamicResource CardBorderBrush}" BorderThickness="1" Padding="12,8">
+  <Border BorderBrush="{DynamicResource CardBorderBrush}" BorderThickness="1" Padding="14,10,12,9">
     <Grid RowDefinitions="Auto,Auto,Auto,Auto">
       <Grid ColumnDefinitions="Auto,*,Auto">
         <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+          <Ellipse Width="8" Height="8" VerticalAlignment="Center" Fill="{DynamicResource OkBrush}" IsVisible="{Binding !IsReconnecting}" />
+          <Ellipse Width="8" Height="8" VerticalAlignment="Center" Fill="{DynamicResource WarnBrush}" IsVisible="{Binding IsReconnecting}" />
           <TextBlock Text="{Binding HostName}" FontWeight="SemiBold" VerticalAlignment="Center" MaxWidth="160"
                      TextTrimming="CharacterEllipsis" />
-          <TextBlock Classes="label" Text="{l:T Toolbar.Mode}" VerticalAlignment="Center" />
-          <StackPanel Orientation="Horizontal" Spacing="2">
-            <RadioButton Name="ModeOffice" GroupName="mode" Content="{l:T Texts.Mode.Office}" IsChecked="{Binding IsOffice}" />
-            <RadioButton Name="ModeBalanced" GroupName="mode" Content="{l:T Texts.Mode.Balanced}" IsChecked="{Binding IsBalanced}" />
-            <RadioButton Name="ModeGame" GroupName="mode" Content="{l:T Texts.Mode.Game}" IsChecked="{Binding IsGame}" />
-          </StackPanel>
+          <TextBlock Classes="label" Text="{l:T Toolbar.Mode}" VerticalAlignment="Center" Margin="6,0,0,0" />
+          <Border Classes="segments">
+            <StackPanel Orientation="Horizontal">
+              <RadioButton Name="ModeOffice" Classes="segment" GroupName="mode" Content="{l:T Texts.Mode.Office}" IsChecked="{Binding IsOffice}" />
+              <RadioButton Name="ModeBalanced" Classes="segment" GroupName="mode" Content="{l:T Texts.Mode.Balanced}" IsChecked="{Binding IsBalanced}" />
+              <RadioButton Name="ModeGame" Classes="segment" GroupName="mode" Content="{l:T Texts.Mode.Game}" IsChecked="{Binding IsGame}" />
+            </StackPanel>
+          </Border>
           <TextBlock Classes="label" Text="{l:T Toolbar.Display}" VerticalAlignment="Center" IsVisible="{Binding HasManyDisplays}" />
           <ComboBox Name="DisplayPicker" ItemsSource="{Binding Displays}" SelectedItem="{Binding SelectedDisplay}"
-                    IsVisible="{Binding HasManyDisplays}" MaxWidth="260" VerticalAlignment="Center">
+                    IsVisible="{Binding HasManyDisplays}" MaxWidth="210" VerticalAlignment="Center">
             <ComboBox.ItemTemplate>
               <DataTemplate x:DataType="vm:DisplayChoice">
                 <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" />
@@ -40,15 +44,14 @@
           <Button Name="SendFilesButton" Classes="small" Content="{l:T Toolbar.SendFiles}" Click="OnSendFiles"
                   IsVisible="{Binding CanSendFiles}" ToolTip.Tip="{l:T Toolbar.SendFilesTip}" />
           <ToggleButton Name="HudButton" Classes="small" Content="HUD" IsChecked="{Binding IsHudVisible}"
-                        Padding="10,3" FontSize="12.5" ToolTip.Tip="{l:T Toolbar.HudTip}" />
+                        ToolTip.Tip="{l:T Toolbar.HudTip}" />
           <Button Name="DiagnosticsButton" Classes="small" Content="{l:T Toolbar.Diagnostics}" Click="OnDiagnostics" />
           <Button Name="FullScreenButton" Classes="small" Content="{l:T Toolbar.FullScreen}" Click="OnFullScreen" />
-          <Button Name="HideButton" Classes="small" Content="{l:T Toolbar.Hide}" Command="{Binding ToggleToolbarCommand}" />
-          <Button Name="ToolbarDisconnectButton" Classes="small" Content="{l:T Toolbar.Disconnect}" Command="{Binding DisconnectCommand}"
-                  Foreground="{DynamicResource ErrorBrush}" />
+          <Button Name="HideButton" Classes="small ghost" Content="{l:T Toolbar.Hide}" Command="{Binding ToggleToolbarCommand}" />
+          <Button Name="ToolbarDisconnectButton" Classes="small danger" Content="{l:T Toolbar.Disconnect}" Command="{Binding DisconnectCommand}" />
         </StackPanel>
       </Grid>
-      <Grid Grid.Row="1" ColumnDefinitions="*,Auto,Auto" Margin="0,6,0,0">
+      <Grid Grid.Row="1" ColumnDefinitions="*,Auto,Auto" Margin="0,8,0,0">
         <TextBlock Name="CaptureText" Classes="muted" Text="{Binding CaptureText}" TextTrimming="CharacterEllipsis"
                    TextWrapping="NoWrap" IsVisible="{Binding !IsReconnecting}" />
         <TextBlock Name="ReconnectText" Text="{Binding ReconnectText}" Foreground="{DynamicResource WarnBrush}"
@@ -61,7 +64,7 @@
       </Grid>
       <TextBlock Grid.Row="2" Name="WarningText" Text="{Binding Warning}" Foreground="{DynamicResource WarnBrush}"
                  TextWrapping="Wrap" FontSize="12" Margin="0,4,0,0" IsVisible="{Binding HasWarning}" />
-      <Border Grid.Row="3" Name="TransferPanel" Classes="subtle" Margin="0,8,0,0" IsVisible="{Binding Transfers.HasItems}">
+      <Border Grid.Row="3" Name="TransferPanel" BorderBrush="{DynamicResource CardBorderBrush}" BorderThickness="1" CornerRadius="10" Padding="12,8" Margin="0,8,0,0" IsVisible="{Binding Transfers.HasItems}">
         <views:TransferListView DataContext="{Binding Transfers}" />
       </Border>
     </Grid>

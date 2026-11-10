@@ -10,8 +10,23 @@
         Topmost="True" ShowInTaskbar="False" ShowActivated="False"
         WindowDecorations="None"
         Background="{DynamicResource BannerBrush}">
+  <Window.Styles>
+    <Style Selector="Button.onBanner">
+      <Setter Property="Background" Value="White" />
+      <Setter Property="Foreground" Value="#9A3412" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+    <Style Selector="Button.onBanner:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="#FFF1E8" />
+      <Setter Property="Foreground" Value="#9A3412" />
+    </Style>
+    <Style Selector="Button.onBanner:pressed /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="#FFE2D1" />
+      <Setter Property="Foreground" Value="#9A3412" />
+    </Style>
+  </Window.Styles>
   <StackPanel>
-    <Border Padding="18,0,10,0" Height="64">
+    <Border Padding="18,0,12,0" Height="64">
       <Grid ColumnDefinitions="Auto,*,Auto,Auto" VerticalAlignment="Center">
         <Ellipse Width="12" Height="12" Fill="White" VerticalAlignment="Center" Margin="0,0,12,0" />
         <StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center">
@@ -25,8 +40,7 @@
         </StackPanel>
         <TextBlock Grid.Column="2" Text="{Binding DurationText}" Foreground="White" FontFamily="{DynamicResource MonoFont}"
                    VerticalAlignment="Center" Margin="12,0,12,0" />
-        <Button Grid.Column="3" Name="BannerDisconnectButton" Content="{l:T Banner.Disconnect}" Command="{Binding DisconnectCommand}"
-                Background="White" Foreground="#9A3412" FontWeight="SemiBold" MinWidth="80" HorizontalContentAlignment="Center" />
+        <Button Grid.Column="3" Name="BannerDisconnectButton" Classes="onBanner wide" Content="{l:T Banner.Disconnect}" Command="{Binding DisconnectCommand}" />
       </Grid>
     </Border>
     <!-- Only with the file permission: drop files here to send them to the viewer (§3.1 stream 4). -->
