@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using Avalonia.Input;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using NexaDesk.Localization;
 using NexaDesk.Proto;
 using NexaDesk.Services;
 
@@ -21,18 +22,18 @@ public sealed partial class KeyRuleViewModel(KeyboardSettingsViewModel owner, Ke
     [ObservableProperty] private bool _isEnabled = rule.Enabled;
 
     public string When => Rule.When;
-    public string Then => string.Join("，再 ", Rule.Then);
+    public string Then => string.Join(L.Get("Keyboard.ThenSeparator"), Rule.Then);
     public bool IsUser => !Rule.Builtin;
-    public string Source => Rule.Builtin ? "内置" : "自定义";
+    public string Source => Rule.Builtin ? L.Get("Keyboard.Builtin") : L.Get("Keyboard.Custom");
     public string Notes
     {
         get
         {
             var parts = new List<string>();
-            if (Rule.Ctx == "terminal") parts.Add("仅终端");
-            else if (Rule.Ctx == "ide") parts.Add("仅 IDE");
-            if (Rule.Tag == "paste") parts.Add("粘贴，等剪贴板同步");
-            if (!string.IsNullOrEmpty(Rule.Hold)) parts.Add($"按住期间保持 {Rule.Hold}");
+            if (Rule.Ctx == "terminal") parts.Add(L.Get("Keyboard.TerminalOnly"));
+            else if (Rule.Ctx == "ide") parts.Add(L.Get("Keyboard.IdeOnly"));
+            if (Rule.Tag == "paste") parts.Add(L.Get("Keyboard.PasteNote"));
+            if (!string.IsNullOrEmpty(Rule.Hold)) parts.Add(L.Format("Keyboard.HoldNote", Rule.Hold));
             return string.Join(" · ", parts);
         }
     }
@@ -57,8 +58,8 @@ public sealed partial class KeyboardSettingsViewModel : ObservableObject
 
     public IReadOnlyList<KeyTarget> Targets { get; } =
     [
-        new(RemoteOs.Windows, "本机 Mac → Windows"),
-        new(RemoteOs.Macos, "本机 Mac → Mac"),
+        new(RemoteOs.Windows, L.Get("Keyboard.TargetWindows")),
+        new(RemoteOs.Macos, L.Get("Keyboard.TargetMac")),
     ];
 
     public ObservableCollection<KeyRuleViewModel> Rules { get; } = new();
@@ -87,7 +88,7 @@ public sealed partial class KeyboardSettingsViewModel : ObservableObject
 
     [ObservableProperty] private string _previewChord = "";
     [ObservableProperty] private bool _previewInTerminal;
-    [ObservableProperty] private string _previewText = "点一下下面的框，然后按一个组合键";
+    [ObservableProperty] private string _previewText = L.Get("Keyboard.PreviewPrompt");
     [ObservableProperty] private string _previewDetail = "";
     [ObservableProperty] private bool _previewIsError;
 
@@ -111,7 +112,8 @@ public sealed partial class KeyboardSettingsViewModel : ObservableObject
         var view = _keymap.Rules(Target.Os);
         foreach (var r in view.Rules) Rules.Add(new KeyRuleViewModel(this, r));
         _loading = false;
-        Error = string.IsNullOrEmpty(view.Error) ? null : view.Error;
+        var error = Messages.KeymapError(view);
+        Error = string.IsNullOrEmpty(error) ? null : error;
         IsDirty = false;
         RefreshPreview();
     }
@@ -145,7 +147,7 @@ public sealed partial class KeyboardSettingsViewModel : ObservableObject
         var check = _keymap.Preview(Target.Os, rule.When, NewTerminalOnly ? KeyContext.Terminal : KeyContext.Default, trial);
         if (check.Error.Length > 0)
         {
-            Error = $"这条规则无法使用：{check.Error}";
+            Error = L.Format("Keyboard.RuleUnusable", check.Error);
             return;
         }
         Error = null;
@@ -163,12 +165,12 @@ public sealed partial class KeyboardSettingsViewModel : ObservableObject
         var error = _keymap.Save(Target.Os, Current());
         if (error != null)
         {
-            Error = $"没有保存：{error}";
+            Error = L.Format("Keyboard.NotSaved", error);
             return;
         }
         Error = null;
         IsDirty = false;
-        Status = "已保存到 keymap.toml。之后开始的会话会使用这些规则。";
+        Status = L.Get("Keyboard.Saved");
     }
 
     [RelayCommand(CanExecute = nameof(IsDirty))]
@@ -192,14 +194,14 @@ public sealed partial class KeyboardSettingsViewModel : ObservableObject
         PreviewIsError = p.Error.Length > 0;
         if (PreviewIsError)
         {
-            PreviewText = $"按下 {PreviewChord}：{p.Error}";
+            PreviewText = L.Format("Keyboard.PreviewError", PreviewChord, p.Error);
             PreviewDetail = "";
             return;
         }
-        var sent = p.Sent.Count == 0 ? "（不发送任何键）" : string.Join("，再 ", p.Sent);
-        PreviewText = $"按下 {PreviewChord} → 发送 {sent}";
+        var sent = p.Sent.Count == 0 ? L.Get("Keyboard.SendsNothing") : string.Join(L.Get("Keyboard.ThenSeparator"), p.Sent);
+        PreviewText = L.Format("Keyboard.PreviewSends", PreviewChord, sent);
         var keys = string.Join(" ", p.Events.Select(e => (e.Down ? "↓" : "↑") + e.Key));
-        PreviewDetail = p.Paste ? $"{keys}  · 粘贴：会等剪贴板同步完再发出" : keys;
+        PreviewDetail = p.Paste ? L.Format("Keyboard.PreviewPaste", keys) : keys;
     }
 }
 

@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using NexaDesk.Localization;
 using NexaDesk.Native;
 using NexaDesk.Proto;
 using NexaDesk.Services;
@@ -44,7 +45,7 @@ public sealed partial class SessionViewModel : ObservableObject
     public bool CanSendFiles => Perms.File;
     public string Title => $"{HostName} — NexaDesk";
     public string PermsText => Texts.Permissions(Perms);
-    public string HostKeyHint => "按 ⌃⌥⌘G 释放键盘并显示工具条";
+    public string HostKeyHint => L.Get("Session.HostKeyHint");
     public bool CanControl => Perms.Input;
     /// <summary>The host shared its sound: the toolbar offers mute.</summary>
     public bool CanHearAudio => Perms.Audio;
@@ -73,7 +74,7 @@ public sealed partial class SessionViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(CaptureText))]
     private bool _isSuspended;
 
-    [ObservableProperty] private string _streamText = "等待画面…";
+    [ObservableProperty] private string _streamText = L.Get("Session.WaitingForVideo");
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasWarning))]
     private string? _warning;
@@ -110,15 +111,15 @@ public sealed partial class SessionViewModel : ObservableObject
         _now = now ?? (() => DateTimeOffset.Now);
         Diagnostics = new DiagnosticsViewModel(address);
         Transfers = new TransferListViewModel(new SessionTransfers(session));
-        _clipboardText = Perms.Clipboard ? "剪贴板：双向同步" : "剪贴板：对方未允许";
+        _clipboardText = Perms.Clipboard ? L.Get("Session.ClipboardSync") : L.Get("Session.ClipboardDenied");
         Displays = (connected.Displays ?? []).Select(DisplayChoice.Of).ToList();
         _displayFromHost = true;
         SelectedDisplay = Displays.FirstOrDefault();
         _displayFromHost = false;
     }
 
-    public string AudioText => !Perms.Audio ? "声音：对方未共享" : IsMuted ? "声音：已静音" : "声音：播放中";
-    public string MuteLabel => IsMuted ? "取消静音" : "静音";
+    public string AudioText => !Perms.Audio ? L.Get("Session.AudioNotShared") : IsMuted ? L.Get("Session.AudioMuted") : L.Get("Session.AudioPlaying");
+    public string MuteLabel => IsMuted ? L.Get("Session.Unmute") : L.Get("Session.Mute");
 
     [RelayCommand]
     private void ToggleMute() => IsMuted = !IsMuted;
@@ -143,9 +144,9 @@ public sealed partial class SessionViewModel : ObservableObject
     public string ModeText => Texts.Mode(Mode);
 
     public string CaptureText => IsReconnecting
-        ? "已释放键盘：重新连上后自动恢复"
+        ? L.Get("Session.CaptureReconnecting")
         : IsSuspended && Perms.Input
-            ? "已释放键盘：点击画面或“继续控制”恢复"
+            ? L.Get("Session.CaptureSuspended")
             : Texts.Capture(Capture, Perms.Input);
 
     public bool CaptureNeedsPermission => Perms.Input && Capture is CaptureState.Degraded or CaptureState.Unavailable;
@@ -272,11 +273,11 @@ public sealed partial class SessionViewModel : ObservableObject
                 break;
             case PasteGateEvent g:
                 ClipboardText = g.TimedOut
-                    ? $"剪贴板：粘贴等待 {g.WaitedMs} ms 后超时，可能粘贴了旧内容"
-                    : $"剪贴板：粘贴前等待了 {g.WaitedMs} ms";
+                    ? L.Format("Session.PasteTimedOut", g.WaitedMs)
+                    : L.Format("Session.PasteWaited", g.WaitedMs);
                 break;
             case ClipboardNoticeEvent n:
-                ClipboardText = $"剪贴板：{n.Text}";
+                ClipboardText = L.Format("Session.ClipboardNotice", Messages.Clipboard(n));
                 break;
             case StatsEvent s:
                 var at = _now();
@@ -290,7 +291,7 @@ public sealed partial class SessionViewModel : ObservableObject
                 OnHostKey();
                 break;
             case WarningEvent w:
-                Warning = w.Text;
+                Warning = Messages.Warning(w);
                 break;
             case ReconnectingEvent r:
                 IsReconnecting = true;
@@ -343,7 +344,7 @@ public sealed partial class DiagnosticsViewModel(string address) : ObservableObj
     /// </summary>
     [ObservableProperty]
     private string _pathText = Texts.NormalizeDeviceId(address) != null || address.StartsWith("ID ")
-        ? "正在建立…"
+        ? L.Get("Diagnostics.Establishing")
         : Texts.PathOf(address);
 
     [ObservableProperty] private string _rttText = "—";
@@ -355,10 +356,10 @@ public sealed partial class DiagnosticsViewModel(string address) : ObservableObj
     [ObservableProperty] private string _pasteText = "—";
     [ObservableProperty] private string _audioText = "—";
 
-    public void OnReconnecting() => PathText = "连接中断，正在重新连接…";
+    public void OnReconnecting() => PathText = L.Get("Diagnostics.Reconnecting");
 
     public void OnStream(StreamChangedEvent s) =>
-        StreamText = $"{Texts.Codec(s.Codec)} · {s.Width}×{s.Height} · 目标 {s.Fps} fps · {Texts.Mode(s.Mode)}模式";
+        StreamText = L.Format("Diagnostics.StreamInfo", Texts.Codec(s.Codec), s.Width, s.Height, s.Fps, Texts.Mode(s.Mode));
 
     public void Update(StreamStats s, DateTimeOffset now)
     {
@@ -366,12 +367,12 @@ public sealed partial class DiagnosticsViewModel(string address) : ObservableObj
         if (s.Path != PathKind.Unknown)
         {
             var path = Texts.Path(s.Path, s.PathDetail);
-            PathText = s.PathRttUs == 0 ? path : $"{path} · 探测 {s.PathRttUs / 1000.0:F0} ms";
+            PathText = s.PathRttUs == 0 ? path : L.Format("Diagnostics.PathProbe", path, s.PathRttUs / 1000.0);
         }
-        RecoveryText = $"FEC 恢复 {s.FecRecovered} 帧 · 解码错误 {s.DecodeErrors}";
-        PasteText = $"{s.GatePastes} 次粘贴 · {s.GateHeld} 次等待剪贴板 · {s.GateTimeouts} 次超时";
+        RecoveryText = L.Format("Diagnostics.RecoveryInfo", s.FecRecovered, s.DecodeErrors);
+        PasteText = L.Format("Diagnostics.PasteInfo", s.GatePastes, s.GateHeld, s.GateTimeouts);
         if (s.AudioPlayed > 0 || s.AudioConcealed > 0)
-            AudioText = $"缓冲 {s.AudioBufferUs / 1000.0:F0} ms · 补帧 {s.AudioConcealed} / {s.AudioPlayed + s.AudioConcealed}";
+            AudioText = L.Format("Diagnostics.AudioInfo", s.AudioBufferUs / 1000.0, s.AudioConcealed, s.AudioPlayed + s.AudioConcealed);
         var last = _last;
         var lastAt = _lastAt;
         _last = s;
@@ -394,7 +395,7 @@ public sealed partial class DiagnosticsViewModel(string address) : ObservableObj
 public sealed record DisplayChoice(uint Id, string Label)
 {
     public static DisplayChoice Of(DisplayInfo d) =>
-        new(d.Id, string.IsNullOrWhiteSpace(d.Name) ? $"显示器 {d.Id + 1}" : $"{d.Name} · {d.Width}×{d.Height}");
+        new(d.Id, string.IsNullOrWhiteSpace(d.Name) ? L.Format("Session.Display", d.Id + 1) : $"{d.Name} · {d.Width}×{d.Height}");
 
     public override string ToString() => Label;
 }

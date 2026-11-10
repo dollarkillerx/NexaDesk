@@ -1,0 +1,12 @@
+{
+  "Permissions.WindowTitle": "NexaDesk — Permissions",
+  "Permissions.Request": "Request access",
+  "Permissions.OpenScreenRecording": "Open Screen Recording settings",
+  "Permissions.OpenAccessibility": "Open Accessibility settings",
+  "Permissions.Steps": "Steps",
+  "Permissions.Step1": "1. Click a button above to open the matching page in System Settings → Privacy & Security.",
+  "Permissions.Step2": "2. Find NexaDesk in the list and turn it on. If it is not there, click “+” and add NexaDesk.app from Applications.",
+  "Permissions.Step3": "3. Come back here and click “Check again”.",
+  "Permissions.Recheck": "Check again",
+  "Permissions.Done": "Done"
+}

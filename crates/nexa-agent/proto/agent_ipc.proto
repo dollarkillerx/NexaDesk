@@ -118,7 +118,8 @@ message PairedDevice {
 message Pairings { repeated PairedDevice devices = 1; }
 
 enum NoticeKind { NOTICE_WARNING = 0; NOTICE_CONNECTION_FAILED = 1; NOTICE_CLIPBOARD = 2; }
-message Notice { NoticeKind kind = 1; string text = 2; }
+// text is English. For CONNECTION_FAILED, remote and reason let the UI word it itself.
+message Notice { NoticeKind kind = 1; string text = 2; string remote = 3; string reason = 4; }
 // A command that could not be carried out.
 message Refused { string command = 1; string reason = 2; }
 

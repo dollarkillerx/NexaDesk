@@ -1,0 +1,4 @@
+/* macOS shows these in its permission prompts. Copied into the bundle by scripts/package-macos.sh. */
+"NSScreenCaptureUsageDescription" = "「このMacの操作を許可」をオンにして接続を承認したとき、このMacの画面を相手に送るために画面収録を使用します。";
+"NSAccessibilityUsageDescription" = "ほかのコンピュータを操作するときにすべてのキー（Cmd+Tab を含む）を取得し、操作を許可したときに相手のキーボードとマウスの操作をこのMacで実行するために、アクセシビリティを使用します。";
+"NSLocalNetworkUsageDescription" = "LAN 内のほかのコンピュータを見つけて接続したり、その接続を受け付けたりするために、ローカルネットワークを使用します。";

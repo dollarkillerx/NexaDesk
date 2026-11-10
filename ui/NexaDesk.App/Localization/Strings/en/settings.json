@@ -1,0 +1,6 @@
+{
+  "Settings.Language": "Language",
+  "Settings.LanguageSystem": "Follow system",
+  "Settings.LanguageRestart": "Takes effect after restarting NexaDesk",
+  "Settings.ThisDevice": "This Mac: {0}"
+}

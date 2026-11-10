@@ -294,8 +294,32 @@ pub struct PasteGate {
 
 #[derive(Clone, PartialEq, Message)]
 pub struct ClipboardNotice {
+    /// English, for a UI that does not know `code`.
     #[prost(string, tag = "1")]
     pub text: String,
+    #[prost(enumeration = "ClipboardCode", tag = "2")]
+    pub code: i32,
+    /// The format concerned: "text", "html", "rtf" or "png"; empty if none.
+    #[prost(string, tag = "3")]
+    pub kind: String,
+    /// Bytes, for `TooLarge`.
+    #[prost(uint64, tag = "4")]
+    pub size: u64,
+    /// An error message, for `Unavailable`.
+    #[prost(string, tag = "5")]
+    pub detail: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Enumeration)]
+#[repr(i32)]
+pub enum ClipboardCode {
+    Other = 0,
+    SensitiveKeptLocal = 1,
+    TooLarge = 2,
+    PeerRejected = 3,
+    WriteFailed = 4,
+    FetchFailed = 5,
+    Unavailable = 6,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -511,8 +535,38 @@ pub struct HostKeyPressed {}
 
 #[derive(Clone, PartialEq, Message)]
 pub struct Warning {
+    /// English, for logs and for a UI that does not know `code`.
     #[prost(string, tag = "1")]
     pub text: String,
+    /// What happened, so the UI can say it in its own language.
+    #[prost(enumeration = "WarningCode", tag = "2")]
+    pub code: i32,
+    /// The variable part (an error message), shown as is.
+    #[prost(string, tag = "3")]
+    pub detail: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Enumeration)]
+#[repr(i32)]
+pub enum WarningCode {
+    Other = 0,
+    GameWssRelay = 1,
+    GameDerp = 2,
+    KeymapInvalid = 3,
+    AudioOutput = 4,
+    RememberHost = 5,
+    AudioPlayback = 6,
+    PointerLock = 7,
+}
+
+impl Warning {
+    pub fn new(code: WarningCode, text: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            code: code as i32,
+            detail: detail.into(),
+        }
+    }
 }
 
 /// §4.4 Reconnecting: attempt `attempt` is starting. `Connected` for the same
@@ -688,9 +742,12 @@ pub struct KeymapRequest {
 pub struct KeymapView {
     #[prost(message, repeated, tag = "1")]
     pub rules: Vec<KeymapRule>,
-    /// keymap.toml could not be used; the rules shown are the built-in ones.
+    /// keymap.toml could not be used; the rules shown are the built-in ones. English.
     #[prost(string, tag = "2")]
     pub error: String,
+    /// The reason alone, for a UI that words the rest itself.
+    #[prost(string, tag = "3")]
+    pub file_error: String,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -719,6 +776,39 @@ mod tests {
 
     fn hex(b: &[u8]) -> String {
         b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    /// The same golden bytes as ui/NexaDesk.Tests/LocalizationTests.cs.
+    #[test]
+    fn warning_code_matches_the_csharp_golden_bytes() {
+        let e = Event {
+            tag: 0,
+            body: Some(EventBody::Warning(Warning::new(
+                WarningCode::GameWssRelay,
+                "x",
+                "d",
+            ))),
+        };
+        assert_eq!(hex(&e.encode_to_vec()), "5a080a017810011a0164");
+    }
+
+    /// The same golden bytes as ui/NexaDesk.Tests/LocalizationTests.cs.
+    #[test]
+    fn clipboard_code_matches_the_csharp_golden_bytes() {
+        let e = Event {
+            tag: 0,
+            body: Some(EventBody::Clipboard(ClipboardNotice {
+                text: "x".into(),
+                code: ClipboardCode::TooLarge as i32,
+                kind: "png".into(),
+                size: 3 << 20,
+                detail: String::new(),
+            })),
+        };
+        assert_eq!(
+            hex(&e.encode_to_vec()),
+            "3a0f0a017810021a03706e67208080c001"
+        );
     }
 
     /// The same golden bytes as ui/NexaDesk.Tests/TailscaleFirstTests.cs.

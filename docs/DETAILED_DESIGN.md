@@ -1137,6 +1137,31 @@ HudWindow（同上，鼠标穿透）
 - 打包：`PublishAot=true`；`libnexa_client` 作为原生依赖一起发布。
 - 页面：`DevicesView`、`SessionWindow`、`KeyboardSettingsView`、`DiagnosticsView`、`ConsentDialog`。
 
+### 10.5 多语言
+
+界面支持简体中文、English、日本語，以代码和测试为准：
+
+- **文案存放**：`ui/NexaDesk.App/Localization/Strings/<语言>/<区域>.json`，每个文件是一个扁平的 `"区域.名称": "文本"` 对象，作为内嵌资源编进程序集。不用 resx 卫星程序集，NativeAOT 下无需额外处理。C# 用 `L.Get` / `L.Format`（固定文化格式化），XAML 用 `{l:T 键名}`，也可以放在 `StringFormat` 里。
+- **语言选择**：启动时决定一次。优先用设置里的语言；没有设置时，取 macOS 首选语言列表（CoreFoundation `CFLocaleCopyPreferredLanguages`，因为程序开启了固定文化全球化）中第一个受支持的语言。繁体中文也用简体中文，都不支持时用英文。主窗口右上角可切换，重启后生效，不做运行时切换。
+- **缺失兜底**：当前语言缺键时依次退回英文、中文，最后显示键名本身。格式字符串损坏时显示原文，不抛异常。
+- **字体**：中日文共用的汉字码位在两种字体里字形不同，日文界面把 Hiragino Sans 放在最前，中英文保持 PingFang SC。
+- **核心发来的消息**：Rust 端和被控端发给界面的提示带“消息代码”，界面按代码选择当前语言的措辞，原有的文本字段改为英文兜底：
+  - `Warning`：增加 `code` 和 `detail`；
+  - `ClipboardNotice`：增加 `code`、`kind`、`size` 和 `detail`；
+  - `KeymapView`：增加 `file_error`；
+  - 被控端 `Notice`：增加 `remote` 和 `reason`。
+  
+  错误原因等可变部分（来自系统或网络库）按原文显示。
+- **系统权限提示**：macOS 的屏幕录制、辅助功能、本地网络权限说明来自应用包里各语言的 `InfoPlist.strings`（源文件在 `Localization/InfoPlist/`，打包脚本复制），`Info.plist` 本身为英文。
+- **测试**：`LocalizationTests` 检查以下各项：
+  - 三种语言的键完全一致，占位符一致；
+  - 代码和 XAML 用到的键都存在；
+  - 视图和视图模型里除注释外不残留中日文；
+  - 首选语言选择；
+  - 设置的保存；
+  - 消息代码的措辞；
+  - 三种语言的界面渲染。
+
 ## 11. 配置与持久化
 
 | 文件 | 位置 | 内容 |

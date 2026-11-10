@@ -1,0 +1,6 @@
+{
+  "Settings.Language": "语言",
+  "Settings.LanguageSystem": "跟随系统",
+  "Settings.LanguageRestart": "重启 NexaDesk 后生效",
+  "Settings.ThisDevice": "本机：{0}"
+}

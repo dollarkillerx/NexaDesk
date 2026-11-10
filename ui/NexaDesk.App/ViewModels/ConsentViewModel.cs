@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using NexaDesk.Localization;
 using NexaDesk.Proto;
 using NexaDesk.Services;
 
@@ -30,8 +31,8 @@ public sealed partial class ConsentViewModel : ObservableObject
     public bool OfferSave => _req.OfferSave;
     public bool OfferSkipNextTime => _req.OfferSkipNextTime;
     public bool InputAvailable => _req.InputAvailable;
-    public string Headline => $"「{DeviceName}」请求连接本机";
-    public string InputNote => InputAvailable ? "可以移动鼠标、点击和输入" : "本机未授予 NexaDesk“辅助功能”权限，无法允许键盘鼠标";
+    public string Headline => L.Format("Consent.Headline", DeviceName);
+    public string InputNote => InputAvailable ? L.Get("Consent.InputAvailable") : L.Get("Consent.InputUnavailable");
 
     /// <summary>Raised once, when the dialog should close.</summary>
     public event Action<ConsentViewModel>? Finished;
@@ -42,7 +43,7 @@ public sealed partial class ConsentViewModel : ObservableObject
     [ObservableProperty] private bool _allowAudio;
     /// <summary>Always starts unticked, even for a device saved with it: files are opt-in each time.</summary>
     [ObservableProperty] private bool _allowFile;
-    public string FileNote => $"双方可互相发送文件，收到的文件保存在 {Texts.DownloadsFolder}；对方不能浏览本机文件";
+    public string FileNote => L.Format("Consent.FileNote", Texts.DownloadsFolder);
     [ObservableProperty] private bool _saveDevice;
     [ObservableProperty] private bool _skipNextTime;
 
@@ -60,7 +61,7 @@ public sealed partial class ConsentViewModel : ObservableObject
 
     [ObservableProperty] private string? _outcome;
 
-    public string CountdownText => $"{SecondsLeft} 秒内不回应将自动拒绝";
+    public string CountdownText => L.Format("Consent.Countdown", SecondsLeft);
 
     public ConsentViewModel(AgentMessage.IncomingRequest req, IAgentLink link, DateTimeOffset now)
     {
@@ -90,7 +91,7 @@ public sealed partial class ConsentViewModel : ObservableObject
         if (IsFinished) return;
         IsArmed = now - _shownAt >= ArmDelay;
         SecondsLeft = Math.Max(0, (int)Math.Ceiling((_deadline - now).TotalSeconds));
-        if (now >= _deadline) Finish(UiRequest.Decide.Deny(ReqId), "已超时，自动拒绝");
+        if (now >= _deadline) Finish(UiRequest.Decide.Deny(ReqId), L.Get("Consent.TimedOut"));
     }
 
     bool CanAllow() => IsArmed && !IsFinished;
@@ -101,11 +102,11 @@ public sealed partial class ConsentViewModel : ObservableObject
         if (!CanAllow()) return;
         var perms = new Permissions(View: true, Input: AllowInput && InputAvailable, Clipboard: AllowClipboard,
             File: AllowFile, Audio: AllowAudio);
-        Finish(new UiRequest.Decide(ReqId, true, perms, OfferSave && SaveDevice, OfferSkipNextTime && SkipNextTime), "已允许");
+        Finish(new UiRequest.Decide(ReqId, true, perms, OfferSave && SaveDevice, OfferSkipNextTime && SkipNextTime), L.Get("Consent.Allowed"));
     }
 
     [RelayCommand]
-    private void Deny() => Finish(UiRequest.Decide.Deny(ReqId), "已拒绝");
+    private void Deny() => Finish(UiRequest.Decide.Deny(ReqId), L.Get("Consent.Denied"));
 
     /// <summary>The window went away by any route: that is a denial.</summary>
     public void OnWindowClosed() => Deny();
@@ -117,8 +118,8 @@ public sealed partial class ConsentViewModel : ObservableObject
         IsFinished = true;
         Outcome = reason switch
         {
-            "timed out" => "已超时，自动拒绝",
-            "cancelled" => "对方取消了请求",
+            "timed out" => L.Get("Consent.TimedOut"),
+            "cancelled" => L.Get("Consent.Cancelled"),
             _ => reason,
         };
         Finished?.Invoke(this);

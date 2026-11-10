@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using NexaDesk.Localization;
 using NexaDesk.Proto;
 
 namespace NexaDesk.ViewModels;
@@ -16,7 +17,7 @@ public interface ITransferControl
 public static partial class Texts
 {
     /// <summary>Received files land here on both sides (§3.1 stream 4).</summary>
-    public const string DownloadsFolder = "下载/NexaDesk";
+    public static string DownloadsFolder => L.Get("Transfer.DownloadsFolder");
 
     public static string Bytes(ulong n) => n switch
     {
@@ -29,18 +30,18 @@ public static partial class Texts
     /// <summary>Why a transfer failed, from this side's point of view.</summary>
     public static string TransferFailed(TransferFail reason, bool outgoing) => reason switch
     {
-        TransferFail.Declined => outgoing ? "对方拒绝了" : "已拒绝",
-        TransferFail.TooLarge => outgoing ? "文件超过对方允许的大小" : "文件超过本机允许的大小，已拒绝",
-        TransferFail.NotPermitted => "这次会话没有文件传输权限",
-        TransferFail.Invalid => "数据不一致，已丢弃",
-        TransferFail.HashMismatch => "校验失败，已丢弃",
-        TransferFail.NoSpace => outgoing ? "对方磁盘空间不足" : "本机磁盘空间不足",
-        TransferFail.Io => "无法读取或写入文件",
-        TransferFail.ConnectionLost => "连接中断",
-        TransferFail.Timeout => "超时",
-        TransferFail.NotAFile => "只能发送文件，不能发送文件夹",
-        TransferFail.Busy => outgoing ? "对方正在接收太多文件，请稍后再试" : "同时接收的文件太多",
-        _ => "失败",
+        TransferFail.Declined => outgoing ? L.Get("Transfer.FailDeclinedByPeer") : L.Get("Transfer.FailDeclined"),
+        TransferFail.TooLarge => outgoing ? L.Get("Transfer.FailTooLargeForPeer") : L.Get("Transfer.FailTooLarge"),
+        TransferFail.NotPermitted => L.Get("Transfer.FailNotPermitted"),
+        TransferFail.Invalid => L.Get("Transfer.FailInvalid"),
+        TransferFail.HashMismatch => L.Get("Transfer.FailHashMismatch"),
+        TransferFail.NoSpace => outgoing ? L.Get("Transfer.FailNoSpacePeer") : L.Get("Transfer.FailNoSpace"),
+        TransferFail.Io => L.Get("Transfer.FailIo"),
+        TransferFail.ConnectionLost => L.Get("Transfer.FailConnectionLost"),
+        TransferFail.Timeout => L.Get("Transfer.FailTimeout"),
+        TransferFail.NotAFile => L.Get("Transfer.FailNotAFile"),
+        TransferFail.Busy => outgoing ? L.Get("Transfer.FailBusyPeer") : L.Get("Transfer.FailBusy"),
+        _ => L.Get("Transfer.Failed"),
     };
 }
 
@@ -54,8 +55,8 @@ public sealed partial class TransferItemViewModel(TransferListViewModel owner, T
     private TransferInfo _info = info;
 
     public ulong Id => Info.Id;
-    public string Name => string.IsNullOrEmpty(Info.Name) ? "(无名文件)" : Info.Name;
-    public string Direction => Info.Outgoing ? "发送 ↑" : "接收 ↓";
+    public string Name => string.IsNullOrEmpty(Info.Name) ? L.Get("Transfer.Unnamed") : Info.Name;
+    public string Direction => Info.Outgoing ? L.Get("Transfer.Outgoing") : L.Get("Transfer.Incoming");
     public double Progress => Info.Size == 0 ? (Info.State == TransferState.Done ? 100 : 0) : 100.0 * Info.Done / Info.Size;
     public string ProgressText => Info.Size == 0 ? "" : $"{Texts.Bytes(Info.Done)} / {Texts.Bytes(Info.Size)}";
     public bool IsActive => !Info.IsFinal;
@@ -66,12 +67,12 @@ public sealed partial class TransferItemViewModel(TransferListViewModel owner, T
 
     public string StatusText => Info.State switch
     {
-        TransferState.Waiting => Info.Outgoing ? "等待对方接收…" : "准备中…",
-        TransferState.NeedsConfirm => $"文件较大（{Texts.Bytes(Info.Size)}），是否接收？",
+        TransferState.Waiting => Info.Outgoing ? L.Get("Transfer.WaitingForPeer") : L.Get("Transfer.Preparing"),
+        TransferState.NeedsConfirm => L.Format("Transfer.ConfirmLarge", Texts.Bytes(Info.Size)),
         TransferState.Running => $"{Progress:F0}%",
-        TransferState.Done when Info.Outgoing => "已发送",
-        TransferState.Done => $"已保存到 {Texts.DownloadsFolder}/{System.IO.Path.GetFileName(Info.Path)}",
-        TransferState.Cancelled => Info.ByPeer ? "对方取消了" : "已取消",
+        TransferState.Done when Info.Outgoing => L.Get("Transfer.Sent"),
+        TransferState.Done => L.Format("Transfer.SavedTo", Texts.DownloadsFolder, System.IO.Path.GetFileName(Info.Path)),
+        TransferState.Cancelled => Info.ByPeer ? L.Get("Transfer.CancelledByPeer") : L.Get("Transfer.Cancelled"),
         TransferState.Failed => Texts.TransferFailed(Info.Reason, Info.Outgoing),
         _ => "",
     };
@@ -120,8 +121,8 @@ public sealed partial class TransferListViewModel : ObservableObject
         {
             var active = Items.Count(i => i.IsActive);
             var asking = Items.Count(i => i.NeedsAnswer);
-            if (asking > 0) return $"{asking} 个文件等待你确认";
-            return active > 0 ? $"正在传输 {active} 个文件" : $"文件：{Items.Count} 项已结束";
+            if (asking > 0) return L.Format("Transfer.SummaryAsking", asking);
+            return active > 0 ? L.Format("Transfer.SummaryActive", active) : L.Format("Transfer.SummaryFinished", Items.Count);
         }
     }
 
@@ -134,12 +135,12 @@ public sealed partial class TransferListViewModel : ObservableObject
         Error = null;
         if (files.Count == 0)
         {
-            Error = "只能发送文件（不支持文件夹）。";
+            Error = L.Get("Transfer.OnlyFiles");
             return 0;
         }
         if (files.Count > MaxFilesPerDrop)
         {
-            Error = $"一次最多发送 {MaxFilesPerDrop} 个文件。";
+            Error = L.Format("Transfer.TooMany", MaxFilesPerDrop);
             return 0;
         }
         Control.Send(files);

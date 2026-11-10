@@ -1,0 +1,12 @@
+{
+  "Permissions.WindowTitle": "NexaDesk — 权限",
+  "Permissions.Request": "请求授权",
+  "Permissions.OpenScreenRecording": "打开“屏幕录制”设置",
+  "Permissions.OpenAccessibility": "打开“辅助功能”设置",
+  "Permissions.Steps": "步骤",
+  "Permissions.Step1": "1. 点上面的按钮打开“系统设置 → 隐私与安全性”的对应页面。",
+  "Permissions.Step2": "2. 在列表里找到 NexaDesk 并打开开关；没有的话点“+”从“应用程序”中添加 NexaDesk.app。",
+  "Permissions.Step3": "3. 回到这里点“重新检查”。",
+  "Permissions.Recheck": "重新检查",
+  "Permissions.Done": "完成"
+}

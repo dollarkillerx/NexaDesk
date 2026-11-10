@@ -1,6 +1,7 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:NexaDesk.ViewModels"
+        xmlns:l="using:NexaDesk.Localization"
         x:Class="NexaDesk.Views.HudWindow"
         x:DataType="vm:HudViewModel"
         Title="NexaDesk HUD"
@@ -11,15 +12,15 @@
   <!-- §10.3: an owned, borderless, click-through window over the native video. Always dark. -->
   <StackPanel Margin="12,10,12,10" Spacing="3">
     <Grid ColumnDefinitions="*,Auto">
-      <TextBlock Text="延迟（中位数 / P99）" Foreground="#E5E7EB" FontWeight="SemiBold" FontSize="12" />
-      <TextBlock Grid.Column="1" Name="HudFps" Text="{Binding FpsText}" Foreground="#86EFAC" FontFamily="{StaticResource MonoFont}" FontSize="12" />
+      <TextBlock Text="{l:T Hud.Header}" Foreground="#E5E7EB" FontWeight="SemiBold" FontSize="12" />
+      <TextBlock Grid.Column="1" Name="HudFps" Text="{Binding FpsText}" Foreground="#86EFAC" FontFamily="{DynamicResource MonoFont}" FontSize="12" />
     </Grid>
     <ItemsControl Name="HudSegments" ItemsSource="{Binding Segments}">
       <ItemsControl.ItemTemplate>
         <DataTemplate x:DataType="vm:HudSegment">
           <Grid ColumnDefinitions="*,Auto" Margin="0,1">
             <TextBlock Text="{Binding Label}" Foreground="#A3AAB6" FontSize="12" />
-            <TextBlock Grid.Column="1" Text="{Binding Value}" Foreground="#F3F4F6" FontFamily="{StaticResource MonoFont}" FontSize="12" />
+            <TextBlock Grid.Column="1" Text="{Binding Value}" Foreground="#F3F4F6" FontFamily="{DynamicResource MonoFont}" FontSize="12" />
           </Grid>
         </DataTemplate>
       </ItemsControl.ItemTemplate>

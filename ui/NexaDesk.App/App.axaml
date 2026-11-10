@@ -51,7 +51,7 @@
   <Application.Styles>
     <FluentTheme />
     <Style Selector="Window">
-      <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
+      <Setter Property="FontFamily" Value="{DynamicResource UiFont}" />
       <Setter Property="Background" Value="{DynamicResource PageBrush}" />
       <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
     </Style>
@@ -117,7 +117,7 @@
       <Setter Property="FontSize" Value="12.5" />
     </Style>
     <Style Selector="TextBlock.mono">
-      <Setter Property="FontFamily" Value="{StaticResource MonoFont}" />
+      <Setter Property="FontFamily" Value="{DynamicResource MonoFont}" />
     </Style>
     <Style Selector="Button.accent">
       <Setter Property="Background" Value="{DynamicResource AccentBrush}" />

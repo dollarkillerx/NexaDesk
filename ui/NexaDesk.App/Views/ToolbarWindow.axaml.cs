@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
+using NexaDesk.Localization;
 using NexaDesk.ViewModels;
 
 namespace NexaDesk.Views;
@@ -32,7 +33,7 @@ public partial class ToolbarWindow : Window
         if (Vm is not { CanSendFiles: true } vm) return;
         var picked = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
         {
-            Title = $"发送文件到 {vm.HostName}",
+            Title = L.Format("Toolbar.SendFilesTo", vm.HostName),
             AllowMultiple = true,
         });
         var paths = picked.Select(f => f.TryGetLocalPath()).OfType<string>().ToList();

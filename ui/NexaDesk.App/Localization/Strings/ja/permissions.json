@@ -1,0 +1,12 @@
+{
+  "Permissions.WindowTitle": "NexaDesk — 権限",
+  "Permissions.Request": "アクセスを要求",
+  "Permissions.OpenScreenRecording": "「画面収録」設定を開く",
+  "Permissions.OpenAccessibility": "「アクセシビリティ」設定を開く",
+  "Permissions.Steps": "手順",
+  "Permissions.Step1": "1. 上のボタンをクリックして、「システム設定 → プライバシーとセキュリティ」の該当ページを開きます。",
+  "Permissions.Step2": "2. リストでNexaDeskを探してスイッチをオンにします。見つからない場合は「+」をクリックし、「アプリケーション」からNexaDesk.appを追加します。",
+  "Permissions.Step3": "3. ここに戻って「再確認」をクリックします。",
+  "Permissions.Recheck": "再確認",
+  "Permissions.Done": "完了"
+}

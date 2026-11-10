@@ -1,0 +1,21 @@
+{
+  "Messages.GameWssRelay": "ゲームモード：UDP がブロックされているため、WSS（TCP）中継で通信しています。遅延やカクつきが大きくなります。",
+  "Messages.GameDerp": "ゲームモード：Tailscale が DERP 経由で中継しているため、遅延と帯域が制限されます。",
+  "Messages.KeymapInvalid": "keymap.toml に誤りがあるため、組み込みのキーボードルールを使用しています：{0}",
+  "Messages.KeymapUnusable": "keymap.toml を使用できないため、組み込みのルールを表示しています：{0}",
+  "Messages.AudioOutput": "このMacの音声出力を開始できません。",
+  "Messages.RememberHost": "このデバイスとのペアリングを保存できません：{0}",
+  "Messages.AudioPlayback": "相手の音声をこのMacで再生できません：{0}",
+  "Messages.PointerLock": "ゲームモードでポインタをロックできません：{0}",
+  "Messages.ConnectionFailed": "{0} からの接続に失敗しました：{1}",
+  "Messages.ClipSensitive": "機密性の高い内容はこのMacに残し、同期しませんでした",
+  "Messages.ClipTooLarge": "{0}が大きすぎるため（{1:F1} MB）同期しませんでした。ファイル転送を使ってください",
+  "Messages.ClipPeerRejected": "相手はこのMacのクリップボードを受け取りませんでした",
+  "Messages.ClipWriteFailed": "相手のクリップボードをこのMacに書き込めませんでした",
+  "Messages.ClipFetchFailed": "相手のクリップボードの{0}が届きませんでした",
+  "Messages.ClipUnavailable": "使用できません：{0}",
+  "Messages.ClipKind.text": "テキスト",
+  "Messages.ClipKind.html": "HTML",
+  "Messages.ClipKind.rtf": "RTF",
+  "Messages.ClipKind.png": "画像"
+}

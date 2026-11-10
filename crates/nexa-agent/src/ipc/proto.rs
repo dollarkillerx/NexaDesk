@@ -308,8 +308,14 @@ pub enum NoticeKind {
 pub struct Notice {
     #[prost(enumeration = "NoticeKind", tag = "1")]
     pub kind: i32,
+    /// English, for a UI that does not word the kind itself.
     #[prost(string, tag = "2")]
     pub text: String,
+    /// For `ConnectionFailed`: where from, and why.
+    #[prost(string, tag = "3")]
+    pub remote: String,
+    #[prost(string, tag = "4")]
+    pub reason: String,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -485,6 +491,18 @@ mod tests {
 
     fn hex(bytes: &[u8]) -> String {
         bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// The same golden bytes as ui/NexaDesk.Tests/LocalizationTests.cs.
+    #[test]
+    fn connection_failed_notice_matches_the_csharp_golden_bytes() {
+        let m = AgentToUi::from(AgentBody::Notice(Notice {
+            kind: NoticeKind::ConnectionFailed as i32,
+            text: "t".into(),
+            remote: "r".into(),
+            reason: "e".into(),
+        }));
+        assert_eq!(hex(&m.encode_to_vec()), "3a0b08011201741a0172220165");
     }
 
     /// Golden bytes shared with the C# codec tests (ui/NexaDesk.Tests/ProtoTests.cs).

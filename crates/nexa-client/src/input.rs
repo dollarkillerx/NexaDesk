@@ -32,7 +32,7 @@ use crate::{
     client::EventTx,
     cursor::CursorState,
     deps::{KeySource, KeySourceError, PointerLock},
-    proto::{CaptureState, EventBody, InputCapture, PasteGate, Warning},
+    proto::{CaptureState, EventBody, InputCapture, PasteGate, Warning, WarningCode},
 };
 
 const SYNC_INTERVAL: Duration = Duration::from_secs(1);
@@ -404,9 +404,11 @@ impl InputState {
                 Err(e) => {
                     // Once per session: the person sees it and the absolute pointer stays.
                     self.game.failed = true;
-                    self.event(EventBody::Warning(Warning {
-                        text: format!("game mode could not lock the pointer: {e}"),
-                    }));
+                    self.event(EventBody::Warning(Warning::new(
+                        WarningCode::PointerLock,
+                        format!("game mode could not lock the pointer: {e}"),
+                        e.to_string(),
+                    )));
                 }
             },
             (false, true) => {

@@ -56,23 +56,25 @@ fn dir_of(req: &KeymapRequest, default_dir: &Path) -> PathBuf {
     }
 }
 
-/// The user's file, or nothing (and why) if it cannot be used.
+/// The user's file, or nothing and the reason if it cannot be used.
 fn load(dir: &Path) -> (UserKeymap, String) {
     match UserKeymap::load(dir) {
         Ok(u) => (u, String::new()),
-        Err(e) => (
-            UserKeymap::default(),
-            format!("keymap.toml 无法使用，已显示内置规则：{e}"),
-        ),
+        Err(e) => (UserKeymap::default(), e.to_string()),
     }
 }
 
 pub fn rules(req: &KeymapRequest, default_dir: &Path) -> Result<KeymapView, String> {
     let (from, to) = (os_of(req.local_os)?, os_of(req.remote_os)?);
-    let (user, error) = load(&dir_of(req, default_dir));
+    let (user, reason) = load(&dir_of(req, default_dir));
     Ok(KeymapView {
         rules: user.rules(from, to).into_iter().map(rule_of).collect(),
-        error,
+        error: if reason.is_empty() {
+            String::new()
+        } else {
+            format!("keymap.toml cannot be used, so the built-in rules are shown: {reason}")
+        },
+        file_error: reason,
     })
 }
 
@@ -128,9 +130,7 @@ pub fn preview_chord(req: &KeymapRequest, default_dir: &Path) -> Result<KeyPrevi
 pub fn for_sessions(dir: &Path) -> (nexa_input::Keymap, Option<String>) {
     match UserKeymap::load(dir).and_then(|u| u.keymap()) {
         Ok(k) => (k, None),
-        Err(e) => (
-            nexa_input::Keymap::builtin(),
-            Some(format!("keymap.toml 有误，已改用内置键盘规则：{e}")),
-        ),
+        // The reason alone: the caller words it (a warning with a code).
+        Err(e) => (nexa_input::Keymap::builtin(), Some(e.to_string())),
     }
 }

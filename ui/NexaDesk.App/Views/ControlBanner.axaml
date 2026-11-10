@@ -1,10 +1,11 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:NexaDesk.ViewModels"
+        xmlns:l="using:NexaDesk.Localization"
         xmlns:views="using:NexaDesk.Views"
         x:Class="NexaDesk.Views.ControlBanner"
         x:DataType="vm:BannerViewModel"
-        Title="NexaDesk — 正在被控制"
+        Title="{l:T Banner.WindowTitle}"
         Width="720" SizeToContent="Height" CanResize="False"
         Topmost="True" ShowInTaskbar="False" ShowActivated="False"
         WindowDecorations="None"
@@ -22,9 +23,9 @@
             <Run Text="{Binding Detail}" />
           </TextBlock>
         </StackPanel>
-        <TextBlock Grid.Column="2" Text="{Binding DurationText}" Foreground="White" FontFamily="{StaticResource MonoFont}"
+        <TextBlock Grid.Column="2" Text="{Binding DurationText}" Foreground="White" FontFamily="{DynamicResource MonoFont}"
                    VerticalAlignment="Center" Margin="12,0,12,0" />
-        <Button Grid.Column="3" Name="BannerDisconnectButton" Content="断开" Command="{Binding DisconnectCommand}"
+        <Button Grid.Column="3" Name="BannerDisconnectButton" Content="{l:T Banner.Disconnect}" Command="{Binding DisconnectCommand}"
                 Background="White" Foreground="#9A3412" FontWeight="SemiBold" MinWidth="80" HorizontalContentAlignment="Center" />
       </Grid>
     </Border>

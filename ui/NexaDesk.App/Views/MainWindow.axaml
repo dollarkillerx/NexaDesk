@@ -1,6 +1,7 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:NexaDesk.ViewModels"
+        xmlns:l="using:NexaDesk.Localization"
         x:Class="NexaDesk.Views.MainWindow"
         x:DataType="vm:MainViewModel"
         Title="NexaDesk"
@@ -11,12 +12,25 @@
       <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
         <TextBlock Classes="h1" Text="NexaDesk" />
         <TextBlock Classes="label" VerticalAlignment="Bottom" Margin="0,0,0,2"
-                   Text="{Binding DeviceName, StringFormat='本机：{0}'}" />
+                   Text="{Binding DeviceName, StringFormat={l:T Settings.ThisDevice}}" />
       </StackPanel>
       <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-        <Button Name="KeyboardSettingsButton" Classes="small" Content="键盘设置…" Command="{Binding ShowKeyboardSettingsCommand}"
+        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center"
+                    DataContext="{Binding Settings}" x:DataType="vm:SettingsViewModel">
+          <TextBlock Classes="muted" Name="LanguageRestartText" Text="{l:T Settings.LanguageRestart}" VerticalAlignment="Center"
+                     IsVisible="{Binding LanguageRestartNeeded}" />
+          <TextBlock Classes="label" Text="{l:T Settings.Language}" VerticalAlignment="Center" />
+          <ComboBox Name="LanguageBox" ItemsSource="{Binding LanguageOptions}" SelectedItem="{Binding SelectedLanguage}" MinWidth="120">
+            <ComboBox.ItemTemplate>
+              <DataTemplate x:DataType="vm:LanguageOption">
+                <TextBlock Text="{Binding Name}" />
+              </DataTemplate>
+            </ComboBox.ItemTemplate>
+          </ComboBox>
+        </StackPanel>
+        <Button Name="KeyboardSettingsButton" Classes="small" Content="{l:T Main.KeyboardSettings}" Command="{Binding ShowKeyboardSettingsCommand}"
                 IsVisible="{Binding HasKeyboardSettings}" />
-        <Button Classes="small" Content="权限设置…" Command="{Binding ShowViewerPermissionsCommand}" />
+        <Button Classes="small" Content="{l:T Main.Permissions}" Command="{Binding ShowViewerPermissionsCommand}" />
       </StackPanel>
     </Grid>
 
@@ -25,31 +39,31 @@
       <StackPanel Spacing="4">
         <StackPanel Orientation="Horizontal" Spacing="10"
                     DataContext="{Binding LoginItem}" x:DataType="vm:LoginItemViewModel">
-          <CheckBox Name="AnnounceOnLanBox" Content="在局域网中显示本机"
+          <CheckBox Name="AnnounceOnLanBox" Content="{l:T Main.AnnounceOnLan}"
                     IsChecked="{Binding $parent[Window].((vm:MainViewModel)DataContext).Settings.AnnounceOnLan}"
-                    ToolTip.Tip="让同一局域网里的 NexaDesk 列出这台 Mac，方便直接连接。对方连接时仍需一次性码或配对。" />
-          <CheckBox Name="LoginItemBox" Content="登录时启动" IsChecked="{Binding IsEnabled}" IsEnabled="{Binding IsSupported}" />
+                    ToolTip.Tip="{l:T Main.AnnounceOnLanTip}" />
+          <CheckBox Name="LoginItemBox" Content="{l:T Main.LoginItem}" IsChecked="{Binding IsEnabled}" IsEnabled="{Binding IsSupported}" />
           <TextBlock Classes="muted" Name="LoginItemStatus" Text="{Binding StatusText}" VerticalAlignment="Center" />
-          <Button Classes="small" Content="打开登录项设置" Command="{Binding OpenSettingsCommand}" IsVisible="{Binding NeedsApproval}" />
+          <Button Classes="small" Content="{l:T Main.OpenLoginItems}" Command="{Binding OpenSettingsCommand}" IsVisible="{Binding NeedsApproval}" />
           <TextBlock Classes="errorText" Text="{Binding Error}" VerticalAlignment="Center"
                      IsVisible="{Binding Error, Converter={x:Static ObjectConverters.IsNotNull}}" />
         </StackPanel>
-        <TextBlock Classes="muted" TextWrapping="Wrap" Text="关闭这个窗口后，NexaDesk 仍在菜单栏运行：允许控制、连接确认和顶部提示条都照常工作；从菜单栏选“退出”才会停止。" />
+        <TextBlock Classes="muted" TextWrapping="Wrap" Text="{l:T Main.MenuBarNote}" />
         <Expander Name="AdvancedExpander" Margin="0,4,0,0" HorizontalAlignment="Stretch"
                   DataContext="{Binding Settings}" x:DataType="vm:SettingsViewModel">
           <Expander.Header>
             <StackPanel Orientation="Horizontal" Spacing="10">
-              <TextBlock Classes="label" Text="高级：自建信令服务器（可选）" VerticalAlignment="Center" />
+              <TextBlock Classes="label" Text="{l:T Main.Advanced}" VerticalAlignment="Center" />
               <TextBlock Classes="muted" Name="ServerStatusText" Text="{Binding ServerStatus}" VerticalAlignment="Center" />
             </StackPanel>
           </Expander.Header>
           <StackPanel Spacing="6">
             <TextBlock Classes="muted" TextWrapping="Wrap"
-                       Text="不用服务器也能连接：同一局域网直接连；不在同一网络时，推荐两边都用 Tailscale，它会自动打洞，打不通时自动中转。只有不能用 Tailscale、又想按 9 位设备 ID 连接时，才需要自建信令服务器（部署见 docs/DEPLOY.md）。" />
+                       Text="{l:T Main.AdvancedHelp}" />
             <StackPanel Orientation="Horizontal" Spacing="10">
-              <TextBlock Classes="label" Text="信令服务器" VerticalAlignment="Center" />
+              <TextBlock Classes="label" Text="{l:T Main.SignalServer}" VerticalAlignment="Center" />
               <TextBox Name="ServerBox" Text="{Binding ServerInput}" Width="320" PlaceholderText="wss://signal.example.com" />
-              <Button Name="SaveServerButton" Classes="small" Content="保存" Command="{Binding SaveCommand}" />
+              <Button Name="SaveServerButton" Classes="small" Content="{l:T Main.Save}" Command="{Binding SaveCommand}" />
             </StackPanel>
             <TextBlock Classes="errorText" Text="{Binding ServerHint}" IsVisible="{Binding ServerHint, Converter={x:Static ObjectConverters.IsNotNull}}" />
           </StackPanel>
@@ -63,26 +77,26 @@
         <ScrollViewer VerticalScrollBarVisibility="Auto">
           <!-- Room for the scroll bar, which floats over the content. -->
           <StackPanel Spacing="8" Margin="0,0,14,0">
-            <TextBlock Classes="h2" Text="连接到设备" />
+            <TextBlock Classes="h2" Text="{l:T Connect.Title}" />
             <TextBlock Classes="muted" TextWrapping="Wrap" Text="{Binding Intro}" />
 
-            <TextBlock Classes="label" Text="地址" Margin="0,6,0,0" />
+            <TextBlock Classes="label" Text="{l:T Connect.Address}" Margin="0,6,0,0" />
             <TextBox Name="AddressBox" Text="{Binding Address}" PlaceholderText="{Binding AddressPlaceholder}"
                      IsEnabled="{Binding !IsConnecting}" />
             <TextBlock Classes="errorText" Text="{Binding AddressHint}" IsVisible="{Binding AddressHint, Converter={x:Static ObjectConverters.IsNotNull}}" />
 
-            <TextBlock Classes="label" Text="一次性码" Margin="0,4,0,0" />
+            <TextBlock Classes="label" Text="{l:T Main.OneTimeCode}" Margin="0,4,0,0" />
             <TextBox Name="CodeBox" Text="{Binding Code}" PlaceholderText="ABCD-2345" MaxLength="12"
-                     FontFamily="{StaticResource MonoFont}" FontSize="16" IsEnabled="{Binding !IsConnecting}" />
+                     FontFamily="{DynamicResource MonoFont}" FontSize="16" IsEnabled="{Binding !IsConnecting}" />
             <TextBlock Classes="errorText" Text="{Binding CodeHint}" IsVisible="{Binding CodeHint, Converter={x:Static ObjectConverters.IsNotNull}}" />
 
             <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,8,0,0">
-              <Button Name="ConnectButton" Classes="accent" Content="连接" Command="{Binding ConnectCommand}" IsDefault="True"
+              <Button Name="ConnectButton" Classes="accent" Content="{l:T Main.Connect}" Command="{Binding ConnectCommand}" IsDefault="True"
                       IsVisible="{Binding !IsConnecting}" />
               <ProgressBar IsIndeterminate="True" Width="80" IsVisible="{Binding IsConnecting}" VerticalAlignment="Center" />
               <TextBlock Classes="muted" Text="{Binding ProgressText}" VerticalAlignment="Center" MaxWidth="300"
                          IsVisible="{Binding IsConnecting}" />
-              <Button Name="CancelButton" Classes="small" Content="取消" Command="{Binding CancelCommand}" IsVisible="{Binding IsConnecting}" />
+              <Button Name="CancelButton" Classes="small" Content="{l:T Connect.Cancel}" Command="{Binding CancelCommand}" IsVisible="{Binding IsConnecting}" />
             </StackPanel>
 
             <Border Name="ConnectError" Classes="error" IsVisible="{Binding HasError}" Margin="0,6,0,0">
@@ -96,7 +110,7 @@
             </Border>
 
             <StackPanel Name="LanSection" Spacing="4" Margin="0,12,0,0" IsVisible="{Binding HasLan}">
-              <TextBlock Classes="label" Text="局域网中的 NexaDesk 设备" />
+              <TextBlock Classes="label" Text="{l:T Connect.LanDevices}" />
               <ItemsControl Name="LanList" ItemsSource="{Binding Lan}">
                 <ItemsControl.ItemTemplate>
                   <DataTemplate x:DataType="vm:LanDeviceViewModel">
@@ -106,7 +120,7 @@
                           <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
                           <TextBlock Classes="muted" Text="{Binding Detail}" />
                         </StackPanel>
-                        <Button Grid.Column="1" Classes="small" Content="连接" Command="{Binding ConnectCommand}"
+                        <Button Grid.Column="1" Classes="small" Content="{l:T Main.Connect}" Command="{Binding ConnectCommand}"
                                 VerticalAlignment="Center" />
                       </Grid>
                     </Border>
@@ -116,7 +130,7 @@
             </StackPanel>
 
             <StackPanel Name="TailnetSection" Spacing="4" Margin="0,12,0,0" IsVisible="{Binding HasTailnet}">
-              <TextBlock Classes="label" Text="Tailscale 网络中的 NexaDesk 设备" />
+              <TextBlock Classes="label" Text="{l:T Connect.TailnetDevices}" />
               <ItemsControl Name="TailnetList" ItemsSource="{Binding Tailnet}">
                 <ItemsControl.ItemTemplate>
                   <DataTemplate x:DataType="vm:TailnetDeviceViewModel">
@@ -131,7 +145,7 @@
                           </StackPanel>
                           <TextBlock Classes="muted" Text="{Binding Detail}" />
                         </StackPanel>
-                        <Button Grid.Column="1" Classes="small" Content="连接" Command="{Binding ConnectCommand}"
+                        <Button Grid.Column="1" Classes="small" Content="{l:T Main.Connect}" Command="{Binding ConnectCommand}"
                                 VerticalAlignment="Center" />
                       </Grid>
                     </Border>
@@ -143,15 +157,15 @@
             <Border Name="ConnectTailscaleAdvice" Classes="subtle" Background="{DynamicResource BadgeBrush}" Margin="0,12,0,0"
                     IsVisible="{Binding ShowTailscaleAdvice}">
               <StackPanel Spacing="6">
-                <TextBlock FontWeight="SemiBold" Text="不在同一个局域网？推荐用 Tailscale" />
+                <TextBlock FontWeight="SemiBold" Text="{l:T Connect.TailscaleAdviceTitle}" />
                 <TextBlock Classes="muted" TextWrapping="Wrap"
-                           Text="两台设备都安装 Tailscale 并登录同一个账号，就能跨网络连接：Tailscale 会自动打洞，打不通时自动中转，不需要自建服务器。装好后，对方会出现在 Tailscale 设备列表里。" />
-                <Button Classes="small" Content="下载 Tailscale" Command="{Binding Tailscale.DownloadCommand}" HorizontalAlignment="Left" />
+                           Text="{l:T Connect.TailscaleAdvice}" />
+                <Button Classes="small" Content="{l:T Main.DownloadTailscale}" Command="{Binding Tailscale.DownloadCommand}" HorizontalAlignment="Left" />
               </StackPanel>
             </Border>
 
-            <TextBlock Classes="label" Text="最近的设备" Margin="0,12,0,0" />
-            <TextBlock Classes="muted" Text="还没有连接过任何设备。" IsVisible="{Binding !HasRecent}" />
+            <TextBlock Classes="label" Text="{l:T Connect.Recent}" Margin="0,12,0,0" />
+            <TextBlock Classes="muted" Text="{l:T Connect.NoRecent}" IsVisible="{Binding !HasRecent}" />
 
             <ItemsControl Name="RecentList" ItemsSource="{Binding Recent}">
               <ItemsControl.ItemTemplate>
@@ -166,11 +180,11 @@
                           </Border>
                         </StackPanel>
                         <TextBlock Classes="muted" Text="{Binding Address}" />
-                        <TextBlock Classes="muted" Text="{Binding LastSeen, StringFormat='上次连接：{0}'}" />
+                        <TextBlock Classes="muted" Text="{Binding LastSeen, StringFormat={l:T Main.LastConnected}}" />
                       </StackPanel>
                       <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-                        <Button Classes="small" Content="连接" Command="{Binding ConnectCommand}" />
-                        <Button Classes="small" Content="移除" Command="{Binding RemoveCommand}" />
+                        <Button Classes="small" Content="{l:T Main.Connect}" Command="{Binding ConnectCommand}" />
+                        <Button Classes="small" Content="{l:T Connect.Remove}" Command="{Binding RemoveCommand}" />
                       </StackPanel>
                     </Grid>
                   </Border>
@@ -179,7 +193,7 @@
             </ItemsControl>
 
             <StackPanel Spacing="3" Margin="0,10,0,0">
-              <TextBlock Classes="label" TextWrapping="Wrap" Text="本机指纹（对方确认连接时，可以与他看到的指纹核对）" />
+              <TextBlock Classes="label" TextWrapping="Wrap" Text="{l:T Connect.Fingerprint}" />
               <TextBlock Classes="mono" FontSize="12" Text="{Binding ThisDeviceFingerprint}" Foreground="{DynamicResource MutedBrush}" />
             </StackPanel>
           </StackPanel>
@@ -192,11 +206,11 @@
           <!-- Room for the scroll bar, which floats over the content. -->
           <StackPanel Spacing="8" Margin="0,0,14,0">
             <Grid ColumnDefinitions="*,Auto">
-              <TextBlock Classes="h2" Text="允许别人控制本机" VerticalAlignment="Center" />
+              <TextBlock Classes="h2" Text="{l:T Main.HostTitle}" VerticalAlignment="Center" />
               <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-                <Button Name="StartHostingButton" Classes="accent" Content="开始" Command="{Binding StartCommand}" IsVisible="{Binding IsStopped}" />
+                <Button Name="StartHostingButton" Classes="accent" Content="{l:T Host.Start}" Command="{Binding StartCommand}" IsVisible="{Binding IsStopped}" />
                 <ProgressBar IsIndeterminate="True" Width="80" IsVisible="{Binding IsStarting}" VerticalAlignment="Center" />
-                <Button Name="StopHostingButton" Content="停止" Command="{Binding StopCommand}" IsVisible="{Binding IsHosting}" />
+                <Button Name="StopHostingButton" Content="{l:T Host.Stop}" Command="{Binding StopCommand}" IsVisible="{Binding IsHosting}" />
               </StackPanel>
             </Grid>
             <TextBlock Classes="muted" TextWrapping="Wrap" Text="{Binding StateText}" />
@@ -206,16 +220,16 @@
               <StackPanel Spacing="2">
                 <TextBlock Foreground="{DynamicResource OkBrush}" FontWeight="SemiBold" Text="{Binding Tailscale.StatusText}" />
                 <TextBlock Classes="muted" TextWrapping="Wrap"
-                           Text="同一个 Tailscale 账号下的设备，在任何网络都能连接本机；打不通时由 Tailscale 自动中转。" />
+                           Text="{l:T Host.TailscaleStatus}" />
               </StackPanel>
             </Border>
             <Border Name="HostTailscaleAdvice" Classes="subtle" Background="{DynamicResource BadgeBrush}"
                     IsVisible="{Binding ShowTailscaleAdvice}">
               <StackPanel Spacing="6">
-                <TextBlock FontWeight="SemiBold" Text="想从别的网络连接本机？推荐 Tailscale" />
+                <TextBlock FontWeight="SemiBold" Text="{l:T Host.TailscaleAdviceTitle}" />
                 <TextBlock Classes="muted" TextWrapping="Wrap"
-                           Text="在这台 Mac 和对方的设备上都安装 Tailscale 并登录同一个账号：Tailscale 会自动打洞，打不通时自动中转，不需要自建服务器。只在同一局域网内使用时不需要它。" />
-                <Button Classes="small" Content="下载 Tailscale" Command="{Binding Tailscale.DownloadCommand}" HorizontalAlignment="Left" />
+                           Text="{l:T Host.TailscaleAdvice}" />
+                <Button Classes="small" Content="{l:T Main.DownloadTailscale}" Command="{Binding Tailscale.DownloadCommand}" HorizontalAlignment="Left" />
               </StackPanel>
             </Border>
 
@@ -223,15 +237,15 @@
             <Expander Name="ListenExpander" HorizontalAlignment="Stretch" IsVisible="{Binding !IsHosting}">
               <Expander.Header>
                 <StackPanel Orientation="Horizontal" Spacing="10">
-                  <TextBlock Classes="label" Text="监听范围" VerticalAlignment="Center" />
+                  <TextBlock Classes="label" Text="{l:T Host.ListenRange}" VerticalAlignment="Center" />
                   <TextBlock Classes="muted" Name="ListenSummaryText" Text="{Binding ListenSummary}" VerticalAlignment="Center" />
                 </StackPanel>
               </Expander.Header>
               <StackPanel Spacing="6">
                 <RadioButton GroupName="listen" Name="ListenEverywhereRadio" IsChecked="{Binding ListenEverywhere}" IsEnabled="{Binding IsStopped}"
-                             Content="所有网络（推荐）：局域网和 Tailscale 都能连接" />
+                             Content="{l:T Host.ListenEverywhere}" />
                 <RadioButton GroupName="listen" Name="ListenOnOneRadio" IsChecked="{Binding ListenOnOne}" IsEnabled="{Binding IsStopped}"
-                             Content="只在一个地址上" />
+                             Content="{l:T Host.ListenOnOne}" />
                 <StackPanel Spacing="6" Margin="26,0,0,0" IsVisible="{Binding ListenOnOne}">
                   <TextBox Name="ListenBox" Text="{Binding ListenAddress}" IsEnabled="{Binding IsStopped}" />
                   <TextBlock Classes="errorText" Text="{Binding ListenHint}" IsVisible="{Binding ListenHint, Converter={x:Static ObjectConverters.IsNotNull}}" />
@@ -249,14 +263,14 @@
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
-                  <TextBlock Classes="muted" TextWrapping="Wrap" Text="只有这个地址能连进来。只在本机测试时可以用 127.0.0.1。" />
+                  <TextBlock Classes="muted" TextWrapping="Wrap" Text="{l:T Host.ListenOnOneHelp}" />
                 </StackPanel>
               </StackPanel>
             </Expander>
 
             <!-- Hosting: every way in, then the code -->
             <StackPanel Spacing="4" IsVisible="{Binding IsHosting}">
-              <TextBlock Classes="label" Text="对方输入以下任一地址即可连接" Margin="0,6,0,0" />
+              <TextBlock Classes="label" Text="{l:T Host.AddressesTitle}" Margin="0,6,0,0" />
               <ItemsControl Name="ConnectOptionsList" ItemsSource="{Binding ConnectOptions}">
                 <ItemsControl.ItemTemplate>
                   <DataTemplate x:DataType="vm:ConnectOption">
@@ -265,7 +279,7 @@
                         <TextBlock Text="{Binding Kind}" FontSize="11" />
                       </Border>
                       <StackPanel Grid.Column="1" Spacing="1">
-                        <SelectableTextBlock Text="{Binding Address}" FontFamily="{StaticResource MonoFont}" FontSize="16" />
+                        <SelectableTextBlock Text="{Binding Address}" FontFamily="{DynamicResource MonoFont}" FontSize="16" />
                         <TextBlock Classes="muted" Text="{Binding Detail}" IsVisible="{Binding HasDetail}" />
                       </StackPanel>
                     </Grid>
@@ -282,21 +296,21 @@
               </TextBlock>
               <TextBlock Classes="errorText" TextWrapping="Wrap" Text="{Binding SignalText}" IsVisible="{Binding SignalProblem}" />
               <TextBlock Classes="errorText" TextWrapping="Wrap" IsVisible="{Binding RestartNeeded}"
-                         Text="信令服务器或局域网显示设置已更改：停止后重新开始才会生效。" />
-              <TextBlock Classes="label" Text="一次性码" Margin="0,10,0,0" />
+                         Text="{l:T Host.RestartNeeded}" />
+              <TextBlock Classes="label" Text="{l:T Main.OneTimeCode}" Margin="0,10,0,0" />
               <Border Classes="subtle" Padding="16,10" HorizontalAlignment="Left">
-                <SelectableTextBlock Name="CodeText" Text="{Binding CodeDisplay}" FontFamily="{StaticResource MonoFont}"
+                <SelectableTextBlock Name="CodeText" Text="{Binding CodeDisplay}" FontFamily="{DynamicResource MonoFont}"
                                      FontSize="46" FontWeight="Bold" LetterSpacing="4" />
               </Border>
               <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,4,0,0">
-                <Button Name="RotateButton" Classes="small" Content="换一个代码" Command="{Binding RotateCodeCommand}" />
-                <TextBlock Classes="muted" VerticalAlignment="Center" Text="每次有人连接，你都会看到确认窗口。" />
+                <Button Name="RotateButton" Classes="small" Content="{l:T Host.RotateCode}" Command="{Binding RotateCodeCommand}" />
+                <TextBlock Classes="muted" VerticalAlignment="Center" Text="{l:T Host.ConfirmNote}" />
               </StackPanel>
               <Border Classes="warn" IsVisible="{Binding !InputAvailable}" Margin="0,6,0,0">
                 <StackPanel Spacing="4">
                   <TextBlock Foreground="{DynamicResource WarnBrush}" TextWrapping="Wrap" FontSize="12.5"
-                             Text="本机未授予“辅助功能”权限：对方只能查看，不能操作键盘鼠标。" />
-                  <Button Classes="small" Content="查看如何授予…" Command="{Binding ShowPermissionGuideCommand}" />
+                             Text="{l:T Host.NoAccessibility}" />
+                  <Button Classes="small" Content="{l:T Host.HowToGrant}" Command="{Binding ShowPermissionGuideCommand}" />
                 </StackPanel>
               </Border>
             </StackPanel>
@@ -304,14 +318,14 @@
             <Border Name="HostError" Classes="error" IsVisible="{Binding HasError}">
               <StackPanel Spacing="6">
                 <TextBlock Classes="errorText" Text="{Binding Error}" />
-                <Button Classes="small" Content="权限设置指引…" Command="{Binding ShowPermissionGuideCommand}" />
+                <Button Classes="small" Content="{l:T Host.PermissionGuide}" Command="{Binding ShowPermissionGuideCommand}" />
               </StackPanel>
             </Border>
             <TextBlock Classes="muted" Text="{Binding Notice}" IsVisible="{Binding Notice, Converter={x:Static ObjectConverters.IsNotNull}}" />
 
             <Grid ColumnDefinitions="*,Auto" Margin="0,12,0,0" IsVisible="{Binding IsHosting}">
-              <TextBlock Classes="label" Text="已配对的设备" VerticalAlignment="Center" />
-              <Button Grid.Column="1" Classes="small" Content="刷新" Command="{Binding RefreshPairingsCommand}" />
+              <TextBlock Classes="label" Text="{l:T Host.PairedDevices}" VerticalAlignment="Center" />
+              <Button Grid.Column="1" Classes="small" Content="{l:T Host.Refresh}" Command="{Binding RefreshPairingsCommand}" />
             </Grid>
             <ItemsControl Name="PairedList" ItemsSource="{Binding Paired}" IsVisible="{Binding IsHosting}">
               <ItemsControl.ItemTemplate>
@@ -320,14 +334,14 @@
                     <Grid ColumnDefinitions="*,Auto">
                       <StackPanel Spacing="2">
                         <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
-                        <TextBlock Classes="muted" Text="{Binding PermsText, StringFormat='权限：{0}'}" />
+                        <TextBlock Classes="muted" Text="{Binding PermsText, StringFormat={l:T Host.Perms}}" />
                         <TextBlock Classes="muted" Text="{Binding ConsentText}" />
-                        <TextBlock Classes="muted" FontFamily="{StaticResource MonoFont}" Text="{Binding Fingerprint, StringFormat='指纹 {0}'}" />
-                        <TextBlock Classes="muted" Text="{Binding LastSeen, StringFormat='上次连接：{0}'}" />
+                        <TextBlock Classes="muted" FontFamily="{DynamicResource MonoFont}" Text="{Binding Fingerprint, StringFormat={l:T Host.Fingerprint}}" />
+                        <TextBlock Classes="muted" Text="{Binding LastSeen, StringFormat={l:T Main.LastConnected}}" />
                       </StackPanel>
                       <StackPanel Grid.Column="1" Spacing="6" VerticalAlignment="Center">
-                        <Button Classes="small" Content="撤销配对" Command="{Binding RevokeCommand}" />
-                        <Button Classes="small" Content="改为每次确认" Command="{Binding RequireConsentCommand}" IsVisible="{Binding Unattended}" />
+                        <Button Classes="small" Content="{l:T Host.Revoke}" Command="{Binding RevokeCommand}" />
+                        <Button Classes="small" Content="{l:T Host.RequireConsent}" Command="{Binding RequireConsentCommand}" IsVisible="{Binding Unattended}" />
                       </StackPanel>
                     </Grid>
                   </Border>

@@ -1,10 +1,11 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:NexaDesk.ViewModels"
+        xmlns:l="using:NexaDesk.Localization"
         xmlns:views="using:NexaDesk.Views"
         x:Class="NexaDesk.Views.ToolbarWindow"
         x:DataType="vm:SessionViewModel"
-        Title="NexaDesk 工具条"
+        Title="{l:T Toolbar.Title}"
         Width="940" SizeToContent="Height" CanResize="False"
         Topmost="True" ShowInTaskbar="False" ShowActivated="False"
         WindowDecorations="None"
@@ -15,13 +16,13 @@
         <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
           <TextBlock Text="{Binding HostName}" FontWeight="SemiBold" VerticalAlignment="Center" MaxWidth="160"
                      TextTrimming="CharacterEllipsis" />
-          <TextBlock Classes="label" Text="模式" VerticalAlignment="Center" />
+          <TextBlock Classes="label" Text="{l:T Toolbar.Mode}" VerticalAlignment="Center" />
           <StackPanel Orientation="Horizontal" Spacing="2">
-            <RadioButton Name="ModeOffice" GroupName="mode" Content="办公" IsChecked="{Binding IsOffice}" />
-            <RadioButton Name="ModeBalanced" GroupName="mode" Content="均衡" IsChecked="{Binding IsBalanced}" />
-            <RadioButton Name="ModeGame" GroupName="mode" Content="游戏" IsChecked="{Binding IsGame}" />
+            <RadioButton Name="ModeOffice" GroupName="mode" Content="{l:T Texts.Mode.Office}" IsChecked="{Binding IsOffice}" />
+            <RadioButton Name="ModeBalanced" GroupName="mode" Content="{l:T Texts.Mode.Balanced}" IsChecked="{Binding IsBalanced}" />
+            <RadioButton Name="ModeGame" GroupName="mode" Content="{l:T Texts.Mode.Game}" IsChecked="{Binding IsGame}" />
           </StackPanel>
-          <TextBlock Classes="label" Text="屏幕" VerticalAlignment="Center" IsVisible="{Binding HasManyDisplays}" />
+          <TextBlock Classes="label" Text="{l:T Toolbar.Display}" VerticalAlignment="Center" IsVisible="{Binding HasManyDisplays}" />
           <ComboBox Name="DisplayPicker" ItemsSource="{Binding Displays}" SelectedItem="{Binding SelectedDisplay}"
                     IsVisible="{Binding HasManyDisplays}" MaxWidth="260" VerticalAlignment="Center">
             <ComboBox.ItemTemplate>
@@ -32,18 +33,18 @@
           </ComboBox>
         </StackPanel>
         <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-          <Button Name="ResumeButton" Classes="small accent" Content="继续控制" Command="{Binding ResumeCommand}"
+          <Button Name="ResumeButton" Classes="small accent" Content="{l:T Toolbar.Resume}" Command="{Binding ResumeCommand}"
                   IsVisible="{Binding IsSuspended}" />
           <Button Name="MuteButton" Classes="small" Content="{Binding MuteLabel}" Command="{Binding ToggleMuteCommand}"
                   IsVisible="{Binding CanHearAudio}" />
-          <Button Name="SendFilesButton" Classes="small" Content="发送文件…" Click="OnSendFiles"
-                  IsVisible="{Binding CanSendFiles}" ToolTip.Tip="也可以把文件拖到会话窗口或工具条上" />
+          <Button Name="SendFilesButton" Classes="small" Content="{l:T Toolbar.SendFiles}" Click="OnSendFiles"
+                  IsVisible="{Binding CanSendFiles}" ToolTip.Tip="{l:T Toolbar.SendFilesTip}" />
           <ToggleButton Name="HudButton" Classes="small" Content="HUD" IsChecked="{Binding IsHudVisible}"
-                        Padding="10,3" FontSize="12.5" ToolTip.Tip="在画面上显示分段延迟、路径和帧率" />
-          <Button Name="DiagnosticsButton" Classes="small" Content="诊断" Click="OnDiagnostics" />
-          <Button Name="FullScreenButton" Classes="small" Content="全屏" Click="OnFullScreen" />
-          <Button Name="HideButton" Classes="small" Content="隐藏" Command="{Binding ToggleToolbarCommand}" />
-          <Button Name="ToolbarDisconnectButton" Classes="small" Content="断开" Command="{Binding DisconnectCommand}"
+                        Padding="10,3" FontSize="12.5" ToolTip.Tip="{l:T Toolbar.HudTip}" />
+          <Button Name="DiagnosticsButton" Classes="small" Content="{l:T Toolbar.Diagnostics}" Click="OnDiagnostics" />
+          <Button Name="FullScreenButton" Classes="small" Content="{l:T Toolbar.FullScreen}" Click="OnFullScreen" />
+          <Button Name="HideButton" Classes="small" Content="{l:T Toolbar.Hide}" Command="{Binding ToggleToolbarCommand}" />
+          <Button Name="ToolbarDisconnectButton" Classes="small" Content="{l:T Toolbar.Disconnect}" Command="{Binding DisconnectCommand}"
                   Foreground="{DynamicResource ErrorBrush}" />
         </StackPanel>
       </Grid>

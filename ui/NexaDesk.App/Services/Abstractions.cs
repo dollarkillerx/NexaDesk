@@ -83,8 +83,9 @@ public interface ILocalAddresses
 }
 
 /// <summary>Preferences kept in settings.json. SignalServer is already normalized, or empty.
-/// AnnounceOnLan: whether the host is announced to viewers on the LAN (§4.11).</summary>
-public sealed record AppSettings(string SignalServer = "", bool AnnounceOnLan = true);
+/// AnnounceOnLan: whether the host is announced to viewers on the LAN (§4.11).
+/// Language: a supported language code, or empty to follow macOS; applies at the next start.</summary>
+public sealed record AppSettings(string SignalServer = "", bool AnnounceOnLan = true, string Language = "");
 
 public interface ISettingsStore
 {

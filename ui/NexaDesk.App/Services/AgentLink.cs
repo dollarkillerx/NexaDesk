@@ -1,4 +1,5 @@
 using System.Net.Sockets;
+using NexaDesk.Localization;
 using NexaDesk.Proto;
 
 namespace NexaDesk.Services;
@@ -48,7 +49,7 @@ public sealed class AgentLink(string socketPath, IUiDispatcher ui) : IAgentLink
                     return r.Reason;
                 default:
                     socket.Dispose();
-                    return "被控服务没有回应";
+                    return L.Get("Agent.NoAnswer");
             }
 
             int generation;
@@ -65,7 +66,7 @@ public sealed class AgentLink(string socketPath, IUiDispatcher ui) : IAgentLink
         catch (Exception e) when (e is SocketException or IOException or OperationCanceledException or ProtoException)
         {
             socket.Dispose();
-            return e is OperationCanceledException ? "连接被控服务超时" : e.Message;
+            return e is OperationCanceledException ? L.Get("Agent.Timeout") : e.Message;
         }
     }
 
@@ -85,7 +86,7 @@ public sealed class AgentLink(string socketPath, IUiDispatcher ui) : IAgentLink
             var frame = decoder.Next();
             if (frame != null) return AgentMessage.Decode(frame);
             var n = await socket.ReceiveAsync(buf, SocketFlags.None, ct).ConfigureAwait(false);
-            if (n == 0) throw new IOException("被控服务关闭了连接");
+            if (n == 0) throw new IOException(L.Get("Agent.Closed"));
             decoder.Push(buf.AsSpan(0, n));
         }
     }

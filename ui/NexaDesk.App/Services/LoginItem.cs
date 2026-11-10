@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using NexaDesk.Localization;
 
 namespace NexaDesk.Services;
 
@@ -35,10 +36,10 @@ public sealed partial class SmAppServiceLoginItem : ILoginItem
 
     static string Describe(nint error)
     {
-        if (error == 0) return "未知错误";
+        if (error == 0) return L.Get("LoginItem.UnknownError");
         var text = Send(error, Selector("localizedDescription"));
         var utf8 = text == 0 ? 0 : Send(text, Selector("UTF8String"));
-        return utf8 == 0 ? "未知错误" : Marshal.PtrToStringUTF8(utf8) ?? "未知错误";
+        return utf8 == 0 ? L.Get("LoginItem.UnknownError") : Marshal.PtrToStringUTF8(utf8) ?? L.Get("LoginItem.UnknownError");
     }
 
     public LoginItemStatus Status
@@ -55,7 +56,7 @@ public sealed partial class SmAppServiceLoginItem : ILoginItem
     string? Call(string selector)
     {
         var app = MainApp();
-        if (app == 0) return "需要 macOS 13 或更新版本";
+        if (app == 0) return L.Get("LoginItem.NeedsMacOS13");
         return SendWithError(app, Selector(selector), out var error) ? null : Describe(error);
     }
 

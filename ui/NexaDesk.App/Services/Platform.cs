@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Avalonia.Threading;
+using NexaDesk.Localization;
 
 namespace NexaDesk.Services;
 
@@ -56,7 +57,7 @@ public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
     public string? Start(string listen, string deviceName, string signalServer, bool announceOnLan)
     {
         var path = Locate();
-        if (path == null) return "找不到 nexa-agent。请使用打包好的 NexaDesk.app。";
+        if (path == null) return L.Get("Platform.AgentMissing");
         var info = new ProcessStartInfo(path)
         {
             UseShellExecute = false,
@@ -89,7 +90,7 @@ public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
         }
         catch (Exception e)
         {
-            return $"无法启动 nexa-agent：{e.Message}";
+            return L.Format("Platform.AgentStartFailed", e.Message);
         }
         lock (_gate)
         {
@@ -195,7 +196,8 @@ public sealed class SettingsStore(string path) : ISettingsStore
             if (f.Length > 1 << 16) return new AppSettings();
             var s = JsonSerializer.Deserialize(f, SettingsJson.Default.AppSettings) ?? new AppSettings();
             // Only what the app itself would have written is honoured.
-            return new AppSettings(ViewModels.Texts.NormalizeServer(s.SignalServer) ?? "", s.AnnounceOnLan);
+            return new AppSettings(ViewModels.Texts.NormalizeServer(s.SignalServer) ?? "", s.AnnounceOnLan,
+                Localization.L.IsSupported(s.Language ?? "") ? s.Language! : "");
         }
         catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException)
         {

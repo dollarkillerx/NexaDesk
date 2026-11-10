@@ -119,7 +119,8 @@ public abstract record AgentMessage
     public sealed record SessionEnded(ulong Id, string DeviceName, string Reason) : AgentMessage;
     public sealed record Pairings(IReadOnlyList<PairedDevice> Devices) : AgentMessage;
     public sealed record RequestClosed(ulong ReqId, string Reason) : AgentMessage;
-    public sealed record Notice(NoticeKind Kind, string Text) : AgentMessage;
+    /// <summary>Text is English. For ConnectionFailed, Remote and Reason let the UI word it.</summary>
+    public sealed record Notice(NoticeKind Kind, string Text, string Remote = "", string Reason = "") : AgentMessage;
     public sealed record Refused(string Command, string Reason) : AgentMessage;
     /// <summary>A file transfer of session <paramref name="SessionId"/> moved on.</summary>
     public sealed record Transfer(ulong SessionId, TransferInfo Info) : AgentMessage;
@@ -321,7 +322,7 @@ public abstract record AgentMessage
     static Notice DecodeNotice(ReadOnlySpan<byte> data)
     {
         var kind = NoticeKind.Warning;
-        var text = "";
+        string text = "", remote = "", reason = "";
         var r = new ProtoReader(data);
         while (r.Next(out var f))
         {
@@ -329,10 +330,12 @@ public abstract record AgentMessage
             {
                 case 1: kind = (NoticeKind)r.Int32(); break;
                 case 2: text = r.String(); break;
+                case 3: remote = r.String(); break;
+                case 4: reason = r.String(); break;
                 default: r.Skip(); break;
             }
         }
-        return new Notice(kind, text);
+        return new Notice(kind, text, remote, reason);
     }
 
     /// <summary>Same fields as the client ABI's Transfer, shifted by one for session_id.</summary>

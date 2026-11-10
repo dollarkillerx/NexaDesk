@@ -1,8 +1,15 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using NexaDesk.Localization;
 using NexaDesk.Services;
 
 namespace NexaDesk.ViewModels;
+
+/// <summary>A choice in the language menu; an empty code follows macOS.</summary>
+public sealed record LanguageOption(string Code, string Name)
+{
+    public override string ToString() => Name;
+}
 
 /// <summary>
 /// The optional self-hosted signaling server (§4.3), where device IDs are looked up. Empty, the
@@ -19,7 +26,26 @@ public sealed partial class SettingsViewModel : ObservableObject
         _savedServer = loaded.SignalServer;
         _serverInput = _savedServer;
         _announceOnLan = loaded.AnnounceOnLan;
+        _startupLanguage = loaded.Language;
+        LanguageOptions = [new LanguageOption("", L.Get("Settings.LanguageSystem")), .. L.Languages.Select(l => new LanguageOption(l.Code, l.Name))];
+        _selectedLanguage = LanguageOptions.FirstOrDefault(o => o.Code == loaded.Language) ?? LanguageOptions[0];
     }
+
+    readonly string _startupLanguage;
+
+    /// <summary>"Follow macOS", then each language in its own name.</summary>
+    public IReadOnlyList<LanguageOption> LanguageOptions { get; }
+
+    /// <summary>Saved at once; the text changes at the next start.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(LanguageRestartNeeded))]
+    private LanguageOption _selectedLanguage;
+
+    public bool LanguageRestartNeeded => SelectedLanguage.Code != _startupLanguage;
+
+    partial void OnSelectedLanguageChanged(LanguageOption value) => Persist();
+
+    void Persist() => _store.Save(new AppSettings(SavedServer, AnnounceOnLan, SelectedLanguage?.Code ?? ""));
 
     /// <summary>Whether this Mac's host is announced on the LAN (§4.11). Saved at once; applies on the next start.</summary>
     [ObservableProperty]
@@ -30,7 +56,7 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     partial void OnAnnounceOnLanChanged(bool value)
     {
-        _store.Save(new AppSettings(SavedServer, value));
+        Persist();
         AnnounceChanged?.Invoke(value);
     }
 
@@ -53,12 +79,12 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     public string? ServerHint =>
         ServerInput.Trim().Length > 0 && Texts.NormalizeServer(ServerInput) == null
-            ? "格式应为 wss://服务器[:端口]，例如 wss://signal.example.com"
+            ? L.Get("Main.ServerHint")
             : null;
 
     public string ServerStatus => HasServer
-        ? $"使用中：{SavedServer}"
-        : "未使用（跨网络推荐 Tailscale）";
+        ? L.Format("Main.ServerInUse", SavedServer)
+        : L.Get("Main.ServerNotUsed");
 
     bool CanSave() => IsDirty && ServerHint == null;
 
@@ -69,7 +95,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         if (value == null) return;
         SavedServer = value;
         ServerInput = value;
-        _store.Save(new AppSettings(value, AnnounceOnLan));
+        Persist();
         ServerChanged?.Invoke(value);
     }
 }

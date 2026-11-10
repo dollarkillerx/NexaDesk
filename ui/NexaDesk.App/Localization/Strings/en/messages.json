@@ -1,0 +1,21 @@
+{
+  "Messages.GameWssRelay": "Game mode: UDP is blocked, so the session goes through the WSS (TCP) relay. Expect noticeably more latency and stutter.",
+  "Messages.GameDerp": "Game mode: Tailscale is relaying through DERP, which limits latency and bandwidth.",
+  "Messages.KeymapInvalid": "keymap.toml has an error, so the built-in keyboard rules are used: {0}",
+  "Messages.KeymapUnusable": "keymap.toml cannot be used, so the built-in rules are shown: {0}",
+  "Messages.AudioOutput": "This Mac's sound output could not start.",
+  "Messages.RememberHost": "Could not save the pairing with this device: {0}",
+  "Messages.AudioPlayback": "The other Mac's sound cannot be played here: {0}",
+  "Messages.PointerLock": "Game mode could not lock the pointer: {0}",
+  "Messages.ConnectionFailed": "A connection from {0} failed: {1}",
+  "Messages.ClipSensitive": "Sensitive content stayed on this Mac and was not synced",
+  "Messages.ClipTooLarge": "{0} is too large ({1:F1} MB) to sync; use file transfer instead",
+  "Messages.ClipPeerRejected": "The other Mac did not take this Mac's clipboard",
+  "Messages.ClipWriteFailed": "Could not put the other Mac's clipboard on this Mac",
+  "Messages.ClipFetchFailed": "The {0} on the other Mac's clipboard did not arrive",
+  "Messages.ClipUnavailable": "unavailable: {0}",
+  "Messages.ClipKind.text": "text",
+  "Messages.ClipKind.html": "HTML",
+  "Messages.ClipKind.rtf": "RTF",
+  "Messages.ClipKind.png": "image"
+}

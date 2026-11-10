@@ -207,11 +207,16 @@ public sealed record ConnectedEvent(ulong Tag, string HostKey, string HostName, 
 public sealed record StreamChangedEvent(ulong Tag, uint Codec, StreamMode Mode, uint Width, uint Height, uint Fps, uint Display = 0) : ClientEvent(Tag);
 public sealed record InputCaptureEvent(ulong Tag, CaptureState State) : ClientEvent(Tag);
 public sealed record PasteGateEvent(ulong Tag, uint WaitedMs, bool TimedOut) : ClientEvent(Tag);
-public sealed record ClipboardNoticeEvent(ulong Tag, string Text) : ClientEvent(Tag);
+/// <summary>Clipboard status. Text is English; Code lets the UI word it. Kind is "text", "html", "rtf" or "png".</summary>
+public enum ClipboardCode { Other = 0, SensitiveKeptLocal = 1, TooLarge = 2, PeerRejected = 3, WriteFailed = 4, FetchFailed = 5, Unavailable = 6 }
+public sealed record ClipboardNoticeEvent(ulong Tag, string Text, ClipboardCode Code = ClipboardCode.Other, string Kind = "",
+    ulong Size = 0, string Detail = "") : ClientEvent(Tag);
 public sealed record StatsEvent(ulong Tag, StreamStats Stats) : ClientEvent(Tag);
 public sealed record DisconnectedEvent(ulong Tag, DisconnectReason Reason, string Message) : ClientEvent(Tag);
 public sealed record HostKeyEvent(ulong Tag) : ClientEvent(Tag);
-public sealed record WarningEvent(ulong Tag, string Text) : ClientEvent(Tag);
+/// <summary>What the core wants said. Text is English; Code lets the UI word it, Detail is the variable part.</summary>
+public enum WarningCode { Other = 0, GameWssRelay = 1, GameDerp = 2, KeymapInvalid = 3, AudioOutput = 4, RememberHost = 5, AudioPlayback = 6, PointerLock = 7 }
+public sealed record WarningEvent(ulong Tag, string Text, WarningCode Code = WarningCode.Other, string Detail = "") : ClientEvent(Tag);
 /// <summary>§4.4: the transport dropped and attempt n is starting; a Connected for the tag ends it.</summary>
 public sealed record ReconnectingEvent(ulong Tag, uint Attempt, string Reason, uint RemainingMs) : ClientEvent(Tag);
 /// <summary>A Tailscale peer answering on the NexaDesk port. Address is "ip:port".</summary>
@@ -254,11 +259,11 @@ public static class ClientCodec
             4 => Stream(tag, payload),
             5 => new InputCaptureEvent(tag, (CaptureState)FirstVarint(payload, 1)),
             6 => PasteGate(tag, payload),
-            7 => new ClipboardNoticeEvent(tag, FirstString(payload, 1)),
+            7 => ClipboardNotice(tag, payload),
             8 => Stats(tag, payload),
             9 => Disconnected(tag, payload),
             10 => new HostKeyEvent(tag),
-            11 => new WarningEvent(tag, FirstString(payload, 1)),
+            11 => Warning(tag, payload),
             40 => Reconnecting(tag, payload),
             41 => Tailnet(tag, payload),
             42 => Transfer(tag, payload),
@@ -519,6 +524,51 @@ public static class ClientCodec
         return new TailnetDevicesEvent(tag, list, state, name, dns, ips);
     }
 
+    static ClipboardNoticeEvent ClipboardNotice(ulong tag, ReadOnlySpan<byte> data)
+    {
+        string text = "", kind = "", detail = "";
+        var code = ClipboardCode.Other;
+        ulong size = 0;
+        var r = new ProtoReader(data);
+        while (r.Next(out var f))
+        {
+            switch (f)
+            {
+                case 1: text = r.String(); break;
+                case 2:
+                    var v = r.UInt64();
+                    code = v <= 6 ? (ClipboardCode)v : ClipboardCode.Other;
+                    break;
+                case 3: kind = r.String(); break;
+                case 4: size = r.UInt64(); break;
+                case 5: detail = r.String(); break;
+                default: r.Skip(); break;
+            }
+        }
+        return new ClipboardNoticeEvent(tag, text, code, kind, size, detail);
+    }
+
+    static WarningEvent Warning(ulong tag, ReadOnlySpan<byte> data)
+    {
+        string text = "", detail = "";
+        var code = WarningCode.Other;
+        var r = new ProtoReader(data);
+        while (r.Next(out var f))
+        {
+            switch (f)
+            {
+                case 1: text = r.String(); break;
+                case 2:
+                    var v = r.UInt64();
+                    code = v <= 7 ? (WarningCode)v : WarningCode.Other;
+                    break;
+                case 3: detail = r.String(); break;
+                default: r.Skip(); break;
+            }
+        }
+        return new WarningEvent(tag, text, code, detail);
+    }
+
     static LanDevicesEvent Lan(ulong tag, ReadOnlySpan<byte> data)
     {
         var list = new List<LanDevice>();
@@ -643,20 +693,22 @@ public sealed record KeymapRequest(string DataDir, RemoteOs LocalOs, RemoteOs Re
     }
 }
 
-public sealed record KeymapView(IReadOnlyList<KeymapRule> Rules, string Error)
+/// <summary>Error is English; FileError, when set, is the reason keymap.toml could not be used, for the UI to word.</summary>
+public sealed record KeymapView(IReadOnlyList<KeymapRule> Rules, string Error, string FileError = "")
 {
     public static KeymapView Decode(ReadOnlySpan<byte> data)
     {
         var rules = new List<KeymapRule>();
-        var error = "";
+        string error = "", fileError = "";
         var r = new ProtoReader(data);
         while (r.Next(out var f))
         {
             if (f == 1) rules.Add(KeymapRule.Read(r.Bytes()));
             else if (f == 2) error = r.String();
+            else if (f == 3) fileError = r.String();
             else r.Skip();
         }
-        return new KeymapView(rules, error);
+        return new KeymapView(rules, error, fileError);
     }
 }
 

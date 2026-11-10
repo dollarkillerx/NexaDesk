@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using NexaDesk.Localization;
 using NexaDesk.Services;
 
 namespace NexaDesk.ViewModels;
@@ -29,11 +30,11 @@ public sealed partial class LoginItemViewModel : ObservableObject
 
     public string StatusText => Status switch
     {
-        LoginItemStatus.Enabled => "登录 macOS 后自动打开 NexaDesk（允许控制仍需你手动开启）",
-        LoginItemStatus.RequiresApproval => "需要在“系统设置 → 通用 → 登录项”中允许 NexaDesk",
-        LoginItemStatus.NotFound => "只有安装好的 NexaDesk.app 才能设为登录时启动",
-        LoginItemStatus.Unsupported => "需要 macOS 13 或更新版本",
-        _ => "关闭：登录后不会自动打开",
+        LoginItemStatus.Enabled => L.Get("LoginItem.Enabled"),
+        LoginItemStatus.RequiresApproval => L.Get("LoginItem.RequiresApproval"),
+        LoginItemStatus.NotFound => L.Get("LoginItem.NotFound"),
+        LoginItemStatus.Unsupported => L.Get("LoginItem.NeedsMacOS13"),
+        _ => L.Get("LoginItem.Off"),
     };
 
     public void Refresh()
@@ -48,7 +49,7 @@ public sealed partial class LoginItemViewModel : ObservableObject
     {
         if (_syncing) return;
         var why = value ? _item.Register() : _item.Unregister();
-        Error = why == null ? null : (value ? "无法设为登录时启动：" : "无法取消登录时启动：") + why;
+        Error = why == null ? null : (value ? L.Format("LoginItem.CannotEnable", why) : L.Format("LoginItem.CannotDisable", why));
         Refresh();
     }
 
@@ -94,13 +95,13 @@ public sealed partial class TrayViewModel : ObservableObject
             : _host.State switch
             {
                 HostState.Hosting when _host.Tailscale.IsPresent && _host.Tailscale.ConnectName.Length > 0 =>
-                    $"允许控制中 · {_host.Tailscale.ConnectName}",
-                HostState.Hosting => _host.HasDeviceId ? $"允许控制中 · ID {_host.DeviceIdDisplay}" : "允许控制中",
-                HostState.Starting => "正在开启允许控制…",
-                _ => "未允许别人控制本机",
+                    L.Format("Tray.HostingAt", _host.Tailscale.ConnectName),
+                HostState.Hosting => _host.HasDeviceId ? L.Format("Tray.HostingId", _host.DeviceIdDisplay) : L.Get("Tray.Hosting"),
+                HostState.Starting => L.Get("Tray.Starting"),
+                _ => L.Get("Tray.Stopped"),
             };
         ToolTip = $"NexaDesk — {StatusText}";
-        HostingLabel = _host.State == HostState.Stopped ? "允许别人控制本机" : "停止允许控制";
+        HostingLabel = _host.State == HostState.Stopped ? L.Get("Tray.AllowControl") : L.Get("Tray.StopControl");
         DisconnectCommand.NotifyCanExecuteChanged();
     }
 

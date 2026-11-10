@@ -1,3 +1,4 @@
+using NexaDesk.Localization;
 using NexaDesk.Proto;
 using NexaDesk.Services;
 using static NexaDesk.Native.NativeMethods;
@@ -37,7 +38,7 @@ public sealed unsafe class NativeKeymap(string dataDir) : IKeymapService
         }
         catch (Exception e) when (e is NexaException or ProtoException or DllNotFoundException or EntryPointNotFoundException)
         {
-            return new KeymapView([], $"无法读取键盘规则：{e.Message}");
+            return new KeymapView([], L.Format("Keymap.CannotRead", e.Message));
         }
     }
 

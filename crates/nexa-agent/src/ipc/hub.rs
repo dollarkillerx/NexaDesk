@@ -336,10 +336,12 @@ impl AgentUi for IpcHub {
                 })));
                 Outgoing::StatusChanged
             }
-            AgentEvent::ConnectionFailed { remote, reason } => notice(
-                NoticeKind::ConnectionFailed,
-                format!("来自 {remote} 的连接失败：{reason}"),
-            ),
+            AgentEvent::ConnectionFailed { remote, reason } => message(AgentBody::Notice(Notice {
+                kind: NoticeKind::ConnectionFailed as i32,
+                text: format!("a connection from {remote} failed: {reason}"),
+                remote: remote.to_string(),
+                reason,
+            })),
             AgentEvent::ClipboardNotice(n) => notice(NoticeKind::Clipboard, format!("{n:?}")),
             AgentEvent::Warning(w) => notice(NoticeKind::Warning, w),
             AgentEvent::Transfer { session, event } => {
@@ -354,6 +356,7 @@ fn notice(kind: NoticeKind, text: String) -> Outgoing {
     message(AgentBody::Notice(Notice {
         kind: kind as i32,
         text,
+        ..Default::default()
     }))
 }
 

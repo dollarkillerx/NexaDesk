@@ -1,13 +1,14 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:NexaDesk.ViewModels"
+             xmlns:l="using:NexaDesk.Localization"
              x:Class="NexaDesk.Views.TransferListView"
              x:DataType="vm:TransferListViewModel">
   <!-- Files to and from the other side (§3.1 stream 4). Shared by the toolbar and the banner. -->
   <StackPanel Spacing="4">
     <Grid ColumnDefinitions="*,Auto">
       <TextBlock Name="TransferSummary" Classes="label" Text="{Binding Summary}" VerticalAlignment="Center" />
-      <Button Grid.Column="1" Classes="small" Content="清除已结束" Command="{Binding ClearFinishedCommand}" />
+      <Button Grid.Column="1" Classes="small" Content="{l:T Transfer.ClearFinished}" Command="{Binding ClearFinishedCommand}" />
     </Grid>
     <TextBlock Classes="errorText" Text="{Binding Error}" IsVisible="{Binding Error, Converter={x:Static ObjectConverters.IsNotNull}}" />
     <ScrollViewer MaxHeight="196" VerticalScrollBarVisibility="Auto">
@@ -26,9 +27,9 @@
                            Text="{Binding StatusText}" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" />
               </StackPanel>
               <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center" Margin="10,0,0,0">
-                <Button Classes="small accent" Content="接收" Command="{Binding AcceptCommand}" IsVisible="{Binding NeedsAnswer}" />
-                <Button Classes="small" Content="拒绝" Command="{Binding DeclineCommand}" IsVisible="{Binding NeedsAnswer}" />
-                <Button Classes="small" Content="取消" Command="{Binding CancelCommand}" IsVisible="{Binding ShowProgress}" />
+                <Button Classes="small accent" Content="{l:T Transfer.Accept}" Command="{Binding AcceptCommand}" IsVisible="{Binding NeedsAnswer}" />
+                <Button Classes="small" Content="{l:T Transfer.Decline}" Command="{Binding DeclineCommand}" IsVisible="{Binding NeedsAnswer}" />
+                <Button Classes="small" Content="{l:T Transfer.Cancel}" Command="{Binding CancelCommand}" IsVisible="{Binding ShowProgress}" />
               </StackPanel>
             </Grid>
           </DataTemplate>

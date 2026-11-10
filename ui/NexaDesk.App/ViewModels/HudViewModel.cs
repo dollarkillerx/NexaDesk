@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
+using NexaDesk.Localization;
 using NexaDesk.Proto;
 
 namespace NexaDesk.ViewModels;
@@ -18,35 +19,35 @@ public sealed partial class HudViewModel : ObservableObject
 
     public ObservableCollection<HudSegment> Segments { get; } = new();
 
-    [ObservableProperty] private string _pathText = "路径：—";
+    [ObservableProperty] private string _pathText = L.Get("Hud.PathNone");
     [ObservableProperty] private string _fpsText = "— fps";
-    [ObservableProperty] private string _note = "等待第一帧…";
+    [ObservableProperty] private string _note = L.Get("Hud.WaitingFirstFrame");
 
     public static string Label(LatencySegment s) => s switch
     {
-        LatencySegment.HostAndNetwork => "被控端 + 网络",
-        LatencySegment.Receive => "收齐分片",
-        LatencySegment.DecodeQueue => "等待解码",
-        LatencySegment.Decode => "解码",
-        LatencySegment.PresentQueue => "等待呈现",
-        LatencySegment.Present => "呈现",
-        _ => "总计",
+        LatencySegment.HostAndNetwork => L.Get("Hud.Segment.HostAndNetwork"),
+        LatencySegment.Receive => L.Get("Hud.Segment.Receive"),
+        LatencySegment.DecodeQueue => L.Get("Hud.Segment.DecodeQueue"),
+        LatencySegment.Decode => L.Get("Hud.Segment.Decode"),
+        LatencySegment.PresentQueue => L.Get("Hud.Segment.PresentQueue"),
+        LatencySegment.Present => L.Get("Hud.Segment.Present"),
+        _ => L.Get("Hud.Segment.Total"),
     };
 
     static string Ms(uint us) => us >= 10_000 ? $"{us / 1000.0:F0}" : $"{us / 1000.0:F1}";
 
     public void Update(StreamStats s, DateTimeOffset now)
     {
-        PathText = s.Path == PathKind.Unknown ? "路径：—" : $"路径：{Texts.Path(s.Path, s.PathDetail)}";
+        PathText = s.Path == PathKind.Unknown ? L.Get("Hud.PathNone") : L.Format("Hud.Path", Texts.Path(s.Path, s.PathDetail));
         var latency = s.Latency ?? [];
         Segments.Clear();
         foreach (var seg in latency.OrderBy(l => l.Segment == LatencySegment.Total ? 1 : 0).ThenBy(l => l.Segment))
             Segments.Add(new HudSegment(Label(seg.Segment), $"{Ms(seg.P50Us)} / {Ms(seg.P99Us)} ms", seg.Segment == LatencySegment.Total));
         Note = latency.Count == 0
-            ? "等待第一帧…"
+            ? L.Get("Hud.WaitingFirstFrame")
             : latency.Any(l => l.Segment == LatencySegment.HostAndNetwork)
-                ? "中位数 / P99，最近约 240 帧"
-                : "中位数 / P99；时钟尚未对齐，暂缺被控端段";
+                ? L.Get("Hud.NoteFull")
+                : L.Get("Hud.NoteNoClock");
         var last = _last;
         var lastAt = _lastAt;
         _last = s;

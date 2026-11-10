@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using NexaDesk.Localization;
 using NexaDesk.Proto;
 
 namespace NexaDesk.ViewModels;
@@ -44,9 +45,9 @@ public sealed partial class TailscaleViewModel : ObservableObject
     public string StatusText => State switch
     {
         TailscaleState.Running or TailscaleState.AddressOnly when ConnectName.Length > 0 =>
-            $"Tailscale 已连接：{ConnectName}",
-        TailscaleState.Running or TailscaleState.AddressOnly => "Tailscale 已连接",
-        TailscaleState.Absent => "未检测到 Tailscale",
+            L.Format("Tailscale.ConnectedAs", ConnectName),
+        TailscaleState.Running or TailscaleState.AddressOnly => L.Get("Tailscale.Connected"),
+        TailscaleState.Absent => L.Get("Tailscale.NotFound"),
         _ => "",
     };
 

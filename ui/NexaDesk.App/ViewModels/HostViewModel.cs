@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using NexaDesk.Localization;
 using NexaDesk.Proto;
 using NexaDesk.Services;
 
@@ -11,12 +12,12 @@ public enum HostState { Stopped, Starting, Hosting }
 public sealed partial class PairedDeviceViewModel(HostViewModel owner, PairedDevice device, string lastSeen) : ObservableObject
 {
     public PairedDevice Device { get; } = device;
-    public string Name => string.IsNullOrWhiteSpace(Device.Name) ? "(未命名设备)" : Device.Name;
+    public string Name => string.IsNullOrWhiteSpace(Device.Name) ? L.Get("Host.UnnamedDevice") : Device.Name;
     public string Fingerprint => Texts.ShortFingerprint(Device.DeviceKey);
     public string PermsText => Texts.Permissions(Device.Perms);
     public string LastSeen { get; } = lastSeen;
     public bool Unattended => Device.Unattended;
-    public string ConsentText => Device.Unattended ? "连接时不再询问" : "每次连接都需确认";
+    public string ConsentText => Device.Unattended ? L.Get("Host.ConsentNever") : L.Get("Host.ConsentAlways");
 
     [RelayCommand]
     private void Revoke() => owner.Revoke(this);
@@ -47,7 +48,7 @@ public sealed partial class BannerViewModel : ObservableObject
     public TransferListViewModel Transfers { get; }
     public bool CanSendFiles => Session.Perms.File;
     public string DropHint => CanSendFiles
-        ? $"把文件拖到这里发给对方 · 收到的文件在 {Texts.DownloadsFolder}"
+        ? L.Format("Host.DropHint", Texts.DownloadsFolder)
         : "";
 
     [ObservableProperty] private string _durationText = "00:00";
@@ -55,9 +56,9 @@ public sealed partial class BannerViewModel : ObservableObject
 
     public ulong SessionId => Session.Id;
     public bool HasInput => Session.Perms.Input;
-    public string Headline => HasInput ? $"「{Session.DeviceName}」正在控制本机" : $"「{Session.DeviceName}」正在查看本机屏幕";
-    public string PermsText => $"权限：{Texts.Permissions(Session.Perms)}";
-    public string Detail => $"{Session.Remote} · 指纹 {Texts.ShortFingerprint(Session.DeviceKey)}";
+    public string Headline => HasInput ? L.Format("Host.Controlling", Session.DeviceName) : L.Format("Host.Viewing", Session.DeviceName);
+    public string PermsText => L.Format("Host.Perms", Texts.Permissions(Session.Perms));
+    public string Detail => L.Format("Host.Detail", Session.Remote, Texts.ShortFingerprint(Session.DeviceKey));
 
     public void Tick(DateTimeOffset now) => DurationText = Texts.Duration(now - _startedAt);
 
@@ -131,8 +132,8 @@ public sealed partial class HostViewModel : ObservableObject
     partial void OnListenEverywhereChanged(bool value) => OnPropertyChanged(nameof(ListenOnOne));
 
     public string ListenSummary => ListenEverywhere
-        ? $"所有网络（局域网和 Tailscale），端口 {Texts.DefaultPort}"
-        : $"只在 {ListenAddress}";
+        ? L.Format("Host.ListenEverywhereSummary", Texts.DefaultPort)
+        : L.Format("Host.ListenOnSummary", ListenAddress);
     public ConsentViewModel? Consent => _consent;
     public BannerViewModel? Banner => _banner;
 
@@ -228,12 +229,12 @@ public sealed partial class HostViewModel : ObservableObject
 
     public string StateText => State switch
     {
-        HostState.Starting => "正在启动…",
-        HostState.Hosting => "已开启：对方输入下面任一地址和一次性码即可请求连接，每次都需要你确认",
-        _ => "未开启：别人无法连接本机",
+        HostState.Starting => L.Get("Host.Starting"),
+        HostState.Hosting => L.Get("Host.HostingState"),
+        _ => L.Get("Host.StoppedState"),
     };
 
-    public string? ListenHint => !ListenEverywhere && Texts.NormalizeAddress(ListenAddress) == null ? "格式应为 IP:端口" : null;
+    public string? ListenHint => !ListenEverywhere && Texts.NormalizeAddress(ListenAddress) == null ? L.Get("Host.ListenHint") : null;
 
     [RelayCommand]
     private void UseSuggestion(string address)
@@ -257,12 +258,12 @@ public sealed partial class HostViewModel : ObservableObject
         var ips = everywhere ? _addresses.Candidates().Where(ip => ip != "127.0.0.1").ToList() : [host];
         var tailnet = ips.Where(IsTailnet).ToList();
         if (tailnet.Count > 0 && Tailscale.DnsName.Length > 0)
-            ConnectOptions.Add(new ConnectOption("Tailscale", Tailscale.DnsName + suffix, $"或 {tailnet[0]}{suffix}"));
+            ConnectOptions.Add(new ConnectOption("Tailscale", Tailscale.DnsName + suffix, L.Format("Host.OrAddress", tailnet[0], suffix)));
         else
             foreach (var ip in tailnet) ConnectOptions.Add(new ConnectOption("Tailscale", Bracket(ip) + suffix));
         foreach (var ip in ips.Where(ip => !IsTailnet(ip)))
-            ConnectOptions.Add(new ConnectOption(ip == "127.0.0.1" || ip == "::1" ? "仅本机" : "局域网", Bracket(ip) + suffix));
-        if (HasDeviceId) ConnectOptions.Add(new ConnectOption("设备 ID", DeviceIdDisplay, "经自建信令服务器"));
+            ConnectOptions.Add(new ConnectOption(ip == "127.0.0.1" || ip == "::1" ? L.Get("Host.KindLocalOnly") : L.Get("Host.KindLan"), Bracket(ip) + suffix));
+        if (HasDeviceId) ConnectOptions.Add(new ConnectOption(L.Get("Host.KindDeviceId"), DeviceIdDisplay, L.Get("Host.ViaServer")));
     }
 
     partial void OnStateChanged(HostState value) => RebuildOptions();
@@ -286,12 +287,12 @@ public sealed partial class HostViewModel : ObservableObject
         var listen = ListenEverywhere ? $"[::]:{Texts.DefaultPort}" : Texts.NormalizeAddress(ListenAddress);
         if (listen == null)
         {
-            Error = "监听地址格式不对，应为 IP:端口，例如 192.168.1.20:47800。";
+            Error = L.Get("Host.BadListen");
             return;
         }
         if (!_permissions.Check().ScreenRecording)
         {
-            Error = "需要先授予 NexaDesk“屏幕录制”权限，别人才能看到本机屏幕。";
+            Error = L.Get("Host.NeedScreenRecording");
             ShowPermissionGuide();
             return;
         }
@@ -340,7 +341,7 @@ public sealed partial class HostViewModel : ObservableObject
         {
             _process.Kill();
             State = HostState.Stopped;
-            Error ??= "被控服务启动超时。";
+            Error ??= L.Get("Host.StartTimeout");
         }
     }
 
@@ -408,7 +409,7 @@ public sealed partial class HostViewModel : ObservableObject
                 break;
             case AgentMessage.IncomingRequest r:
                 // The agent asks one question at a time; a new one replaces anything stale.
-                _consent?.Expire("被新的请求取代");
+                _consent?.Expire(L.Get("Host.Superseded"));
                 var consent = new ConsentViewModel(r, _link, _now());
                 consent.Finished += c =>
                 {
@@ -426,7 +427,7 @@ public sealed partial class HostViewModel : ObservableObject
                 break;
             case AgentMessage.SessionEnded e:
                 if (_banner?.SessionId == e.Id) HideBanner();
-                Notice = $"与「{e.DeviceName}」的会话已结束。";
+                Notice = L.Format("Host.SessionEnded", e.DeviceName);
                 _link.Send(new UiRequest.ListPairings());
                 break;
             case AgentMessage.Pairings p:
@@ -436,18 +437,18 @@ public sealed partial class HostViewModel : ObservableObject
                     Paired.Add(new PairedDeviceViewModel(this, d, Texts.Ago(DateTimeOffset.FromUnixTimeSeconds((long)d.LastSeen), now)));
                 break;
             case AgentMessage.Notice n:
-                Notice = n.Text;
+                Notice = Messages.Notice(n);
                 break;
             case AgentMessage.Transfer t:
                 if (_banner?.SessionId == t.SessionId) _banner.Transfers.OnUpdate(t.Info);
                 break;
             case AgentMessage.Refused { Command: "files" } r when _banner != null:
-                _banner.Transfers.Error = $"无法发送：{r.Reason}";
+                _banner.Transfers.Error = L.Format("Host.CannotSend", r.Reason);
                 break;
             case AgentMessage.Refused r:
                 Error = r.Command == "policy"
-                    ? "只能在连接确认时开启“下次无需确认”。"
-                    : $"操作未完成：{r.Reason}";
+                    ? L.Get("Host.PolicyRefused")
+                    : L.Format("Host.Refused", r.Reason);
                 break;
         }
     }
@@ -486,7 +487,7 @@ public sealed partial class HostViewModel : ObservableObject
         SignalProblem = false;
         Paired.Clear();
         // With no UI the agent itself ends the session and denies the open question.
-        _consent?.Expire("被控服务已停止");
+        _consent?.Expire(L.Get("Host.AgentStopped"));
         HideBanner();
         if (error != null) Error = error;
     }
@@ -494,7 +495,7 @@ public sealed partial class HostViewModel : ObservableObject
     void OnLinkLost(string? why)
     {
         if (State == HostState.Stopped) return;
-        Stopped(_stopping ? null : "与被控服务的连接断开了，已停止允许控制。");
+        Stopped(_stopping ? null : L.Get("Host.LinkLost"));
     }
 
     void OnProcessExited(AgentExit exit)
@@ -504,17 +505,17 @@ public sealed partial class HostViewModel : ObservableObject
         string message;
         if (text.Contains("Screen Recording", StringComparison.OrdinalIgnoreCase))
         {
-            message = "缺少“屏幕录制”权限，被控服务无法启动。";
+            message = L.Get("Host.ExitScreenRecording");
             ShowPermissionGuide();
         }
         else if (text.Contains("cannot listen", StringComparison.OrdinalIgnoreCase))
-            message = $"无法在 {ListenAddress} 上监听：地址不属于本机，或端口已被占用。";
+            message = L.Format("Host.ExitCannotListen", ListenAddress);
         else if (text.Contains("already running", StringComparison.OrdinalIgnoreCase))
-            message = "另一个被控服务已经在运行。";
+            message = L.Get("Host.ExitAlreadyRunning");
         else if (text.Contains("device key", StringComparison.OrdinalIgnoreCase))
-            message = "无法读取本机设备密钥（钥匙串）。";
+            message = L.Get("Host.ExitDeviceKey");
         else
-            message = $"被控服务意外退出（代码 {exit.Code}）。";
+            message = L.Format("Host.ExitUnexpected", exit.Code);
         var detail = text.Length > 0 ? $"\n{text.Split('\n').Last()}" : "";
         if (State != HostState.Stopped) Stopped(message + detail);
         else Error = message + detail;
@@ -536,7 +537,7 @@ public enum PermissionContext { Hosting, Viewing }
 sealed class NoLoginItem : ILoginItem
 {
     public LoginItemStatus Status => LoginItemStatus.Unsupported;
-    public string? Register() => "需要 macOS 13 或更新版本";
+    public string? Register() => L.Get("LoginItem.NeedsMacOS13");
     public string? Unregister() => null;
     public void OpenSettings() { }
 }
@@ -565,21 +566,21 @@ public sealed partial class PermissionGuideViewModel : ObservableObject
         Recheck();
     }
 
-    public string Title => "需要 macOS 权限";
+    public string Title => L.Get("Host.PermTitle");
 
     public string Intro => Context == PermissionContext.Hosting
-        ? "要让别人看到并控制这台 Mac，需要在“系统设置 → 隐私与安全性”中为 NexaDesk 打开下面的开关。"
-        : "要把 Cmd+Tab 等全部按键发给对方，需要为 NexaDesk 打开“辅助功能”。没有它也能控制，但系统快捷键会留在本机。";
+        ? L.Get("Host.PermIntroHosting")
+        : L.Get("Host.PermIntroViewing");
 
     public bool ShowScreenRecording => Context == PermissionContext.Hosting;
-    public string ScreenRecordingStatus => ScreenRecording ? "已授予" : "未授予";
-    public string AccessibilityStatus => Accessibility ? "已授予" : "未授予";
-    public string ScreenRecordingUse => "屏幕录制（必需）：让对方看到你的屏幕";
+    public string ScreenRecordingStatus => ScreenRecording ? L.Get("Host.PermGranted") : L.Get("Host.PermNotGranted");
+    public string AccessibilityStatus => Accessibility ? L.Get("Host.PermGranted") : L.Get("Host.PermNotGranted");
+    public string ScreenRecordingUse => L.Get("Host.PermScreenRecordingUse");
     public string AccessibilityUse => Context == PermissionContext.Hosting
-        ? "辅助功能：让对方操作你的键盘和鼠标；不授予则只能查看"
-        : "辅助功能：控制别人时捕获全部按键";
+        ? L.Get("Host.PermAccessibilityUseHosting")
+        : L.Get("Host.PermAccessibilityUseViewing");
     public bool AllGranted => Accessibility && (ScreenRecording || Context != PermissionContext.Hosting);
-    public string RestartNote => "打开开关后，macOS 可能要求退出并重新打开 NexaDesk 才会生效。";
+    public string RestartNote => L.Get("Host.PermRestartNote");
 
     [RelayCommand]
     private void Recheck()

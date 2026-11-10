@@ -64,7 +64,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleDevelopmentRegion</key><string>zh_CN</string>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleLocalizations</key>
+  <array><string>en</string><string>zh-Hans</string><string>ja</string></array>
   <key>CFBundleDisplayName</key><string>NexaDesk</string>
   <key>CFBundleExecutable</key><string>NexaDesk</string>
   <key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>
@@ -78,12 +80,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+  <!-- English here; each language's wording is in Resources/<lang>.lproj/InfoPlist.strings. -->
   <key>NSScreenCaptureUsageDescription</key>
-  <string>NexaDesk 需要录制屏幕，才能在你开启“允许别人控制本机”并同意连接后，把这台 Mac 的画面发给对方。</string>
+  <string>NexaDesk records the screen so that, after you turn on Allow remote control and accept a connection, the other person can see this Mac.</string>
   <key>NSAccessibilityUsageDescription</key>
-  <string>NexaDesk 需要辅助功能权限：控制别人时捕获全部按键（包括 Cmd+Tab）；被控制时，在你同意后执行对方的键盘和鼠标操作。</string>
+  <string>NexaDesk needs Accessibility to capture every key while you control another computer (including Cmd+Tab), and, once you allow it, to carry out the other person's keyboard and mouse input on this Mac.</string>
   <key>NSLocalNetworkUsageDescription</key>
-  <string>NexaDesk 需要访问本地网络，才能发现并连接局域网中的其他电脑，或接受它们的连接。</string>
+  <string>NexaDesk uses the local network to find and connect to other computers on your LAN, and to accept their connections.</string>
   <key>NSBonjourServices</key>
   <array><string>_nexadesk._udp</string></array>
 </dict>
@@ -91,6 +94,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
+# Permission prompts in the person's language (same languages as the app's own text).
+for lproj in "$ROOT/ui/NexaDesk.App/Localization/InfoPlist"/*.lproj; do
+  cp -R "$lproj" "$APP/Contents/Resources/"
+  plutil -lint "$APP/Contents/Resources/$(basename "$lproj")/InfoPlist.strings" >/dev/null
+done
 
 step "Ad-hoc signing"
 # Inside out: libraries and the helper first, then the bundle, which seals them.

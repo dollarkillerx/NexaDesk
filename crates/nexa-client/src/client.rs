@@ -67,10 +67,11 @@ use crate::{
     input::{self, InputCmd, InputThreadConfig, LockStats, ViewGeometry},
     presenter::PresenterSlot,
     proto::{
-        ClipboardNotice, Command, ConnectAuth, ConnectRequest, ConnectStage, Connected, Connecting,
-        DisconnectReason, Disconnected, DisplayInfo, Event, EventBody, KnownHost, LanDevice,
-        LanDevices, PathKind, Permissions, Ready, Reconnecting, SessionCommand, Stats,
-        StreamChanged, TailnetDevice, TailnetDevices, TailscaleState, Transfer, Warning,
+        ClipboardCode, ClipboardNotice, Command, ConnectAuth, ConnectRequest, ConnectStage,
+        Connected, Connecting, DisconnectReason, Disconnected, DisplayInfo, Event, EventBody,
+        KnownHost, LanDevice, LanDevices, PathKind, Permissions, Ready, Reconnecting,
+        SessionCommand, Stats, StreamChanged, TailnetDevice, TailnetDevices, TailscaleState,
+        Transfer, Warning, WarningCode,
     },
 };
 
@@ -393,9 +394,11 @@ impl Session {
             drop(audio);
             self.core.events.send(
                 self.tag,
-                EventBody::Warning(Warning {
-                    text: "this Mac's audio output could not start".into(),
-                }),
+                EventBody::Warning(Warning::new(
+                    WarningCode::AudioOutput,
+                    "this Mac's audio output could not start",
+                    "",
+                )),
             );
             return Ok(());
         }
@@ -1080,9 +1083,17 @@ fn start_input(
     let rx = lock(&session.input_rx).take()?;
     let tx = session.input_tx.clone();
     let (keymap, problem) = crate::keymap::for_sessions(&core.data_dir);
-    if let Some(text) = problem {
-        core.events
-            .send(session.tag, EventBody::Warning(Warning { text }));
+    if let Some(reason) = problem {
+        core.events.send(
+            session.tag,
+            EventBody::Warning(Warning::new(
+                WarningCode::KeymapInvalid,
+                format!(
+                    "keymap.toml has a problem, so the built-in keyboard rules are used: {reason}"
+                ),
+                reason,
+            )),
+        );
     }
     let profile = keymap.for_session(core.deps.os(), host_os);
     let handle = input::spawn(
@@ -1313,9 +1324,11 @@ async fn stream_session(
         Err(e) => {
             core.events.send(
                 tag,
-                EventBody::Warning(Warning {
-                    text: format!("could not remember this host: {e}"),
-                }),
+                EventBody::Warning(Warning::new(
+                    WarningCode::RememberHost,
+                    format!("could not remember this host: {e}"),
+                    e.to_string(),
+                )),
             );
             false
         }
@@ -1447,12 +1460,7 @@ async fn stream_session(
                             let _ = release_to.send(InputCmd::GateRelease(generation));
                         }),
                         on_notice: Box::new(move |notice| {
-                            events.send(
-                                tag,
-                                EventBody::Clipboard(ClipboardNotice {
-                                    text: format!("{notice:?}"),
-                                }),
-                            );
+                            events.send(tag, EventBody::Clipboard(clipboard_notice(notice)));
                         }),
                     },
                     bulk.clone(),
@@ -1465,6 +1473,9 @@ async fn stream_session(
                     tag,
                     EventBody::Clipboard(ClipboardNotice {
                         text: format!("clipboard unavailable: {e}"),
+                        code: ClipboardCode::Unavailable as i32,
+                        detail: e.to_string(),
+                        ..Default::default()
                     }),
                 );
             }
@@ -1484,9 +1495,11 @@ async fn stream_session(
             }
             Err(e) => core.events.send(
                 tag,
-                EventBody::Warning(Warning {
-                    text: format!("the host's audio cannot be played here: {e}"),
-                }),
+                EventBody::Warning(Warning::new(
+                    WarningCode::AudioPlayback,
+                    format!("the host's audio cannot be played here: {e}"),
+                    e.to_string(),
+                )),
             ),
         }
     }
@@ -1566,11 +1579,11 @@ async fn stream_session(
                     .last_config
                     .as_ref()
                     .is_some_and(|c| Mode::try_from(c.mode) == Ok(Mode::Game));
-                if let Some(text) = path_warning(path, game)
+                if let Some((code, text)) = path_warning(path, game)
                     && warned_path != Some(path)
                 {
                     warned_path = Some(path);
-                    core.events.send(tag, EventBody::Warning(Warning { text: text.to_owned() }));
+                    core.events.send(tag, EventBody::Warning(Warning::new(code, text, "")));
                 }
                 if let Some(media) = lock(&session.media).as_ref() {
                     use std::sync::atomic::Ordering::Relaxed as R;
@@ -1702,16 +1715,46 @@ async fn accept_host_streams(conn: Connection, transfers: Option<Transfers>) {
     }
 }
 
-/// What to tell someone in game mode about the path (§4.6, §5.2).
-fn path_warning(path: PathKind, game: bool) -> Option<&'static str> {
+/// A clipboard status for the toolbar: a code the UI words, and an English fallback.
+fn clipboard_notice(n: nexa_clip::ClipNotice) -> ClipboardNotice {
+    use nexa_clip::{ClipKind, ClipNotice as N};
+    let kind_name = |k: ClipKind| match k {
+        ClipKind::Text => "text",
+        ClipKind::Html => "html",
+        ClipKind::Rtf => "rtf",
+        ClipKind::Png => "png",
+    };
+    let (code, kind, size) = match n {
+        N::SensitiveKeptLocal => (ClipboardCode::SensitiveKeptLocal, "", 0),
+        N::TooLarge { kind, size } => (ClipboardCode::TooLarge, kind_name(kind), size),
+        N::PeerRejected { .. } => (ClipboardCode::PeerRejected, "", 0),
+        N::WriteFailed { .. } => (ClipboardCode::WriteFailed, "", 0),
+        N::FetchFailed { kind, .. } => (ClipboardCode::FetchFailed, kind_name(kind), 0),
+    };
+    ClipboardNotice {
+        text: format!("{n:?}"),
+        code: code as i32,
+        kind: kind.into(),
+        size,
+        detail: String::new(),
+    }
+}
+
+/// What to tell someone in game mode about the path (§4.6, §5.2). The UI words
+/// it from the code; the text is the English fallback.
+fn path_warning(path: PathKind, game: bool) -> Option<(WarningCode, &'static str)> {
     if !game {
         return None;
     }
     match path {
-        PathKind::RelayWss => {
-            Some("游戏模式：UDP 被阻断，当前经 WSS（TCP）中继传输，延迟和卡顿会明显增加")
-        }
-        PathKind::TailscaleDerp => Some("游戏模式：Tailscale 当前经 DERP 中继，延迟和带宽受限"),
+        PathKind::RelayWss => Some((
+            WarningCode::GameWssRelay,
+            "game mode: UDP is blocked, so the session goes through the WSS (TCP) relay; expect more latency and stutter",
+        )),
+        PathKind::TailscaleDerp => Some((
+            WarningCode::GameDerp,
+            "game mode: Tailscale is relaying through DERP, which limits latency and bandwidth",
+        )),
         _ => None,
     }
 }

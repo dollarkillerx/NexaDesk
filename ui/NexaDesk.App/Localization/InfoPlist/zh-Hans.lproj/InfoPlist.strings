@@ -1,0 +1,4 @@
+/* macOS shows these in its permission prompts. Copied into the bundle by scripts/package-macos.sh. */
+"NSScreenCaptureUsageDescription" = "NexaDesk 需要录制屏幕，才能在你开启“允许别人控制本机”并同意连接后，把这台 Mac 的画面发给对方。";
+"NSAccessibilityUsageDescription" = "NexaDesk 需要辅助功能权限：控制别人时捕获全部按键（包括 Cmd+Tab）；被控制时，在你同意后执行对方的键盘和鼠标操作。";
+"NSLocalNetworkUsageDescription" = "NexaDesk 需要访问本地网络，才能发现并连接局域网中的其他电脑，或接受它们的连接。";

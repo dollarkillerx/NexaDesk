@@ -1,0 +1,21 @@
+{
+  "Messages.GameWssRelay": "游戏模式：UDP 被阻断，当前经 WSS（TCP）中继传输，延迟和卡顿会明显增加",
+  "Messages.GameDerp": "游戏模式：Tailscale 当前经 DERP 中继，延迟和带宽受限",
+  "Messages.KeymapInvalid": "keymap.toml 有误，已改用内置键盘规则：{0}",
+  "Messages.KeymapUnusable": "keymap.toml 无法使用，已显示内置规则：{0}",
+  "Messages.AudioOutput": "本机的声音输出无法启动",
+  "Messages.RememberHost": "无法保存与这台设备的配对：{0}",
+  "Messages.AudioPlayback": "无法在本机播放对方的声音：{0}",
+  "Messages.PointerLock": "游戏模式无法锁定指针：{0}",
+  "Messages.ConnectionFailed": "来自 {0} 的连接失败：{1}",
+  "Messages.ClipSensitive": "敏感内容只保留在本机，没有同步",
+  "Messages.ClipTooLarge": "{0}太大（{1:F1} MB），没有同步，请改用文件传输",
+  "Messages.ClipPeerRejected": "对方没有接收本机的剪贴板",
+  "Messages.ClipWriteFailed": "无法把对方的剪贴板写入本机",
+  "Messages.ClipFetchFailed": "对方剪贴板中的{0}没能送达",
+  "Messages.ClipUnavailable": "不可用：{0}",
+  "Messages.ClipKind.text": "文本",
+  "Messages.ClipKind.html": "HTML",
+  "Messages.ClipKind.rtf": "RTF",
+  "Messages.ClipKind.png": "图片"
+}

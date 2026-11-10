@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using NexaDesk.Localization;
 using NexaDesk.Native;
 using NexaDesk.Proto;
 using NexaDesk.Services;
@@ -23,7 +24,7 @@ public sealed partial class RecentDeviceViewModel(ConnectViewModel owner, Recent
     [NotifyPropertyChangedFor(nameof(PairedText))]
     private bool _isPaired = paired;
 
-    public string PairedText => IsPaired ? "已配对" : "未配对";
+    public string PairedText => IsPaired ? L.Get("Connect.Paired") : L.Get("Connect.NotPaired");
 
     [RelayCommand]
     private void Connect() => owner.ConnectRecent(this);
@@ -38,7 +39,7 @@ public sealed partial class TailnetDeviceViewModel(ConnectViewModel owner, Tailn
     public TailnetDevice Device { get; } = device;
     public string Name => string.IsNullOrWhiteSpace(Device.Name) ? Device.Address : Device.Name;
     public string Address => Device.Address;
-    public string PathText => Device.Direct ? "直连" : "经 DERP 中继";
+    public string PathText => Device.Direct ? L.Get("Connect.PathDirect") : L.Get("Connect.PathDerp");
     public string Detail => string.IsNullOrEmpty(Device.Os) ? Device.Address : $"{Device.Address} · {Device.Os}";
 
     [RelayCommand]
@@ -87,12 +88,12 @@ public sealed partial class ConnectViewModel : ObservableObject
     bool HasServer => _signalServer().Length > 0;
 
     public string Intro => HasServer
-        ? "输入对方窗口里显示的地址（局域网 IP 或 Tailscale 名称）或设备 ID，以及一次性码。"
-        : "输入对方窗口里显示的地址（局域网 IP 或 Tailscale 名称），以及一次性码。";
+        ? L.Get("Connect.IntroWithId")
+        : L.Get("Connect.Intro");
 
     public string AddressPlaceholder => HasServer
-        ? "例如 192.168.1.20、studio.tail1234.ts.net 或 123 456 789"
-        : "例如 192.168.1.20 或 studio.tail1234.ts.net";
+        ? L.Get("Connect.AddressPlaceholderWithId")
+        : L.Get("Connect.AddressPlaceholder");
 
     /// <summary>Asks the view to put the cursor in the code box.</summary>
     public event Action? FocusCodeRequested;
@@ -125,16 +126,15 @@ public sealed partial class ConnectViewModel : ObservableObject
 
     public string? AddressHint =>
         Address.Length > 0 && Texts.NormalizeTarget(Address) == null
-            ? "请输入对方的地址：局域网 IP 或 Tailscale 名称，可以带端口（例如 192.168.1.20:47800）"
+            ? L.Get("Connect.AddressHint")
             : Texts.NormalizeDeviceId(Address) != null && !HasServer
                 ? IdNeedsServer
                 : null;
 
-    const string IdNeedsServer =
-        "设备 ID 只在设置了自建信令服务器（高级设置）后可用。不想自建服务器：两边都安装 Tailscale，然后输入对方的 Tailscale 名称。";
+    static string IdNeedsServer => L.Get("Connect.IdNeedsServer");
 
     public string? CodeHint =>
-        Code.Length > 0 && Texts.NormalizeCode(Code) == null ? "一次性码是 8 位字母或数字（2–7），例如 ABCD-2345" : null;
+        Code.Length > 0 && Texts.NormalizeCode(Code) == null ? L.Get("Connect.CodeHint") : null;
 
     public ConnectViewModel(IClientCore core, IRecentStore store, IWindowService windows, Func<DateTimeOffset>? now = null,
         Func<string>? signalServer = null, TailscaleViewModel? tailscale = null)
@@ -193,7 +193,7 @@ public sealed partial class ConnectViewModel : ObservableObject
         }
         Address = Texts.NormalizeDeviceId(device.Device.Address) is { } id ? Texts.GroupDeviceId(id) : device.Device.Address;
         Code = "";
-        Error = new ErrorText("需要一次性码", $"尚未与 {device.Name} 配对。请输入对方屏幕上显示的一次性码。");
+        Error = new ErrorText(L.Get("Connect.CodeNeeded"), L.Format("Connect.NotPairedDetail", device.Name));
         FocusCodeRequested?.Invoke();
     }
 
@@ -230,7 +230,7 @@ public sealed partial class ConnectViewModel : ObservableObject
         var server = _signalServer();
         if (isId && server.Length == 0)
         {
-            Error = new ErrorText("设备 ID 需要信令服务器", IdNeedsServer);
+            Error = new ErrorText(L.Get("Connect.IdNeedsServerTitle"), IdNeedsServer);
             return;
         }
         var tag = _nextTag++;
@@ -241,12 +241,12 @@ public sealed partial class ConnectViewModel : ObservableObject
         }
         catch (NexaException e)
         {
-            Error = new ErrorText("无法开始连接", e.Message);
+            Error = new ErrorText(L.Get("Connect.CannotStart"), e.Message);
             return;
         }
         _pending = (tag, session, address);
         IsConnecting = true;
-        ProgressText = isId ? Texts.Stage(ConnectStage.Resolving, Shown(address)) : $"正在连接 {address}…";
+        ProgressText = isId ? Texts.Stage(ConnectStage.Resolving, Shown(address)) : L.Format("Connect.Connecting", address);
     }
 
     [RelayCommand]
@@ -291,7 +291,7 @@ public sealed partial class ConnectViewModel : ObservableObject
 
     void OnReady(ReadyEvent ready)
     {
-        IdentityError = string.IsNullOrEmpty(ready.Error) ? null : $"无法加载本机身份：{ready.Error}";
+        IdentityError = string.IsNullOrEmpty(ready.Error) ? null : L.Format("Connect.IdentityError", ready.Error);
         if (!string.IsNullOrEmpty(ready.ThisDeviceKey)) ThisDeviceFingerprint = Texts.Fingerprint(ready.ThisDeviceKey);
         _paired.Clear();
         foreach (var h in ready.Hosts) _paired.Add(h.Key);
@@ -324,7 +324,7 @@ public sealed partial class ConnectViewModel : ObservableObject
                 if (d.Reason != DisconnectReason.ClosedLocally) Error = Failure(d.Reason, p.Address);
                 break;
             case WarningEvent w:
-                ProgressText = w.Text;
+                ProgressText = Messages.Warning(w);
                 break;
         }
     }
@@ -345,7 +345,7 @@ public sealed partial class ConnectViewModel : ObservableObject
         _sessions.Remove(vm.Session.Tag);
         if (reason == DisconnectReason.ClosedLocally) return;
         var e = Texts.Disconnect(reason);
-        Error = new ErrorText($"与 {vm.HostName} 的会话已结束：{e.Title}", e.Detail);
+        Error = new ErrorText(L.Format("Connect.SessionEnded", vm.HostName, e.Title), e.Detail);
     }
 
     void Remember(string address, ConnectedEvent c)
