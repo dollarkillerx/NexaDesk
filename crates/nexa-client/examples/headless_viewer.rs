@@ -4,12 +4,16 @@
 //!
 //! `cargo run -p nexa-client --example headless_viewer -- <ip:port> <one-time-code>`
 //! `cargo run -p nexa-client --example headless_viewer -- <ip:port> known <host-key-hex>`
+//!
+//! `<ip:port>` may instead be a 9-digit device ID when `NEXA_SIGNAL` names the server
+//! (`wss://server[:port]`). `NEXA_DATA_DIR` replaces the app's data directory, which is
+//! where the viewer's identity, pairings and an optional `signal-ca.pem` live.
 
 use std::ffi::c_void;
 
 use nexa_client::{
     abi,
-    proto::{ConnectAuth, ConnectRequest, Event, EventBody},
+    proto::{ClientConfig, ConnectAuth, ConnectRequest, Event, EventBody},
 };
 use nexa_wire::control::Mode;
 use prost::Message;
@@ -46,12 +50,17 @@ fn main() {
             std::process::exit(2);
         }
     };
+    let config = ClientConfig {
+        data_dir: std::env::var("NEXA_DATA_DIR").unwrap_or_default(),
+        ..Default::default()
+    }
+    .encode_to_vec();
     let mut client = std::ptr::null_mut();
     // SAFETY: valid pointers; the callback ignores `user`.
     let status = unsafe {
         abi::nexa_init(
-            std::ptr::null(),
-            0,
+            config.as_ptr(),
+            config.len(),
             Some(on_event),
             std::ptr::null_mut(),
             &mut client,
@@ -64,7 +73,7 @@ fn main() {
         mode: Mode::Balanced as i32,
         fps: 0,
         auth: Some(auth),
-        signal_server: String::new(),
+        signal_server: std::env::var("NEXA_SIGNAL").unwrap_or_default(),
     }
     .encode_to_vec();
     let mut session = std::ptr::null_mut();
