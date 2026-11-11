@@ -4,6 +4,31 @@
 
 > **状态**：macOS ↔ macOS 的功能已经写完，自动化测试全部通过，但**还没在两台真实的 Mac、真实的网络上验证过**。Web 端（桌面浏览器查看和控制）已完成第一版，只用演示主机在浏览器里验证过；Windows 端尚未开始。暂时不建议用在重要场合。
 
+## 截图
+
+主窗口：左边连接别的设备（局域网和 Tailscale 里的设备会自动列出），右边允许别人控制本机（对方可输入的地址、一次性码、已配对的设备）。自动跟随系统的浅色和深色。
+
+<p>
+  <img src="docs/images/main.png" width="49%" alt="主窗口（浅色）">
+  <img src="docs/images/main-dark.png" width="49%" alt="主窗口（深色）">
+</p>
+
+有人连接时，本机弹出确认窗口：显示对方是谁、怎么验证的、密钥指纹，由你勾选允许的权限。“拒绝”是默认按钮，“允许”在窗口出现一秒后才能点。浏览器端不用安装任何软件，输入一次性码即可。
+
+<p>
+  <img src="docs/images/consent.png" width="36%" alt="连接确认">
+  <img src="docs/images/web.png" width="62%" alt="浏览器端">
+</p>
+
+控制别人时，画面上方是工具栏（模式、声音、文件、HUD、诊断）；被控制时，本机顶部一直显示提示条，随时可以断开。
+
+<p>
+  <img src="docs/images/toolbar.png" width="80%" alt="控制端工具栏"><br>
+  <img src="docs/images/banner.png" width="60%" alt="被控端提示条">
+</p>
+
+截图里的设备、地址和代码都是虚构的。界面改动后运行 `scripts/screenshots.sh` 重新生成：应用界面由 `ui/NexaDesk.Screenshots` 用真实的界面代码离屏渲染，浏览器页面用无界面的 Google Chrome 截取。
+
 ## 特点
 
 - **传输**：一个 UDP socket 上跑 QUIC。控制走可靠流，视频走 DATAGRAM，每帧带 Reed-Solomon 纠错。拥塞控制由应用层自己做，丢一个包不会卡住后面的帧。
@@ -40,7 +65,7 @@
 | `crates/nexa-signal` | 信令 + STUN + 中继服务器 `nexa-signal` |
 | `crates/nexa-web` | 浏览器访问：网页、信令和 WebRTC（str0m），由被控端直接提供 |
 | `crates/nexa-web-pake` | 浏览器一侧的配对（SPAKE2），编译为 WebAssembly |
-| `ui/` | Avalonia 桌面应用（.NET 10，NativeAOT）与测试 |
+| `ui/` | Avalonia 桌面应用（.NET 10，NativeAOT）、测试和 README 截图工具 |
 | `deploy/` | 服务器的 systemd 单元、Docker 镜像与 Compose、配置模板、证书续期钩子 |
 | `docs/` | 设计文档、部署说明、M0 验证报告 |
 | `spikes/` | M0 阶段的验证代码 |
