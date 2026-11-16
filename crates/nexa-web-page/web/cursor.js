@@ -119,7 +119,9 @@ export class RemoteCursor {
     const rect = this.rect();
     const shape = st && this.shapes.get(st.id);
     if (!st || !rect || !shape?.ready) return;
-    const k = this.pointScale(rect);
+    // At the picture's scale, but never so small it is lost: a phone shrinks a whole
+    // desktop into a few inches, and its cursor with it.
+    const k = Math.max(this.pointScale(rect), this.touch ? 1 : 0.75);
     // Its size on the page: host points at the picture's scale, within what browsers take.
     let cw = (shape.w / shape.s) * k, ch = (shape.h / shape.s) * k;
     const fit = Math.min(1, MOST_CSS_PX / Math.max(cw, ch));
