@@ -55,7 +55,8 @@ store.Save([
     new RecentDevice("studio.tail1234.ts.net:47800", "工作室 Mac mini", StudioKey, now.AddHours(-2).ToUnixTimeSeconds()),
     new RecentDevice("192.168.1.42:47800", "客厅 iMac", "", now.AddDays(-3).ToUnixTimeSeconds()),
 ]);
-var vm = new MainViewModel(client, store, link, new Process(), new Perms(), windows, new Addresses(), "我的 MacBook Pro", () => now);
+var settings = new MemorySettings(new AppSettings(SignalServer: "wss://signal.example.com:8443"));
+var vm = new MainViewModel(client, store, link, new Process(), new Perms(), windows, new Addresses(), "我的 MacBook Pro", () => now, settings);
 client.Raise(new ReadyEvent(0, new string('3', 64), [new KnownHost(StudioKey, "工作室 Mac mini", 0)], ""));
 client.Raise(new TailnetDevicesEvent(0,
     [
@@ -73,7 +74,8 @@ Pump();
 
 link.Next = null;
 await vm.Host.StartCommand.ExecuteAsync(null);
-link.Raise(new AgentMessage.Status(1, "[::]:47800", "K7QM2XPA", "我的 MacBook Pro", "3f9a1c07d2e84b56", new string('a', 64), null, true));
+link.Raise(new AgentMessage.Status(1, "[::]:47800", "K7QM2XPA", "我的 MacBook Pro", "3f9a1c07d2e84b56", new string('a', 64), null, true,
+    ShortId: "271828182", Signal: SignalState.Online, PasswordSet: true));
 link.Raise(new AgentMessage.Pairings([
     new PairedDevice("9d4b2e71c0a83f56e1b7d9204c6a58f3b2e0d1c7a94f6e8b03d5c2a17e9b4f60", "a41c7e09b3d25f68", "设计部 MacBook Air",
         new Permissions(true, true, true, true, false), (ulong)now.AddDays(-12).ToUnixTimeSeconds(), (ulong)now.AddDays(-1).ToUnixTimeSeconds(), false),
@@ -98,8 +100,20 @@ Pump();
 link.Raise(new AgentMessage.SessionStarted(new HostSession(9, "设计部 MacBook Air", "a41c7e09b3d25f68",
     "9d4b2e71c0a83f56e1b7d9204c6a58f3b2e0d1c7a94f6e8b03d5c2a17e9b4f60", "100.92.5.110:51934",
     new Permissions(true, true, true, true, false))));
+// A second person at the same time: a browser with only the command line.
+link.Raise(new AgentMessage.SessionStarted(new HostSession((1UL << 48) + 1, "Chrome · Windows (browser)", "c3a0e57b19d24f68",
+    "c3a0e57b19d24f6881e2a7d40b9c56f13e8d2a07b4c1f9e65d30a8b7c2e14f95", "203.0.113.24",
+    new Permissions(false, false, false, Terminal: true))));
 Pump();
-if (windows.Banner is { } banner) Shot(banner, "banner");
+if (windows.Banner is { } banner)
+{
+    Shot(banner, "banner");
+    windows.BannerStack.IsCollapsed = true;
+    Pump();
+    Shot(banner, "banner-folded");
+    windows.BannerStack.IsCollapsed = false;
+    Pump();
+}
 
 vm.Connect.Address = "studio.tail1234.ts.net";
 vm.Connect.Code = "abcd-2345";

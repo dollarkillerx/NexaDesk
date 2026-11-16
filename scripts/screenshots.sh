@@ -1,7 +1,8 @@
 #!/bin/sh
 # Regenerates the README screenshots in docs/images (2x, made-up devices and addresses).
 #   - the app: ui/NexaDesk.Screenshots renders the real views headless;
-#   - the web page: the nexa-web demo, captured with headless Google Chrome.
+#   - the web pages: the nexa-web demo, driven in headless Google Chrome by
+#     scripts/web-screenshots.mjs (connect page, a session, the terminal).
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT="$ROOT/docs/images"
@@ -15,14 +16,13 @@ if [ ! -x "$CHROME" ]; then
     exit 0
 fi
 cargo build -q -p nexa-web --example demo --manifest-path "$ROOT/Cargo.toml"
-"$ROOT/target/debug/examples/demo" 127.0.0.1:47811 >/dev/null &
+LOG=$(mktemp)
+# A plain shell for the terminal shot, so nothing of this Mac shows.
+NEXA_DEMO_SHELL=/bin/sh "$ROOT/target/debug/examples/demo" 127.0.0.1:47811 >"$LOG" &
 DEMO=$!
-PROFILE=$(mktemp -d)
-trap 'kill $DEMO 2>/dev/null; wait $DEMO 2>/dev/null || true; rm -rf "$PROFILE"' EXIT
-sleep 1
-# The demo serves HTTPS with a certificate it made itself; this throwaway profile takes it.
-"$CHROME" --headless=new --user-data-dir="$PROFILE" --lang=zh-CN --accept-lang=zh-CN \
-    --ignore-certificate-errors \
-    --hide-scrollbars --force-device-scale-factor=2 --window-size=1100,540 \
-    --virtual-time-budget=3000 --screenshot="$OUT/web.png" https://127.0.0.1:47811/ 2>/dev/null
-echo "$OUT/web.png"
+trap 'kill $DEMO 2>/dev/null; wait $DEMO 2>/dev/null || true; rm -f "$LOG"' EXIT
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    grep -q "one-time code" "$LOG" && break
+    sleep 0.5
+done
+node "$ROOT/scripts/web-screenshots.mjs" https://127.0.0.1:47811/ "$LOG" "$OUT"

@@ -109,9 +109,11 @@ mod demo {
         }
         fn terminal(&self, cols: u16, rows: u16) -> Result<nexa_term::Pty, String> {
             println!("terminal opened {cols}x{rows}");
+            // NEXA_DEMO_SHELL: another shell, e.g. a plain /bin/sh for screenshots.
             nexa_term::Pty::spawn(&nexa_term::Spawn {
                 cols,
                 rows,
+                shell: std::env::var_os("NEXA_DEMO_SHELL").map(Into::into),
                 ..Default::default()
             })
             .map_err(|e| e.to_string())
