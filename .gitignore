@@ -7,3 +7,4 @@ spikes/**/out/
 ui/out/
 dist/
 .claude/worktrees/
+.wrangler/
