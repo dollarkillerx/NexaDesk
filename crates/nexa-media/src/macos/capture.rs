@@ -34,6 +34,8 @@ use crate::{CaptureConfig, CaptureEvent, CapturedFrame, Capturer, DisplayMode, M
 /// §6.5: the default depth of 8 adds latency.
 const QUEUE_DEPTH: isize = 3;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a woken display has to come back into ScreenCaptureKit's list.
+const WAKE_WAIT: Duration = Duration::from_secs(4);
 const MODE_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 /// True if this process already has Screen Recording permission. This never
@@ -217,6 +219,7 @@ fn dirty_rects(sample: &CMSampleBuffer, frame_width: u32, frame_height: u32) -> 
 }
 
 pub struct ScreenCapturer {
+    _awake: Option<super::power::DisplayAwake>,
     mailbox: Arc<Mailbox>,
     stream: Retained<SCStream>,
     // Kept alive for the stream, which only holds these weakly.
@@ -250,14 +253,33 @@ impl ScreenCapturer {
             return Err(MediaError::Other("fps must be non-zero".into()));
         }
         let display_id = if config.display == 0 { CGMainDisplayID() } else { config.display };
-        let content = shareable_content()?;
-        // SAFETY: plain getters on a valid object.
-        let display = unsafe {
-            content
-                .displays()
-                .iter()
-                .find(|d: &Retained<SCDisplay>| d.displayID() == display_id)
-                .ok_or_else(|| MediaError::Other(format!("display {display_id} not found")))?
+        // A display asleep is not in the list: wake it, as someone at the Mac would, and
+        // give it a moment to come back.
+        let mut listing_failed = None;
+        let display = super::power::wake_and_wait("NexaDesk: a viewer connected", WAKE_WAIT, || {
+            let content = match shareable_content() {
+                Ok(c) => c,
+                Err(e) => {
+                    listing_failed = Some(e);
+                    return None;
+                }
+            };
+            // SAFETY: plain getters on a valid object.
+            unsafe {
+                content
+                    .displays()
+                    .iter()
+                    .find(|d: &Retained<SCDisplay>| d.displayID() == display_id)
+            }
+        });
+        let display = match (display, listing_failed) {
+            (Some(d), _) => d,
+            (None, Some(e)) => return Err(e),
+            (None, None) => {
+                return Err(MediaError::Other(format!(
+                    "display {display_id} not found, and did not wake"
+                )));
+            }
         };
         let mode = current_mode(display_id)
             .ok_or_else(|| MediaError::Other(format!("display {display_id} has no current mode")))?;
@@ -316,6 +338,8 @@ impl ScreenCapturer {
         start_stream(&stream)?;
 
         Ok(Self {
+            // Watched displays do not go to sleep: a sleeping one stops the picture.
+            _awake: super::power::DisplayAwake::hold("NexaDesk: someone is viewing this screen"),
             mailbox,
             stream,
             _output: output,
