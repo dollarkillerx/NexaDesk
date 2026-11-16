@@ -1,5 +1,6 @@
 // Connections saved in this browser, so the next time is one tap: a host's device ID,
-// its name and what to open, and, only if the person asks, its fixed password.
+// its name (as the host gives it, and the person's own label if they set one) and what
+// to open, and, only if the person asks, its fixed password.
 //
 // A password is never kept as text. It is sealed with AES-GCM under a key this browser
 // generated and keeps in IndexedDB as non-extractable: page script can use the key but
@@ -60,6 +61,23 @@ export async function save({ deviceId, name, view, password }) {
       delete entry.sealed;
     }
   }
+  write(all);
+  return entry;
+}
+
+/** The person's own changes: `label` names the connection ("" goes back to the host's
+ *  own name); `password` as in save(). */
+export async function update(id, { label, password }) {
+  const all = read();
+  const entry = all.find((e) => e.id === id);
+  if (!entry) return null;
+  if (label !== undefined) {
+    const l = String(label).trim().slice(0, 64);
+    if (l) entry.label = l;
+    else delete entry.label;
+  }
+  if (password === null) delete entry.sealed;
+  else if (password !== undefined && canKeepPasswords) entry.sealed = await seal(password);
   write(all);
   return entry;
 }

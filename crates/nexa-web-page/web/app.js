@@ -283,48 +283,176 @@ const spaced = (id) => id.replace(/(\d{3})(?=\d)/g, "$1 ");
  *  host itself when it served the page. */
 function showSaved() {
   const items = saved.list().filter((e) => (mode === "server" ? DEVICE_ID.test(e.deviceId) : e.deviceId === ""));
-  $("saved").hidden = items.length === 0;
+  $("saved-empty").hidden = items.length > 0;
   const ul = $("saved-list");
+  ul.hidden = items.length === 0;
   ul.replaceChildren();
+  if (!items.some((e) => e.id === editing)) editing = null;
   for (const e of items) {
     const li = document.createElement("li");
     li.className = "saved-item";
+    const row = document.createElement("div");
+    row.className = "saved-row";
     const go = document.createElement("button");
     go.type = "button";
     go.className = "saved-go";
     const name = document.createElement("span");
     name.className = "saved-name";
-    name.textContent = e.name || (e.deviceId ? `${t("saved.device")} ${spaced(e.deviceId)}` : t("saved.thisHost"));
+    name.textContent = savedName(e);
     const meta = document.createElement("span");
     meta.className = "saved-meta";
     const where = e.deviceId ? spaced(e.deviceId) : location.host;
     meta.textContent = [where, t(e.sealed ? "saved.password" : e.deviceId ? "saved.ask" : "saved.typePassword"), t("view." + (e.view === "terminal" ? "terminal" : "screen"))].join(" · ");
     go.append(name, meta);
     go.addEventListener("click", () => connectSaved(e.id));
-    const rm = document.createElement("button");
-    rm.type = "button";
-    rm.className = "saved-remove";
-    rm.setAttribute("aria-label", `${t("saved.remove")} ${name.textContent}`);
-    rm.textContent = "✕";
-    // Two taps: the first asks, the second removes.
-    rm.addEventListener("click", () => {
-      if (rm.classList.contains("armed")) {
-        saved.remove(e.id);
-        showSaved();
-        return;
-      }
-      rm.classList.add("armed");
-      rm.textContent = t("saved.confirmRemove");
-      setTimeout(() => {
-        if (!rm.isConnected) return;
-        rm.classList.remove("armed");
-        rm.textContent = "✕";
-      }, 4000);
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "saved-edit";
+    edit.textContent = t("saved.edit");
+    edit.setAttribute("aria-expanded", String(editing === e.id));
+    edit.setAttribute("aria-label", `${t("saved.edit")} ${name.textContent}`);
+    edit.addEventListener("click", () => {
+      editing = editing === e.id ? null : e.id;
+      showSaved();
+      if (editing) li.parentElement?.querySelector(".saved-editor input")?.focus();
     });
-    li.append(go, rm);
+    row.append(go, edit);
+    li.append(row);
+    if (editing === e.id) li.append(savedEditor(e));
     ul.append(li);
   }
   if (session) setConnecting(true);
+}
+
+/** What a saved connection is called: the person's label, else the host's own name. */
+function savedName(e) {
+  return e.label || e.name || (e.deviceId ? `${t("saved.device")} ${spaced(e.deviceId)}` : t("saved.thisHost"));
+}
+
+/** The saved connection being changed, if any: one at a time. */
+let editing = null;
+
+/** Rename a saved connection, change or drop its kept password, or remove it. */
+function savedEditor(e) {
+  const form = document.createElement("form");
+  form.className = "saved-editor";
+  form.noValidate = true;
+  const field = (labelKey, input) => {
+    const label = document.createElement("label");
+    label.className = "label";
+    label.textContent = t(labelKey);
+    label.htmlFor = input.id;
+    return label;
+  };
+
+  const nameInput = document.createElement("input");
+  nameInput.id = "saved-name-input";
+  nameInput.className = "field plain";
+  nameInput.maxLength = 64;
+  nameInput.autocomplete = "off";
+  nameInput.value = e.label || "";
+  nameInput.placeholder = e.name || savedName(e);
+  form.append(field("saved.nameLabel", nameInput), nameInput);
+
+  let pwInput = null;
+  let forget = null;
+  if (saved.canKeepPasswords) {
+    pwInput = document.createElement("input");
+    pwInput.id = "saved-pw-input";
+    pwInput.className = "field plain";
+    pwInput.type = "password";
+    pwInput.autocomplete = "new-password";
+    pwInput.maxLength = 128;
+    pwInput.placeholder = t(e.sealed ? "saved.passwordKeep" : "saved.passwordNone");
+    form.append(field("saved.passwordLabel", pwInput), pwInput);
+    if (e.sealed) {
+      const check = document.createElement("label");
+      check.className = "check";
+      forget = document.createElement("input");
+      forget.type = "checkbox";
+      const text = document.createElement("span");
+      text.textContent = t("saved.forgetPassword");
+      check.append(forget, text);
+      forget.addEventListener("change", () => {
+        pwInput.disabled = forget.checked;
+        if (forget.checked) pwInput.value = "";
+      });
+      form.append(check);
+    }
+  } else {
+    const note = document.createElement("p");
+    note.className = "helper";
+    note.textContent = t("rememberHelp.noCrypto");
+    form.append(note);
+  }
+  const problem = document.createElement("p");
+  problem.className = "helper invalid";
+  problem.hidden = true;
+  form.append(problem);
+
+  const actions = document.createElement("div");
+  actions.className = "saved-actions";
+  const save = document.createElement("button");
+  save.type = "submit";
+  save.className = "small primary-small";
+  save.textContent = t("saved.save");
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "small ghost";
+  cancel.textContent = t("saved.cancel");
+  cancel.addEventListener("click", () => {
+    editing = null;
+    showSaved();
+  });
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "small ghost danger-text";
+  remove.textContent = t("saved.delete");
+  // Two taps: the first asks, the second removes.
+  remove.addEventListener("click", () => {
+    if (remove.classList.contains("armed")) {
+      saved.remove(e.id);
+      editing = null;
+      showSaved();
+      return;
+    }
+    remove.classList.add("armed");
+    remove.textContent = t("saved.confirmRemove");
+    setTimeout(() => {
+      if (!remove.isConnected) return;
+      remove.classList.remove("armed");
+      remove.textContent = t("saved.delete");
+    }, 4000);
+  });
+  actions.append(save, cancel, remove);
+  form.append(actions);
+
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const typed = pwInput?.value ?? "";
+    if (typed && [...typed].length < 8) {
+      problem.textContent = t("saved.passwordShort");
+      problem.hidden = false;
+      pwInput.focus();
+      return;
+    }
+    // A new password is only tried at the next connection: if it is wrong, it is
+    // dropped then and asked for again.
+    const password = forget?.checked ? null : typed ? typed : undefined;
+    try {
+      await saved.update(e.id, { label: nameInput.value, password });
+    } catch {
+      problem.textContent = t("rememberHelp.noCrypto");
+      problem.hidden = false;
+      return;
+    }
+    editing = null;
+    showSaved();
+  });
+  form.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") cancel.click();
+  });
+  return form;
 }
 
 /** One tap on a saved connection: its password if one is kept, else the host is asked. */

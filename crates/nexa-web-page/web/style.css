@@ -457,7 +457,9 @@ button { font: inherit; letter-spacing: 0.16px; border-radius: 0; }
 /* Saved connections: a row each, one tap connects. */
 .saved { margin-bottom: 8px; }
 .saved-list { list-style: none; margin: 0 0 24px; padding: 0; border-top: 1px solid var(--border-subtle); }
-.saved-item { display: flex; border-bottom: 1px solid var(--border-subtle); }
+.saved-item { border-bottom: 1px solid var(--border-subtle); }
+.saved-row { display: flex; }
+.saved-empty { margin: 0 0 24px; padding: 12px 16px; background: var(--field); color: var(--text-secondary); font-size: 12px; letter-spacing: 0.32px; }
 .saved-go {
   flex: 1;
   min-width: 0;
@@ -473,20 +475,45 @@ button { font: inherit; letter-spacing: 0.16px; border-radius: 0; }
 }
 .saved-go:hover { background: var(--field); }
 .saved-go:disabled { color: var(--disabled-text); cursor: not-allowed; background: transparent; }
-.saved-go:focus-visible, .saved-remove:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .saved-name { font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .saved-meta { font-size: 12px; letter-spacing: 0.32px; color: var(--text-helper); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.saved-remove {
+.saved-edit {
   flex: none;
-  min-width: 48px;
-  padding: 0 12px;
+  min-width: 64px;
+  padding: 0 16px;
   border: 0;
   background: transparent;
-  color: var(--text-secondary);
+  color: var(--interactive);
   cursor: pointer;
 }
-.saved-remove:hover { background: var(--field); color: var(--text); }
-.saved-remove.armed { background: var(--error); color: #ffffff; }
+.saved-edit:hover { background: var(--field); }
+.saved-edit[aria-expanded="true"] { background: var(--field); color: var(--text); }
+.saved-edit:disabled { color: var(--disabled-text); cursor: not-allowed; background: transparent; }
+.saved-go:focus-visible, .saved-edit:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+
+/* Changing a saved connection, under its row. */
+.saved-editor { padding: 16px; background: var(--field); }
+.saved-editor .label { margin-top: 12px; }
+.saved-editor .label:first-child { margin-top: 0; }
+.saved-editor .check { margin-top: 8px; }
+.field.plain {
+  height: 40px;
+  font-size: 16px;
+  letter-spacing: 0.16px;
+  text-transform: none;
+  background: var(--layer);
+}
+.field.plain::placeholder { letter-spacing: 0.16px; }
+.field.plain:disabled { color: var(--disabled-text); }
+.saved-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.small { height: 40px; padding: 0 16px; border: 0; cursor: pointer; }
+.primary-small { background: var(--interactive); color: #ffffff; }
+.primary-small:hover { background: var(--interactive-hover); }
+.ghost { background: transparent; color: var(--interactive); }
+.ghost:hover { background: var(--border-subtle); }
+.danger-text { color: var(--error); margin-left: auto; }
+.danger-text.armed { background: var(--error); color: #ffffff; }
+.small:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .saved-new { margin-top: 0; }
 
 /* Phones, and any screen without room: icons instead of words in the header, the
