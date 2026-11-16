@@ -8,7 +8,6 @@
 use std::{
     fs::{File, OpenOptions},
     io::{BufRead, BufReader, Write},
-    os::fd::AsRawFd,
     sync::{
         Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering::Relaxed},
@@ -31,6 +30,8 @@ pub enum Command {
 
 struct Terminal {
     out: Mutex<File>,
+    /// The terminal's input, to drop what was typed before a prompt (Unix only).
+    #[cfg(unix)]
     fd: i32,
     pending: Mutex<Option<SyncSender<String>>>,
     alive: AtomicBool,
@@ -145,14 +146,20 @@ impl Terminal {
 impl TerminalUi {
     /// Opens the controlling terminal and starts reading it. Commands go to `commands`.
     pub fn open(commands: impl Fn(Command) + Send + 'static) -> Self {
-        let Ok(input) = OpenOptions::new().read(true).open("/dev/tty") else {
+        // The console itself, never standard input (see the module docs).
+        #[cfg(unix)]
+        let (tty_in, tty_out) = ("/dev/tty", "/dev/tty");
+        #[cfg(windows)]
+        let (tty_in, tty_out) = ("CONIN$", "CONOUT$");
+        let Ok(input) = OpenOptions::new().read(true).open(tty_in) else {
             return Self { terminal: None };
         };
-        let Ok(out) = OpenOptions::new().write(true).open("/dev/tty") else {
+        let Ok(out) = OpenOptions::new().write(true).open(tty_out) else {
             return Self { terminal: None };
         };
         let terminal = Arc::new(Terminal {
-            fd: input.as_raw_fd(),
+            #[cfg(unix)]
+            fd: std::os::fd::AsRawFd::as_raw_fd(&input),
             out: Mutex::new(out),
             pending: Mutex::new(None),
             alive: AtomicBool::new(true),
@@ -205,6 +212,7 @@ impl Consent for TerminalUi {
         }
         let deadline = Instant::now() + timeout;
         // Nothing typed before this point may answer the prompt.
+        #[cfg(unix)]
         // SAFETY: `fd` stays open for as long as the reader thread holds the terminal.
         unsafe {
             libc::tcflush(terminal.fd, libc::TCIFLUSH);

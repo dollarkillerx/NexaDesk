@@ -3,10 +3,9 @@
 # machine has no GPU and no desktop session worth capturing.
 name: Windows
 
+# Run by hand only (Actions → Windows → Run workflow): Windows builds are made on a Mac
+# for now (docs/WINDOWS.md).
 on:
-  push:
-    branches: [main, windows]
-  pull_request:
   workflow_dispatch:
 
 permissions:

@@ -48,5 +48,18 @@
   "Keymap.CannotRead": "Could not read the keyboard rules: {0}",
   "Main.AllowBrowsers": "Allow browsers to connect",
   "Main.AllowBrowsersTip": "The other person opens port 47801 of this Mac's address in a browser, with nothing to install. The one-time code and your confirmation still apply. Best kept to your LAN or Tailscale. Takes effect the next time you allow remote control.",
-  "Main.CodeOrPassword": "One-time code or password"
+  "Main.CodeOrPassword": "One-time code or password",
+  "LoginItem.EnabledWindows": "Opens NexaDesk in the notification area when you sign in to Windows, with remote control on",
+  "LoginItem.RequiresApprovalWindows": "Switched off in Settings → Apps → Startup: turn NexaDesk on there",
+  "Platform.AgentMissingWindows": "Could not find nexa-agent.exe. Reinstall NexaDesk.",
+  "App.ViewerNotYet": "Connecting to other computers from Windows comes in a later version. Other devices can already connect to this PC.",
+  "Updates.Current": "Version {0}",
+  "Updates.Check": "Check for updates",
+  "Updates.Restart": "Restart to update",
+  "Updates.NotInstalled": "Updates come with the packaged app",
+  "Updates.Checking": "Checking for updates…",
+  "Updates.UpToDate": "Up to date",
+  "Updates.Downloading": "Downloading {0}… {1}%",
+  "Updates.Ready": "Version {0} is ready: restarting ends remote sessions",
+  "Updates.Failed": "Could not check for updates: {0}"
 }

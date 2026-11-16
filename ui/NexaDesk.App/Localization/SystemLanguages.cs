@@ -3,9 +3,10 @@ using System.Runtime.InteropServices;
 namespace NexaDesk.Localization;
 
 /// <summary>
-/// macOS's preferred languages (System Settings → General → Language &amp; Region), most
-/// preferred first. The app is built with invariant globalization, so .NET's culture says
-/// nothing; CoreFoundation does. Empty on any failure or off macOS.
+/// The system's preferred languages, most preferred first: macOS's (System Settings →
+/// General → Language &amp; Region) from CoreFoundation, Windows' display languages from
+/// GetUserPreferredUILanguages. The app is built with invariant globalization, so .NET's
+/// culture says nothing. Empty on any failure or on other systems.
 /// </summary>
 public static partial class SystemLanguages
 {
@@ -14,6 +15,33 @@ public static partial class SystemLanguages
 
     [LibraryImport(CoreFoundation)]
     private static partial nint CFLocaleCopyPreferredLanguages();
+
+    const uint MuiLanguageName = 0x8; // MUI_LANGUAGE_NAME: "zh-CN", "ja-JP", …
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static unsafe partial bool GetUserPreferredUILanguages(uint flags, out uint count, char* buffer, ref uint length);
+
+    /// <summary>A double-NUL-terminated list of language names.</summary>
+    static unsafe IReadOnlyList<string> WindowsPreferred()
+    {
+        try
+        {
+            uint length = 0;
+            if (!GetUserPreferredUILanguages(MuiLanguageName, out _, null, ref length) || length == 0 || length > 4096) return [];
+            var buffer = new char[length];
+            fixed (char* p = buffer)
+            {
+                if (!GetUserPreferredUILanguages(MuiLanguageName, out _, p, ref length)) return [];
+            }
+            return new string(buffer, 0, (int)Math.Min(length, (uint)buffer.Length))
+                .Split('\0', StringSplitOptions.RemoveEmptyEntries);
+        }
+        catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException)
+        {
+            return [];
+        }
+    }
 
     [LibraryImport(CoreFoundation)]
     private static partial nint CFArrayGetCount(nint array);
@@ -30,6 +58,7 @@ public static partial class SystemLanguages
 
     public static unsafe IReadOnlyList<string> Preferred()
     {
+        if (OperatingSystem.IsWindows()) return WindowsPreferred();
         if (!OperatingSystem.IsMacOS()) return [];
         try
         {

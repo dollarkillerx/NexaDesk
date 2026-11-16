@@ -16,9 +16,10 @@ public sealed class AvaloniaDispatcher : IUiDispatcher
 }
 
 /// <summary>
-/// Starts nexa-agent from the app bundle (Contents/MacOS/nexa-agent), with consent
-/// coming from this UI over the socket. Its stderr is kept for error messages, and
-/// written to ~/Library/Logs/NexaDesk/agent.log so a session's end can be looked up later.
+/// Starts nexa-agent from next to the app (Contents/MacOS/nexa-agent, or nexa-agent.exe
+/// in the install folder on Windows), with consent coming from this UI over the socket.
+/// Its stderr is kept for error messages, and written to agent.log (<see cref="AgentLog.DefaultPath"/>)
+/// so a session's end can be looked up later.
 /// </summary>
 public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
 {
@@ -41,14 +42,15 @@ public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
     public static string? Locate()
     {
         var here = AppContext.BaseDirectory;
-        var bundled = Path.Combine(here, "nexa-agent");
+        var exe = OperatingSystem.IsWindows() ? "nexa-agent.exe" : "nexa-agent";
+        var bundled = Path.Combine(here, exe);
         if (File.Exists(bundled)) return bundled;
         var dir = new DirectoryInfo(here);
         for (var i = 0; i < 8 && dir != null; i++, dir = dir.Parent)
         {
             foreach (var profile in new[] { "release", "debug" })
             {
-                var candidate = Path.Combine(dir.FullName, "target", profile, "nexa-agent");
+                var candidate = Path.Combine(dir.FullName, "target", profile, exe);
                 if (File.Exists(candidate) && File.Exists(Path.Combine(dir.FullName, "Cargo.toml")))
                     return candidate;
             }
@@ -65,7 +67,7 @@ public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
     async Task<string?> RunSubcommand(string command, string? stdin)
     {
         var path = Locate();
-        if (path == null) return L.Get("Platform.AgentMissing");
+        if (path == null) return L.Get(OperatingSystem.IsWindows() ? "Platform.AgentMissingWindows" : "Platform.AgentMissing");
         var info = new ProcessStartInfo(path)
         {
             UseShellExecute = false,
@@ -74,10 +76,12 @@ public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
             RedirectStandardOutput = true,
         };
         info.ArgumentList.Add(command);
+        // A console program: without this Windows opens a console window for it.
+        info.CreateNoWindow = true;
         try
         {
             using var p = Process.Start(info);
-            if (p == null) return L.Get("Platform.AgentMissing");
+            if (p == null) return L.Get(OperatingSystem.IsWindows() ? "Platform.AgentMissingWindows" : "Platform.AgentMissing");
             // On stdin, never on the command line where other processes could read it.
             if (stdin != null) await p.StandardInput.WriteLineAsync(stdin);
             p.StandardInput.Close();
@@ -97,7 +101,7 @@ public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
     public string? Start(string listen, string deviceName, string signalServer, bool announceOnLan, string? web = null)
     {
         var path = Locate();
-        if (path == null) return L.Get("Platform.AgentMissing");
+        if (path == null) return L.Get(OperatingSystem.IsWindows() ? "Platform.AgentMissingWindows" : "Platform.AgentMissing");
         var info = new ProcessStartInfo(path)
         {
             UseShellExecute = false,
@@ -105,6 +109,7 @@ public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
             RedirectStandardOutput = true,
             RedirectStandardInput = true,
         };
+        info.CreateNoWindow = true;
         info.ArgumentList.Add("--listen");
         info.ArgumentList.Add(listen);
         info.ArgumentList.Add("--name");
@@ -195,8 +200,12 @@ public sealed class AgentLog(string path)
 
     public string Path { get; } = path;
 
-    public static string DefaultPath() =>
-        System.IO.Path.Combine(
+    /// <summary>~/Library/Logs/NexaDesk on macOS, %LOCALAPPDATA%\NexaDesk\Logs on Windows.</summary>
+    public static string DefaultPath() => OperatingSystem.IsWindows()
+        ? System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "NexaDesk", "Logs", "agent.log")
+        : System.IO.Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             "Library", "Logs", "NexaDesk", "agent.log");
 
@@ -214,6 +223,21 @@ public sealed class AgentLog(string path)
             catch (IOException) { }
             catch (UnauthorizedAccessException) { }
         }
+    }
+}
+
+/// <summary>Windows asks for nothing: any program in the session may capture the screen
+/// and send input (except into elevated windows, which the agent cannot reach).</summary>
+public sealed class NoPermissionsNeeded : IPermissionProbe
+{
+    public PermissionState Check() => new(true, true);
+
+    public void Request(PermissionKind kind)
+    {
+    }
+
+    public void OpenSettings(PermissionKind kind)
+    {
     }
 }
 

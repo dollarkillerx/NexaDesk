@@ -186,6 +186,15 @@ function page(lang) {
   <div class="wrap">
     <h2>${t.startTitle}</h2>
     <p class="section-lead">${esc(t.startText)}</p>
+    <div class="downloads">
+      ${t.downloads
+        .map(
+          ([os, detail, label, file]) =>
+            `<div class="download"><h3>${esc(os)}</h3><p>${esc(detail)}</p><a class="button primary" href="${REPO}/releases/latest/download/${file}">${esc(label)}</a></div>`,
+        )
+        .join("\n      ")}
+    </div>
+    <p class="download-note">${esc(t.downloadNote)} <a href="${REPO}/releases" rel="noopener">${esc(t.allReleases)} →</a></p>
     <ol class="steps">
       ${t.startSteps
         .map(([h, p]) => {

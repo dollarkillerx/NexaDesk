@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The hardened runtime with no exceptions: NativeAOT makes no code at run time, and every
+     library in the bundle carries the same Developer ID signature (scripts/package-macos.sh).
+     Not sandboxed: the agent listens on the network and drives input. Without this file,
+     Velopack would sign with .NET's default exceptions (JIT, no library validation). -->
+<plist version="1.0">
+<dict>
+</dict>
+</plist>

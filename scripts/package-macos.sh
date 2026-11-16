@@ -3,6 +3,12 @@
 # with NativeAOT, one bundle, ad-hoc signed. macOS only.
 #
 #   scripts/package-macos.sh [output dir]      (default: dist/)
+#   NEXA_NOTARY_PROFILE=<profile> scripts/package-macos.sh
+#       a release: adds the updater with Velopack (vpk, the same version as the Velopack
+#       package), notarizes, and writes <output dir>/macos/ (NexaDesk-macOS.dmg,
+#       NexaDesk-osx-Portable.zip, the .nupkg and releases.osx.json the updater reads), all
+#       for the GitHub release. The profile is a notarytool keychain profile
+#       (`xcrun notarytool store-credentials <profile> ...`).
 #
 # Result: <output dir>/NexaDesk.app
 #   Contents/MacOS/NexaDesk               the UI (NativeAOT)
@@ -11,9 +17,11 @@
 #   Contents/MacOS/lib*.dylib             Avalonia's native parts (AvaloniaNative, Skia, HarfBuzz)
 #   Contents/Resources/AppIcon.icns       the app icon (assets/icon, from scripts/make-app-icon.sh)
 #
-# Signed with one identity (scripts/make-signing-identity.sh, or NEXA_SIGN_IDENTITY), every
-# build is the same app to macOS and keeps its privacy grants. Ad-hoc signing, the fallback,
-# ties them to this exact build: after rebuilding they must be given again.
+# Signed with one identity (a Developer ID, scripts/make-signing-identity.sh, or
+# NEXA_SIGN_IDENTITY), every build is the same app to macOS and keeps its privacy grants.
+# Ad-hoc signing, the fallback, ties them to this exact build: after rebuilding they must be
+# given again. A Developer ID build has the hardened runtime and a secure timestamp, which
+# notarization needs; it runs on other Macs without a Gatekeeper warning once notarized.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -22,7 +30,8 @@ mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 APP="$OUT/NexaDesk.app"
 PUBLISH="$OUT/publish"
-VERSION="0.1.0"
+VERSION="$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' "$ROOT/ui/NexaDesk.App/NexaDesk.App.csproj" | head -1)"
+REPO="https://github.com/dollarkillerx/NexaDesk"
 BUNDLE_ID="app.nexadesk.NexaDesk"
 
 case "$(uname -m)" in
@@ -106,12 +115,16 @@ for lproj in "$ROOT/ui/NexaDesk.App/Localization/InfoPlist"/*.lproj; do
 done
 
 # One identity for every build, so macOS keeps Screen Recording, Accessibility and
-# Keychain "Always Allow" across rebuilds: NEXA_SIGN_IDENTITY (e.g. a Developer ID), else
-# "NexaDesk Local Signing" from scripts/make-signing-identity.sh, else an Apple
-# Development certificate, else ad-hoc.
+# Keychain "Always Allow" across rebuilds: NEXA_SIGN_IDENTITY, else a Developer ID
+# Application certificate, else "NexaDesk Local Signing" from
+# scripts/make-signing-identity.sh, else an Apple Development certificate, else ad-hoc.
 IDENTITY="${NEXA_SIGN_IDENTITY:-}"
 KEYCHAIN_ARGS=()
 if [ -n "${NEXA_SIGN_KEYCHAIN:-}" ]; then KEYCHAIN_ARGS=(--keychain "$NEXA_SIGN_KEYCHAIN"); fi
+if [ -z "$IDENTITY" ]; then
+  IDENTITY=$(security find-identity -v -p codesigning ${NEXA_SIGN_KEYCHAIN:+"$NEXA_SIGN_KEYCHAIN"} 2>/dev/null \
+    | sed -n 's/^ *[0-9]*) \([0-9A-F]\{40\}\) "Developer ID Application: .*/\1/p' | head -1)
+fi
 if [ -z "$IDENTITY" ] && security find-certificate -c "NexaDesk Local Signing" ${NEXA_SIGN_KEYCHAIN:+"$NEXA_SIGN_KEYCHAIN"} >/dev/null 2>&1; then
   IDENTITY="NexaDesk Local Signing"
 fi
@@ -120,21 +133,71 @@ if [ -z "$IDENTITY" ]; then
   IDENTITY=$(security find-identity -v -p codesigning ${NEXA_SIGN_KEYCHAIN:+"$NEXA_SIGN_KEYCHAIN"} 2>/dev/null \
     | sed -n 's/^ *[0-9]*) \([0-9A-F]\{40\}\) "Apple Development: .*/\1/p' | head -1)
 fi
+DEVELOPER_ID=0
 if [ -n "$IDENTITY" ]; then
   step "Signing as \"$IDENTITY\""
   SIGN=(--sign "$IDENTITY" "${KEYCHAIN_ARGS[@]+"${KEYCHAIN_ARGS[@]}"}")
+  if security find-identity -v -p codesigning ${NEXA_SIGN_KEYCHAIN:+"$NEXA_SIGN_KEYCHAIN"} 2>/dev/null \
+      | grep -F "$IDENTITY" | grep -q '"Developer ID Application: '; then
+    DEVELOPER_ID=1
+  fi
 else
   step "Ad-hoc signing (scripts/make-signing-identity.sh keeps permissions across rebuilds)"
   SIGN=(--sign -)
 fi
+# Developer ID: the hardened runtime with no exceptions (NativeAOT makes no code at run
+# time; every library in the bundle carries this same signature) and Apple's timestamp.
+if [ "$DEVELOPER_ID" = 1 ]; then
+  SIGN+=(--options runtime --timestamp)
+else
+  SIGN+=(--timestamp=none)
+fi
 # Inside out: libraries and the helper first, then the bundle, which seals them.
 for lib in "$APP/Contents/MacOS"/*.dylib; do
-  codesign --force "${SIGN[@]}" --timestamp=none "$lib"
+  codesign --force "${SIGN[@]}" "$lib"
 done
-codesign --force "${SIGN[@]}" --timestamp=none --identifier app.nexadesk.agent "$APP/Contents/MacOS/nexa-agent"
-codesign --force "${SIGN[@]}" --timestamp=none "$APP"
+codesign --force "${SIGN[@]}" --identifier app.nexadesk.agent "$APP/Contents/MacOS/nexa-agent"
+codesign --force "${SIGN[@]}" "$APP"
 codesign --verify --strict --deep "$APP"
 codesign -dr - "$APP" 2>&1 | sed -n 's/^designated => /identity: /p'
+
+PROFILE="${NEXA_NOTARY_PROFILE:-}"
+if [ -n "$PROFILE" ]; then
+  [ "$DEVELOPER_ID" = 1 ] || { echo "a release needs a Developer ID Application identity" >&2; exit 1; }
+  VPK="$(command -v vpk || echo "$HOME/.dotnet/tools/vpk")"
+  [ -x "$VPK" ] || { echo "missing vpk (dotnet tool install -g vpk)" >&2; exit 1; }
+  RELEASES="$OUT/macos"
+  rm -rf "$RELEASES"
+  mkdir -p "$RELEASES"
+  step "Previous release (for delta updates)"
+  "$VPK" download github --repoUrl "$REPO" -o "$RELEASES" -c osx || echo "  none found; full package only"
+
+  # Velopack adds its updater (UpdateMac) to the bundle and signs it and the bundle; the
+  # rest keeps the signatures above (--signDisableDeep). Then notarizes and staples.
+  step "Velopack: updater, signature, notarization (notarytool profile \"$PROFILE\")"
+  "$VPK" pack -u NexaDesk -v "$VERSION" -p "$APP" -e NexaDesk -o "$RELEASES" -c osx \
+    --packTitle NexaDesk --packAuthors NexaDesk \
+    --signAppIdentity "$IDENTITY" --signEntitlements "$ROOT/assets/macos/NexaDesk.entitlements" --signDisableDeep \
+    --notaryProfile "$PROFILE" --noInst ${NEXA_SIGN_KEYCHAIN:+--keychain "$NEXA_SIGN_KEYCHAIN"}
+  # The bundle as published, with the updater and the notarization ticket.
+  rm -rf "$APP"
+  ditto -x -k "$RELEASES/NexaDesk-osx-Portable.zip" "$OUT"
+  xcrun stapler validate "$APP"
+
+  DMG="$RELEASES/NexaDesk-macOS.dmg"
+  step "Disk image: $DMG"
+  STAGE="$(mktemp -d)"
+  ditto "$APP" "$STAGE/NexaDesk.app"
+  ln -s /Applications "$STAGE/Applications"
+  hdiutil create -volname NexaDesk -srcfolder "$STAGE" -fs HFS+ -format UDZO -ov "$DMG" >/dev/null
+  rm -rf "$STAGE"
+  codesign --force --sign "$IDENTITY" "${KEYCHAIN_ARGS[@]+"${KEYCHAIN_ARGS[@]}"}" --timestamp "$DMG"
+  xcrun notarytool submit "$DMG" --keychain-profile "$PROFILE" --wait
+  xcrun stapler staple "$DMG"
+  spctl --assess --type execute -vv "$APP" 2>&1 | sed 's/^/  /'
+  spctl --assess --type open --context context:primary-signature -vv "$DMG" 2>&1 | sed 's/^/  /'
+  ls -lh "$RELEASES"
+fi
 
 step "Done"
 du -sh "$APP" | sed 's/^/bundle size: /'

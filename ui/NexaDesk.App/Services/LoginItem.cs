@@ -76,3 +76,95 @@ public sealed partial class SmAppServiceLoginItem : ILoginItem
         }
     }
 }
+
+/// <summary>
+/// "Open at login" on Windows: a value under HKCU\Software\Microsoft\Windows\CurrentVersion\Run
+/// that starts this NexaDesk.exe with <see cref="BackgroundArg"/> (tray only, remote control on).
+/// Settings → Apps → Startup can switch it off without removing it; that shows as needing approval.
+/// </summary>
+[System.Runtime.Versioning.SupportedOSPlatform("windows")]
+public sealed class RunKeyLoginItem : ILoginItem
+{
+    public const string BackgroundArg = "--background";
+    const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    const string ApprovedKey = @"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
+    const string ValueName = "NexaDesk";
+
+    static string? Command() =>
+        Environment.ProcessPath is { } exe ? $"\"{exe}\" {BackgroundArg}" : null;
+
+    public LoginItemStatus Status
+    {
+        get
+        {
+            try
+            {
+                using var run = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKey);
+                if (run?.GetValue(ValueName) is not string value
+                    || !string.Equals(value, Command(), StringComparison.OrdinalIgnoreCase))
+                    return LoginItemStatus.NotRegistered;
+                // StartupApproved: an odd first byte means switched off in Settings or Task Manager.
+                using var approved = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(ApprovedKey);
+                if (approved?.GetValue(ValueName) is byte[] { Length: > 0 } flags && (flags[0] & 1) == 1)
+                    return LoginItemStatus.RequiresApproval;
+                return LoginItemStatus.Enabled;
+            }
+            catch (Exception e) when (e is System.Security.SecurityException or UnauthorizedAccessException or IOException)
+            {
+                return LoginItemStatus.NotRegistered;
+            }
+        }
+    }
+
+    public string? Register()
+    {
+        var command = Command();
+        if (command == null) return L.Get("LoginItem.UnknownError");
+        try
+        {
+            using var run = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(RunKey);
+            run.SetValue(ValueName, command);
+            // Switched on here means on: forget an earlier "off" from Settings.
+            using var approved = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(ApprovedKey, writable: true);
+            approved?.DeleteValue(ValueName, throwOnMissingValue: false);
+            return null;
+        }
+        catch (Exception e) when (e is System.Security.SecurityException or UnauthorizedAccessException or IOException)
+        {
+            return e.Message;
+        }
+    }
+
+    public string? Unregister()
+    {
+        try
+        {
+            Remove();
+            return null;
+        }
+        catch (Exception e) when (e is System.Security.SecurityException or UnauthorizedAccessException or IOException)
+        {
+            return e.Message;
+        }
+    }
+
+    /// <summary>Also run by the uninstaller (Program.Main), so nothing is left starting a removed app.</summary>
+    public static void Remove()
+    {
+        using var run = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKey, writable: true);
+        run?.DeleteValue(ValueName, throwOnMissingValue: false);
+        using var approved = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(ApprovedKey, writable: true);
+        approved?.DeleteValue(ValueName, throwOnMissingValue: false);
+    }
+
+    public void OpenSettings()
+    {
+        try
+        {
+            using var _ = Process.Start(new ProcessStartInfo("ms-settings:startupapps") { UseShellExecute = true });
+        }
+        catch (Exception)
+        {
+        }
+    }
+}

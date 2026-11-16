@@ -857,7 +857,8 @@ public sealed partial class MainViewModel : ObservableObject
     public MainViewModel(IClientCore core, IRecentStore recent, IAgentLink link, IAgentProcess process,
         IPermissionProbe permissions, IWindowService windows, ILocalAddresses addresses, string deviceName,
         Func<DateTimeOffset>? now = null, ISettingsStore? settings = null, ILoginItem? loginItem = null,
-        IKeymapService? keymap = null, IViewerPrefs? viewerPrefs = null, ISavedPasswords? passwords = null)
+        IKeymapService? keymap = null, IViewerPrefs? viewerPrefs = null, ISavedPasswords? passwords = null,
+        IAppUpdater? updater = null)
     {
         _keymap = keymap;
         _core = core;
@@ -878,7 +879,11 @@ public sealed partial class MainViewModel : ObservableObject
         _windows = windows;
         LoginItem = new LoginItemViewModel(loginItem ?? new NoLoginItem());
         Tray = new TrayViewModel(Host);
+        Updates = new UpdatesViewModel(updater ?? NullAppUpdater.Instance, () => Tray.QuitCommand.Execute(null));
     }
+
+    /// <summary>The version and updates from GitHub releases.</summary>
+    public UpdatesViewModel Updates { get; }
 
     readonly IKeymapService? _keymap;
     readonly IPermissionProbe _permissions;

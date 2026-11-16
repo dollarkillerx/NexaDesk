@@ -48,5 +48,18 @@
   "Keymap.CannotRead": "无法读取键盘规则：{0}",
   "Main.AllowBrowsers": "允许浏览器连接",
   "Main.AllowBrowsersTip": "对方不用安装 NexaDesk，在浏览器打开本机地址的 47801 端口即可连接；同样需要一次性码和你的确认。只建议在局域网或 Tailscale 中开启。下次开始允许控制时生效。",
-  "Main.CodeOrPassword": "一次性码或密码"
+  "Main.CodeOrPassword": "一次性码或密码",
+  "LoginItem.EnabledWindows": "登录 Windows 后在通知区域自动打开 NexaDesk，并开启允许控制",
+  "LoginItem.RequiresApprovalWindows": "已在“设置 → 应用 → 启动”中被关闭，请在那里打开 NexaDesk",
+  "Platform.AgentMissingWindows": "找不到 nexa-agent.exe。请重新安装 NexaDesk。",
+  "App.ViewerNotYet": "Windows 版暂不能连接其他电脑（后续版本提供）；其他设备已经可以连接这台电脑。",
+  "Updates.Current": "版本 {0}",
+  "Updates.Check": "检查更新",
+  "Updates.Restart": "重启以更新",
+  "Updates.NotInstalled": "只有打包好的应用才会更新",
+  "Updates.Checking": "正在检查更新…",
+  "Updates.UpToDate": "已是最新版本",
+  "Updates.Downloading": "正在下载 {0}… {1}%",
+  "Updates.Ready": "{0} 已下载好：重启会断开远程连接",
+  "Updates.Failed": "无法检查更新：{0}"
 }

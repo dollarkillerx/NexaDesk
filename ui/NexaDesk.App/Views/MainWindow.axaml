@@ -500,6 +500,14 @@
           <TextBlock Classes="errorText" Text="{Binding Error}" VerticalAlignment="Center"
                      IsVisible="{Binding Error, Converter={x:Static ObjectConverters.IsNotNull}}" />
         </StackPanel>
+        <StackPanel Orientation="Horizontal" Spacing="10" DataContext="{Binding Updates}" x:DataType="vm:UpdatesViewModel">
+          <TextBlock Classes="label" Name="VersionText" Text="{Binding CurrentVersion}" VerticalAlignment="Center" />
+          <TextBlock Classes="muted" Name="UpdateStatusText" Text="{Binding StatusText}" VerticalAlignment="Center" />
+          <Button Classes="small" Name="CheckUpdatesButton" Content="{l:T Updates.Check}" Command="{Binding CheckCommand}"
+                  IsVisible="{Binding CanCheckNow}" />
+          <Button Classes="small" Name="RestartToUpdateButton" Content="{l:T Updates.Restart}" Command="{Binding RestartCommand}"
+                  IsVisible="{Binding IsReady}" />
+        </StackPanel>
         <TextBlock Classes="muted" TextWrapping="Wrap" Text="{l:T Main.MenuBarNote}" />
         <Expander Name="AdvancedExpander" Margin="0,2,0,0" HorizontalAlignment="Stretch"
                   DataContext="{Binding Settings}" x:DataType="vm:SettingsViewModel">

@@ -18,7 +18,7 @@
 mod backend;
 pub mod format;
 mod gate;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 pub mod platform;
 mod sync;
 mod time;

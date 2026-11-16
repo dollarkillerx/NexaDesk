@@ -12,8 +12,11 @@ use std::time::{Duration, Instant};
 use nexa_wire::control::{Chroma, Codec, Mode};
 
 pub mod caps_cache;
+pub mod convert;
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(windows)]
+pub mod windows;
 
 #[derive(Debug, thiserror::Error)]
 pub enum MediaError {

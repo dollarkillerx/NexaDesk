@@ -16,6 +16,9 @@ public partial class App : Application
 {
     TrayIcon? _tray;
 
+    /// <summary>Started by "Open at login" on Windows: no window, remote control on.</summary>
+    internal static bool StartInBackground;
+
     public override void Initialize()
     {
         AvaloniaXamlLoader.Load(this);
@@ -30,13 +33,14 @@ public partial class App : Application
     {
         var japanese = language == Localization.L.Japanese;
         // IBM Plex first (the IBM Design Language typeface) when it is installed; Latin falls
-        // back to Helvetica Neue and Han to the system font for the language, in list order.
+        // back to Helvetica Neue (Segoe UI on Windows) and Han to the system font for the
+        // language, in list order.
         app.Resources["UiFont"] = new Avalonia.Media.FontFamily(japanese
-            ? "IBM Plex Sans JP, IBM Plex Sans, Helvetica Neue, Hiragino Sans, Hiragino Kaku Gothic ProN, PingFang SC, sans-serif"
-            : "IBM Plex Sans, Helvetica Neue, PingFang SC, Hiragino Sans GB, Heiti SC, sans-serif");
+            ? "IBM Plex Sans JP, IBM Plex Sans, Helvetica Neue, Hiragino Sans, Hiragino Kaku Gothic ProN, Segoe UI, Yu Gothic UI, Meiryo UI, PingFang SC, Microsoft YaHei UI, sans-serif"
+            : "IBM Plex Sans, Helvetica Neue, PingFang SC, Hiragino Sans GB, Heiti SC, Segoe UI, Microsoft YaHei UI, sans-serif");
         app.Resources["MonoFont"] = new Avalonia.Media.FontFamily(japanese
-            ? "IBM Plex Mono, Menlo, SF Mono, Hiragino Sans, monospace"
-            : "IBM Plex Mono, Menlo, SF Mono, PingFang SC, monospace");
+            ? "IBM Plex Mono, Menlo, SF Mono, Hiragino Sans, Cascadia Mono, Consolas, Yu Gothic UI, monospace"
+            : "IBM Plex Mono, Menlo, SF Mono, PingFang SC, Cascadia Mono, Consolas, Microsoft YaHei UI, monospace");
     }
 
     public override void OnFrameworkInitializationCompleted()
@@ -56,19 +60,26 @@ public partial class App : Application
             catch (Exception e) when (e is NexaException or DllNotFoundException or EntryPointNotFoundException)
             {
                 core = new UnavailableClient(e.Message);
-                startupError = L.Format("App.LibraryError", e.Message);
+                // The viewer side on Windows is docs/WINDOWS.md stage 3; hosting works already.
+                startupError = OperatingSystem.IsWindows() && e is NexaException
+                    ? L.Get("App.ViewerNotYet")
+                    : L.Format("App.LibraryError", e.Message);
             }
             var windows = new WindowService();
             var vm = new MainViewModel(core, new RecentStore(Path.Combine(dataDir, "recent.json")),
-                new AgentLink(Path.Combine(dataDir, Ipc.SocketName), ui), new AgentProcess(ui), new MacPermissions(),
+                new AgentLink(Path.Combine(dataDir, Ipc.SocketName), ui), new AgentProcess(ui),
+                OperatingSystem.IsWindows() ? new NoPermissionsNeeded() : new MacPermissions(),
                 windows, new LocalAddresses(), deviceName, settings: new SettingsStore(Path.Combine(dataDir, "settings.json")),
-                loginItem: new SmAppServiceLoginItem(), keymap: new NativeKeymap(dataDir),
+                loginItem: OperatingSystem.IsWindows() ? new RunKeyLoginItem() : new SmAppServiceLoginItem(), keymap: new NativeKeymap(dataDir),
                 viewerPrefs: new ViewerPrefsStore(Path.Combine(dataDir, "viewer-prefs.json")),
-                passwords: new NativeSavedPasswords());
+                passwords: new NativeSavedPasswords(), updater: new VelopackUpdater());
             if (startupError != null) vm.Connect.IdentityError = startupError;
             var main = new MainWindow { DataContext = vm };
+            if (OperatingSystem.IsWindows())
+                main.Icon = new WindowIcon(AssetLoader.Open(new Uri("avares://NexaDesk/Assets/app.ico")));
             windows.Owner = main;
-            desktop.MainWindow = main;
+            // At login on Windows only the tray icon appears; the window opens from it.
+            if (!StartInBackground) desktop.MainWindow = main;
             // The menu-bar item keeps NexaDesk (agent, consent prompts, banner) running
             // with the window closed; only Quit, or Cmd+Q, ends it.
             desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
@@ -97,6 +108,13 @@ public partial class App : Application
                     if (e.Kind == ActivationKind.Reopen) Show();
                 };
             _tray = MenuBar.Create(this, vm.Tray);
+            if (OperatingSystem.IsWindows())
+            {
+                // A click on the notification-area icon opens the window, as Windows users expect.
+                _tray.Clicked += (_, _) => Show();
+                // Opening NexaDesk again (Start menu, desktop) shows this copy's window.
+                SingleInstance.OnShowRequested(() => Avalonia.Threading.Dispatcher.UIThread.Post(Show));
+            }
             desktop.ShutdownRequested += (_, _) =>
             {
                 quitting = true;
@@ -109,15 +127,24 @@ public partial class App : Application
                 core.Dispose();
             };
             main.Opened += async (_, _) => await vm.Host.TryAttachExistingAsync();
+            if (StartInBackground) _ = HostAtLoginAsync(vm.Host);
+            _ = vm.Updates.CheckDailyAsync();
         }
         base.OnFrameworkInitializationCompleted();
+    }
+
+    /// <summary>Started at login: an agent still running is picked up, else remote control is turned on.</summary>
+    static async Task HostAtLoginAsync(HostViewModel host)
+    {
+        await host.TryAttachExistingAsync();
+        if (host.StartCommand.CanExecute(null)) await host.StartCommand.ExecuteAsync(null);
     }
 
     static string DeviceName()
     {
         var name = Environment.MachineName;
         if (name.EndsWith(".local", StringComparison.OrdinalIgnoreCase)) name = name[..^6];
-        return string.IsNullOrWhiteSpace(name) ? "Mac" : name;
+        return string.IsNullOrWhiteSpace(name) ? (OperatingSystem.IsWindows() ? "PC" : "Mac") : name;
     }
 }
 
@@ -137,7 +164,7 @@ sealed class UnavailableClient(string why) : IClientCore
     }
 }
 
-/// <summary>The NSStatusItem: what is happening, and the way back to the window or out.</summary>
+/// <summary>The NSStatusItem (the notification-area icon on Windows): what is happening, and the way back to the window or out.</summary>
 static class MenuBar
 {
     public static TrayIcon Create(Application app, TrayViewModel vm)
@@ -151,14 +178,16 @@ static class MenuBar
         foreach (var item in new NativeMenuItemBase[]
                  { status, new NativeMenuItemSeparator(), show, hosting, disconnect, new NativeMenuItemSeparator(), quit })
             menu.Items.Add(item);
+        // macOS: a template image the menu bar tints; Windows: the app icon in colour.
+        var icon = OperatingSystem.IsWindows() ? "avares://NexaDesk/Assets/app.ico" : "avares://NexaDesk/Assets/tray.png";
         var tray = new TrayIcon
         {
-            Icon = new WindowIcon(AssetLoader.Open(new Uri("avares://NexaDesk/Assets/tray.png"))),
+            Icon = new WindowIcon(AssetLoader.Open(new Uri(icon))),
             ToolTipText = vm.ToolTip,
             Menu = menu,
             IsVisible = true,
         };
-        MacOSProperties.SetIsTemplateIcon(tray, true);
+        if (OperatingSystem.IsMacOS()) MacOSProperties.SetIsTemplateIcon(tray, true);
         vm.PropertyChanged += (_, _) =>
         {
             status.Header = vm.StatusText;

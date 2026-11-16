@@ -233,6 +233,12 @@ h3 { font-size: 18px; font-weight: 600; margin: 0 0 8px; }
 pre { margin: 0; overflow-x: auto; }
 code { font-family: var(--mono); font-size: 14px; color: #f4f4f4; background: #262626; padding: 8px 10px; display: block; }
 .docs { margin: 36px 0 0; color: #c6c6c6; }
+.downloads { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; max-width: 760px; }
+.download { background: #1f1f1f; border: 1px solid #393939; border-top: 2px solid #78a9ff; padding: 24px; display: flex; flex-direction: column; }
+.download p { color: #c6c6c6; margin: 0 0 20px; font-size: 15px; flex: 1; }
+.download .button { align-self: flex-start; }
+.dark .download .button.primary { color: #fff; }
+.download-note { color: #a8a8a8; font-size: 14px; margin: 16px 0 48px; max-width: 46em; }
 .dark a { color: #78a9ff; }
 
 .foot { border-top: 1px solid var(--border); padding: 28px 0; color: var(--text-3); font-size: 14px; }
@@ -251,7 +257,7 @@ code { font-family: var(--mono); font-size: 14px; color: #f4f4f4; background: #2
   .hero-grid { grid-template-columns: 1fr; padding: 56px 0 64px; gap: 40px; }
   .split, .split.reverse { grid-template-columns: 1fr; gap: 36px; }
   .split.reverse .narrow { order: 2; }
-  .paths { grid-template-columns: 1fr; }
+  .paths, .downloads { grid-template-columns: 1fr; }
   .band { padding: 64px 0; }
 }
 @media (max-width: 560px) {

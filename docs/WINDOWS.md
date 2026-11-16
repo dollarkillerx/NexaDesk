@@ -55,25 +55,30 @@
 
 ## 3. 构建、测试和安装包
 
-- **Rust**：Windows x64，目标 `x86_64-pc-windows-msvc`。这台 Mac 上先用 mingw（`x86_64-pc-windows-gnu`）检查能否编译，正式包在 Windows 上构建。如果在 Mac mini 的虚拟机里跑 Windows 11 ARM，就再加 `aarch64-pc-windows-msvc`。
-- **界面**：NativeAOT 不能在 macOS 上交叉编译到 Windows，所以 Windows 版的界面要在 Windows 上编译（GitHub Actions 的 Windows 机器，或者你的 Windows 电脑）。
-- **CI**：新增 GitHub Actions：Windows 上编译 Rust 和界面、跑全部单元测试、打安装包，产物可以下载。CI 机器没有显卡和真实桌面，截屏、编码这类测试要在真机上跑。
-- **真机测试**：必须有一台 Windows 机器，见第 6 节的问题。
-- **安装包**：NSIS，三种语言（安装时按系统语言自动选，也可以手动选）：
-  - 装到 Program Files，开始菜单和桌面快捷方式，可选开机启动；
-  - 防火墙放行 UDP 47800（被控端用）；
-  - 完整卸载（可选保留设置和配对记录）；
-  - 代码签名：没有证书时 SmartScreen 会提示“未知发布者”，需要你决定是否购买证书。
+全部在这台 Mac 上完成：`scripts/package-windows.sh`（做法和 MySSH 一样）。
+
+- **Rust**：用 mingw 交叉编译（`x86_64-pc-windows-gnu`，`brew install mingw-w64`），只依赖系统自带的 DLL（UCRT，Windows 10 起都有）。
+- **界面**：NativeAOT 不能在 macOS 上交叉编译到 Windows，所以 Windows 版是自带运行时的 JIT 版本加 ReadyToRun（代码和 AOT 版相同，体积大一些，第一次启动稍慢）。
+- **CI**：暂不用。`.github/workflows/windows.yml` 只能手动触发，留着以后用。
+- **真机测试**：在你的 Windows 电脑上装 `dist/windows/NexaDesk-win-Setup.exe`。
+- **安装包**：Velopack（`vpk "[win]" pack`）：
+  - 按用户安装到 `%LocalAppData%\NexaDesk`，不需要管理员权限，开始菜单和桌面快捷方式；
+  - 安装界面只有进度，没有文字，所以不分语言；应用本身按 Windows 显示语言选中文、日语或英语，设置里也能改；
+  - “登录时启动”写在 `HKCU\...\Run`，带 `--background`：登录后只在通知区域出现图标并自动开启允许控制；卸载时删掉这一项；
+  - 防火墙：按用户安装没有权限预先放行，第一次开启允许控制时 Windows 会弹窗询问，选允许即可；
+  - 卸载：设置 → 应用。设置和配对记录在 `%APPDATA%\NexaDesk`，卸载后保留；
+  - 不签名：SmartScreen 第一次会提示“Windows 已保护你的电脑”，点“更多信息 → 仍要运行”。
+  - 以后可以加 Velopack 的自动更新（`releases.win.json` 已经生成）。
 
 ## 4. 阶段
 
 每个阶段结束都能单独验收。
 
-1. **能在 Windows 上编译**（进行中：整个项目已能按 `x86_64-pc-windows-gnu` 编译；被控端和应用的本地通信在 Windows 上改用只允许本人打开的命名管道，名字由数据目录算出（`\\.\pipe\nexadesk-<路径的 FNV-1a>`）；`.github/workflows/windows.yml` 在 Windows 上编译、测试、上传产物，还没在 GitHub 上跑过）：给所有 macOS 专用代码加平台条件；Windows 下先用“不支持”的占位实现；加 CI；`cargo test` 和界面测试在 Windows 上跑通。
-2. **被控端（从 Mac 控制 Windows）**：截屏、编码、输入注入、剪贴板、主机指针、命名管道、开机启动、显示器唤醒。验收：用 Mac 版或浏览器连上 Windows 电脑，能看、能操作、能复制粘贴、能开 PowerShell 终端。
+1. **能在 Windows 上编译**（完成）：整个项目能按 `x86_64-pc-windows-gnu` 编译；被控端和应用的本地通信在 Windows 上改用只允许本人打开的命名管道，名字由数据目录算出（`\\.\pipe\nexadesk-<路径的 FNV-1a>`）。
+2. **被控端（从 Mac 控制 Windows）**（已写完，等真机验收）：DXGI 截屏转 NV12、Media Foundation 软件 H.264（先到 1080p）、SendInput（扫描码和 Unicode 文字）、剪贴板文字、主机指针、显示器唤醒、按显示器的 DPI 感知；界面通过命名管道连被控端，“登录时启动”、通知区域图标、只运行一份。验收：用 Mac 版或浏览器连上 Windows 电脑，能看、能操作、能复制粘贴、能开 PowerShell 终端。这一阶段 Windows 版还不能去连别的电脑，界面上会说明。
 3. **控制端（从 Windows 控制 Mac）**：解码、D3D11 显示、键盘钩子、指针、游戏模式、WebView2 终端。验收：Windows 上的 NexaDesk 能连 Mac，组合键按“Windows 控制 Mac”的规则改写，延迟和 Mac 版相当。
 4. **声音**：WASAPI 采集和播放、libopus。
-5. **安装包**：NSIS 三语言安装包、开始菜单、防火墙规则、卸载、（可选）签名。
+5. **安装包**（完成，见第 3 节）：Velopack 安装包和免安装 zip；以后加自动更新和（可选）签名。
 6. **以后再做**：作为 Windows 服务运行，才能在登录界面、锁屏和 UAC 弹窗时也能控制（普通用户进程看不到安全桌面）；ARM64 版。
 
 阶段 2 和 3 互不依赖，可以按你更需要的方向先做。
@@ -87,6 +92,7 @@
 
 ## 6. 已经决定的
 
-- 测试：在你的 Windows 电脑（x64）上装 CI 打出来的包验收。
+- 测试：在你的 Windows 电脑（x64）上装这台 Mac 打出来的包验收，不用 CI。
+- 安装包：参考 MySSH，用 Velopack。
 - 顺序：被控端和控制端都做；先做被控端（做完就能从 Mac 和浏览器控制 Windows），接着做控制端。
 - 签名：先不签名，以后需要时再加。

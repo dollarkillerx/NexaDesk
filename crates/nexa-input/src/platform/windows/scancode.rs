@@ -1,0 +1,152 @@
+//! USB HID keyboard usages to PC scan codes (set 1), the codes SendInput takes with
+//! KEYEVENTF_SCANCODE. `0xE0xx` marks an extended key.
+
+use crate::Hid;
+
+/// The scan code for a keyboard-page usage, or `None` for keys a PC has no code for.
+pub fn scancode_of(hid: Hid) -> Option<u16> {
+    if hid.0 >> 16 != 0x07 {
+        return None;
+    }
+    let usage = hid.0 & 0xffff;
+    let code: u16 = match usage {
+        // Letters a..z.
+        0x04 => 0x1E,
+        0x05 => 0x30,
+        0x06 => 0x2E,
+        0x07 => 0x20,
+        0x08 => 0x12,
+        0x09 => 0x21,
+        0x0A => 0x22,
+        0x0B => 0x23,
+        0x0C => 0x17,
+        0x0D => 0x24,
+        0x0E => 0x25,
+        0x0F => 0x26,
+        0x10 => 0x32,
+        0x11 => 0x31,
+        0x12 => 0x18,
+        0x13 => 0x19,
+        0x14 => 0x10,
+        0x15 => 0x13,
+        0x16 => 0x1F,
+        0x17 => 0x14,
+        0x18 => 0x16,
+        0x19 => 0x2F,
+        0x1A => 0x11,
+        0x1B => 0x2D,
+        0x1C => 0x15,
+        0x1D => 0x2C,
+        // 1..9, 0.
+        0x1E..=0x26 => 0x02 + (usage - 0x1E) as u16,
+        0x27 => 0x0B,
+        0x28 => 0x1C, // Enter
+        0x29 => 0x01, // Escape
+        0x2A => 0x0E, // Backspace
+        0x2B => 0x0F, // Tab
+        0x2C => 0x39, // Space
+        0x2D => 0x0C, // - _
+        0x2E => 0x0D, // = +
+        0x2F => 0x1A, // [ {
+        0x30 => 0x1B, // ] }
+        0x31 => 0x2B, // \ |
+        0x32 => 0x2B, // Non-US # ~
+        0x33 => 0x27, // ; :
+        0x34 => 0x28, // ' "
+        0x35 => 0x29, // ` ~
+        0x36 => 0x33, // , <
+        0x37 => 0x34, // . >
+        0x38 => 0x35, // / ?
+        0x39 => 0x3A, // Caps Lock
+        // F1..F10, F11, F12.
+        0x3A..=0x43 => 0x3B + (usage - 0x3A) as u16,
+        0x44 => 0x57,
+        0x45 => 0x58,
+        0x46 => 0xE037, // Print Screen
+        0x47 => 0x46,   // Scroll Lock
+        // Pause sends an E1 sequence SendInput cannot make: left out.
+        0x49 => 0xE052, // Insert
+        0x4A => 0xE047, // Home
+        0x4B => 0xE049, // Page Up
+        0x4C => 0xE053, // Delete
+        0x4D => 0xE04F, // End
+        0x4E => 0xE051, // Page Down
+        0x4F => 0xE04D, // Right
+        0x50 => 0xE04B, // Left
+        0x51 => 0xE050, // Down
+        0x52 => 0xE048, // Up
+        0x53 => 0x45,   // Num Lock
+        0x54 => 0xE035, // Keypad /
+        0x55 => 0x37,   // Keypad *
+        0x56 => 0x4A,   // Keypad -
+        0x57 => 0x4E,   // Keypad +
+        0x58 => 0xE01C, // Keypad Enter
+        0x59 => 0x4F,
+        0x5A => 0x50,
+        0x5B => 0x51,
+        0x5C => 0x4B,
+        0x5D => 0x4C,
+        0x5E => 0x4D,
+        0x5F => 0x47,
+        0x60 => 0x48,
+        0x61 => 0x49,
+        0x62 => 0x52,
+        0x63 => 0x53,   // Keypad .
+        0x64 => 0x56,   // Non-US \ |
+        0x65 => 0xE05D, // Application (menu)
+        0x67 => 0x59,   // Keypad =
+        // F13..F24.
+        0x68 => 0x64,
+        0x69 => 0x65,
+        0x6A => 0x66,
+        0x6B => 0x67,
+        0x6C => 0x68,
+        0x6D => 0x69,
+        0x6E => 0x6A,
+        0x6F => 0x6B,
+        0x70 => 0x6C,
+        0x71 => 0x6D,
+        0x72 => 0x6E,
+        0x73 => 0x76,
+        0x85 => 0x7E,   // Keypad , (Brazil)
+        0x87 => 0x73,   // International1: JIS ろ / _
+        0x88 => 0x70,   // International2: JIS かな
+        0x89 => 0x7D,   // International3: JIS ¥
+        0x8A => 0x79,   // International4: 変換
+        0x8B => 0x7B,   // International5: 無変換
+        0x90 => 0x70,   // Lang1 (a Mac's かな): the kana key
+        0x91 => 0x7B,   // Lang2 (a Mac's 英数): 無変換, IME off in current Microsoft IME
+        0xE0 => 0x1D,   // Left Control
+        0xE1 => 0x2A,   // Left Shift
+        0xE2 => 0x38,   // Left Alt
+        0xE3 => 0xE05B, // Left Windows (a Mac's ⌘)
+        0xE4 => 0xE01D, // Right Control
+        0xE5 => 0x36,   // Right Shift
+        0xE6 => 0xE038, // Right Alt
+        0xE7 => 0xE05C, // Right Windows
+        _ => return None,
+    };
+    Some(code)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn common_keys_have_their_pc_codes() {
+        assert_eq!(scancode_of(Hid::key(0x04)), Some(0x1E)); // A
+        assert_eq!(scancode_of(Hid::key(0x1D)), Some(0x2C)); // Z
+        assert_eq!(scancode_of(Hid::key(0x1E)), Some(0x02)); // 1
+        assert_eq!(scancode_of(Hid::key(0x26)), Some(0x0A)); // 9
+        assert_eq!(scancode_of(Hid::key(0x27)), Some(0x0B)); // 0
+        assert_eq!(scancode_of(Hid::key(0x3A)), Some(0x3B)); // F1
+        assert_eq!(scancode_of(Hid::key(0x43)), Some(0x44)); // F10
+        assert_eq!(scancode_of(Hid::key(0x45)), Some(0x58)); // F12
+        assert_eq!(scancode_of(Hid::key(0x68)), Some(0x64)); // F13
+        assert_eq!(scancode_of(Hid::key(0x50)), Some(0xE04B)); // Left arrow, extended
+        assert_eq!(scancode_of(Hid::key(0xE3)), Some(0xE05B)); // ⌘ → Windows key
+        assert_eq!(scancode_of(Hid::key(0x89)), Some(0x7D)); // ¥
+        assert_eq!(scancode_of(Hid(0x0C_00E9)), None); // a consumer-page usage
+    }
+}

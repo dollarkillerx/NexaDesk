@@ -1,17 +1,27 @@
-//! `nexa-agent`: shares this Mac's main display with one paired viewer at a time.
+//! `nexa-agent`: shares this computer's screen with the viewers it lets in (macOS and
+//! Windows; what differs between them is in `os` and `real`).
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 fn main() {
-    eprintln!("nexa-agent currently runs on macOS only");
+    eprintln!("nexa-agent runs on macOS and Windows only");
     std::process::exit(2);
 }
 
 #[cfg(target_os = "macos")]
-mod real;
+#[path = "os_mac.rs"]
+mod os;
+#[cfg(windows)]
+#[path = "os_windows.rs"]
+mod os;
 #[cfg(target_os = "macos")]
+mod real;
+#[cfg(windows)]
+#[path = "real_windows.rs"]
+mod real;
+#[cfg(any(target_os = "macos", windows))]
 mod terminal;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn main() {
     // The fixed password is set and cleared by these, which the app runs; they do not
     // start a host.
@@ -27,7 +37,7 @@ fn main() {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn finish(r: Result<(), String>) {
     if let Err(message) = r {
         eprintln!("nexa-agent: {message}");
@@ -36,14 +46,14 @@ fn finish(r: Result<(), String>) {
 }
 
 /// Where the fixed password's Argon2id verifier is kept: never the password itself.
-#[cfg(target_os = "macos")]
-fn password_store() -> nexa_auth::KeychainStore {
-    nexa_auth::KeychainStore::new("app.nexadesk", "host-password")
+#[cfg(any(target_os = "macos", windows))]
+fn password_store() -> Box<dyn nexa_auth::KeyStore> {
+    os::password_store()
 }
 
 /// The password must be one a person can type, and must not look like a one-time code:
 /// what someone types is a code if it can be one.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn check_password(p: &str) -> Result<(), String> {
     let n = p.chars().count();
     if n < 8 {
@@ -62,9 +72,8 @@ fn check_password(p: &str) -> Result<(), String> {
 }
 
 /// `nexa-agent set-password`: reads one line from standard input.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn set_password() -> Result<(), String> {
-    use nexa_auth::KeyStore;
     let mut line = zeroize::Zeroizing::new(String::new());
     std::io::stdin()
         .read_line(&mut line)
@@ -78,9 +87,8 @@ fn set_password() -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn clear_password() -> Result<(), String> {
-    use nexa_auth::KeyStore;
     password_store()
         .delete()
         .map_err(|e| format!("keychain: {e}"))
@@ -88,18 +96,17 @@ fn clear_password() -> Result<(), String> {
 
 /// Mixed into the device ID the signaling server derives from this Mac's key: a new
 /// seed is a new ID. Kept beside the pairings; without it the ID is the key's own.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 const ID_SEED_FILE: &str = "device-id-seed";
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn default_data_dir() -> Result<std::path::PathBuf, String> {
-    let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
-    Ok(std::path::Path::new(&home).join("Library/Application Support/NexaDesk"))
+    os::default_data_dir()
 }
 
 /// `reset-device-id [--data-dir <dir>]`: the next start registers under a new device ID,
 /// and the old one stops working.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn reset_device_id() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(2).collect();
     let dir = match args.as_slice() {
@@ -108,16 +115,15 @@ fn reset_device_id() -> Result<(), String> {
         _ => return Err("usage: nexa-agent reset-device-id [--data-dir <dir>]".into()),
     };
     std::fs::create_dir_all(&dir).map_err(|e| format!("data directory: {e}"))?;
-    let mut seed = [0u8; 16];
-    // SAFETY: fills exactly the 16 bytes it is given.
-    unsafe { libc::arc4random_buf(seed.as_mut_ptr().cast(), seed.len()) };
-    let hex: String = seed.iter().map(|b| format!("{b:02x}")).collect();
+    // 16 random bytes: the start of a fresh key's public half (the OS's random source).
+    let fresh = nexa_auth::DeviceIdentity::generate().public_key();
+    let hex: String = fresh.to_hex().chars().take(32).collect();
     std::fs::write(dir.join(ID_SEED_FILE), hex + "\n")
         .map_err(|e| format!("saving the new device ID: {e}"))
 }
 
 /// The seed saved by `reset-device-id`, or none.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn load_id_seed(dir: &std::path::Path) -> Vec<u8> {
     let Ok(text) = std::fs::read_to_string(dir.join(ID_SEED_FILE)) else {
         return Vec::new();
@@ -133,9 +139,8 @@ fn load_id_seed(dir: &std::path::Path) -> Vec<u8> {
 }
 
 /// The fixed password, if one was set.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn load_password() -> Result<Option<std::sync::Arc<nexa_auth::HostPassword>>, String> {
-    use nexa_auth::KeyStore;
     let Some(bytes) = password_store()
         .load()
         .map_err(|e| format!("keychain: {e}"))?
@@ -149,23 +154,14 @@ fn load_password() -> Result<Option<std::sync::Arc<nexa_auth::HostPassword>>, St
 
 /// The page's certificate: the person's own in the data directory, else one this Mac
 /// makes for its addresses, its Tailscale name and its `.local` name.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn web_certificate(data_dir: &std::path::Path) -> std::io::Result<nexa_web::WebTls> {
     let mut names = nexa_web::certificate_names();
-    if let Some(local) = std::process::Command::new("scutil")
-        .args(["--get", "LocalHostName"])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
-    {
-        names.push(format!("{local}.local"));
-    }
+    names.extend(os::local_names());
     nexa_web::WebTls::load_or_create(data_dir, &names)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 const USAGE: &str = "usage: nexa-agent --listen <ip:port> [--name <device name>] [--data-dir <dir>] [--consent terminal|ui]\n\
                  [--signal <wss://server[:port]>] [--signal-ca <pem>] [--paired-only] [--relay-only]\n\
                  [--downloads <dir>] [--no-lan-discovery] [--web <ip:port>]\n\
@@ -191,14 +187,14 @@ const USAGE: &str = "usage: nexa-agent --listen <ip:port> [--name <device name>]
   With a fixed password set, viewers and browsers may type it instead of the one-time\n\
   code; every connection is still put to the person at this Mac.";
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ConsentMode {
     Terminal,
     Ui,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 struct Args {
     listen: std::net::SocketAddr,
     name: String,
@@ -213,7 +209,7 @@ struct Args {
     web: Option<std::net::SocketAddr>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn parse_args() -> Result<Args, String> {
     let mut listen = None;
     let mut name = None;
@@ -267,23 +263,15 @@ fn parse_args() -> Result<Args, String> {
         }
     }
     let listen = listen.ok_or_else(|| format!("--listen is required\n{USAGE}"))?;
-    let name = name.unwrap_or_else(|| {
-        std::process::Command::new("scutil")
-            .args(["--get", "ComputerName"])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_owned())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "Mac".to_owned())
-    });
-    let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
+    let name = name.unwrap_or_else(os::computer_name);
     let data_dir = match data_dir {
         Some(d) => d,
         None => default_data_dir()?,
     };
-    let downloads =
-        downloads.unwrap_or_else(|| std::path::Path::new(&home).join("Downloads/NexaDesk"));
+    let downloads = match downloads {
+        Some(d) => d,
+        None => os::default_downloads()?,
+    };
     Ok(Args {
         listen,
         name,
@@ -300,78 +288,31 @@ fn parse_args() -> Result<Args, String> {
     })
 }
 
-/// The agent runs from inside the app's bundle, so its first AppKit call (the pasteboard,
-/// screen capture) would give it a Dock icon of its own beside the app's. As an accessory
-/// it stays out of the Dock and the app switcher.
-#[cfg(target_os = "macos")]
-fn stay_out_of_the_dock() {
-    use objc2::{
-        msg_send,
-        runtime::{AnyClass, AnyObject},
-    };
-    #[link(name = "AppKit", kind = "framework")]
-    unsafe extern "C" {}
-    /// NSApplicationActivationPolicyAccessory.
-    const ACCESSORY: isize = 1;
-    let Some(class) = AnyClass::get(c"NSApplication") else {
-        return;
-    };
-    // SAFETY: called on the main thread before anything else touches AppKit;
-    // `sharedApplication` and `setActivationPolicy:` take and return what is declared.
-    unsafe {
-        let app: *mut AnyObject = msg_send![class, sharedApplication];
-        if !app.is_null() {
-            let _: bool = msg_send![app, setActivationPolicy: ACCESSORY];
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn run() -> Result<(), String> {
-    stay_out_of_the_dock();
+    os::prepare();
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering::Relaxed},
     };
 
     use nexa_agent::{AgentConfig, AgentUi, ipc::IpcConfig, start, start_with_ui};
-    use nexa_auth::{DeviceIdentity, KeychainStore, PairingStore};
-    use nexa_input::platform::macos::{FocusWatcher, accessibility_granted};
-    use nexa_media::macos::{cached_caps, has_screen_capture_permission, probe_caps};
+    use nexa_auth::{DeviceIdentity, PairingStore};
     use nexa_session::handshake::Timeouts;
-    use nexa_wire::control::{FocusContext, Os};
-    use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSRunLoop};
     use terminal::{Command, TerminalUi};
 
     let args = parse_args()?;
-
-    if !has_screen_capture_permission() {
-        return Err(
-            "Screen Recording permission is missing. Grant it to this program (or the terminal \
-             running it) in System Settings > Privacy & Security > Screen Recording, then start again."
-                .to_owned(),
-        );
-    }
-    if !accessibility_granted() {
-        eprintln!(
-            "nexa-agent: Accessibility permission is missing, so viewers cannot be given keyboard or mouse control."
-        );
-    }
+    os::check_permissions()?;
 
     std::fs::create_dir_all(&args.data_dir).map_err(|e| format!("data directory: {e}"))?;
-    let identity =
-        DeviceIdentity::load_or_create(&KeychainStore::new("app.nexadesk", "agent-device-key"))
-            .map_err(|e| format!("device key: {e}"))?;
+    let identity = DeviceIdentity::load_or_create(&*os::device_key_store(&args.data_dir))
+        .map_err(|e| format!("device key: {e}"))?;
     let store = PairingStore::open(
         args.data_dir.join("pairings.json"),
         identity.store_mac_key(),
     )
     .map_err(|e| format!("pairing store (fix or remove it to continue): {e}"))?;
-    // §3.5: probed with real sessions once per OS build and GPU, then cached.
-    let caps = match nexa_media::caps_cache::default_path() {
-        Some(path) => cached_caps(&path),
-        None => probe_caps(),
-    };
+    let caps = os::caps();
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -453,7 +394,7 @@ fn run() -> Result<(), String> {
     let config = AgentConfig {
         listen: args.listen,
         device_name: args.name,
-        os: Os::Macos,
+        os: os::OS,
         caps,
         timeouts: Timeouts::default(),
         signal,
@@ -479,7 +420,7 @@ fn run() -> Result<(), String> {
                         config,
                         identity,
                         store,
-                        Arc::new(real::RealPlatform),
+                        os::platform(),
                         ui.clone() as Arc<dyn AgentUi>,
                     ))
                     .map_err(|e| e.to_string())?,
@@ -502,7 +443,7 @@ fn run() -> Result<(), String> {
                     config,
                     identity,
                     store,
-                    Arc::new(real::RealPlatform),
+                    os::platform(),
                     fallback,
                     IpcConfig::in_dir(&args.data_dir),
                     on_shutdown,
@@ -518,49 +459,13 @@ fn run() -> Result<(), String> {
     {
         let (agent, quit) = (agent.clone(), quit.clone());
         runtime.spawn(async move {
-            use tokio::signal::unix::{SignalKind, signal};
-            let (Ok(mut term), Ok(mut int)) = (
-                signal(SignalKind::terminate()),
-                signal(SignalKind::interrupt()),
-            ) else {
-                return;
-            };
-            tokio::select! {
-                _ = term.recv() => {}
-                _ = int.recv() => {}
-            }
+            os::stop_signal().await;
             agent.shutdown();
             quit.store(true, Relaxed);
         });
     }
 
-    // The main thread belongs to AppKit: FocusWatcher notifications and pasteboard
-    // promise callbacks both arrive through its run loop.
-    let extra_terminals: Vec<String> = Vec::new();
-    if let Some((class, id)) = FocusWatcher::current(&extra_terminals) {
-        agent.set_focus(FocusContext {
-            cls: class as i32,
-            app_id: id,
-        });
-    }
-    let watcher = {
-        let agent = agent.clone();
-        FocusWatcher::start(extra_terminals, move |class, id| {
-            agent.set_focus(FocusContext {
-                cls: class as i32,
-                app_id: id.to_owned(),
-            });
-        })
-    };
-    let run_loop = NSRunLoop::currentRunLoop();
-    while !quit.load(Relaxed) {
-        let until = NSDate::dateWithTimeIntervalSinceNow(0.2);
-        // SAFETY: the mode is a Foundation constant and the date is valid.
-        unsafe {
-            run_loop.runMode_beforeDate(NSDefaultRunLoopMode, &until);
-        }
-    }
-    drop(watcher);
+    os::main_loop(&agent, &quit);
     runtime.block_on(agent.wait());
     drop(_ipc);
     Ok(())

@@ -24,7 +24,14 @@
     <PackageReference Include="Avalonia.Desktop" Version="12.1.6" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.6" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <!-- The Windows installer and its hooks (scripts/package-windows.sh); a no-op elsewhere. -->
+    <PackageReference Include="Velopack" Version="1.2.161" />
   </ItemGroup>
+
+  <!-- The icon of NexaDesk.exe on Windows (Explorer, the taskbar, the Start menu). -->
+  <PropertyGroup Condition="$(RuntimeIdentifier.StartsWith('win'))">
+    <ApplicationIcon>Assets/app.ico</ApplicationIcon>
+  </PropertyGroup>
 
   <ItemGroup>
     <AvaloniaResource Include="Assets/**" />
@@ -42,7 +49,7 @@
   </ItemGroup>
 
   <!-- For `dotnet run`: the library built by cargo next to the app. The bundle script copies it itself. -->
-  <ItemGroup Condition="Exists('../../target/release/libnexa_client.dylib')">
+  <ItemGroup Condition="Exists('../../target/release/libnexa_client.dylib') And !$(RuntimeIdentifier.StartsWith('win'))">
     <None Include="../../target/release/libnexa_client.dylib" Link="libnexa_client.dylib" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

@@ -5,7 +5,7 @@ using NexaDesk.Services;
 
 namespace NexaDesk.ViewModels;
 
-/// <summary>"登录时启动": SMAppService.mainApp behind <see cref="ILoginItem"/>.</summary>
+/// <summary>"登录时启动": SMAppService.mainApp, or the Run key on Windows, behind <see cref="ILoginItem"/>.</summary>
 public sealed partial class LoginItemViewModel : ObservableObject
 {
     readonly ILoginItem _item;
@@ -30,8 +30,9 @@ public sealed partial class LoginItemViewModel : ObservableObject
 
     public string StatusText => Status switch
     {
-        LoginItemStatus.Enabled => L.Get("LoginItem.Enabled"),
-        LoginItemStatus.RequiresApproval => L.Get("LoginItem.RequiresApproval"),
+        LoginItemStatus.Enabled => L.Get(OperatingSystem.IsWindows() ? "LoginItem.EnabledWindows" : "LoginItem.Enabled"),
+        LoginItemStatus.RequiresApproval =>
+            L.Get(OperatingSystem.IsWindows() ? "LoginItem.RequiresApprovalWindows" : "LoginItem.RequiresApproval"),
         LoginItemStatus.NotFound => L.Get("LoginItem.NotFound"),
         LoginItemStatus.Unsupported => L.Get("LoginItem.NeedsMacOS13"),
         _ => L.Get("LoginItem.Off"),

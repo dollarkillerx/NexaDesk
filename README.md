@@ -2,7 +2,7 @@
 
 轻量的远程控制软件。目标是高清、低延迟，粘贴可靠，键盘对 Win / Mac 友好，能自己打洞，也能借助 Tailscale。界面用 Avalonia，后端用 Rust。
 
-> **状态**：macOS ↔ macOS 的功能已经写完，自动化测试全部通过，但**还没在两台真实的 Mac、真实的网络上验证过**。浏览器端（查看、控制、命令行，含手机、输入法、剪贴板，可经自建服务器跨网络）已在 Chrome 中做过自动化端到端测试，并经公网服务器实测过。Linux / Windows 的命令行被控端已能构建，Linux 版已在服务器上注册运行，Windows 版尚未实机运行。图形化的 Windows 端尚未开始。暂时不建议用在重要场合。
+> **状态**：macOS ↔ macOS 的功能已经写完，自动化测试全部通过，但**还没在两台真实的 Mac、真实的网络上验证过**。浏览器端（查看、控制、命令行，含手机、输入法、剪贴板，可经自建服务器跨网络）已在 Chrome 中做过自动化端到端测试，并经公网服务器实测过。Linux / Windows 的命令行被控端已能构建，Linux 版已在服务器上注册运行，Windows 版尚未实机运行。Windows 图形版的第一个预览版已发布（目前只能被控，尚未实机验证）。暂时不建议用在重要场合。
 
 ## 截图
 
@@ -100,6 +100,26 @@
 | `spikes/` | M0 阶段的验证代码 |
 | `third_party/` | 打了小补丁的第三方代码（dimpl，让 Linux 版不依赖 aws-lc），说明见其中的 README |
 
+## 下载
+
+从 [GitHub Releases](https://github.com/dollarkillerx/NexaDesk/releases/latest) 下载：
+
+- **macOS**（Apple 芯片，macOS 14+）：[NexaDesk-macOS.dmg](https://github.com/dollarkillerx/NexaDesk/releases/latest/download/NexaDesk-macOS.dmg)，Developer ID 签名并经 Apple 公证。
+- **Windows**（x64，Windows 10 / 11，预览版，只能被控）：[NexaDesk-win-Setup.exe](https://github.com/dollarkillerx/NexaDesk/releases/latest/download/NexaDesk-win-Setup.exe)，按用户安装，不需要管理员权限；还没有代码签名，SmartScreen 提示时点“更多信息 → 仍要运行”。
+
+两个版本都会自动更新（[Velopack](https://velopack.io)）：启动后和之后每天检查一次 GitHub Releases，有新版本就在后台下载，主窗口底部显示“重启以更新”。不会自动重启，因为重启会断开远程连接。
+
+## 发布
+
+在这台 Mac 上打两个平台的包，然后把 `dist/macos/` 和 `dist/windows/` 里的文件全部上传到同一个 GitHub Release（应用的更新程序从那里读 `releases.osx.json` / `releases.win.json`）：
+
+```bash
+NEXA_NOTARY_PROFILE=<notarytool 凭据名> scripts/package-macos.sh
+scripts/package-windows.sh
+```
+
+版本号来自 `ui/NexaDesk.App/NexaDesk.App.csproj` 的 `<Version>`。Windows 包用 mingw 交叉编译，见 [docs/WINDOWS.md](docs/WINDOWS.md)。
+
 ## 构建（macOS）
 
 需要：
@@ -121,7 +141,7 @@ scripts/package-macos.sh
 scripts/make-signing-identity.sh
 ```
 
-这个证书的私钥只应留在本机：拿到它的人可以签出被 macOS 当作 NexaDesk、带着同样权限的程序。给别人用的版本请用 Developer ID 签名（`NEXA_SIGN_IDENTITY="Developer ID Application: …" scripts/package-macos.sh`）。
+这个证书的私钥只应留在本机：拿到它的人可以签出被 macOS 当作 NexaDesk、带着同样权限的程序。钥匙串里有 Developer ID Application 证书时，脚本会优先用它，并开启 hardened runtime（公证需要）。
 
 应用图标在 `assets/icon/`（`AppIcon.icns` 和 1024 px 原图），已提交到仓库，打包时直接使用。图标由 `scripts/make-app-icon.swift` 用代码绘制；修改后运行 `scripts/make-app-icon.sh` 重新生成。
 
@@ -189,8 +209,8 @@ cargo run -p nexa-web --example demo
 ## 尚未完成
 
 - **验证**：两台 Mac 的实机联调；真实 NAT 环境下的打洞测试（经自建服务器中继已在公网实测，见 docs/DEPLOY.md §6）。
-- **macOS 发布**：Developer ID 签名与公证、安装包、自动更新，以及登录界面和锁屏前的远程访问。
-- **其他平台**：Windows 的图形被控端与控制端（命令行被控端已有，见 docs/TERM_HOST.md）。
+- **macOS**：登录界面和锁屏前的远程访问。
+- **Windows**：被控端的实机验证；控制端（从 Windows 控制别的电脑）、声音、作为服务运行（登录界面和 UAC），见 [docs/WINDOWS.md](docs/WINDOWS.md)。
 - **Web 端后续**：iPhone / Safari、Firefox 上的实测（Android 上的 Chrome 已用过）；TURN over TCP/TLS（UDP 被封的网络）；声音和文件传输；应用（非浏览器）里的终端。
 - **命令行被控端**：Windows 版的实机运行；作为 Windows 服务运行。
 - **产品决定**：无人值守机器的首次配对方式；知道 ID 的人默认能做什么；文件权限是否按方向拆开。
