@@ -5,6 +5,7 @@ import { Keyboard } from "./keyboard.js";
 import { setupTouch } from "./touch.js";
 import { watch } from "./stats.js";
 import { RemoteTerminal } from "./term.js";
+import * as saved from "./saved.js";
 
 const $ = (id) => document.getElementById(id);
 const CODE_ALPHABET = /^[A-Z2-7]{8}$/;
@@ -80,11 +81,14 @@ function showStatus(text, { error = false, busy = false } = {}) {
   $("status").classList.toggle("error", error);
   $("spinner").hidden = !busy;
   $("status-text").textContent = text;
+  // On a phone the form is taller than the screen: keep the news where it is seen.
+  $("status").scrollIntoView({ block: "nearest" });
 }
 
 function setConnecting(on) {
   $("connect").disabled = on;
   $("code").disabled = on;
+  for (const b of document.querySelectorAll("#saved-list button")) b.disabled = on;
 }
 
 function normalize(input) {
@@ -122,7 +126,9 @@ function showViewChoice() {
   $("view-help").textContent = t("viewHelp." + view);
 }
 
-function connect(code, deviceId, method = "code") {
+/** `opts.save`: keep this connection in the browser once it is let in. `opts.from`: the
+ *  saved connection this was started from. */
+function connect(code, deviceId, method = "code", opts = {}) {
   const pc = new RTCPeerConnection({ iceServers: [] });
   const path = mode === "server" ? "/web" : "/ws";
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${path}`);
@@ -132,6 +138,13 @@ function connect(code, deviceId, method = "code") {
   const finish = (key, { error = true } = {}) => {
     if (s.ended) return;
     s.ended = true;
+    // A kept password the host no longer takes: drop it and ask for it again.
+    if (key === "error.password" && opts.from?.sealed) {
+      saved.forgetPassword(opts.from.id);
+      key = "saved.stale";
+      if (mode === "server") $("device").value = spaced(deviceId);
+      setTimeout(() => $("code").focus(), 0);
+    }
     s.stopStats?.();
     closeTerminal();
     try { s.dc?.close(); } catch {}
@@ -228,6 +241,7 @@ function connect(code, deviceId, method = "code") {
         s.video = m.video !== false;
         s.hostOs = typeof m.os === "string" ? m.os : "";
         s.started = true;
+        keep(m, code, deviceId, method, opts);
         showSession(s);
         break;
       case "candidates":
@@ -249,7 +263,109 @@ function connect(code, deviceId, method = "code") {
   };
 }
 
+/** Saves the connection just let in, if asked, or brings a saved one up to date. */
+function keep(accepted, code, deviceId, method, opts) {
+  const name = typeof accepted.name === "string" ? accepted.name : "";
+  const id = mode === "server" ? deviceId : "";
+  // Through the server the device ID is worth keeping on its own; the host that served
+  // this page needs its password, or there is nothing to save.
+  const worth = mode === "server" || method === "password";
+  if (opts.save && worth) {
+    saved.save({ deviceId: id, name, view: chosenView(), password: method === "password" ? code : undefined }).then(showSaved);
+  } else if (opts.from) {
+    saved.save({ deviceId: id, name, view: chosenView() }).then(showSaved);
+  }
+}
+
+const spaced = (id) => id.replace(/(\d{3})(?=\d)/g, "$1 ");
+
+/** The saved connections that fit this page: device IDs through the server, the one
+ *  host itself when it served the page. */
+function showSaved() {
+  const items = saved.list().filter((e) => (mode === "server" ? DEVICE_ID.test(e.deviceId) : e.deviceId === ""));
+  $("saved").hidden = items.length === 0;
+  const ul = $("saved-list");
+  ul.replaceChildren();
+  for (const e of items) {
+    const li = document.createElement("li");
+    li.className = "saved-item";
+    const go = document.createElement("button");
+    go.type = "button";
+    go.className = "saved-go";
+    const name = document.createElement("span");
+    name.className = "saved-name";
+    name.textContent = e.name || (e.deviceId ? `${t("saved.device")} ${spaced(e.deviceId)}` : t("saved.thisHost"));
+    const meta = document.createElement("span");
+    meta.className = "saved-meta";
+    const where = e.deviceId ? spaced(e.deviceId) : location.host;
+    meta.textContent = [where, t(e.sealed ? "saved.password" : e.deviceId ? "saved.ask" : "saved.typePassword"), t("view." + (e.view === "terminal" ? "terminal" : "screen"))].join(" · ");
+    go.append(name, meta);
+    go.addEventListener("click", () => connectSaved(e.id));
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.className = "saved-remove";
+    rm.setAttribute("aria-label", `${t("saved.remove")} ${name.textContent}`);
+    rm.textContent = "✕";
+    // Two taps: the first asks, the second removes.
+    rm.addEventListener("click", () => {
+      if (rm.classList.contains("armed")) {
+        saved.remove(e.id);
+        showSaved();
+        return;
+      }
+      rm.classList.add("armed");
+      rm.textContent = t("saved.confirmRemove");
+      setTimeout(() => {
+        if (!rm.isConnected) return;
+        rm.classList.remove("armed");
+        rm.textContent = "✕";
+      }, 4000);
+    });
+    li.append(go, rm);
+    ul.append(li);
+  }
+  if (session) setConnecting(true);
+}
+
+/** One tap on a saved connection: its password if one is kept, else the host is asked. */
+async function connectSaved(id) {
+  if (session) return;
+  const e = saved.find(id);
+  if (!e) return showSaved();
+  try { localStorage.setItem(VIEW_KEY, e.view === "terminal" ? "terminal" : "screen"); } catch {}
+  showViewChoice();
+  const password = await saved.passwordOf(e);
+  if (!password && mode !== "server") {
+    showStatus(t("saved.noPassword"), { error: true });
+    $("code").focus();
+    return;
+  }
+  setConnecting(true);
+  showStatus(t("connecting"), { busy: true });
+  if (!password) return connect("", e.deviceId, "request", { from: e });
+  loadPake().then(() => connect(password, e.deviceId, "password", { from: e }), () => {
+    setConnecting(false);
+    showStatus(t("error.wasm"), { error: true });
+  });
+}
+
+const REMEMBER_KEY = "nexadesk.remember";
+
+/** What ticking "save" would keep, for what is typed now. */
+function showRememberHelp() {
+  const raw = $("code").value;
+  const typed = raw.trim() === "" ? null : readSecret(raw);
+  let key;
+  if (mode === "server" && raw.trim() === "") key = "rememberHelp.request";
+  else if (typed?.method === "password") key = saved.canKeepPasswords ? "rememberHelp.password" : "rememberHelp.noCrypto";
+  else key = mode === "server" ? "rememberHelp.code" : "rememberHelp.codeDirect";
+  $("remember-help").textContent = t(key);
+  $("remember-help").hidden = !$("remember").checked;
+}
+
 function showConnect() {
+  document.body.classList.remove("in-session");
+  showSaved();
   $("session-view").hidden = true;
   $("connect-view").hidden = false;
   $("disconnect").hidden = true;
@@ -269,6 +385,7 @@ function showConnect() {
 }
 
 function showSession(s) {
+  document.body.classList.add("in-session");
   $("connect-view").hidden = true;
   $("session-view").hidden = false;
   $("session-view").classList.toggle("control", s.input);
@@ -704,6 +821,8 @@ function setupLanguage() {
     }
     $("reveal").textContent = t($("code").type === "text" ? "hide" : "show");
     showViewChoice();
+    showSaved();
+    showRememberHelp();
     const s = session;
     if (s?.started) {
       $("mode-tag").textContent = t(s.input ? "control" : "viewOnly");
@@ -719,6 +838,12 @@ function init() {
   setupLanguage();
   setupInput();
   const code = $("code");
+  try { $("remember").checked = localStorage.getItem(REMEMBER_KEY) === "1"; } catch {}
+  $("remember").addEventListener("change", () => {
+    try { localStorage.setItem(REMEMBER_KEY, $("remember").checked ? "1" : "0"); } catch {}
+    showRememberHelp();
+  });
+  code.addEventListener("input", showRememberHelp);
   code.addEventListener("input", () => {
     code.classList.remove("invalid");
     $("code-help").classList.remove("invalid");
@@ -737,7 +862,7 @@ function init() {
     if (mode === "server" && code.value.trim() === "") {
       setConnecting(true);
       showStatus(t("connecting"), { busy: true });
-      connect("", id, "request");
+      connect("", id, "request", { save: $("remember").checked });
       return;
     }
     const typed = readSecret(code.value);
@@ -749,7 +874,8 @@ function init() {
     }
     setConnecting(true);
     showStatus(t("connecting"), { busy: true });
-    loadPake().then(() => connect(typed.secret, id, typed.method), () => {
+    const save = $("remember").checked;
+    loadPake().then(() => connect(typed.secret, id, typed.method, { save }), () => {
       setConnecting(false);
       showStatus(t("error.wasm"), { error: true });
     });
@@ -774,7 +900,10 @@ function init() {
     $("code-help").textContent = t("codeHelpServer");
     $("security-note").textContent = `${t("securityServer")} ${t("securityRequest")}`;
     $("device").focus();
-  }).catch(() => {});
+  }).catch(() => {}).finally(() => {
+    showSaved();
+    showRememberHelp();
+  });
   $("disconnect").addEventListener("click", () => session?.finish("ended", { error: false }));
   $("terminal").addEventListener("click", () => ($("termpanel").hidden ? openTerminal() : hideTerminal()));
   for (const b of document.querySelectorAll("#view-choice button")) {

@@ -360,7 +360,10 @@ async fn serve(
     let gateway = Arc::new(WebGateway::remote_only(
         host.clone(),
         code.clone(),
-        WebConfig::default(),
+        WebConfig {
+            name: machine_name(),
+            ..WebConfig::default()
+        },
     ));
     *host.gateway.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::downgrade(&gateway));
     if let Some(p) = password.clone() {
@@ -509,4 +512,16 @@ fn group_code(code: &str) -> String {
     } else {
         code.to_string()
     }
+}
+
+/// This machine's name, for browsers to save the connection under; empty if unknown.
+fn machine_name() -> String {
+    let name = if cfg!(windows) {
+        std::env::var("COMPUTERNAME").unwrap_or_default()
+    } else {
+        std::fs::read_to_string("/etc/hostname")
+            .or_else(|_| std::fs::read_to_string("/proc/sys/kernel/hostname"))
+            .unwrap_or_default()
+    };
+    name.trim().chars().take(64).collect()
 }

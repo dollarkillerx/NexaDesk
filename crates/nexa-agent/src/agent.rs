@@ -611,7 +611,10 @@ pub async fn start(
             addr,
             host,
             shared.code.clone(),
-            Default::default(),
+            nexa_web::WebConfig {
+                name: config.device_name.clone(),
+                ..Default::default()
+            },
             web_tls,
         )
         .await

@@ -7,7 +7,7 @@
 //! host → browser  {type:"answer", sdp, salt, msg}         SPAKE2 offer (no salt, msg for "request")
 //! browser → host  {type:"auth", msg, confirm}             not for "request"
 //! host → browser  {type:"waiting"}                        the person is being asked
-//! host → browser  {type:"accepted", confirm, input, clipboard, terminal, os}   or {type:"denied"}
+//! host → browser  {type:"accepted", confirm, input, clipboard, terminal, os, name}   or {type:"denied"}
 //! host → browser  {type:"candidates", list}       through the server, once let in: this
 //!                                                 host's own addresses, to try directly
 //! host → browser  {type:"ended", reason}
@@ -391,6 +391,7 @@ pub(crate) async fn run(mut ws: Pipe, peer: SocketAddr, path: rtc::Path, shared:
         "video": screen.is_some(),
         // Shortcuts are carried over to the host's conventions (Ctrl+C → ⌘C on a Mac).
         "os": std::env::consts::OS,
+        "name": shared.config.name,
     });
     if !send(&mut ws, accepted).await {
         driver.abort();

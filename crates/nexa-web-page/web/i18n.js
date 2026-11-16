@@ -2,6 +2,23 @@
 
 const STRINGS = {
   "zh-Hans": {
+    "saved.title": "已保存的连接",
+    "saved.new": "新的连接",
+    "saved.password": "已保存密码",
+    "saved.ask": "需对方确认",
+    "saved.typePassword": "需输入密码",
+    "saved.remove": "删除",
+    "saved.confirmRemove": "确认删除",
+    "saved.device": "设备",
+    "saved.thisHost": "这台电脑",
+    "saved.stale": "保存的密码已经不对了，请重新输入。",
+    "saved.noPassword": "这台电脑没有保存密码，请输入一次性码或密码。",
+    "remember": "保存到这个浏览器",
+    "rememberHelp.password": "设备 ID 和密码会加密保存在这个浏览器里，下次点一下就能连上。只在自己的设备上勾选。",
+    "rememberHelp.code": "一次性码只能用一次，所以只保存设备 ID；下次连接时会请对方确认。",
+    "rememberHelp.request": "保存设备 ID，下次点一下就会向对方发出连接请求。",
+    "rememberHelp.codeDirect": "一次性码只能用一次。要保存这台电脑，请用固定密码连接。",
+    "rememberHelp.noCrypto": "这个浏览器无法加密保存密码，只保存设备 ID。",
     "net.title": "网络",
     "net.method": "连接方式",
     "net.rtt": "往返时延",
@@ -97,6 +114,23 @@ const STRINGS = {
     "error.format": "一次性码是 8 位字母和数字，固定密码至少 8 位。",
   },
   en: {
+    "saved.title": "Saved connections",
+    "saved.new": "New connection",
+    "saved.password": "Password saved",
+    "saved.ask": "Asks the host",
+    "saved.typePassword": "Password needed",
+    "saved.remove": "Remove",
+    "saved.confirmRemove": "Remove?",
+    "saved.device": "Device",
+    "saved.thisHost": "This computer",
+    "saved.stale": "The saved password no longer works. Type it again.",
+    "saved.noPassword": "No password is saved for this computer. Type a one-time code or the password.",
+    "remember": "Save in this browser",
+    "rememberHelp.password": "The device ID and password are kept, encrypted, in this browser: next time it is one tap. Only tick this on your own device.",
+    "rememberHelp.code": "A one-time code works once, so only the device ID is kept; next time the host is asked.",
+    "rememberHelp.request": "Keeps the device ID: next time, one tap asks the host to let you in.",
+    "rememberHelp.codeDirect": "A one-time code works once. To save this computer, connect with its fixed password.",
+    "rememberHelp.noCrypto": "This browser cannot keep a password encrypted, so only the device ID is kept.",
     "net.title": "Network",
     "net.method": "Connection",
     "net.rtt": "Round trip",
@@ -192,6 +226,23 @@ const STRINGS = {
     "error.format": "A one-time code is 8 letters and digits; a fixed password is at least 8 characters.",
   },
   ja: {
+    "saved.title": "保存した接続",
+    "saved.new": "新しい接続",
+    "saved.password": "パスワード保存済み",
+    "saved.ask": "相手の許可が必要",
+    "saved.typePassword": "パスワードが必要",
+    "saved.remove": "削除",
+    "saved.confirmRemove": "削除する",
+    "saved.device": "デバイス",
+    "saved.thisHost": "このコンピューター",
+    "saved.stale": "保存したパスワードが使えなくなりました。もう一度入力してください。",
+    "saved.noPassword": "このコンピューターのパスワードは保存されていません。ワンタイムコードかパスワードを入力してください。",
+    "remember": "このブラウザに保存",
+    "rememberHelp.password": "デバイス ID とパスワードを暗号化してこのブラウザに保存し、次回はタップするだけで接続できます。自分の端末でだけチェックしてください。",
+    "rememberHelp.code": "ワンタイムコードは一度しか使えないため、デバイス ID だけを保存します。次回は相手に許可を求めます。",
+    "rememberHelp.request": "デバイス ID を保存し、次回はタップするだけで相手に接続を求めます。",
+    "rememberHelp.codeDirect": "ワンタイムコードは一度しか使えません。このコンピューターを保存するには固定パスワードで接続してください。",
+    "rememberHelp.noCrypto": "このブラウザではパスワードを暗号化して保存できないため、デバイス ID だけを保存します。",
     "net.title": "ネットワーク",
     "net.method": "接続方法",
     "net.rtt": "往復遅延",
@@ -331,4 +382,9 @@ export function t(key) {
 export function apply(root = document) {
   document.documentElement.lang = lang;
   for (const el of root.querySelectorAll("[data-t]")) el.textContent = t(el.dataset.t);
+  // Buttons that may show only an icon keep their name for screen readers and tooltips.
+  for (const el of root.querySelectorAll("[data-t-label]")) {
+    el.setAttribute("aria-label", t(el.dataset.tLabel));
+    el.title = t(el.dataset.tLabel);
+  }
 }

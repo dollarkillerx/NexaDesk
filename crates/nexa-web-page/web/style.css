@@ -49,6 +49,8 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
+/* A phone's address bar comes and goes: the visible height, where it is known. */
+@supports (height: 100dvh) { body { height: 100dvh; } }
 body {
   background: var(--background);
   color: var(--text);
@@ -69,7 +71,9 @@ body {
   background: #161616;
   border-bottom: 1px solid #393939;
   color: #f4f4f4;
-  padding-left: 16px;
+  padding-left: max(16px, env(safe-area-inset-left));
+  padding-right: env(safe-area-inset-right);
+  white-space: nowrap;
 }
 .shell-name { font-size: 14px; }
 .shell-name b { font-weight: 600; }
@@ -77,7 +81,11 @@ body {
 .shell-label { color: #c6c6c6; font-size: 14px; }
 .shell-spacer { flex: 1; }
 .shell-action {
-  height: 48px;
+  flex: none;
+  height: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   padding: 0 16px;
   border: 0;
   background: transparent;
@@ -88,7 +96,8 @@ body {
 .shell-action:hover { background: #2c2c2c; color: #f4f4f4; }
 .shell .tag { margin-right: 16px; }
 .shell-lang {
-  height: 48px;
+  flex: none;
+  height: 100%;
   padding: 0 12px;
   border: 0;
   border-left: 1px solid #393939;
@@ -179,7 +188,9 @@ button { font: inherit; letter-spacing: 0.16px; border-radius: 0; }
 }
 .danger { background: #da1e28; }
 .danger:hover { background: #b81921; }
-.shell .danger { height: 48px; min-width: 128px; }
+.shell .danger { flex: none; height: 100%; min-width: 128px; display: inline-flex; align-items: center; gap: 8px; }
+/* Header icons: shown where there is no room for words. */
+.ico { display: none; width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; }
 
 /* Inline notification: 3 px stripe on the left. */
 .notification {
@@ -395,11 +406,7 @@ button { font: inherit; letter-spacing: 0.16px; border-radius: 0; }
 
 @media (max-width: 480px) {
   .page { padding: 24px 0; }
-  .shell-label, .shell-divider { display: none; }
-  .shell .danger { min-width: 0; padding: 0 16px; }
-  .shell-action { padding: 0 10px; }
   .shell .tag { display: none; }
-  .net #net-text { display: none; }
 }
 
 /* The host's command line, over the picture. */
@@ -435,3 +442,71 @@ button { font: inherit; letter-spacing: 0.16px; border-radius: 0; }
 .termpanel-close:hover { background: #2c2c2c; color: #f4f4f4; }
 .termpanel-body { flex: 1; min-height: 0; padding: 8px 0 0 12px; }
 .termpanel-body .xterm { height: 100%; }
+
+/* Connect form: remember this connection. */
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  cursor: pointer;
+  user-select: none;
+}
+.check input { width: 16px; height: 16px; margin: 0; accent-color: var(--interactive); }
+
+/* Saved connections: a row each, one tap connects. */
+.saved { margin-bottom: 8px; }
+.saved-list { list-style: none; margin: 0 0 24px; padding: 0; border-top: 1px solid var(--border-subtle); }
+.saved-item { display: flex; border-bottom: 1px solid var(--border-subtle); }
+.saved-go {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 16px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.saved-go:hover { background: var(--field); }
+.saved-go:disabled { color: var(--disabled-text); cursor: not-allowed; background: transparent; }
+.saved-go:focus-visible, .saved-remove:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.saved-name { font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.saved-meta { font-size: 12px; letter-spacing: 0.32px; color: var(--text-helper); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.saved-remove {
+  flex: none;
+  min-width: 48px;
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.saved-remove:hover { background: var(--field); color: var(--text); }
+.saved-remove.armed { background: var(--error); color: #ffffff; }
+.saved-new { margin-top: 0; }
+
+/* Phones, and any screen without room: icons instead of words in the header, the
+   connect button the width of the form, keys that fit. */
+@media (max-width: 640px), (max-height: 480px) {
+  .shell .ico { display: block; }
+  .shell .txt { display: none; }
+  .shell-action { padding: 0 14px; }
+  .shell .danger { min-width: 0; padding: 0 16px; }
+  .shell-label, .shell-divider { display: none; }
+  body.in-session .shell-lang { display: none; }
+  body.in-session .shell .tag { display: none; }
+  .net #net-text { display: none; }
+  .primary { width: 100%; }
+  .keybar button { flex: 1 1 0; min-width: 34px; font-size: 14px; }
+  .netpanel { width: 100%; }
+}
+/* A phone on its side: every line of height counts. */
+@media (max-height: 480px) {
+  .shell { height: 40px; }
+  .page { padding: 16px 0; }
+  .keybar button { height: 40px; }
+}

@@ -402,7 +402,12 @@ mod demo {
         let tls = nexa_web::WebTls::load_or_create(&dir, &nexa_web::certificate_names())
             .expect("certificate");
         println!("certificate SHA-256: {}", tls.fingerprint_text());
-        let gateway = WebGateway::bind(addr, host, code.clone(), WebConfig::default(), Some(tls))
+        // A made-up name, as the agent would send its device name.
+        let config = WebConfig {
+            name: std::env::var("NEXA_DEMO_NAME").unwrap_or_else(|_| "Studio Mac".into()),
+            ..WebConfig::default()
+        };
+        let gateway = WebGateway::bind(addr, host, code.clone(), config, Some(tls))
             .await
             .expect("bind");
         println!("listening on https://{}", gateway.local_addr());

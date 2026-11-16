@@ -63,6 +63,9 @@ pub struct WebConfig {
     pub max_bitrate_bps: u32,
     /// How long the person at the host has to answer.
     pub consent_timeout: Duration,
+    /// The host's name, told to a browser once it is let in: what it saves the
+    /// connection as. Empty: the browser names it by its device ID.
+    pub name: String,
 }
 
 impl Default for WebConfig {
@@ -74,6 +77,7 @@ impl Default for WebConfig {
             min_bitrate_bps: 1_000_000,
             max_bitrate_bps: 25_000_000,
             consent_timeout: Duration::from_secs(60),
+            name: String::new(),
         }
     }
 }

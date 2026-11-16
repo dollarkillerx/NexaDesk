@@ -21,10 +21,10 @@
       <span class="dot" id="net-dot"></span><span id="net-text"></span>
     </button>
     <button class="shell-action" id="swap" type="button" aria-pressed="false" hidden></button>
-    <button class="shell-action" id="terminal" type="button" data-t="terminal" aria-pressed="false" hidden></button>
-    <button class="shell-action" id="keyboard" type="button" data-t="keyboard" aria-pressed="false" hidden></button>
-    <button class="shell-action" id="fullscreen" type="button" data-t="fullscreen" hidden></button>
-    <button class="danger" id="disconnect" type="button" data-t="disconnect" hidden></button>
+    <button class="shell-action" id="terminal" type="button" data-t-label="terminal" aria-pressed="false" hidden><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4l4 4-4 4M8 12.5h5.5"/></svg><span class="txt" data-t="terminal"></span></button>
+    <button class="shell-action" id="keyboard" type="button" data-t-label="keyboard" aria-pressed="false" hidden><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="3.5" width="13" height="9"/><path d="M4 6.5h1M7.5 6.5h1M11 6.5h1M4 9.5h8"/></svg><span class="txt" data-t="keyboard"></span></button>
+    <button class="shell-action" id="fullscreen" type="button" data-t-label="fullscreen" hidden><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg><span class="txt" data-t="fullscreen"></span></button>
+    <button class="danger" id="disconnect" type="button" data-t-label="disconnect" hidden><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg><span class="txt" data-t="disconnect"></span></button>
     <select class="shell-lang" id="lang" aria-label="Language"></select>
   </header>
 
@@ -32,6 +32,11 @@
     <section class="tile">
       <h1 data-t="title"></h1>
       <p class="body-secondary" data-t="intro"></p>
+      <section class="saved" id="saved" hidden>
+        <p class="label" data-t="saved.title"></p>
+        <ul class="saved-list" id="saved-list"></ul>
+        <p class="label saved-new" data-t="saved.new"></p>
+      </section>
       <form id="connect-form" autocomplete="off" novalidate>
         <div id="device-row" hidden>
           <label class="label" for="device" data-t="deviceLabel"></label>
@@ -52,6 +57,11 @@
           <button type="button" data-view="terminal" role="radio" data-t="view.terminal"></button>
         </div>
         <p class="helper" id="view-help"></p>
+        <label class="check" for="remember">
+          <input type="checkbox" id="remember">
+          <span data-t="remember"></span>
+        </label>
+        <p class="helper" id="remember-help"></p>
         <button class="primary" id="connect" type="submit">
           <span data-t="connect"></span>
         </button>
