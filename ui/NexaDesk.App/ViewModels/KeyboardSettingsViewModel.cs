@@ -98,7 +98,23 @@ public sealed partial class KeyboardSettingsViewModel : ObservableObject
     {
         _keymap = keymap;
         _target = Targets.FirstOrDefault(t => t.Os == initial) ?? Targets[0];
+        _symbolsAsPrinted = keymap.SymbolsAsPrinted();
         Load();
+    }
+
+    /// <summary>
+    /// Symbol keys as printed on this Mac's keyboard (sent as text, so a host with
+    /// another layout types the same) or by position. Applies at once, unsaved rules aside.
+    /// </summary>
+    [ObservableProperty] private bool _symbolsAsPrinted;
+
+    partial void OnSymbolsAsPrintedChanged(bool value)
+    {
+        var refused = _keymap.SetSymbolsAsPrinted(value);
+        if (refused == null) return;
+        Error = refused;
+        _symbolsAsPrinted = !value;
+        OnPropertyChanged(nameof(SymbolsAsPrinted));
     }
 
     partial void OnTargetChanged(KeyTarget value) => Load();

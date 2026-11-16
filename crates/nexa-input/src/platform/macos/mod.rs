@@ -14,6 +14,7 @@ mod tap;
 
 pub use capture::{
     CaptureError, CaptureEvent, HostKey, KeyCapture, KeyCaptureConfig, LocalKeyMonitor,
+    set_symbols_as_printed,
 };
 pub use focus::{FocusWatcher, TERMINAL_BUNDLE_IDS, classify_bundle_id};
 pub use inject::{EventTarget, INJECTED_EVENT_MARKER, Injector, InjectorError, PidTarget};

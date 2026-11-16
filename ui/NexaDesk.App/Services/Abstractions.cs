@@ -116,6 +116,10 @@ public interface IKeymapService
     string? Save(RemoteOs remote, IReadOnlyList<KeymapRule> rules);
     /// <summary>Runs the real rewriter on a chord with <paramref name="rules"/> in place of the file. Sends nothing.</summary>
     KeyPreview Preview(RemoteOs remote, string chord, KeyContext ctx, IReadOnlyList<KeymapRule> rules);
+    /// <summary>Whether symbol keys type what this keyboard prints on them (sent as text) rather than going by position.</summary>
+    bool SymbolsAsPrinted();
+    /// <summary>Null when kept and applied (to a session running now too), else why not.</summary>
+    string? SetSymbolsAsPrinted(bool on);
 }
 
 /// <summary>SMAppService.mainApp's status (macOS 13+); Unsupported elsewhere.</summary>

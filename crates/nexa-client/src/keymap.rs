@@ -134,3 +134,46 @@ pub fn for_sessions(dir: &Path) -> (nexa_input::Keymap, Option<String>) {
         Err(e) => (nexa_input::Keymap::builtin(), Some(e.to_string())),
     }
 }
+
+/// Where the symbol-key choice is kept (`printed` or `position`); no file: printed.
+const SYMBOLS_FILE: &str = "symbol-keys";
+
+/// Whether symbol keys type what this Mac's keyboard prints on them (sent as text, so
+/// a host with another layout types the same) rather than going by key position.
+pub fn symbols_as_printed(dir: &Path) -> bool {
+    std::fs::read_to_string(dir.join(SYMBOLS_FILE)).map_or(true, |s| s.trim() != "position")
+}
+
+/// Remembers the choice and applies it at once, to a session running now too.
+pub fn set_symbols_as_printed(dir: &Path, on: bool) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    std::fs::write(
+        dir.join(SYMBOLS_FILE),
+        if on { "printed\n" } else { "position\n" },
+    )?;
+    apply_symbols(on);
+    Ok(())
+}
+
+/// Hands the choice to key capture.
+pub fn apply_symbols(on: bool) {
+    #[cfg(target_os = "macos")]
+    nexa_input::platform::macos::set_symbols_as_printed(on);
+    #[cfg(not(target_os = "macos"))]
+    let _ = on;
+}
+
+#[cfg(test)]
+mod symbol_tests {
+    use super::*;
+
+    #[test]
+    fn the_symbol_choice_is_kept_and_printed_is_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(symbols_as_printed(dir.path()));
+        set_symbols_as_printed(dir.path(), false).unwrap();
+        assert!(!symbols_as_printed(dir.path()));
+        set_symbols_as_printed(dir.path(), true).unwrap();
+        assert!(symbols_as_printed(dir.path()));
+    }
+}

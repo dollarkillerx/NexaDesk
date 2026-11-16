@@ -20,6 +20,12 @@
       </Grid>
       <TextBlock Classes="muted"
                  Text="{l:T Keyboard.Intro}" />
+      <CheckBox Name="SymbolsAsPrinted" IsChecked="{Binding SymbolsAsPrinted}" Margin="0,6,0,0">
+        <StackPanel Spacing="2">
+          <TextBlock Text="{l:T Keyboard.SymbolsAsPrinted}" />
+          <TextBlock Classes="muted" Text="{l:T Keyboard.SymbolsAsPrintedNote}" TextWrapping="Wrap" />
+        </StackPanel>
+      </CheckBox>
     </StackPanel>
 
     <Border Grid.Row="1" Classes="card" Padding="0" Margin="0,12,0,0">

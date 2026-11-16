@@ -133,6 +133,19 @@ namespace NexaDesk.Native
         public static extern int nexa_keymap_save(byte* req, nuint len);
 
         /// <summary>
+        ///  1 when symbol keys type what this Mac's keyboard prints on them (the default), 0
+        ///  when they go by key position. Needs no client handle.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "nexa_symbols_as_printed", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int nexa_symbols_as_printed();
+
+        /// <summary>
+        ///  Sets that choice: kept for later sessions, and applied to one running now.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "nexa_set_symbols_as_printed", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int nexa_set_symbols_as_printed(int on);
+
+        /// <summary>
         ///  "按下 → 发送": runs the real rewriter on `req.chord` and writes a `KeyPreview`.
         ///  Nothing is sent anywhere and no session is involved.
         ///

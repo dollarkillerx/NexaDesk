@@ -45,6 +45,7 @@ fn forward(events: std::sync::mpsc::Receiver<CaptureEvent>, tx: Sender<InputCmd>
                     CaptureEvent::Key(k) => InputCmd::Key(k),
                     CaptureEvent::HostKey => InputCmd::HostKey,
                     CaptureEvent::Interrupted => InputCmd::Interrupted,
+                    CaptureEvent::Text(c) => InputCmd::Text(c.to_string()),
                 };
                 if tx.send(cmd).is_err() {
                     return; // dropping `events` makes the tap stop swallowing keys

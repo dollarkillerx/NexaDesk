@@ -26,6 +26,35 @@ use crate::keytable::mac_to_hid;
 use crate::rewriter::PhysKey;
 
 const MAC_CAPS_LOCK: u16 = 0x39;
+/// NSEvent and CGEvent modifier flags share these bits.
+const FLAG_CTRL: u64 = 0x40000;
+const FLAG_ALT: u64 = 0x80000;
+const FLAG_CMD: u64 = 0x100000;
+
+/// Symbols as printed on this keyboard (the default) rather than by key position.
+static SYMBOLS_AS_PRINTED: AtomicBool = AtomicBool::new(true);
+
+/// Whether a symbol key types the symbol printed on this Mac's keyboard (sent as text,
+/// so the host's layout cannot change it) or goes as the key at that position. A
+/// Japanese keyboard and a US one put @, [, : and others on different keys.
+pub fn set_symbols_as_printed(on: bool) {
+    SYMBOLS_AS_PRINTED.store(on, Ordering::Relaxed);
+}
+
+/// The symbol a key down types, if it should go as text: one printable character that
+/// is not a letter, digit or space, with no ⌘, Ctrl or ⌥ (shortcuts, and ⌥'s dead
+/// keys, stay keys). Function and arrow keys type private-use characters: not text.
+fn symbol_text(raw: &RawKey, as_printed: bool) -> Option<char> {
+    if !as_printed {
+        return None;
+    }
+    if raw.flags & (FLAG_CTRL | FLAG_ALT | FLAG_CMD) != 0 {
+        return None;
+    }
+    let c = raw.text?;
+    let private = ('\u{E000}'..='\u{F8FF}').contains(&c);
+    (!c.is_alphanumeric() && !c.is_whitespace() && !c.is_control() && !private).then_some(c)
+}
 
 /// An output of capture, in physical order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,6 +67,8 @@ pub enum CaptureEvent {
     /// The system disabled the tap for a moment and key releases may be lost.
     /// Call [`Rewriter::reset`](crate::Rewriter::reset).
     Interrupted,
+    /// A symbol key: the character it types on this keyboard, to be typed as text.
+    Text(char),
 }
 
 /// The local-only chord from §7.4.
@@ -106,6 +137,8 @@ pub(super) struct RawKey {
     pub keycode: u16,
     pub flags: u64,
     pub autorepeat: bool,
+    /// What the key types with this keyboard's layout, when it is one character.
+    pub text: Option<char>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,6 +156,8 @@ pub(super) struct KeyFilter {
     was_active: bool,
     held_mods: ModSet,
     held_keys: BTreeSet<Hid>,
+    /// Keys whose symbol went as text: their repeats go as text, their release nowhere.
+    typed: BTreeSet<Hid>,
     /// The host key's main key while physically down; none of it is forwarded.
     swallowing: Option<Hid>,
 }
@@ -134,6 +169,7 @@ impl KeyFilter {
             was_active: false,
             held_mods: ModSet::EMPTY,
             held_keys: BTreeSet::new(),
+            typed: BTreeSet::new(),
             swallowing: None,
         }
     }
@@ -141,6 +177,7 @@ impl KeyFilter {
     fn clear(&mut self) {
         self.held_mods = ModSet::EMPTY;
         self.held_keys.clear();
+        self.typed.clear();
         self.swallowing = None;
     }
 
@@ -218,6 +255,21 @@ impl KeyFilter {
             }
             self.held_mods = ModSet::EMPTY;
             out.push(CaptureEvent::HostKey);
+            return;
+        }
+        // A symbol goes as the character printed on this keyboard; a key already held
+        // as a key (pressed with ⌘, say) carries on as one.
+        if down
+            && !self.held_keys.contains(&hid)
+            && let Some(c) = symbol_text(&raw, SYMBOLS_AS_PRINTED.load(Ordering::Relaxed))
+        {
+            if !raw.autorepeat || self.typed.contains(&hid) {
+                self.typed.insert(hid);
+                out.push(CaptureEvent::Text(c));
+            }
+            return;
+        }
+        if !down && self.typed.remove(&hid) {
             return;
         }
         match (down, raw.autorepeat) {
@@ -310,11 +362,30 @@ pub(super) fn raw_key_from_cg(kind: CGEventType, event: &CGEvent) -> Option<RawK
         _ => return None,
     };
     let field = |f| CGEvent::integer_value_field(Some(event), f);
+    let text = if kind == RawKind::KeyDown {
+        let mut units = [0u16; 4];
+        let mut len = 0;
+        // SAFETY: the buffer holds `units.len()` UniChars and `len` is written.
+        unsafe {
+            CGEvent::keyboard_get_unicode_string(
+                Some(event),
+                units.len() as _,
+                &mut len,
+                units.as_mut_ptr(),
+            )
+        };
+        one_char(char::decode_utf16(
+            units[..(len as usize).min(units.len())].iter().copied(),
+        ))
+    } else {
+        None
+    };
     Some(RawKey {
         kind,
         keycode: field(CGEventField::KeyboardEventKeycode) as u16,
         flags: CGEvent::flags(Some(event)).bits(),
         autorepeat: field(CGEventField::KeyboardEventAutorepeat) != 0,
+        text,
     })
 }
 
@@ -455,12 +526,30 @@ fn raw_key_from_ns(event: &NSEvent) -> Option<RawKey> {
         _ => return None,
     };
     let autorepeat = kind != RawKind::FlagsChanged && event.isARepeat();
+    let text = if kind == RawKind::KeyDown {
+        event
+            .characters()
+            .and_then(|s| one_char(char::decode_utf16(s.to_string().encode_utf16())))
+    } else {
+        None
+    };
     Some(RawKey {
         kind,
         keycode: event.keyCode(),
         flags: event.modifierFlags().bits() as u64,
         autorepeat,
+        text,
     })
+}
+
+/// The one character a key typed; none if it typed nothing, several, or broken UTF-16.
+fn one_char(
+    mut chars: impl Iterator<Item = Result<char, std::char::DecodeUtf16Error>>,
+) -> Option<char> {
+    match (chars.next(), chars.next()) {
+        (Some(Ok(c)), None) => Some(c),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -480,6 +569,7 @@ mod tests {
             keycode: hid_to_mac(hid).unwrap(),
             flags,
             autorepeat,
+            text: None,
         }
     }
 
@@ -569,6 +659,68 @@ mod tests {
         );
     }
 
+    fn typing(kind: RawKind, hid: Hid, flags: u64, autorepeat: bool, c: char) -> RawKey {
+        RawKey {
+            text: Some(c),
+            ..raw(kind, hid, flags, autorepeat)
+        }
+    }
+
+    #[test]
+    fn symbols_go_as_the_character_printed_on_this_keyboard() {
+        let mut rig = Rig::new();
+        // A Japanese keyboard: "[" is on the key a US one calls "]".
+        let bracket = typing(RawKind::KeyDown, key::BRACKET_RIGHT, 0, false, '[');
+        assert_eq!(rig.active(bracket), vec![CaptureEvent::Text('[')]);
+        let again = typing(RawKind::KeyDown, key::BRACKET_RIGHT, 0, true, '[');
+        assert_eq!(rig.active(again), vec![CaptureEvent::Text('[')]);
+        assert_eq!(rig.active(up(key::BRACKET_RIGHT, 0)), vec![]);
+        // Shift+2 is a double quote there.
+        let quote = typing(RawKind::KeyDown, key::D2, LSHIFT, false, '"');
+        assert_eq!(rig.active(quote), vec![CaptureEvent::Text('"')]);
+        assert_eq!(rig.active(up(key::D2, LSHIFT)), vec![]);
+    }
+
+    #[test]
+    fn letters_digits_and_shortcuts_stay_keys() {
+        let mut rig = Rig::new();
+        let a = typing(RawKind::KeyDown, key::A, 0, false, 'a');
+        assert_eq!(
+            rig.active(a),
+            vec![CaptureEvent::Key(PhysKey {
+                hid: key::A,
+                down: true,
+                repeat: false
+            })]
+        );
+        rig.active(up(key::A, 0));
+        let five = typing(RawKind::KeyDown, key::D5, 0, false, '5');
+        assert!(matches!(rig.active(five)[..], [CaptureEvent::Key(_)]));
+        rig.active(up(key::D5, 0));
+        let cmd = typing(RawKind::KeyDown, key::BRACKET_RIGHT, CMD, false, '[');
+        assert!(matches!(rig.active(cmd)[..], [CaptureEvent::Key(_)]));
+        // Held as a key, its repeats stay keys though ⌘ has been let go.
+        let repeat = typing(RawKind::KeyDown, key::BRACKET_RIGHT, 0, true, '[');
+        assert!(matches!(rig.active(repeat)[..], [CaptureEvent::Key(k)] if k.repeat));
+        assert!(
+            matches!(rig.active(up(key::BRACKET_RIGHT, 0))[..], [CaptureEvent::Key(k)] if !k.down)
+        );
+    }
+
+    #[test]
+    fn what_is_not_a_symbol_or_not_wanted_as_one() {
+        let at = |flags, c| typing(RawKind::KeyDown, key::BRACKET_LEFT, flags, false, c);
+        assert_eq!(symbol_text(&at(0, '@'), true), Some('@'));
+        assert_eq!(symbol_text(&at(0, '@'), false), None);
+        assert_eq!(symbol_text(&at(OPT, '´'), true), None);
+        assert_eq!(symbol_text(&at(CTRL, '@'), true), None);
+        assert_eq!(symbol_text(&at(0, '¥'), true), Some('¥'));
+        assert_eq!(symbol_text(&at(0, 'é'), true), None);
+        assert_eq!(symbol_text(&at(0, '\u{F702}'), true), None); // ←
+        assert_eq!(symbol_text(&at(0, '\r'), true), None);
+        assert_eq!(symbol_text(&at(0, ' '), true), None);
+    }
+
     #[test]
     fn repeat_of_a_key_held_before_capture_is_dropped() {
         let mut rig = Rig::new();
@@ -584,6 +736,7 @@ mod tests {
             keycode: 0x3F,
             flags: 0x800000,
             autorepeat: false,
+            text: None,
         };
         assert_eq!(rig.active(fn_key), vec![]);
     }
@@ -779,7 +932,27 @@ mod tests {
                 keycode: hid_to_mac(key::J).unwrap(),
                 flags: CMD,
                 autorepeat: true,
+                // What J types depends on the layout of the Mac running the test.
+                text: raw.text,
             }
+        );
+    }
+
+    #[test]
+    fn cg_key_events_carry_the_character_they_type() {
+        let event = CGEvent::new_keyboard_event(None, hid_to_mac(key::BRACKET_LEFT).unwrap(), true)
+            .unwrap();
+        let at = [u16::from(b'@')];
+        // SAFETY: one UniChar, as said.
+        unsafe { CGEvent::keyboard_set_unicode_string(Some(&event), 1, at.as_ptr()) };
+        assert_eq!(
+            raw_key_from_cg(CGEventType::KeyDown, &event).unwrap().text,
+            Some('@')
+        );
+        // A release types nothing.
+        assert_eq!(
+            raw_key_from_cg(CGEventType::KeyUp, &event).unwrap().text,
+            None
         );
     }
 

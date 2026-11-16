@@ -26,5 +26,7 @@
   "Keyboard.PreviewError": "{0} を押すと：{1}",
   "Keyboard.SendsNothing": "（キーは送信されません）",
   "Keyboard.PreviewSends": "{0} を押す → {1} を送信",
-  "Keyboard.PreviewPaste": "{0}  · 貼り付け：クリップボードの同期が完了してから送信します"
+  "Keyboard.PreviewPaste": "{0}  · 貼り付け：クリップボードの同期が完了してから送信します",
+  "Keyboard.SymbolsAsPrinted": "記号をキーボードの刻印どおりに入力",
+  "Keyboard.SymbolsAsPrintedNote": "日本語キーボードから英語配列の Mac を操作するときなど、配列が違う場合にオンにします。@、[、: などの記号がこのキーボードの刻印どおりに入力されます。英字、数字、ショートカットはキーの位置のまま送られます。"
 }

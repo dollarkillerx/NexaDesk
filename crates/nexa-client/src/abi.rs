@@ -573,6 +573,22 @@ pub unsafe extern "C" fn nexa_keymap_save(req: *const u8, len: usize) -> i32 {
     })
 }
 
+/// 1 when symbol keys type what this Mac's keyboard prints on them (the default), 0
+/// when they go by key position. Needs no client handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn nexa_symbols_as_printed() -> i32 {
+    i32::from(crate::keymap::symbols_as_printed(&default_data_dir()))
+}
+
+/// Sets that choice: kept for later sessions, and applied to one running now.
+#[unsafe(no_mangle)]
+pub extern "C" fn nexa_set_symbols_as_printed(on: i32) -> i32 {
+    guarded(|| {
+        crate::keymap::set_symbols_as_printed(&default_data_dir(), on != 0)
+            .map_err(|e| invalid(&e.to_string()))
+    })
+}
+
 /// "按下 → 发送": runs the real rewriter on `req.chord` and writes a `KeyPreview`.
 /// Nothing is sent anywhere and no session is involved.
 ///

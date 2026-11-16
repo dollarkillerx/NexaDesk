@@ -26,5 +26,7 @@
   "Keyboard.PreviewError": "按下 {0}：{1}",
   "Keyboard.SendsNothing": "（不发送任何键）",
   "Keyboard.PreviewSends": "按下 {0} → 发送 {1}",
-  "Keyboard.PreviewPaste": "{0}  · 粘贴：会等剪贴板同步完再发出"
+  "Keyboard.PreviewPaste": "{0}  · 粘贴：会等剪贴板同步完再发出",
+  "Keyboard.SymbolsAsPrinted": "符号按键盘上印的字输入",
+  "Keyboard.SymbolsAsPrintedNote": "两边键盘布局不同时打开，比如用日文键盘控制英文配列的 Mac：@、[、: 这些符号会照你键盘上印的输入。字母、数字和快捷键仍按按键位置发送。"
 }

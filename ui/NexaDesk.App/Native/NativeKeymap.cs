@@ -57,6 +57,30 @@ public sealed unsafe class NativeKeymap(string dataDir) : IKeymapService
         }
     }
 
+    public bool SymbolsAsPrinted()
+    {
+        try
+        {
+            return nexa_symbols_as_printed() != 0;
+        }
+        catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException)
+        {
+            return true;
+        }
+    }
+
+    public string? SetSymbolsAsPrinted(bool on)
+    {
+        try
+        {
+            return nexa_set_symbols_as_printed(on ? 1 : 0) == NEXA_OK ? null : NativeError.Last();
+        }
+        catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException)
+        {
+            return e.Message;
+        }
+    }
+
     public KeyPreview Preview(RemoteOs remote, string chord, KeyContext ctx, IReadOnlyList<KeymapRule> rules)
     {
         try

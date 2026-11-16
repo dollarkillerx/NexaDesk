@@ -1092,6 +1092,7 @@ fn start_input(
     let rx = lock(&session.input_rx).take()?;
     let tx = session.input_tx.clone();
     let (keymap, problem) = crate::keymap::for_sessions(&core.data_dir);
+    crate::keymap::apply_symbols(crate::keymap::symbols_as_printed(&core.data_dir));
     if let Some(reason) = problem {
         core.events.send(
             session.tag,

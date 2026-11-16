@@ -287,6 +287,16 @@ public sealed class FakeLoginItem : ILoginItem
 /// </summary>
 public sealed class FakeKeymap : IKeymapService
 {
+    public bool Symbols { get; set; } = true;
+    public string? SymbolsRefusal { get; set; }
+    public bool SymbolsAsPrinted() => Symbols;
+    public string? SetSymbolsAsPrinted(bool on)
+    {
+        if (SymbolsRefusal != null) return SymbolsRefusal;
+        Symbols = on;
+        return null;
+    }
+
     public Dictionary<RemoteOs, List<KeymapRule>> Saved { get; } = new()
     {
         [RemoteOs.Windows] =

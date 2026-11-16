@@ -26,5 +26,7 @@
   "Keyboard.PreviewError": "Pressing {0}: {1}",
   "Keyboard.SendsNothing": "(no keys sent)",
   "Keyboard.PreviewSends": "Press {0} → sends {1}",
-  "Keyboard.PreviewPaste": "{0}  · Paste: sent once the clipboard has synced"
+  "Keyboard.PreviewPaste": "{0}  · Paste: sent once the clipboard has synced",
+  "Keyboard.SymbolsAsPrinted": "Type symbols as printed on this keyboard",
+  "Keyboard.SymbolsAsPrintedNote": "For two different keyboard layouts, such as a Japanese keyboard controlling a Mac set to US: @, [, : and other symbols are typed as printed here. Letters, digits and shortcuts still go by key position."
 }
