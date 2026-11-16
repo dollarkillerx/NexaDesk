@@ -472,10 +472,11 @@ pub(crate) async fn run(mut ws: Pipe, peer: SocketAddr, path: rtc::Path, shared:
             },
             m = ws.next_text() => match m {
                 Some(t) if matches!(serde_json::from_str(&t), Ok(FromBrowser::Bye)) => {
-                    break "the browser disconnected".to_string();
+                    break "the browser left".to_string();
                 }
                 Some(_) => continue,
-                None => break "the browser disconnected".to_string(),
+                // Its signaling WebSocket: through a server, the server closed it.
+                None => break "the browser's signaling connection closed".to_string(),
             },
         }
     };

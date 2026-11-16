@@ -465,8 +465,9 @@ async fn run(
                             c.force_key.store(true, Relaxed);
                         }
                     }
+                    // No connectivity checks from the browser for 15 s: its network went away.
                     Event::IceConnectionStateChange(IceConnectionState::Disconnected) => {
-                        return Ended::Disconnected;
+                        return Ended::Error("ICE: the browser stopped answering".into());
                     }
                     Event::MediaAdded(m) if m.kind == MediaKind::Video => video = Some(m.mid),
                     Event::ChannelOpen(id, label) if label == "input" => input_channel = Some(id),

@@ -317,6 +317,23 @@ impl Consent for IpcHub {
 
 impl AgentUi for IpcHub {
     fn event(&self, event: AgentEvent) {
+        // The UI keeps these in its log file: why a session ended is otherwise lost.
+        match &event {
+            AgentEvent::SessionStarted(info) => eprintln!(
+                "nexa-agent: session {} started: {} from {}",
+                info.id, info.device_name, info.remote
+            ),
+            AgentEvent::SessionEnded {
+                id,
+                device_name,
+                reason,
+            } => eprintln!("nexa-agent: session {id} ended: {device_name}: {reason}"),
+            AgentEvent::ConnectionFailed { remote, reason } => {
+                eprintln!("nexa-agent: a connection from {remote} failed: {reason}")
+            }
+            AgentEvent::Warning(w) => eprintln!("nexa-agent: warning: {w}"),
+            _ => {}
+        }
         let out = match event {
             AgentEvent::Listening(_) | AgentEvent::CodeChanged(_) | AgentEvent::Signal(_) => {
                 Outgoing::StatusChanged

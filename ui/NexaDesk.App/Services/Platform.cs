@@ -17,12 +17,14 @@ public sealed class AvaloniaDispatcher : IUiDispatcher
 
 /// <summary>
 /// Starts nexa-agent from the app bundle (Contents/MacOS/nexa-agent), with consent
-/// coming from this UI over the socket. Its stderr is kept for error messages.
+/// coming from this UI over the socket. Its stderr is kept for error messages, and
+/// written to ~/Library/Logs/NexaDesk/agent.log so a session's end can be looked up later.
 /// </summary>
 public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
 {
     readonly object _gate = new();
     readonly Queue<string> _lines = new();
+    readonly AgentLog _log = new(AgentLog.DefaultPath());
     Process? _process;
 
     public bool IsRunning
@@ -140,12 +142,14 @@ public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
             _lines.Clear();
             _process = process;
         }
+        _log.Write($"nexa-agent started (pid {process.Id})");
         return null;
     }
 
     void Keep(string? line)
     {
         if (string.IsNullOrWhiteSpace(line)) return;
+        _log.Write(line.Trim());
         lock (_gate)
         {
             _lines.Enqueue(line.Trim());
@@ -167,6 +171,7 @@ public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
         // Let the last stderr lines arrive before reporting.
         process.WaitForExit(500);
         lock (_gate) output = string.Join("\n", _lines);
+        _log.Write($"nexa-agent exited with code {code}");
         process.Dispose();
         ui.Post(() => Exited?.Invoke(new AgentExit(code, output)));
     }
@@ -176,6 +181,39 @@ public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
         Process? p;
         lock (_gate) p = _process;
         try { p?.Kill(); } catch (InvalidOperationException) { }
+    }
+}
+
+/// <summary>
+/// The agent's output with the time it arrived. One file, moved to agent.log.1 once it
+/// passes a megabyte. Never throws: a log that cannot be written is simply not written.
+/// </summary>
+public sealed class AgentLog(string path)
+{
+    const long MostBytes = 1 << 20;
+    readonly object _gate = new();
+
+    public string Path { get; } = path;
+
+    public static string DefaultPath() =>
+        System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            "Library", "Logs", "NexaDesk", "agent.log");
+
+    public void Write(string line)
+    {
+        lock (_gate)
+        {
+            try
+            {
+                Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
+                var file = new FileInfo(Path);
+                if (file.Exists && file.Length > MostBytes) File.Move(Path, Path + ".1", overwrite: true);
+                File.AppendAllText(Path, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} {line}\n");
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
     }
 }
 

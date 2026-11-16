@@ -33,8 +33,11 @@ use crate::{
 /// The path browsers open.
 pub const WEB_PATH: &str = "/web";
 const HELLO_TIMEOUT: Duration = Duration::from_secs(15);
-/// Silence from both sides for this long ends it; a session in progress pings.
+/// Silence from the browser for this long ends it. Once its session is running the
+/// page has nothing more to say here, so the server pings and the browser's pongs
+/// keep it open; a browser that is gone stops answering.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+const PING_EVERY: Duration = Duration::from_secs(30);
 /// Signaling text only: SDP, pairing, a few control messages.
 pub const MAX_BROWSER_MESSAGE: usize = 64 * 1024;
 const QUEUE: usize = 64;
@@ -110,14 +113,28 @@ where
 
     let rate = Rate::new(20.0, 60.0);
     let mut bucket = Bucket::full(rate, Instant::now());
+    let mut ping = tokio::time::interval(PING_EVERY);
+    ping.tick().await;
+    let mut heard = Instant::now();
     loop {
+        let quiet = tokio::time::sleep_until((heard + IDLE_TIMEOUT).into());
         tokio::select! {
-            m = tokio::time::timeout(IDLE_TIMEOUT, stream.next()) => {
+            _ = quiet => break,
+            _ = ping.tick() => {
+                if sink.send(Message::Ping(Vec::new().into())).await.is_err() {
+                    break;
+                }
+            }
+            m = stream.next() => {
                 let text = match m {
-                    Ok(Some(Ok(Message::Text(t)))) if t.len() <= MAX_BROWSER_MESSAGE => t,
-                    Ok(Some(Ok(Message::Ping(_) | Message::Pong(_)))) => continue,
+                    Some(Ok(Message::Text(t))) if t.len() <= MAX_BROWSER_MESSAGE => t,
+                    Some(Ok(Message::Ping(_) | Message::Pong(_))) => {
+                        heard = Instant::now();
+                        continue;
+                    }
                     _ => break,
                 };
+                heard = Instant::now();
                 if !bucket.take(rate, 1.0, Instant::now()) {
                     break;
                 }
