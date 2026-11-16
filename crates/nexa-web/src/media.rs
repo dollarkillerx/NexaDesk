@@ -11,7 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nexa_media::{CaptureConfig, CaptureEvent, EncodeOpts, EncoderConfig};
+use nexa_media::{CaptureConfig, CaptureEvent, EncodeOpts, EncoderConfig, MediaError};
 use nexa_wire::control::{Chroma, Codec, Mode};
 use tokio::sync::mpsc;
 
@@ -341,6 +341,10 @@ fn run(
                     ctl.force_key.store(true, Relaxed);
                 }
             }
+            // The encoder skipped this frame on purpose (it was behind, as on a large
+            // screen at 60 fps): nothing was produced and the next frame goes on as
+            // usual. Only a real failure ends the session.
+            Err(MediaError::FrameDropped) => {}
             Err(e) => return Err(e.to_string()),
         }
     }

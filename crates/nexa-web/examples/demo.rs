@@ -49,6 +49,17 @@ mod demo {
     const W: u32 = 1280;
     const H: u32 = 800;
 
+    /// `NEXA_DEMO_SIZE=3072x1920`: the screen's pixels, for trying large pictures.
+    fn pixels() -> (u32, u32) {
+        std::env::var("NEXA_DEMO_SIZE")
+            .ok()
+            .and_then(|v| {
+                let (w, h) = v.split_once('x')?;
+                Some((w.parse().ok()?, h.parse().ok()?))
+            })
+            .unwrap_or((W, H))
+    }
+
     #[derive(Default)]
     struct Seen {
         pointer: (f64, f64),
@@ -69,7 +80,7 @@ mod demo {
                 display: 1,
                 origin_points: (0.0, 0.0),
                 size_points: (W as f64, H as f64),
-                size_pixels: (W, H),
+                size_pixels: pixels(),
             })
         }
         fn capturer(&self, config: CaptureConfig) -> nexa_media::Result<Box<dyn Capturer>> {

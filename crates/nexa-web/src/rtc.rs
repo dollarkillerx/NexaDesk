@@ -98,7 +98,7 @@ impl Tuning {
     ) {
         let p = sized(
             preset(self.quality, self.reduced, config),
-            self.resolution,
+            self.effective_resolution(),
             self.window,
         );
         if let Some(c) = control {
@@ -107,7 +107,7 @@ impl Tuning {
         let note = serde_json::json!({
             "t": "q",
             "q": self.quality.name(),
-            "res": self.resolution.name(),
+            "res": self.effective_resolution().name(),
             "reduced": self.reduced,
             "fps": p.fps,
             "maxKbps": p.max_bps / 1000,
@@ -115,6 +115,14 @@ impl Tuning {
         .to_string();
         if let Some(mut ch) = channel.and_then(|id| rtc.channel(id)) {
             let _ = ch.write(false, note.as_bytes());
+        }
+    }
+
+    /// Clear is the sharpest picture: left on Auto, the resolution is the host's own.
+    fn effective_resolution(&self) -> Resolution {
+        match (self.quality, self.resolution) {
+            (Quality::Clear, Resolution::Auto) => Resolution::Native,
+            (_, r) => r,
         }
     }
 
@@ -663,7 +671,11 @@ async fn run(
             }
             frame = async { frames.as_mut()?.recv().await }, if frames.is_some() => {
                 let Some(frame) = frame else {
-                    return Ended::Error("the capture thread stopped".into());
+                    // Its own reason, if it gave one.
+                    let why = control
+                        .as_ref()
+                        .and_then(|c| c.failed.lock().unwrap_or_else(|e| e.into_inner()).take());
+                    return Ended::Error(why.unwrap_or_else(|| "the capture thread stopped".into()));
                 };
                 if !connected {
                     continue;
@@ -847,6 +859,24 @@ mod tests {
                 "fd7a:115c:a1e0::1"
             ]
         );
+    }
+
+    #[test]
+    fn clear_means_the_host_s_own_pixels_unless_a_resolution_is_chosen() {
+        let mut t = Tuning {
+            quality: Quality::Clear,
+            resolution: Resolution::Auto,
+            window: Some((1512, 945)),
+            reduced: false,
+            poor_since: None,
+            good_since: None,
+        };
+        assert_eq!(t.effective_resolution(), Resolution::Native);
+        t.resolution = Resolution::Lines(720);
+        assert_eq!(t.effective_resolution(), Resolution::Lines(720));
+        t.quality = Quality::Balanced;
+        t.resolution = Resolution::Auto;
+        assert_eq!(t.effective_resolution(), Resolution::Auto);
     }
 
     #[test]
