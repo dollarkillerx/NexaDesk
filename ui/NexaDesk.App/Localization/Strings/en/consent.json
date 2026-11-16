@@ -28,5 +28,8 @@
   "Consent.Denied": "Denied",
   "Consent.Cancelled": "They canceled the request",
   "Consent.HeadlineBrowser": "The browser “{0}” wants to connect to this Mac",
-  "Consent.BrowserNote": "This is a web browser, not the NexaDesk app. It can only see the screen and use the keyboard and mouse. It is never saved: it needs a one-time code every time."
+  "Consent.BrowserNote": "This is a web browser, not the NexaDesk app. It can see the screen, use the keyboard and mouse, and, if you tick it, exchange copied text. It is never saved.",
+  "Consent.UnverifiedNote": "They entered no one-time code or password, only your device ID, so nothing proves who they are. Allow only if you are expecting them.",
+  "Consent.PermTerminal": "Command line (terminal)",
+  "Consent.TerminalNote": "They can run any command on this Mac as you. Only for people you trust."
 }

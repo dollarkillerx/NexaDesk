@@ -71,7 +71,7 @@ pub enum AccessDecision {
 }
 
 /// New devices propose view-only until the person at the host grants more.
-fn first_contact_perms() -> Permissions {
+pub fn first_contact_perms() -> Permissions {
     Perms {
         view: true,
         ..Perms::default()

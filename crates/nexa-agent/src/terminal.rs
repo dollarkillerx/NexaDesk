@@ -72,6 +72,7 @@ fn perms(view: bool, input: bool, clipboard: bool) -> Permissions {
         clipboard,
         file: false,
         audio: false,
+        terminal: false,
     }
 }
 
@@ -213,6 +214,7 @@ impl Consent for TerminalUi {
             AuthKind::Paired => "paired device",
             AuthKind::Code => "one-time code",
             AuthKind::Password => "password",
+            AuthKind::Request => "device ID only, unverified",
         };
         terminal.say("");
         terminal.say("---------------------------------------------------------");

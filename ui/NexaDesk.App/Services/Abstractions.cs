@@ -54,6 +54,12 @@ public interface IAgentProcess
     /// <param name="announceOnLan">Announce this Mac to viewers on the LAN over mDNS (§4.11).</param>
     /// <param name="web">Where browsers connect (<c>--web</c>), or null to keep browser access off.</param>
     string? Start(string listen, string deviceName, string signalServer, bool announceOnLan, string? web = null);
+    /// <summary>Sets the fixed password (null clears it) with the agent, which keeps only an
+    /// Argon2id verifier in the Keychain. Null on success, else why not. Takes a moment.</summary>
+    Task<string?> SetPassword(string? password) => Task.FromResult<string?>(null);
+    /// <summary>Gives this Mac a new device ID from the next start on; the old one stops
+    /// working. Null on success, else why not.</summary>
+    Task<string?> ResetDeviceId() => Task.FromResult<string?>(null);
     void Kill();
 }
 

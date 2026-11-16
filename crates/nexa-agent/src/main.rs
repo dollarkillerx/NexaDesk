@@ -13,10 +13,156 @@ mod terminal;
 
 #[cfg(target_os = "macos")]
 fn main() {
+    // The fixed password is set and cleared by these, which the app runs; they do not
+    // start a host.
+    match std::env::args().nth(1).as_deref() {
+        Some("set-password") => return finish(set_password()),
+        Some("clear-password") => return finish(clear_password()),
+        Some("reset-device-id") => return finish(reset_device_id()),
+        _ => {}
+    }
     if let Err(message) = run() {
         eprintln!("nexa-agent: {message}");
         std::process::exit(1);
     }
+}
+
+#[cfg(target_os = "macos")]
+fn finish(r: Result<(), String>) {
+    if let Err(message) = r {
+        eprintln!("nexa-agent: {message}");
+        std::process::exit(1);
+    }
+}
+
+/// Where the fixed password's Argon2id verifier is kept: never the password itself.
+#[cfg(target_os = "macos")]
+fn password_store() -> nexa_auth::KeychainStore {
+    nexa_auth::KeychainStore::new("app.nexadesk", "host-password")
+}
+
+/// The password must be one a person can type, and must not look like a one-time code:
+/// what someone types is a code if it can be one.
+#[cfg(target_os = "macos")]
+fn check_password(p: &str) -> Result<(), String> {
+    let n = p.chars().count();
+    if n < 8 {
+        return Err("the password must be at least 8 characters".into());
+    }
+    if n > 128 {
+        return Err("the password must be at most 128 characters".into());
+    }
+    if p.chars().any(char::is_control) {
+        return Err("the password cannot contain control characters".into());
+    }
+    if nexa_auth::normalize_code(p).is_ok() {
+        return Err("the password looks like a one-time code; choose another".into());
+    }
+    Ok(())
+}
+
+/// `nexa-agent set-password`: reads one line from standard input.
+#[cfg(target_os = "macos")]
+fn set_password() -> Result<(), String> {
+    use nexa_auth::KeyStore;
+    let mut line = zeroize::Zeroizing::new(String::new());
+    std::io::stdin()
+        .read_line(&mut line)
+        .map_err(|e| format!("reading the password: {e}"))?;
+    let password = line.trim_end_matches(['\r', '\n']);
+    check_password(password)?;
+    let stored = nexa_auth::HostPassword::create(password).map_err(|e| e.to_string())?;
+    password_store()
+        .store(&stored.to_bytes())
+        .map_err(|e| format!("keychain: {e}"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn clear_password() -> Result<(), String> {
+    use nexa_auth::KeyStore;
+    password_store()
+        .delete()
+        .map_err(|e| format!("keychain: {e}"))
+}
+
+/// Mixed into the device ID the signaling server derives from this Mac's key: a new
+/// seed is a new ID. Kept beside the pairings; without it the ID is the key's own.
+#[cfg(target_os = "macos")]
+const ID_SEED_FILE: &str = "device-id-seed";
+
+#[cfg(target_os = "macos")]
+fn default_data_dir() -> Result<std::path::PathBuf, String> {
+    let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
+    Ok(std::path::Path::new(&home).join("Library/Application Support/NexaDesk"))
+}
+
+/// `reset-device-id [--data-dir <dir>]`: the next start registers under a new device ID,
+/// and the old one stops working.
+#[cfg(target_os = "macos")]
+fn reset_device_id() -> Result<(), String> {
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    let dir = match args.as_slice() {
+        [] => default_data_dir()?,
+        [flag, dir] if flag == "--data-dir" => std::path::PathBuf::from(dir),
+        _ => return Err("usage: nexa-agent reset-device-id [--data-dir <dir>]".into()),
+    };
+    std::fs::create_dir_all(&dir).map_err(|e| format!("data directory: {e}"))?;
+    let mut seed = [0u8; 16];
+    // SAFETY: fills exactly the 16 bytes it is given.
+    unsafe { libc::arc4random_buf(seed.as_mut_ptr().cast(), seed.len()) };
+    let hex: String = seed.iter().map(|b| format!("{b:02x}")).collect();
+    std::fs::write(dir.join(ID_SEED_FILE), hex + "\n")
+        .map_err(|e| format!("saving the new device ID: {e}"))
+}
+
+/// The seed saved by `reset-device-id`, or none.
+#[cfg(target_os = "macos")]
+fn load_id_seed(dir: &std::path::Path) -> Vec<u8> {
+    let Ok(text) = std::fs::read_to_string(dir.join(ID_SEED_FILE)) else {
+        return Vec::new();
+    };
+    let text = text.trim();
+    if text.len() != 32 {
+        return Vec::new();
+    }
+    (0..16)
+        .map(|i| u8::from_str_radix(&text[i * 2..i * 2 + 2], 16))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_default()
+}
+
+/// The fixed password, if one was set.
+#[cfg(target_os = "macos")]
+fn load_password() -> Result<Option<std::sync::Arc<nexa_auth::HostPassword>>, String> {
+    use nexa_auth::KeyStore;
+    let Some(bytes) = password_store()
+        .load()
+        .map_err(|e| format!("keychain: {e}"))?
+    else {
+        return Ok(None);
+    };
+    nexa_auth::HostPassword::from_bytes(&bytes)
+        .map(|p| Some(std::sync::Arc::new(p)))
+        .map_err(|e| format!("stored password: {e}"))
+}
+
+/// The page's certificate: the person's own in the data directory, else one this Mac
+/// makes for its addresses, its Tailscale name and its `.local` name.
+#[cfg(target_os = "macos")]
+fn web_certificate(data_dir: &std::path::Path) -> std::io::Result<nexa_web::WebTls> {
+    let mut names = nexa_web::certificate_names();
+    if let Some(local) = std::process::Command::new("scutil")
+        .args(["--get", "LocalHostName"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+    {
+        names.push(format!("{local}.local"));
+    }
+    nexa_web::WebTls::load_or_create(data_dir, &names)
 }
 
 #[cfg(target_os = "macos")]
@@ -38,7 +184,12 @@ const USAGE: &str = "usage: nexa-agent --listen <ip:port> [--name <device name>]
   --no-lan-discovery  do not announce this Mac to viewers on the local network (mDNS)\n\
   --web       also let web browsers connect: serve the page and WebRTC on this TCP address\n\
               (e.g. [::]:47801); the same one-time code and consent apply. Off by default.\n\
-  --downloads where files sent to this Mac are saved (default: ~/Downloads/NexaDesk)";
+  --downloads where files sent to this Mac are saved (default: ~/Downloads/NexaDesk)\n\
+\n\
+       nexa-agent set-password      read a fixed password from standard input and keep it\n\
+       nexa-agent clear-password    forget it\n\
+  With a fixed password set, viewers and browsers may type it instead of the one-time\n\
+  code; every connection is still put to the person at this Mac.";
 
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -127,9 +278,10 @@ fn parse_args() -> Result<Args, String> {
             .unwrap_or_else(|| "Mac".to_owned())
     });
     let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
-    let data_dir = data_dir.unwrap_or_else(|| {
-        std::path::Path::new(&home).join("Library/Application Support/NexaDesk")
-    });
+    let data_dir = match data_dir {
+        Some(d) => d,
+        None => default_data_dir()?,
+    };
     let downloads =
         downloads.unwrap_or_else(|| std::path::Path::new(&home).join("Downloads/NexaDesk"));
     Ok(Args {
@@ -148,8 +300,35 @@ fn parse_args() -> Result<Args, String> {
     })
 }
 
+/// The agent runs from inside the app's bundle, so its first AppKit call (the pasteboard,
+/// screen capture) would give it a Dock icon of its own beside the app's. As an accessory
+/// it stays out of the Dock and the app switcher.
+#[cfg(target_os = "macos")]
+fn stay_out_of_the_dock() {
+    use objc2::{
+        msg_send,
+        runtime::{AnyClass, AnyObject},
+    };
+    #[link(name = "AppKit", kind = "framework")]
+    unsafe extern "C" {}
+    /// NSApplicationActivationPolicyAccessory.
+    const ACCESSORY: isize = 1;
+    let Some(class) = AnyClass::get(c"NSApplication") else {
+        return;
+    };
+    // SAFETY: called on the main thread before anything else touches AppKit;
+    // `sharedApplication` and `setActivationPolicy:` take and return what is declared.
+    unsafe {
+        let app: *mut AnyObject = msg_send![class, sharedApplication];
+        if !app.is_null() {
+            let _: bool = msg_send![app, setActivationPolicy: ACCESSORY];
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn run() -> Result<(), String> {
+    stay_out_of_the_dock();
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering::Relaxed},
@@ -230,6 +409,7 @@ fn run() -> Result<(), String> {
             if let Some(ca) = ca {
                 server = server.with_ca_file(&ca)?;
             }
+            server.id_seed = load_id_seed(&args.data_dir);
             Some(nexa_agent::SignalSetup {
                 server,
                 // Session sockets stay on the interface --listen names; all
@@ -246,6 +426,30 @@ fn run() -> Result<(), String> {
             })
         }
     };
+    // Browser access is served over HTTPS only. Without a certificate it stays off,
+    // rather than falling back to plain HTTP.
+    let (web, web_tls) = match args.web {
+        Some(addr) => match web_certificate(&args.data_dir) {
+            Ok(tls) => {
+                eprintln!(
+                    "nexa-agent: browsers: https://<this Mac>:{} — certificate SHA-256 {}{}",
+                    addr.port(),
+                    tls.fingerprint_text(),
+                    if tls.custom {
+                        " (yours)"
+                    } else {
+                        " (self-signed)"
+                    }
+                );
+                (Some(addr), Some(tls))
+            }
+            Err(e) => {
+                eprintln!("nexa-agent: browser access is off: certificate: {e}");
+                (None, None)
+            }
+        },
+        None => (None, None),
+    };
     let config = AgentConfig {
         listen: args.listen,
         device_name: args.name,
@@ -258,7 +462,9 @@ fn run() -> Result<(), String> {
             limits: Default::default(),
         },
         lan_discovery: args.lan_discovery,
-        web: args.web,
+        web,
+        web_tls,
+        password: load_password()?,
     };
     // Held until exit: dropping it removes the socket.
     let mut _ipc = None;

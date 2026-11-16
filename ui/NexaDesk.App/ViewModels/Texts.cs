@@ -44,6 +44,7 @@ public static partial class Texts
         if (p.Clipboard) parts.Add(L.Get("Texts.Perm.Clipboard"));
         if (p.File) parts.Add(L.Get("Texts.Perm.File"));
         if (p.Audio) parts.Add(L.Get("Texts.Perm.Audio"));
+        if (p.Terminal) parts.Add(L.Get("Texts.Perm.Terminal"));
         return parts.Count == 0 ? L.Get("Texts.Perm.None") : string.Join(L.Get("Texts.Perm.Separator"), parts);
     }
 
@@ -52,8 +53,13 @@ public static partial class Texts
         AuthKind.Paired => L.Get("Texts.Auth.Paired"),
         AuthKind.Code => L.Get("Texts.Auth.Code"),
         AuthKind.Password => L.Get("Texts.Auth.Password"),
+        AuthKind.Request => L.Get("Texts.Auth.Request"),
         _ => L.Get("Texts.Auth.Unknown"),
     };
+
+    /// <summary>Where a connection comes from; a browser through the server has no port.</summary>
+    public static string Remote(string remote) =>
+        remote.EndsWith(":0", StringComparison.Ordinal) ? remote[..^2].Trim('[', ']') : remote;
 
     /// <summary>A public key in groups of four hex digits, eight groups per line.</summary>
     public static string Fingerprint(string hex)
@@ -86,6 +92,32 @@ public static partial class Texts
 
     [GeneratedRegex("^[A-Z2-7]{8}$")]
     private static partial Regex CodeRegex();
+
+    /// <summary>Shortest fixed password; also what tells a password from a mistyped code.</summary>
+    public const int MinPasswordLength = 8;
+    public const int MaxPasswordLength = 128;
+
+    /// <summary>What was typed as a sign-in: the one-time code if it can be one, else the
+    /// fixed password; null if it can be neither.</summary>
+    public static Proto.ConnectAuth? SignInFor(string? input)
+    {
+        if (NormalizeCode(input) is { } code) return new Proto.ConnectAuth.Code(code);
+        if (input != null && input.Length >= MinPasswordLength && input.Length <= MaxPasswordLength && !input.Any(char.IsControl))
+            return new Proto.ConnectAuth.Password(input);
+        return null;
+    }
+
+    /// <summary>The string key of what is wrong with a new fixed password, or null. A password
+    /// must not look like a one-time code: what someone types is a code if it can be one.</summary>
+    public static string? PasswordProblem(string password, string confirm)
+    {
+        if (password.Length < MinPasswordLength) return "Host.PasswordTooShort";
+        if (password.Length > MaxPasswordLength) return "Host.PasswordTooLong";
+        if (password.Any(char.IsControl)) return "Host.PasswordBadCharacters";
+        if (NormalizeCode(password) != null) return "Host.PasswordLikeCode";
+        if (password != confirm) return "Host.PasswordMismatch";
+        return null;
+    }
 
     /// <summary>host:port, [v6]:port, or a host alone (the default port is added). Null if unusable.</summary>
     public static string? NormalizeAddress(string? input)

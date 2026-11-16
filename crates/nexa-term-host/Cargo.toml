@@ -1,0 +1,20 @@
+[package]
+name = "nexa-term-host"
+description = "A command-line-only NexaDesk host for Linux, Windows and macOS: a shell in the browser"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "nexa-term-host"
+path = "src/main.rs"
+
+[dependencies]
+nexa-auth = { path = "../nexa-auth" }
+nexa-media = { path = "../nexa-media" }
+nexa-session = { path = "../nexa-session" }
+nexa-term = { path = "../nexa-term" }
+nexa-web = { path = "../nexa-web" }
+nexa-wire = { path = "../nexa-wire" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "sync", "signal"] }
+zeroize = "1"

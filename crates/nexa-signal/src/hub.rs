@@ -13,10 +13,10 @@ use std::{
 
 use nexa_auth::DevicePublicKey;
 use nexa_wire::signal::{
-    Answer, ClientBody, Connect, ErrorCode, Incoming, Lookup, MAX_SEALED, NONCE_LEN,
-    PURPOSE_REGISTER, PURPOSE_X25519, PeerInfo, Register, RelayGrant, RelayRole, Routed,
-    SESSION_ID_LEN, SHORT_ID_DIGITS, SIGNAL_PROTOCOL, ServerBody, SignalError, SignalServerMsg,
-    Trickle, normalize_short_id, register_message,
+    Answer, BrowserClose, BrowserOpen, BrowserText, ClientBody, Connect, ErrorCode, Incoming,
+    Lookup, MAX_SEALED, NONCE_LEN, PURPOSE_REGISTER, PURPOSE_X25519, PeerInfo, Register,
+    RelayGrant, RelayRole, Routed, SESSION_ID_LEN, SHORT_ID_DIGITS, SIGNAL_PROTOCOL, ServerBody,
+    SignalError, SignalServerMsg, Trickle, normalize_short_id, register_message,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
@@ -35,10 +35,15 @@ pub type Outbox = mpsc::Sender<SignalServerMsg>;
 
 /// The ID a key gets unless another key already holds it: stable across server
 /// restarts without storing anything, because it is derived from the key.
-pub fn derive_short_id(pubkey: &[u8; 32], attempt: u8) -> String {
+/// A host that wants a new ID registers with a new `seed`.
+pub fn derive_short_id(pubkey: &[u8; 32], seed: &[u8], attempt: u8) -> String {
     let mut h = Sha256::new();
     h.update(b"nexa/1 short id");
     h.update(pubkey);
+    if !seed.is_empty() {
+        h.update(b"seed");
+        h.update(seed);
+    }
     h.update([attempt]);
     let d = h.finalize();
     let n = u64::from_be_bytes(d[..8].try_into().expect("8 bytes"));
@@ -65,6 +70,61 @@ struct Session {
     trickles: u32,
 }
 
+/// What the server says to a browser's WebSocket (`crate::web`).
+#[derive(Debug, PartialEq, Eq)]
+pub enum ToBrowser {
+    Text(String),
+    Close,
+}
+
+/// A browser talking to a host through this server.
+struct BrowserLink {
+    host_conn: u64,
+    out: mpsc::Sender<ToBrowser>,
+}
+
+/// Browser access across the internet: TURN credentials come from this secret.
+#[derive(Clone)]
+pub struct WebTurn {
+    pub secret: Vec<u8>,
+    /// Where browsers and hosts reach TURN.
+    pub server: SocketAddr,
+}
+
+/// How long TURN credentials handed to one browser session stay valid.
+const TURN_CREDENTIALS_SECS: u64 = 24 * 3600;
+
+/// Why a browser cannot be put through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BrowserRefusal {
+    /// Browser access is not configured on this server.
+    Unavailable,
+    RateLimited,
+    /// No such device online.
+    Offline,
+    /// The host's connection is backed up.
+    Busy,
+}
+
+impl BrowserRefusal {
+    /// The `code` the page shows a message for.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Unavailable => "unavailable",
+            Self::RateLimited => "rate",
+            Self::Offline => "offline",
+            Self::Busy => "busy",
+        }
+    }
+}
+
+/// A browser put through to a host.
+pub struct BrowserRoute {
+    pub conn: u64,
+    pub turn: nexa_turn::Credentials,
+    pub turn_server: SocketAddr,
+}
+
 pub struct Hub {
     limits: Limits,
     server_names: Vec<String>,
@@ -83,6 +143,9 @@ pub struct Hub {
     connect_ip: Keyed<IpAddr>,
     connect_src: Keyed<String>,
     connect_dst: Keyed<String>,
+    web: Option<WebTurn>,
+    browsers: HashMap<u64, BrowserLink>,
+    next_browser: u64,
 }
 
 fn rate((per_sec, burst): (f64, f64)) -> Rate {
@@ -117,6 +180,7 @@ pub struct HubSettings {
     pub relay: Option<SocketAddr>,
     pub relay_ttl_secs: u64,
     pub issuer: std::sync::Arc<TokenIssuer>,
+    pub web: Option<WebTurn>,
 }
 
 impl Hub {
@@ -140,6 +204,9 @@ impl Hub {
             sessions: HashMap::new(),
             conns_per_ip: HashMap::new(),
             total_conns: 0,
+            web: s.web,
+            browsers: HashMap::new(),
+            next_browser: 1,
         }
     }
 
@@ -175,6 +242,117 @@ impl Hub {
         }
         self.sessions
             .retain(|_, s| s.viewer_conn != conn && s.host_conn != conn);
+        // A host that goes away takes its browsers with it.
+        self.browsers.retain(|_, b| {
+            let keep = b.host_conn != conn;
+            if !keep {
+                let _ = b.out.try_send(ToBrowser::Close);
+            }
+            keep
+        });
+    }
+
+    /// Puts a browser at `ip` through to the host registered as `short_id`. `out`
+    /// receives what the host says. `unix` is the wall clock, for the credentials.
+    pub fn open_browser(
+        &mut self,
+        ip: IpAddr,
+        short_id: &str,
+        out: mpsc::Sender<ToBrowser>,
+        now: Instant,
+        unix: u64,
+    ) -> Result<BrowserRoute, BrowserRefusal> {
+        let Some(web) = self.web.clone() else {
+            return Err(BrowserRefusal::Unavailable);
+        };
+        if !self.connect_ip.allow(&ip, now) {
+            return Err(BrowserRefusal::RateLimited);
+        }
+        let Some(peer) = normalize_short_id(short_id).and_then(|id| self.peers.get(&id)) else {
+            return Err(BrowserRefusal::Offline);
+        };
+        let (host_conn, host_out) = (peer.conn, peer.out.clone());
+        let conn = self.next_browser;
+        self.next_browser += 1;
+        let expires = unix + TURN_CREDENTIALS_SECS;
+        let host = nexa_turn::auth::issue(&web.secret, &format!("h{conn}"), expires);
+        let browser = nexa_turn::auth::issue(&web.secret, &format!("b{conn}"), expires);
+        let open = ServerBody::BrowserOpen(BrowserOpen {
+            conn,
+            ip: ip.to_string(),
+            turn_server: web.server.to_string(),
+            turn_username: host.username,
+            turn_password: host.password,
+        });
+        if host_out.try_send(open.into()).is_err() {
+            return Err(BrowserRefusal::Busy);
+        }
+        self.browsers.insert(conn, BrowserLink { host_conn, out });
+        Ok(BrowserRoute {
+            conn,
+            turn: browser,
+            turn_server: web.server,
+        })
+    }
+
+    /// A frame from the browser on `conn`, for its host.
+    pub fn browser_text(&mut self, conn: u64, text: String) -> bool {
+        let Some(link) = self.browsers.get(&conn) else {
+            return false;
+        };
+        let Some(out) = self.host_outbox(link.host_conn) else {
+            return false;
+        };
+        out.try_send(ServerBody::BrowserText(BrowserText { conn, text }).into())
+            .is_ok()
+    }
+
+    /// The browser on `conn` left.
+    pub fn close_browser(&mut self, conn: u64) {
+        if let Some(link) = self.browsers.remove(&conn)
+            && let Some(out) = self.host_outbox(link.host_conn)
+        {
+            let _ = out.try_send(ServerBody::BrowserClose(BrowserClose { conn }).into());
+        }
+    }
+
+    pub fn browser_count(&self) -> usize {
+        self.browsers.len()
+    }
+
+    fn host_outbox(&self, host_conn: u64) -> Option<Outbox> {
+        let id = self.by_conn.get(&host_conn)?;
+        self.peers
+            .get(id)
+            .filter(|p| p.conn == host_conn)
+            .map(|p| p.out.clone())
+    }
+
+    /// A host's side of a browser link: only the host it was opened to may speak on it.
+    fn host_frame(&mut self, conn: u64, browser: u64, msg: Option<String>) {
+        if !self
+            .browsers
+            .get(&browser)
+            .is_some_and(|b| b.host_conn == conn)
+        {
+            return;
+        }
+        match msg {
+            Some(text) => {
+                let full = self.browsers[&browser]
+                    .out
+                    .try_send(ToBrowser::Text(text))
+                    .is_err();
+                if full {
+                    self.browsers.remove(&browser);
+                }
+            }
+            None => {
+                if let Some(b) = self.browsers.remove(&browser) {
+                    let _ = b.out.try_send(ToBrowser::Close);
+                }
+            }
+        }
     }
 
     pub fn registered(&self) -> usize {
@@ -236,10 +414,11 @@ impl Hub {
             .map_err(|_| error(ErrorCode::BadRequest, "bad signature"))?;
         if r.x25519.len() != 32
             || r.server_name.len() > 253
+            || r.id_seed.len() > nexa_wire::signal::MAX_ID_SEED
             || !key.verify_for(PURPOSE_X25519, &r.x25519, &x_sig)
             || !key.verify_for(
                 PURPOSE_REGISTER,
-                &register_message(nonce, &r.x25519, &r.server_name),
+                &register_message(nonce, &r.x25519, &r.server_name, &r.id_seed),
                 &sig,
             )
         {
@@ -260,7 +439,7 @@ impl Hub {
         // The same key again (a reconnect): the newer connection wins.
         let mut chosen = None;
         for attempt in 0..ID_ATTEMPTS {
-            let id = derive_short_id(&pubkey, attempt);
+            let id = derive_short_id(&pubkey, &r.id_seed, attempt);
             match self.peers.get(&id) {
                 None => {
                     chosen = Some(id);
@@ -330,6 +509,14 @@ impl Hub {
             ClientBody::Connect(c) => self.connect(conn, &me, c, now),
             ClientBody::Answer(a) => self.answer(conn, a),
             ClientBody::Trickle(t) => self.trickle(conn, t),
+            ClientBody::BrowserText(t) => {
+                self.host_frame(conn, t.conn, Some(t.text));
+                None
+            }
+            ClientBody::BrowserClose(c) => {
+                self.host_frame(conn, c.conn, None);
+                None
+            }
         };
         if let Some(r) = reply {
             let _ = my_out.try_send(r);
@@ -547,20 +734,120 @@ mod tests {
             relay: Some("203.0.113.1:3480".parse().unwrap()),
             relay_ttl_secs: 60,
             issuer: Arc::new(TokenIssuer::new()),
+            web: Some(WebTurn {
+                secret: b"turn secret".to_vec(),
+                server: "203.0.113.1:3478".parse().unwrap(),
+            }),
         })
     }
 
+    #[test]
+    fn browsers_are_put_through_to_their_host_only() {
+        let mut h = hub();
+        let host = DeviceIdentity::generate();
+        let other = DeviceIdentity::generate();
+        let (host_id, mut host_rx) = join(&mut h, 1, &host);
+        let (_, mut other_rx) = join(&mut h, 2, &other);
+        let browser_ip: IpAddr = [192, 0, 2, 9].into();
+        let (tx, mut browser_rx) = mpsc::channel(8);
+        let route = h
+            .open_browser(browser_ip, &host_id, tx, Instant::now(), 1_800_000_000)
+            .unwrap();
+        assert_eq!(route.turn_server, "203.0.113.1:3478".parse().unwrap());
+        assert_eq!(
+            nexa_turn::auth::expiry(&route.turn.username),
+            Some(1_800_000_000 + 24 * 3600)
+        );
+        // The host is told, with credentials of its own.
+        match host_rx.try_recv().unwrap().body {
+            Some(ServerBody::BrowserOpen(o)) => {
+                assert_eq!((o.conn, o.ip.as_str()), (route.conn, "192.0.2.9"));
+                assert_ne!(o.turn_username, route.turn.username);
+                assert_eq!(
+                    nexa_turn::auth::password_for(b"turn secret", &o.turn_username),
+                    o.turn_password
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(h.browser_text(route.conn, "offer".into()));
+        assert!(matches!(
+            host_rx.try_recv().unwrap().body,
+            Some(ServerBody::BrowserText(BrowserText { text, .. })) if text == "offer"
+        ));
+        // Another host cannot speak for it.
+        h.handle(
+            2,
+            ClientBody::BrowserText(BrowserText {
+                conn: route.conn,
+                text: "x".into(),
+            }),
+            Instant::now(),
+        );
+        assert!(browser_rx.try_recv().is_err());
+        h.handle(
+            1,
+            ClientBody::BrowserText(BrowserText {
+                conn: route.conn,
+                text: "answer".into(),
+            }),
+            Instant::now(),
+        );
+        assert_eq!(
+            browser_rx.try_recv().unwrap(),
+            ToBrowser::Text("answer".into())
+        );
+        assert!(other_rx.try_recv().is_err());
+        // The host going away closes the browser.
+        h.close_conn(1, [198, 51, 100, 1].into());
+        assert_eq!(browser_rx.try_recv().unwrap(), ToBrowser::Close);
+        assert_eq!(h.browser_count(), 0);
+    }
+
+    #[test]
+    fn unknown_ids_and_servers_without_web_refuse_browsers() {
+        let mut h = hub();
+        let (tx, _rx) = mpsc::channel(8);
+        let ip: IpAddr = [192, 0, 2, 9].into();
+        assert_eq!(
+            h.open_browser(ip, "123456789", tx.clone(), Instant::now(), 0)
+                .err(),
+            Some(BrowserRefusal::Offline)
+        );
+        let mut plain = Hub::new(HubSettings {
+            limits: Limits::default(),
+            server_names: vec![],
+            stun: vec![],
+            stun_note: None,
+            relay: None,
+            relay_ttl_secs: 60,
+            issuer: Arc::new(TokenIssuer::new()),
+            web: None,
+        });
+        assert_eq!(
+            plain
+                .open_browser(ip, "123456789", tx, Instant::now(), 0)
+                .err(),
+            Some(BrowserRefusal::Unavailable)
+        );
+    }
+
     fn reg(id: &DeviceIdentity, nonce: &[u8; 32], name: &str) -> Register {
+        reg_seeded(id, nonce, name, &[])
+    }
+
+    fn reg_seeded(id: &DeviceIdentity, nonce: &[u8; 32], name: &str, seed: &[u8]) -> Register {
         let x = vec![9u8; 32];
         Register {
             proto: SIGNAL_PROTOCOL,
             pubkey: id.public_key().as_bytes().to_vec(),
             x25519_sig: id.sign_for(PURPOSE_X25519, &x).to_vec(),
             sig: id
-                .sign_for(PURPOSE_REGISTER, &register_message(nonce, &x, name))
+                .sign_for(PURPOSE_REGISTER, &register_message(nonce, &x, name, seed))
                 .to_vec(),
             x25519: x,
             server_name: name.into(),
+            id_seed: seed.to_vec(),
         }
     }
 
@@ -589,11 +876,52 @@ mod tests {
     }
 
     #[test]
+    fn a_new_seed_gives_the_same_key_a_new_id_and_the_seed_is_signed() {
+        let mut h = hub();
+        let id = DeviceIdentity::generate();
+        let (plain, _rx) = join(&mut h, 1, &id);
+        let ip: IpAddr = [198, 51, 100, 2].into();
+        let nonce = [2u8; 32];
+        assert!(h.open_conn(ip));
+        let (tx, _rx2) = mpsc::channel(64);
+        let seeded = match h.register(
+            2,
+            ip,
+            &nonce,
+            &reg_seeded(&id, &nonce, "signal.test", &[5; 16]),
+            tx,
+            Instant::now(),
+        ) {
+            Ok(SignalServerMsg {
+                body: Some(ServerBody::Registered(Registered { short_id, .. })),
+            }) => short_id,
+            other => panic!("{other:?}"),
+        };
+        assert_ne!(plain, seeded);
+        assert_eq!(
+            seeded,
+            derive_short_id(id.public_key().as_bytes(), &[5; 16], 0)
+        );
+
+        // A seed swapped in after signing is refused.
+        let nonce = [3u8; 32];
+        let ip: IpAddr = [198, 51, 100, 3].into();
+        assert!(h.open_conn(ip));
+        let mut forged = reg_seeded(&id, &nonce, "signal.test", &[5; 16]);
+        forged.id_seed = vec![6; 16];
+        let (tx, _rx3) = mpsc::channel(64);
+        assert!(
+            h.register(3, ip, &nonce, &forged, tx, Instant::now())
+                .is_err()
+        );
+    }
+
+    #[test]
     fn ids_are_stable_and_nine_digits() {
         let k = [7u8; 32];
-        assert_eq!(derive_short_id(&k, 0), derive_short_id(&k, 0));
-        assert_ne!(derive_short_id(&k, 0), derive_short_id(&k, 1));
-        assert_eq!(derive_short_id(&k, 0).len(), 9);
+        assert_eq!(derive_short_id(&k, &[], 0), derive_short_id(&k, &[], 0));
+        assert_ne!(derive_short_id(&k, &[], 0), derive_short_id(&k, &[], 1));
+        assert_eq!(derive_short_id(&k, &[], 0).len(), 9);
     }
 
     #[test]

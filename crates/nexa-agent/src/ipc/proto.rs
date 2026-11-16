@@ -14,6 +14,8 @@ pub struct Permissions {
     pub file: bool,
     #[prost(bool, tag = "5")]
     pub audio: bool,
+    #[prost(bool, tag = "6")]
+    pub terminal: bool,
 }
 
 impl From<&nexa_wire::control::Permissions> for Permissions {
@@ -24,6 +26,7 @@ impl From<&nexa_wire::control::Permissions> for Permissions {
             clipboard: p.clipboard,
             file: p.file,
             audio: p.audio,
+            terminal: p.terminal,
         }
     }
 }
@@ -36,6 +39,7 @@ impl From<nexa_auth::Perms> for Permissions {
             clipboard: p.clipboard,
             file: p.file,
             audio: p.audio,
+            terminal: false,
         }
     }
 }
@@ -115,8 +119,9 @@ pub enum UiBody {
     ListPairings(Empty),
     #[prost(message, tag = "5")]
     RevokePairing(RevokePairing),
+    /// Ends one person's session, or every session with id 0.
     #[prost(message, tag = "6")]
-    Disconnect(Empty),
+    Disconnect(SessionRef),
     #[prost(message, tag = "7")]
     RotateCode(Empty),
     #[prost(message, tag = "8")]
@@ -129,6 +134,12 @@ pub enum UiBody {
     CancelTransfer(CancelTransfer),
     #[prost(message, tag = "12")]
     AnswerTransfer(AnswerTransfer),
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct SessionRef {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -198,6 +209,15 @@ pub struct Status {
     /// Why the last attempt failed, or why NAT detection is degraded.
     #[prost(string, tag = "11")]
     pub signal_detail: String,
+    /// SHA-256 of the certificate browsers are shown (`AB:CD:…`); empty without HTTPS.
+    #[prost(string, tag = "12")]
+    pub web_fingerprint: String,
+    /// The certificate is the person's own, so browsers trust it without a warning.
+    #[prost(bool, tag = "13")]
+    pub web_cert_custom: bool,
+    /// A fixed password is set: viewers may type it instead of the code.
+    #[prost(bool, tag = "14")]
+    pub password_set: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Enumeration)]
@@ -216,6 +236,8 @@ pub enum AuthKind {
     Paired = 1,
     Code = 2,
     Password = 3,
+    /// Only the device ID: nothing proves who is asking.
+    Request = 4,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -520,6 +542,7 @@ mod tests {
                 clipboard: true,
                 file: false,
                 audio: false,
+                terminal: false,
             }),
             save: true,
             skip_next_time: false,
@@ -568,6 +591,9 @@ mod tests {
             short_id: "123456789".into(),
             signal: SignalState::Online as i32,
             signal_detail: "n".into(),
+            web_fingerprint: String::new(),
+            web_cert_custom: false,
+            password_set: false,
         }));
         assert_eq!(
             hex(&status.encode_to_vec()),

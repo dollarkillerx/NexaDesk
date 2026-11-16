@@ -25,6 +25,13 @@ pub const SALT_LEN: usize = 16;
 pub const SPAKE_MSG_LEN: usize = 33;
 pub const CONFIRM_LEN: usize = 32;
 const METHOD_CODE: u8 = 1;
+const METHOD_PASSWORD: u8 = 2;
+// The host's Argon2id parameters for the fixed password; both ends must agree.
+const ARGON2_MEMORY_KIB: u32 = 64 * 1024;
+const ARGON2_PASSES: u32 = 3;
+const ARGON2_LANES: u32 = 1;
+const VERIFIER_LEN: usize = 32;
+const MAX_PASSWORD_LEN: usize = 1024;
 const CONFIRM_KEY_INFO: &[u8] = b"nexa/1 pair confirm key";
 const TRANSCRIPT_LABEL: &[u8] = b"nexa/1 pair transcript";
 const VIEWER_TAG: &[u8] = b"nexa/1 confirm viewer";
@@ -57,6 +64,7 @@ pub fn normalize_code(input: &str) -> Result<Zeroizing<String>, Error> {
 }
 
 fn transcript(
+    method: u8,
     browser: &[u8; 32],
     host: &[u8; 32],
     salt: &[u8],
@@ -65,7 +73,7 @@ fn transcript(
 ) -> Vec<u8> {
     let fields: [&[u8]; 7] = [
         TRANSCRIPT_LABEL,
-        &[METHOD_CODE],
+        &[method],
         salt,
         browser,
         host,
@@ -115,11 +123,69 @@ pub fn answer(
     seed: [u8; 32],
 ) -> Result<(Vec<u8>, Vec<u8>, Pending), Error> {
     let code = normalize_code(code)?;
+    answer_secret(
+        code.as_bytes(),
+        METHOD_CODE,
+        browser,
+        host,
+        salt,
+        host_msg,
+        seed,
+    )
+}
+
+/// The same with the host's fixed password, which is first stretched with Argon2id
+/// under the offer's salt, as the host did when it was set. This takes a moment.
+pub fn answer_password(
+    password: &str,
+    browser: &[u8; 32],
+    host: &[u8; 32],
+    salt: &[u8],
+    host_msg: &[u8],
+    seed: [u8; 32],
+) -> Result<(Vec<u8>, Vec<u8>, Pending), Error> {
+    if password.is_empty() || password.len() > MAX_PASSWORD_LEN {
+        return Err(Error::InvalidCode);
+    }
+    if salt.len() != SALT_LEN {
+        return Err(Error::Malformed);
+    }
+    let params = argon2::Params::new(
+        ARGON2_MEMORY_KIB,
+        ARGON2_PASSES,
+        ARGON2_LANES,
+        Some(VERIFIER_LEN),
+    )
+    .map_err(|_| Error::Malformed)?;
+    let mut verifier = Zeroizing::new([0u8; VERIFIER_LEN]);
+    argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params)
+        .hash_password_into(password.as_bytes(), salt, verifier.as_mut_slice())
+        .map_err(|_| Error::InvalidCode)?;
+    answer_secret(
+        verifier.as_slice(),
+        METHOD_PASSWORD,
+        browser,
+        host,
+        salt,
+        host_msg,
+        seed,
+    )
+}
+
+fn answer_secret(
+    secret: &[u8],
+    method: u8,
+    browser: &[u8; 32],
+    host: &[u8; 32],
+    salt: &[u8],
+    host_msg: &[u8],
+    seed: [u8; 32],
+) -> Result<(Vec<u8>, Vec<u8>, Pending), Error> {
     if salt.len() != SALT_LEN || host_msg.len() != SPAKE_MSG_LEN {
         return Err(Error::Malformed);
     }
     let (spake, msg) = Spake2::<Ed25519Group>::start_a_with_rng(
-        &Password::new(code.as_bytes()),
+        &Password::new(secret),
         &Identity::new(browser),
         &Identity::new(host),
         ChaCha20Rng::from_seed(seed),
@@ -130,7 +196,7 @@ pub fn answer(
     Hkdf::<Sha256>::new(Some(&binding), &spake_key)
         .expand(CONFIRM_KEY_INFO, key.as_mut_slice())
         .expect("32 bytes is a valid HKDF output length");
-    let transcript = transcript(browser, host, salt, &msg, host_msg);
+    let transcript = transcript(method, browser, host, salt, &msg, host_msg);
     let confirm = mac(&key, VIEWER_TAG, &transcript)
         .finalize()
         .into_bytes()
@@ -144,6 +210,7 @@ pub fn answer(
 /// p = nx_alloc(n)                       memory for inputs and outputs
 /// nx_answer(code, code_len, browser32, host32, salt16, host_msg33, seed32, out65) -> status
 ///     out65 = spake_msg (33) || confirm (32)
+/// nx_answer_password(password, len, …the same…) -> status    the fixed password
 /// nx_check_host(confirm32) -> status    then forgets the exchange
 /// status: 0 ok, 1 invalid code, 2 malformed, 3 host not verified, 4 no exchange
 /// ```
@@ -172,9 +239,59 @@ pub mod ffi {
         p
     }
 
+    type Answer = fn(
+        &str,
+        &[u8; 32],
+        &[u8; 32],
+        &[u8],
+        &[u8],
+        [u8; 32],
+    ) -> Result<(Vec<u8>, Vec<u8>, Pending), Error>;
+
+    /// # Safety
+    /// As for [`nx_answer`].
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn run(
+        f: Answer,
+        secret: *const u8,
+        secret_len: usize,
+        browser: *const u8,
+        host: *const u8,
+        salt: *const u8,
+        host_msg: *const u8,
+        seed: *const u8,
+        out: *mut u8,
+    ) -> u32 {
+        let (secret, browser, host, salt, host_msg, seed) = unsafe {
+            (
+                std::slice::from_raw_parts(secret, secret_len),
+                &*(browser as *const [u8; 32]),
+                &*(host as *const [u8; 32]),
+                std::slice::from_raw_parts(salt, SALT_LEN),
+                std::slice::from_raw_parts(host_msg, SPAKE_MSG_LEN),
+                *(seed as *const [u8; 32]),
+            )
+        };
+        let Ok(secret) = std::str::from_utf8(secret) else {
+            return 1;
+        };
+        match f(secret, browser, host, salt, host_msg, seed) {
+            Ok((msg, confirm, pending)) => {
+                let out =
+                    unsafe { std::slice::from_raw_parts_mut(out, SPAKE_MSG_LEN + CONFIRM_LEN) };
+                out[..SPAKE_MSG_LEN].copy_from_slice(&msg);
+                out[SPAKE_MSG_LEN..].copy_from_slice(&confirm);
+                *PENDING.lock().unwrap_or_else(|e| e.into_inner()) = Some(pending);
+                0
+            }
+            Err(e) => status(e),
+        }
+    }
+
     /// # Safety
     /// Every pointer must point at the stated number of bytes in this module's memory.
     #[unsafe(no_mangle)]
+    #[allow(clippy::too_many_arguments)]
     pub unsafe extern "C" fn nx_answer(
         code: *const u8,
         code_len: usize,
@@ -185,29 +302,41 @@ pub mod ffi {
         seed: *const u8,
         out: *mut u8,
     ) -> u32 {
-        let (code, browser, host, salt, host_msg, seed) = unsafe {
-            (
-                std::slice::from_raw_parts(code, code_len),
-                &*(browser as *const [u8; 32]),
-                &*(host as *const [u8; 32]),
-                std::slice::from_raw_parts(salt, SALT_LEN),
-                std::slice::from_raw_parts(host_msg, SPAKE_MSG_LEN),
-                *(seed as *const [u8; 32]),
+        unsafe {
+            run(
+                answer, code, code_len, browser, host, salt, host_msg, seed, out,
             )
-        };
-        let Ok(code) = std::str::from_utf8(code) else {
-            return 1;
-        };
-        match answer(code, browser, host, salt, host_msg, seed) {
-            Ok((msg, confirm, pending)) => {
-                let out =
-                    unsafe { std::slice::from_raw_parts_mut(out, SPAKE_MSG_LEN + CONFIRM_LEN) };
-                out[..SPAKE_MSG_LEN].copy_from_slice(&msg);
-                out[SPAKE_MSG_LEN..].copy_from_slice(&confirm);
-                *PENDING.lock().unwrap_or_else(|e| e.into_inner()) = Some(pending);
-                0
-            }
-            Err(e) => status(e),
+        }
+    }
+
+    /// The fixed password instead of the one-time code.
+    ///
+    /// # Safety
+    /// As for [`nx_answer`].
+    #[unsafe(no_mangle)]
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe extern "C" fn nx_answer_password(
+        password: *const u8,
+        password_len: usize,
+        browser: *const u8,
+        host: *const u8,
+        salt: *const u8,
+        host_msg: *const u8,
+        seed: *const u8,
+        out: *mut u8,
+    ) -> u32 {
+        unsafe {
+            run(
+                answer_password,
+                password,
+                password_len,
+                browser,
+                host,
+                salt,
+                host_msg,
+                seed,
+                out,
+            )
         }
     }
 
@@ -307,6 +436,36 @@ mod tests {
         assert_eq!(unsafe { ffi::nx_check_host(host_step.confirm.as_ptr()) }, 0);
         // The exchange is forgotten after one check.
         assert_eq!(unsafe { ffi::nx_check_host(host_step.confirm.as_ptr()) }, 4);
+    }
+
+    #[test]
+    fn pairs_with_the_real_host_by_password() {
+        let stored = nexa_auth::HostPassword::create("open sesame 42").unwrap();
+        let guard = nexa_auth::PasswordGuard::default();
+        let (b, h) = (DtlsFingerprint(B), DtlsFingerprint(H));
+        let (mut host, offer) =
+            BrowserPairing::with_password(b, h, &stored, &guard, source(1)).unwrap();
+        let (msg, confirm, pending) = answer_password(
+            "open sesame 42",
+            &B,
+            &H,
+            &offer.salt,
+            &offer.spake_msg,
+            [5; 32],
+        )
+        .unwrap();
+        let (host_step, _) = host
+            .on_step(&AuthStep {
+                spake_msg: msg,
+                confirm,
+                salt: Vec::new(),
+            })
+            .unwrap();
+        assert!(pending.check_host(&host_step.confirm).is_ok());
+        assert_eq!(
+            answer_password("", &B, &H, &offer.salt, &offer.spake_msg, [5; 32]).err(),
+            Some(Error::InvalidCode)
+        );
     }
 
     #[test]

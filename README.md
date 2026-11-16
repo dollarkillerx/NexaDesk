@@ -2,7 +2,7 @@
 
 轻量的远程控制软件。目标是高清、低延迟，粘贴可靠，键盘对 Win / Mac 友好，能自己打洞，也能借助 Tailscale。界面用 Avalonia，后端用 Rust。
 
-> **状态**：macOS ↔ macOS 的功能已经写完，自动化测试全部通过，但**还没在两台真实的 Mac、真实的网络上验证过**。Web 端（桌面浏览器查看和控制）已完成第一版，只用演示主机在浏览器里验证过；Windows 端尚未开始。暂时不建议用在重要场合。
+> **状态**：macOS ↔ macOS 的功能已经写完，自动化测试全部通过，但**还没在两台真实的 Mac、真实的网络上验证过**。Web 端（浏览器查看和控制，含手机、输入法、剪贴板，可经自建服务器跨网络）已实现，只用演示主机在 Chrome 中做过自动化端到端测试；Windows 端尚未开始。暂时不建议用在重要场合。
 
 ## 截图
 
@@ -40,12 +40,14 @@
 - **键盘**：按物理键码传输，控制端改写组合键意图。例如在 Mac 上按 ⌘C 控制 Windows 时发出 Ctrl+C，而不是全局对调 Ctrl 和 Cmd。映射表可以编辑和预览。
 - **剪贴板与粘贴**：按代际同步。远端粘贴前先等剪贴板到达对端，再放行粘贴键，避免粘贴出旧内容。
 - **游戏模式**：锁定指针，发送相对移动；FEC 更强，延迟更低。
-- **浏览器控制**：对方不用安装任何软件，用浏览器打开本机地址的 47801 端口，输入一次性码即可查看和控制。页面和 WebRTC 都由本机提供，不需要服务器；适合局域网和 Tailscale。默认关闭，在主窗口底部打开“允许浏览器连接”。
+- **浏览器控制**：对方不用安装任何软件，用浏览器打开 `https://本机地址:47801`，输入一次性码即可查看和控制。页面和 WebRTC 都由本机提供，不需要服务器；适合局域网和 Tailscale。手机可用触控手势和屏幕键盘，输入法照常可用，文字剪贴板双向同步，非 Mac 键盘的 Ctrl+C/V 自动对应 ⌘C/V。有自建服务器时，也可以从任何网络打开服务器的网址、输入设备 ID 连接，画面经服务器的 TURN 中转。浏览器顶部显示连接方式和网络质量，画质可选自动、清晰、均衡、弱网。默认关闭，在主窗口底部打开“允许浏览器连接”。
+- **多人同时连接**：最多 4 人同时连接同一台 Mac（应用和浏览器合计），各自确认、都能操作；每人一条顶部提示条，可单独断开，也可以收起成一个小标签。
+- **命令行**：浏览器连接时可以选“屏幕”或“终端”。终端打开被控端的 shell（xterm.js），是单独一项权限，默认不勾。Linux 和 Windows 服务器用命令行被控端 `nexa-term-host`（PowerShell / bash），见 [docs/TERM_HOST.md](docs/TERM_HOST.md)。
 - **其他**：光标形状、声音（Opus）、文件收发、多显示器、断线 30 秒内自动重连、HUD 与连接诊断。
 - **多语言**：简体中文、English、日本語。默认跟随 macOS 的语言设置，也可以在主窗口右上角切换（重启后生效）。
 - **安全**：
   - 双向 TLS，身份就是设备公钥。
-  - 首次连接用一次性码或口令做 SPAKE2 配对，并绑定到 TLS 会话；之后钉住对方公钥。
+  - 首次连接用一次性码或固定密码做 SPAKE2 配对，并绑定到 TLS 会话；之后钉住对方公钥。固定密码在“允许别人控制本机”下设置，只保存 Argon2id 的结果，和一次性码同时有效，原生端和浏览器都能用。
   - 每次被控都要本机确认（可对已配对设备设为无人值守），并显示提示条。
   - 配对猜测按来源限制。
 
@@ -63,7 +65,9 @@
 | `crates/nexa-agent` | 被控端进程 `nexa-agent` |
 | `crates/nexa-client` | 控制端动态库 `libnexa_client`（C ABI，供 UI 调用） |
 | `crates/nexa-signal` | 信令 + STUN + 中继服务器 `nexa-signal` |
-| `crates/nexa-web` | 浏览器访问：网页、信令和 WebRTC（str0m），由被控端直接提供 |
+| `crates/nexa-web` | 浏览器访问：HTTPS、信令和 WebRTC（str0m），由被控端提供；经服务器的会话走 TURN |
+| `crates/nexa-web-page` | 浏览器端网页，由被控端和信令服务器共用 |
+| `crates/nexa-turn` | TURN 服务器与客户端（纯状态机），只在同一服务器的分配之间中转 |
 | `crates/nexa-web-pake` | 浏览器一侧的配对（SPAKE2），编译为 WebAssembly |
 | `ui/` | Avalonia 桌面应用（.NET 10，NativeAOT）、测试和 README 截图工具 |
 | `deploy/` | 服务器的 systemd 单元、Docker 镜像与 Compose、配置模板、证书续期钩子 |
@@ -85,7 +89,13 @@
 scripts/package-macos.sh
 ```
 
-产物是 `dist/NexaDesk.app`，ad-hoc 签名（自签）。每次重新打包，macOS 都会把它当成新应用，“屏幕录制”和“辅助功能”权限需要重新授予。
+产物是 `dist/NexaDesk.app`。默认是 ad-hoc 签名：每次重新打包，macOS 都会把它当成新应用，“屏幕录制”“辅助功能”权限和钥匙串的“始终允许”都要重新给。先运行一次下面的脚本，在登录钥匙串里建一个本机签名证书（“NexaDesk Local Signing”），之后每次打包都用它签名，macOS 会认为是同一个应用，给过的权限不会再丢：
+
+```bash
+scripts/make-signing-identity.sh
+```
+
+这个证书的私钥只应留在本机：拿到它的人可以签出被 macOS 当作 NexaDesk、带着同样权限的程序。给别人用的版本请用 Developer ID 签名（`NEXA_SIGN_IDENTITY="Developer ID Application: …" scripts/package-macos.sh`）。
 
 应用图标在 `assets/icon/`（`AppIcon.icns` 和 1024 px 原图），已提交到仓库，打包时直接使用。图标由 `scripts/make-app-icon.swift` 用代码绘制；修改后运行 `scripts/make-app-icon.sh` 重新生成。
 
@@ -133,7 +143,7 @@ dotnet test ui/NexaDesk.Tests
 cargo run -p nexa-web --example demo
 ```
 
-然后在另一台设备的浏览器，或本机浏览器，打开本机的局域网地址（不要用 127.0.0.1）的 47801 端口，输入终端里显示的一次性码。改了 `crates/nexa-web-pake` 之后，运行 `scripts/build-web-pake.sh` 重新生成 `crates/nexa-web/web/pake.wasm`。
+然后在另一台设备的浏览器，或本机浏览器，打开 `https://本机局域网地址:47801`（不要用 127.0.0.1），接受自签证书的提示，输入终端里显示的一次性码。按 F9 会让演示主机“复制”一行文字，可以用来试剪贴板。改了 `crates/nexa-web-pake` 之后，运行 `scripts/build-web-pake.sh` 重新生成 `crates/nexa-web-page/web/pake.wasm`。
 
 ## 文档
 
@@ -141,12 +151,13 @@ cargo run -p nexa-web --example demo
 - [docs/DETAILED_DESIGN.md](docs/DETAILED_DESIGN.md)：详细设计，各章末尾的“实现修订”记录了实际实现与设计的差异
 - [docs/DEPLOY.md](docs/DEPLOY.md)：部署信令、STUN 和中继服务器
 - [docs/WEB_CLIENT.md](docs/WEB_CLIENT.md)：Web 控制端的方案与第一版实现
+- [docs/TERM_HOST.md](docs/TERM_HOST.md)：Linux / Windows 命令行被控端
 - [docs/spikes/M0-report.md](docs/spikes/M0-report.md)：M0 验证报告
 
 ## 尚未完成
 
-- **验证**：两台 Mac 的实机联调；真实 NAT 环境下的打洞测试。
+- **验证**：两台 Mac 的实机联调；真实 NAT 环境下的打洞测试（经自建服务器中继已在公网实测，见 docs/DEPLOY.md §6）。
 - **macOS 发布**：Developer ID 签名与公证、安装包、自动更新，以及登录界面和锁屏前的远程访问。
-- **其他平台**：Windows 端（被控与控制）。
-- **Web 端后续**：手机手势和虚拟键盘、输入法、剪贴板、跨公网（TURN）、HTTPS；真实浏览器和手机上的延迟实测。
+- **其他平台**：Windows 的图形被控端与控制端（命令行被控端已有，见 docs/TERM_HOST.md）。
+- **Web 端后续**：真实手机、Safari、Firefox 和公网环境下的实测与延迟；TURN over TCP/TLS（UDP 被封的网络）；声音和文件传输。
 - **产品决定**：无人值守机器的首次配对方式；知道 ID 的人默认能做什么；文件权限是否按方向拆开。

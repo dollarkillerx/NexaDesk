@@ -17,6 +17,8 @@ sha2 = { version = "0.10", default-features = false }
 rand_chacha = { version = "0.3", default-features = false }
 rand_core = { version = "0.6", default-features = false }
 zeroize = "1"
+# The fixed password, stretched exactly as the host stores it (nexa-auth secrets.rs).
+argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 nexa-auth = { path = "../nexa-auth" }

@@ -48,6 +48,41 @@ pub fn bind_media_socket(addr: SocketAddr) -> io::Result<UdpSocket> {
     Ok(s.into())
 }
 
+/// Wraps `socket` for tokio with UDP receive coalescing (GRO) turned off.
+///
+/// quinn turns GRO on where the kernel has it, so one receive may hold several
+/// datagrams back to back, `stride` bytes apart. quinn's own endpoint copes;
+/// [`VirtualSocket`]'s relay and STUN filtering and the relay server read one
+/// datagram per receive and would mangle or drop the rest. A burst of video
+/// through the relay is exactly what the kernel coalesces.
+pub fn wrap_without_gro(socket: UdpSocket) -> io::Result<Arc<dyn AsyncUdpSocket>> {
+    use quinn::Runtime;
+    #[cfg(target_os = "linux")]
+    let handle = socket.try_clone()?;
+    let wrapped = quinn::TokioRuntime.wrap_udp_socket(socket)?;
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        let off: libc::c_int = 0;
+        // SAFETY: a valid socket descriptor and a c_int option of the right size.
+        let r = unsafe {
+            libc::setsockopt(
+                handle.as_raw_fd(),
+                libc::SOL_UDP,
+                libc::UDP_GRO,
+                (&raw const off).cast(),
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            )
+        };
+        // Kernels without UDP_GRO never coalesce in the first place.
+        if r != 0 && io::Error::last_os_error().raw_os_error() != Some(libc::ENOPROTOOPT) {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    // Windows coalesces too (URO); turn it off here when the Windows build starts.
+    Ok(wrapped)
+}
+
 /// A dual-stack socket on `port` when this machine has IPv6, else IPv4 only.
 pub fn bind_dual_stack(port: u16) -> io::Result<UdpSocket> {
     bind_media_socket(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port))
@@ -628,6 +663,28 @@ impl AsyncUdpSocket for VirtualSocket {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn wrapped_sockets_do_not_coalesce_receives() {
+        use std::os::fd::AsRawFd;
+        let socket = bind_media_socket(SocketAddr::from(([127, 0, 0, 1], 0))).unwrap();
+        let probe = socket.try_clone().unwrap();
+        let _wrapped = wrap_without_gro(socket).unwrap();
+        let mut on: libc::c_int = -1;
+        let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+        // SAFETY: a valid socket descriptor and a c_int-sized out-parameter.
+        let r = unsafe {
+            libc::getsockopt(
+                probe.as_raw_fd(),
+                libc::SOL_UDP,
+                libc::UDP_GRO,
+                (&raw mut on).cast(),
+                &mut len,
+            )
+        };
+        assert_eq!((r, on), (0, 0));
+    }
 
     fn stun_packet() -> [u8; 20] {
         let mut p = [0u8; 20];

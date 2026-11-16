@@ -20,22 +20,22 @@
 //! Security: the one-time code is the native one with the same attempt limits, and the
 //! exchange is bound to both DTLS fingerprints (`nexa_auth::browser`). The host's consent
 //! is asked as for any viewer. Nothing is accepted from the DataChannel before that, and
-//! only one browser session runs at a time. The page itself is served over plain HTTP: on
-//! a tailnet that path is already encrypted, on a LAN it is not (see WEB_CLIENT.md §8).
+//! only one browser session runs at a time. The page is served over HTTPS (`tls`), with
+//! the host's own certificate unless the person provides one; plain HTTP only redirects.
 
-mod assets;
 mod http;
 mod input;
 mod media;
 mod rtc;
 mod session;
+mod tls;
 
 use std::{
     io,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize},
     },
     time::Duration,
 };
@@ -46,6 +46,8 @@ use nexa_session::{handshake::PairLimiter, input::InputSink};
 use tokio::{net::TcpListener, task::JoinHandle};
 
 pub use nexa_auth::browser::DtlsFingerprint;
+pub use nexa_turn::Credentials as TurnCredentials;
+pub use tls::{CUSTOM_CERT, CUSTOM_KEY, WebTls, certificate_names};
 
 /// The port the agent uses unless told otherwise: next to the native 47800.
 pub const DEFAULT_PORT: u16 = 47801;
@@ -86,6 +88,17 @@ pub struct WebScreen {
 }
 
 /// What the person at the host is asked about a browser.
+/// How a browser signed in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BrowserAuth {
+    Code,
+    /// The host's fixed password.
+    Password,
+    /// Nothing but the device ID, through the signaling server: nothing proves who is
+    /// asking, so the person at the host decides.
+    Request,
+}
+
 #[derive(Clone, Debug)]
 pub struct BrowserRequest {
     pub id: u64,
@@ -96,6 +109,11 @@ pub struct BrowserRequest {
     pub fingerprint: DtlsFingerprint,
     /// Whether this host could carry out input at all (macOS: Accessibility).
     pub input_available: bool,
+    /// How the browser signed in.
+    pub auth: BrowserAuth,
+    /// It asked for the command line only, or this host has no screen to show: the
+    /// terminal is the whole session.
+    pub terminal_only: bool,
     /// Set when the browser goes away; stop asking then.
     pub cancelled: Arc<AtomicBool>,
 }
@@ -105,13 +123,29 @@ pub struct BrowserAnswer {
     pub allow: bool,
     /// Keyboard and mouse. Without it the browser can only watch.
     pub input: bool,
+    /// Text copied on either side reaches the other.
+    pub clipboard: bool,
+    /// A shell on the host, in the page.
+    pub terminal: bool,
 }
 
 impl BrowserAnswer {
     pub const DENY: Self = Self {
         allow: false,
         input: false,
+        clipboard: false,
+        terminal: false,
     };
+}
+
+/// The host's clipboard, text only, as a browser session uses it. Used on the session's
+/// input thread, so `poll` and `set_text` never race.
+pub trait WebClipboard: Send {
+    /// Text someone copied on the host since the last call. Never what `set_text` put
+    /// there, nor anything the OS marks as sensitive (passwords).
+    fn poll(&mut self) -> Option<String>;
+    /// Puts text from the browser on the host's clipboard.
+    fn set_text(&mut self, text: &str) -> Result<(), String>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -122,6 +156,10 @@ pub enum WebEvent {
         remote: SocketAddr,
         fingerprint: DtlsFingerprint,
         input: bool,
+        clipboard: bool,
+        terminal: bool,
+        /// False for a terminal-only session: the screen is not shown at all.
+        video: bool,
     },
     SessionEnded {
         id: u64,
@@ -142,8 +180,23 @@ pub trait WebHost: Send + Sync + 'static {
     fn input_available(&self) -> bool;
     /// Called once per session on its input thread, only if input was allowed.
     fn input_sink(&self) -> Result<Box<dyn InputSink>, String>;
-    /// Whether the host is taken by something else (a native viewer): browsers are then
-    /// told it is busy before any pairing starts.
+    /// Called once per session on its input thread, only if the clipboard was allowed.
+    fn clipboard(&self) -> Result<Box<dyn WebClipboard>, String> {
+        Err("this host does not share its clipboard".into())
+    }
+    /// Whether there is a screen to show. A command-line host has none: every session
+    /// is the terminal.
+    fn has_screen(&self) -> bool {
+        true
+    }
+    /// Starts a shell for a session granted the terminal. Called when the page opens
+    /// its terminal; dropping the result ends the shell.
+    fn terminal(&self, cols: u16, rows: u16) -> Result<nexa_term::Pty, String> {
+        let _ = (cols, rows);
+        Err("this host has no terminal".into())
+    }
+    /// Whether the host has no room for another person: browsers are then told it is
+    /// busy before any pairing starts.
     fn busy(&self) -> bool {
         false
     }
@@ -157,11 +210,29 @@ pub(crate) struct Shared {
     pub code: OneTimeCode,
     pub config: WebConfig,
     pub limiter: PairLimiter,
-    /// One browser session at a time.
-    pub busy: AtomicBool,
+    /// Browsers being let in or connected now.
+    pub active: AtomicUsize,
     pub next_id: AtomicU64,
-    /// Ends the running session: the person at the host pressed Disconnect.
+    /// Ends every browser session and exchange: the person at the host stopped them all.
     pub kick: tokio::sync::Notify,
+    /// Ends one session, by id, while it runs.
+    pub kicks: std::sync::Mutex<std::collections::HashMap<u64, Arc<tokio::sync::Notify>>>,
+    /// HTTPS; plain HTTP then only redirects.
+    pub tls: Option<WebTls>,
+    /// The host's fixed password, if it has one, with the guard shared with native
+    /// viewers so guesses count the same wherever they come from.
+    pub password:
+        std::sync::Mutex<Option<(Arc<nexa_auth::HostPassword>, nexa_auth::PasswordGuard)>>,
+}
+
+/// A browser the signaling server put through to this host (docs/WEB_CLIENT.md §12).
+#[derive(Clone, Debug)]
+pub struct RemoteBrowser {
+    /// Where the browser is, as the server saw it.
+    pub ip: IpAddr,
+    /// TURN on the server, and this host's credentials for it.
+    pub turn_server: SocketAddr,
+    pub turn: TurnCredentials,
 }
 
 /// A running gateway. Dropping it stops accepting; sessions already running end when
@@ -173,25 +244,51 @@ pub struct WebGateway {
 }
 
 impl WebGateway {
-    /// Binds `addr` and starts serving. Must be called inside a Tokio runtime.
+    /// Binds `addr` and starts serving, over HTTPS when `tls` is given. Must be called
+    /// inside a Tokio runtime.
+    /// Serves only browsers the signaling server puts through ([`WebGateway::serve_remote`]):
+    /// no page and no listening socket here.
+    pub fn remote_only(host: Arc<dyn WebHost>, code: OneTimeCode, config: WebConfig) -> Self {
+        rtc::install_crypto();
+        let shared = Self::shared(host, code, config, None);
+        Self {
+            local: SocketAddr::from(([0, 0, 0, 0], 0)),
+            task: tokio::spawn(async {}),
+            shared,
+        }
+    }
+
+    fn shared(
+        host: Arc<dyn WebHost>,
+        code: OneTimeCode,
+        config: WebConfig,
+        tls: Option<WebTls>,
+    ) -> Arc<Shared> {
+        Arc::new(Shared {
+            host,
+            code,
+            config,
+            limiter: PairLimiter::default(),
+            active: AtomicUsize::new(0),
+            next_id: AtomicU64::new(1),
+            kick: tokio::sync::Notify::new(),
+            kicks: std::sync::Mutex::new(std::collections::HashMap::new()),
+            tls,
+            password: std::sync::Mutex::new(None),
+        })
+    }
+
     pub async fn bind(
         addr: SocketAddr,
         host: Arc<dyn WebHost>,
         code: OneTimeCode,
         config: WebConfig,
+        tls: Option<WebTls>,
     ) -> io::Result<Self> {
         rtc::install_crypto();
         let listener = TcpListener::bind(addr).await?;
         let local = listener.local_addr()?;
-        let shared = Arc::new(Shared {
-            host,
-            code,
-            config,
-            limiter: PairLimiter::default(),
-            busy: AtomicBool::new(false),
-            next_id: AtomicU64::new(1),
-            kick: tokio::sync::Notify::new(),
-        });
+        let shared = Self::shared(host, code, config, tls);
         let accepting = shared.clone();
         let task = tokio::spawn(async move {
             let shared = accepting;
@@ -214,14 +311,63 @@ impl WebGateway {
         self.local
     }
 
-    /// Whether a browser session is being set up or running.
-    pub fn busy(&self) -> bool {
-        self.shared.busy.load(std::sync::atomic::Ordering::Relaxed)
+    /// Runs a session for a browser that came through the signaling server: its frames
+    /// arrive on `rx`, this host's go out on `tx`, media goes through TURN. It ends when
+    /// `rx` closes or the session does, and `tx` is dropped then.
+    pub fn serve_remote(
+        &self,
+        browser: RemoteBrowser,
+        rx: tokio::sync::mpsc::Receiver<String>,
+        tx: tokio::sync::mpsc::Sender<String>,
+    ) -> JoinHandle<()> {
+        let shared = self.shared.clone();
+        tokio::spawn(session::run(
+            session::Pipe::Relayed { rx, tx },
+            SocketAddr::new(browser.ip, 0),
+            rtc::Path::Turn {
+                server: browser.turn_server,
+                creds: browser.turn,
+            },
+            shared,
+        ))
     }
 
-    /// Ends the browser session, if there is one, and any exchange in progress.
+    /// Lets browsers sign in with the host's fixed password as well as the one-time
+    /// code; `None` takes that away. `guard` should be the native viewers' own.
+    pub fn set_password(
+        &self,
+        password: Option<(Arc<nexa_auth::HostPassword>, nexa_auth::PasswordGuard)>,
+    ) {
+        *self
+            .shared
+            .password
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = password;
+    }
+
+    /// The certificate browsers see, when serving HTTPS.
+    pub fn tls(&self) -> Option<&WebTls> {
+        self.shared.tls.as_ref()
+    }
+
+    /// How many browsers are being let in or are connected.
+    pub fn active_count(&self) -> usize {
+        self.shared
+            .active
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Ends every browser session and any exchange in progress.
     pub fn disconnect(&self) {
         self.shared.kick.notify_waiters();
+    }
+
+    /// Ends the browser session `id` ([`WebEvent::SessionStarted`]), if it still runs.
+    pub fn disconnect_one(&self, id: u64) {
+        let kicks = self.shared.kicks.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(k) = kicks.get(&id) {
+            k.notify_one();
+        }
     }
 }
 

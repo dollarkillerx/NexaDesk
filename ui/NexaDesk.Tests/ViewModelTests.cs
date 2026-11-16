@@ -533,6 +533,39 @@ public class HostViewModelTests
     }
 
     [Fact]
+    public async Task A_command_line_session_says_so_and_not_that_the_screen_is_seen()
+    {
+        await Hosting();
+        var session = Samples.Session(9) with { Perms = new Permissions(false, false, false, Terminal: true) };
+        _link.Raise(new AgentMessage.SessionStarted(session));
+        var banner = Assert.Single(_windows.Banners);
+        Assert.True(banner.IsTerminalOnly);
+        Assert.Equal("「王小明的 MacBook Pro」正在使用本机命令行", banner.Headline);
+        Assert.Equal("权限：命令行", banner.PermsText);
+    }
+
+    [Fact]
+    public async Task Each_person_gets_a_banner_and_leaves_on_their_own()
+    {
+        var vm = await Hosting();
+        _link.Raise(new AgentMessage.SessionStarted(Samples.Session(7)));
+        _link.Raise(new AgentMessage.SessionStarted(Samples.Session(8, input: false) with { DeviceName = "李雷的 iPad" }));
+        Assert.Equal(2, _windows.Shown.Count);
+        Assert.Equal(7ul, vm.Banner!.SessionId);
+
+        // Disconnecting one names it; the other stays.
+        _windows.Shown[1].DisconnectCommand.Execute(null);
+        Assert.Equal(new UiRequest.Disconnect(8), _link.Sent.Last());
+        _link.Raise(new AgentMessage.SessionEnded(8, "李雷的 iPad", "ended by the host"));
+        Assert.Equal(7ul, Assert.Single(_windows.Shown).SessionId);
+
+        // The first one just leaves.
+        _link.Raise(new AgentMessage.SessionEnded(7, "王小明的 MacBook Pro", "the viewer left"));
+        Assert.Empty(_windows.Shown);
+        Assert.Null(vm.Banner);
+    }
+
+    [Fact]
     public async Task A_reattached_ui_shows_the_banner_from_status()
     {
         _link.ConnectResults.Enqueue(null);

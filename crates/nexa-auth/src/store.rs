@@ -69,6 +69,7 @@ impl From<Perms> for Permissions {
             clipboard: p.clipboard,
             file: p.file,
             audio: p.audio,
+            terminal: false,
         }
     }
 }

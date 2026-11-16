@@ -21,7 +21,7 @@ use nexa_agent::{
         IpcConfig, IpcError, IpcListener,
         proto::{
             AgentBody, AgentToUi, AuthKind, Decide, Empty, Hello, IncomingRequest, Permissions,
-            RevokePairing, SetAccessPolicy, Status, UiBody, UiToAgent,
+            RevokePairing, SessionRef, SetAccessPolicy, Status, UiBody, UiToAgent,
         },
     },
     start_with_ui,
@@ -102,6 +102,8 @@ async fn rig_with(fallback: Option<Arc<FakeUi>>, tweak: impl FnOnce(&mut IpcConf
         AgentConfig {
             lan_discovery: false,
             web: None,
+            web_tls: None,
+            password: None,
             listen: "127.0.0.1:0".parse().unwrap(),
             device_name: "fake host".into(),
             os: Os::Macos,
@@ -691,7 +693,7 @@ async fn the_ui_disconnects_and_rotates_the_code() {
         .await;
     assert_eq!(status.code, *rig.host.agent.current_code());
 
-    ui.send(UiBody::Disconnect(Empty {})).await;
+    ui.send(UiBody::Disconnect(SessionRef { id: 0 })).await;
     assert_eq!(goodbye(&mut accepted).await, CloseReason::HostEnded as i32);
     ui.until("SessionEnded", |b| match b {
         AgentBody::SessionEnded(e) => Some(e),
@@ -758,6 +760,7 @@ async fn access_policy_can_only_narrow() {
             clipboard: true,
             file: true,
             audio: true,
+            terminal: false,
         }),
     }))
     .await;

@@ -60,6 +60,8 @@ pub struct Settings {
     pub relay: RelayLimits,
     pub relay_token_ttl_secs: u64,
     pub limits: Limits,
+    /// Browsers anywhere: the page here, TURN on the first STUN socket.
+    pub web: Option<crate::config::WebSection>,
 }
 
 pub struct Server {
@@ -104,6 +106,33 @@ pub async fn start(settings: Settings, sockets: Sockets) -> std::io::Result<Serv
     let ws_addr = sockets.ws.local_addr()?;
     let issuer = Arc::new(TokenIssuer::new());
     let stun_note = crate::config::stun_note(&settings.stun_advertise);
+    // TURN takes the first STUN socket, and answers its Binding requests as before.
+    let turn = match (&settings.web, settings.stun_advertise.first()) {
+        (Some(w), Some(advertised)) if !sockets.stun.is_empty() => {
+            let mut secret = vec![0u8; 32];
+            OsRng.fill_bytes(&mut secret);
+            let mut nonce_key = [0u8; 32];
+            OsRng.fill_bytes(&mut nonce_key);
+            let server = nexa_turn::Server::new(
+                nexa_turn::ServerConfig {
+                    realm: "nexadesk".into(),
+                    secret: secret.clone(),
+                    relay_ip: advertised.ip(),
+                    max_allocations: w.max_allocations,
+                    max_per_ip: w.max_per_ip,
+                },
+                nonce_key,
+            );
+            Some((
+                Arc::new(Mutex::new(server)),
+                crate::hub::WebTurn {
+                    secret,
+                    server: *advertised,
+                },
+            ))
+        }
+        _ => None,
+    };
     let hub = Arc::new(Mutex::new(Hub::new(HubSettings {
         limits: settings.limits.clone(),
         server_names: settings.server_names.clone(),
@@ -112,6 +141,7 @@ pub async fn start(settings: Settings, sockets: Sockets) -> std::io::Result<Serv
         relay: settings.relay_advertise.filter(|_| sockets.relay.is_some()),
         relay_ttl_secs: settings.relay_token_ttl_secs,
         issuer: issuer.clone(),
+        web: turn.as_ref().map(|(_, w)| w.clone()),
     })));
     let relay = Arc::new(Mutex::new(Relay::new(
         issuer.verifying_key(),
@@ -119,8 +149,13 @@ pub async fn start(settings: Settings, sockets: Sockets) -> std::io::Result<Serv
     )));
     let mut tasks = Vec::new();
     let stun_rate = Rate::new(settings.limits.stun_per_ip.0, settings.limits.stun_per_ip.1);
-    for s in sockets.stun {
-        tasks.push(tokio::spawn(crate::stun::serve(s, stun_rate)));
+    for (i, s) in sockets.stun.into_iter().enumerate() {
+        match (&turn, i) {
+            (Some((t, _)), 0) => {
+                tasks.push(tokio::spawn(crate::turn::serve(s, t.clone(), stun_rate)))
+            }
+            _ => tasks.push(tokio::spawn(crate::stun::serve(s, stun_rate))),
+        }
     }
     let relay_io = Arc::new(RelayIo::new(sockets.relay.clone()));
     if let Some(s) = sockets.relay {
@@ -146,6 +181,7 @@ pub async fn start(settings: Settings, sockets: Sockets) -> std::io::Result<Serv
         hub: hub.clone(),
         relay: relay.clone(),
         relay_io: relay_io.clone(),
+        web: turn.is_some(),
     };
     tasks.push(tokio::spawn(accept_loop(sockets.ws, acceptor, ends)));
     Ok(Server {
@@ -163,6 +199,8 @@ struct Ends {
     hub: Arc<Mutex<Hub>>,
     relay: Arc<Mutex<Relay>>,
     relay_io: Arc<RelayIo>,
+    /// Browser access is on: the page and `/web` are served.
+    web: bool,
 }
 
 async fn accept_loop(listener: TcpListener, tls: Option<TlsAcceptor>, ends: Ends) {
@@ -190,10 +228,10 @@ async fn accept_loop(listener: TcpListener, tls: Option<TlsAcceptor>, ends: Ends
                     if let Ok(Ok(stream)) =
                         tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(tcp)).await
                     {
-                        route_conn(stream, conn, ip, &ends).await;
+                        route_conn(stream, conn, ip, &ends, true).await;
                     }
                 }
-                None => route_conn(tcp, conn, ip, &ends).await,
+                None => route_conn(tcp, conn, ip, &ends, false).await,
             }
             hub.lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -212,23 +250,75 @@ fn encode(msg: &SignalServerMsg) -> Message {
     Message::binary(msg.encode_to_vec())
 }
 
-/// Upgrades to WebSocket and serves signaling, or the relay on [`RELAY_PATH`].
-async fn route_conn<S>(stream: S, conn: u64, ip: IpAddr, ends: &Ends)
+/// Reads the request: the page for a plain GET (with browser access on), else a
+/// WebSocket for signaling, the relay on [`RELAY_PATH`], or a browser on
+/// [`crate::web::WEB_PATH`].
+async fn route_conn<S>(mut stream: S, conn: u64, ip: IpAddr, ends: &Ends, secure: bool)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
-    let mut path = String::new();
-    let seen = &mut path;
-    // The callback's error type is tungstenite's, and large; it is never returned here.
-    #[allow(clippy::result_large_err)]
-    let pick = |req: &Request, resp: Response| {
-        *seen = req.uri().path().to_owned();
-        Ok(resp)
+    use nexa_web_page::http::{
+        Io, MAX_HEAD, Rewind, parse_head, respond, respond_len, same_origin,
+    };
+    use tokio::io::AsyncReadExt;
+
+    let deadline = tokio::time::Instant::now() + HANDSHAKE_TIMEOUT;
+    let mut buf = vec![0u8; MAX_HEAD];
+    let mut n = 0;
+    let head = loop {
+        match parse_head(&buf[..n]) {
+            Some(Ok(h)) => break h,
+            Some(Err(())) => return respond(&mut stream, 400, "text/plain", b"bad request").await,
+            None if n == MAX_HEAD => return respond(&mut stream, 431, "text/plain", b"").await,
+            None => {}
+        }
+        match tokio::time::timeout_at(deadline, stream.read(&mut buf[n..])).await {
+            Ok(Ok(read)) if read > 0 => n += read,
+            _ => return,
+        }
+    };
+
+    if !head.upgrade_ws {
+        // The page, for browsers anywhere; nothing else speaks plain HTTP here.
+        if ends.web && (head.method == "GET" || head.method == "HEAD") {
+            if head.path == "/mode" {
+                return respond(
+                    &mut stream,
+                    200,
+                    "application/json",
+                    nexa_web_page::MODE_SERVER,
+                )
+                .await;
+            }
+            if let Some(a) = nexa_web_page::assets::find(&head.path) {
+                let body = if head.method == "HEAD" {
+                    &[][..]
+                } else {
+                    a.body
+                };
+                return respond_len(&mut stream, 200, a.content_type, body, a.body.len(), secure)
+                    .await;
+            }
+        }
+        return respond(&mut stream, 404, "text/plain", b"not found").await;
+    }
+
+    let path = head.path.clone();
+    let browser = path == crate::web::WEB_PATH;
+    if browser && (!ends.web || !same_origin(&head)) {
+        return respond(&mut stream, 403, "text/plain", b"forbidden").await;
+    }
+    let replay = Rewind::new(buf[..n].to_vec(), Box::new(stream) as Box<dyn Io>);
+    let config = if browser {
+        WebSocketConfig::default()
+            .max_message_size(Some(crate::web::MAX_BROWSER_MESSAGE))
+            .max_frame_size(Some(crate::web::MAX_BROWSER_MESSAGE))
+    } else {
+        ws_config()
     };
     let ws = match tokio::time::timeout(
         HANDSHAKE_TIMEOUT,
-        tokio_tungstenite::accept_hdr_async_with_config(stream, pick, Some(ws_config())),
+        tokio_tungstenite::accept_async_with_config(replay, Some(config)),
     )
     .await
     {
@@ -237,6 +327,8 @@ where
     };
     if path == RELAY_PATH {
         crate::relay::serve_stream(ws, conn, ip, ends.relay.clone(), ends.relay_io.clone()).await;
+    } else if browser {
+        crate::web::serve(ws, ip, ends.hub.clone()).await;
     } else {
         serve_conn(ws, conn, ip, &ends.hub).await;
     }

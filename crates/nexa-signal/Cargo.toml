@@ -13,6 +13,8 @@ path = "src/main.rs"
 
 [dependencies]
 nexa-wire = { path = "../nexa-wire" }
+nexa-turn = { path = "../nexa-turn" }
+nexa-web-page = { path = "../nexa-web-page" }
 nexa-net = { path = "../nexa-net" }
 nexa-auth = { path = "../nexa-auth" }
 thiserror.workspace = true
@@ -27,6 +29,7 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 toml = "0.9"
 
 [dev-dependencies]

@@ -18,10 +18,11 @@ public partial class ControlBanner : Window
     /// <summary>Set by the window service once the session has ended.</summary>
     public bool MayClose { get; set; }
 
+
     public ControlBanner()
     {
         InitializeComponent();
-        _timer.Tick += (_, _) => (DataContext as BannerViewModel)?.Tick(DateTimeOffset.Now);
+        _timer.Tick += (_, _) => Stack?.Tick(DateTimeOffset.Now);
         Opened += (_, _) =>
         {
             _timer.Start();
@@ -29,29 +30,36 @@ public partial class ControlBanner : Window
             MacWindows.FloatOnAllSpaces(this);
         };
         Closed += (_, _) => _timer.Stop();
+        // Re-centred whenever it folds, unfolds, or someone joins or leaves.
+        SizeChanged += (_, _) => Place();
         PointerPressed += (_, e) =>
         {
             if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed && e.Source is not Button)
                 BeginMoveDrag(e);
         };
-        // Files the person at this Mac drops here go to the viewer, and only if the
-        // session was granted files; the agent checks that again.
+        // Files the person at this Mac drops on someone's row go to that viewer, and only
+        // if that session was granted files; the agent checks that again.
         DragDrop.SetAllowDrop(this, true);
         AddHandler(DragDrop.DragOverEvent, (_, e) =>
         {
-            e.DragEffects = Vm is { CanSendFiles: true } && DroppedFiles.HasFiles(e) ? DragDropEffects.Copy : DragDropEffects.None;
+            e.DragEffects = Target(e) is { CanSendFiles: true } && DroppedFiles.HasFiles(e) ? DragDropEffects.Copy : DragDropEffects.None;
             e.Handled = true;
         });
         AddHandler(DragDrop.DropEvent, (_, e) =>
         {
             e.Handled = true;
-            if (Vm is not { CanSendFiles: true } vm) return;
+            if (Target(e) is not { CanSendFiles: true } vm) return;
             var paths = DroppedFiles.Of(e);
             if (paths.Count > 0) vm.Transfers.SendFiles(paths);
         });
     }
 
-    BannerViewModel? Vm => DataContext as BannerViewModel;
+    BannerStackViewModel? Stack => DataContext as BannerStackViewModel;
+
+    /// <summary>The session whose row the files are over, else the newest that takes files.</summary>
+    BannerViewModel? Target(DragEventArgs e) =>
+        (e.Source as StyledElement)?.DataContext as BannerViewModel
+        ?? Stack?.Sessions.LastOrDefault(s => s.CanSendFiles);
 
     protected override void OnClosing(WindowClosingEventArgs e)
     {
@@ -66,12 +74,12 @@ public partial class ControlBanner : Window
             Dispatcher.UIThread.Post(() => WindowState = WindowState.Normal);
     }
 
-    void Place()
+    public void Place()
     {
         var screen = Screens.ScreenFromWindow(this) ?? Screens.Primary;
         if (screen == null) return;
         var area = screen.WorkingArea;
-        var w = (int)(Width * screen.Scaling);
+        var w = (int)(Bounds.Width * screen.Scaling);
         Position = new PixelPoint(area.X + (area.Width - w) / 2, area.Y + (int)(8 * screen.Scaling));
     }
 }

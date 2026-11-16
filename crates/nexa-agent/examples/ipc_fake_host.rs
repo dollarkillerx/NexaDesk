@@ -53,6 +53,8 @@ async fn main() {
         AgentConfig {
             lan_discovery: false,
             web: None,
+            web_tls: None,
+            password: None,
             listen: "127.0.0.1:0".parse().unwrap(),
             device_name: "fake host".into(),
             os: Os::Macos,

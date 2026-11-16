@@ -68,7 +68,7 @@ public class TailscaleFirstTests
     }
 
     [Fact]
-    public async Task Without_magicdns_the_tailnet_ip_is_listed_and_a_registered_id_comes_last()
+    public async Task Without_magicdns_the_tailnet_ip_is_listed_and_a_registered_id_is_shown_apart()
     {
         var client = new FakeClient();
         var main = await Hosting(client, new RecordingWindows(), shortId: "271828182", signal: SignalState.Online);
@@ -77,10 +77,26 @@ public class TailscaleFirstTests
             [
                 new ConnectOption("Tailscale", "100.101.22.7"),
                 new ConnectOption("局域网", "192.168.1.35"),
-                new ConnectOption("设备 ID", "271 828 182", "经自建信令服务器"),
             ],
             main.Host.ConnectOptions);
+        // The ID is shown large beside the code instead of in the list.
+        Assert.True(main.Host.HasDeviceId);
+        Assert.Equal("271 828 182", main.Host.DeviceIdDisplay);
         Assert.True(main.Host.HasSignalText);
+    }
+
+    [Fact]
+    public async Task Clicking_the_id_the_code_or_an_address_copies_it()
+    {
+        var windows = new RecordingWindows();
+        var main = await Hosting(new FakeClient(), windows, shortId: "271828182", signal: SignalState.Online);
+        main.Host.CopyCommand.Execute(main.Host.DeviceId);
+        Assert.Equal("271828182", main.Host.Copied);
+        main.Host.CopyCommand.Execute(main.Host.CodeDisplay);
+        main.Host.CopyCommand.Execute(main.Host.ConnectOptions[0].Address);
+        main.Host.CopyCommand.Execute("");
+        Assert.Equal(["271828182", main.Host.CodeDisplay, main.Host.ConnectOptions[0].Address], windows.Copied);
+        Assert.Equal(main.Host.ConnectOptions[0].Address, main.Host.Copied);
     }
 
     [Fact]

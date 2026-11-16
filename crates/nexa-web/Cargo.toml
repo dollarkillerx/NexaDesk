@@ -10,6 +10,10 @@ nexa-auth = { path = "../nexa-auth" }
 nexa-wire = { path = "../nexa-wire" }
 nexa-media = { path = "../nexa-media" }
 nexa-session = { path = "../nexa-session" }
+nexa-net = { path = "../nexa-net" }
+nexa-web-page = { path = "../nexa-web-page" }
+nexa-turn = { path = "../nexa-turn" }
+nexa-term = { path = "../nexa-term" }
 # WebRTC, sans-IO. Pure-Rust crypto: no OpenSSL to ship, same code on every platform.
 str0m = { version = "0.25", default-features = false, features = ["rust-crypto"] }
 tokio = { version = "1", features = ["rt", "net", "sync", "time", "macros", "io-util"] }
@@ -19,6 +23,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 data-encoding = "2"
 thiserror.workspace = true
+# HTTPS for the page: the person's certificate, or one the host makes for itself.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring", "pem"] }
+sha2 = "0.10"
+time = "0.3"
+x509-parser = "0.18"
 
 [dev-dependencies]
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "sync", "signal"] }

@@ -165,6 +165,8 @@ async fn view_only_real_pipeline_on_loopback() {
         AgentConfig {
             lan_discovery: false,
             web: None,
+            web_tls: None,
+            password: None,
             listen: "127.0.0.1:0".parse().unwrap(),
             device_name: "view-only test".into(),
             os: Os::Macos,

@@ -20,6 +20,7 @@ nexa-clip = { path = "../nexa-clip" }
 nexa-input = { path = "../nexa-input" }
 nexa-session = { path = "../nexa-session" }
 nexa-web = { path = "../nexa-web" }
+nexa-term = { path = "../nexa-term" }
 quinn = "=0.11.12"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "sync", "signal", "io-util"] }
 zeroize = "1"

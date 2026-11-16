@@ -26,6 +26,41 @@ public sealed partial class PairedDeviceViewModel(HostViewModel owner, PairedDev
     private void RequireConsent() => owner.RequireConsent(this);
 }
 
+/// <summary>
+/// Everyone connected, in the one banner at the top of the screen: a row each, oldest
+/// first. Folded, it is a small tab with how many and for how long; never hidden.
+/// </summary>
+public sealed partial class BannerStackViewModel : ObservableObject
+{
+    public ObservableCollection<BannerViewModel> Sessions { get; } = new();
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsExpanded))]
+    private bool _isCollapsed;
+
+    public bool IsExpanded => !IsCollapsed;
+
+    /// <summary>The folded tab: the oldest session's time, and how many when more than one.</summary>
+    public string FoldedText => Sessions.Count switch
+    {
+        0 => "",
+        1 => Sessions[0].DurationText,
+        var n => L.Format("Banner.Folded", n, Sessions[0].DurationText),
+    };
+
+    public BannerStackViewModel() =>
+        Sessions.CollectionChanged += (_, _) => OnPropertyChanged(nameof(FoldedText));
+
+    [RelayCommand]
+    private void ToggleCollapsed() => IsCollapsed = !IsCollapsed;
+
+    public void Tick(DateTimeOffset now)
+    {
+        foreach (var s in Sessions) s.Tick(now);
+        OnPropertyChanged(nameof(FoldedText));
+    }
+}
+
 /// <summary>A running session on this Mac: who, with what, and the way to end it (§9.3).</summary>
 public sealed partial class BannerViewModel : ObservableObject
 {
@@ -41,7 +76,7 @@ public sealed partial class BannerViewModel : ObservableObject
     }
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(Headline), nameof(PermsText), nameof(Detail), nameof(HasInput), nameof(CanSendFiles), nameof(DropHint))]
+    [NotifyPropertyChangedFor(nameof(Headline), nameof(PermsText), nameof(Detail), nameof(HasInput), nameof(CanSendFiles), nameof(DropHint), nameof(IsTerminalOnly))]
     private HostSession _session;
 
     /// <summary>Files dropped here go to the viewer; files from it are listed here too.</summary>
@@ -54,11 +89,17 @@ public sealed partial class BannerViewModel : ObservableObject
     [ObservableProperty] private string _durationText = "00:00";
     [ObservableProperty] private bool _isDisconnecting;
 
+
     public ulong SessionId => Session.Id;
     public bool HasInput => Session.Perms.Input;
-    public string Headline => HasInput ? L.Format("Host.Controlling", Session.DeviceName) : L.Format("Host.Viewing", Session.DeviceName);
+    /// <summary>The command line alone: nothing of the screen is shown.</summary>
+    public bool IsTerminalOnly => !Session.Perms.View && Session.Perms.Terminal;
+    public string Headline =>
+        IsTerminalOnly ? L.Format("Host.UsingTerminal", Session.DeviceName)
+        : HasInput ? L.Format("Host.Controlling", Session.DeviceName)
+        : L.Format("Host.Viewing", Session.DeviceName);
     public string PermsText => L.Format("Host.Perms", Texts.Permissions(Session.Perms));
-    public string Detail => L.Format("Host.Detail", Session.Remote, Texts.ShortFingerprint(Session.DeviceKey));
+    public string Detail => L.Format("Host.Detail", Texts.Remote(Session.Remote), Texts.ShortFingerprint(Session.DeviceKey));
 
     public void Tick(DateTimeOffset now) => DurationText = Texts.Duration(now - _startedAt);
 
@@ -66,7 +107,7 @@ public sealed partial class BannerViewModel : ObservableObject
     private void Disconnect()
     {
         IsDisconnecting = true;
-        _link.Send(new UiRequest.Disconnect());
+        _link.Send(new UiRequest.Disconnect(SessionId));
     }
 }
 
@@ -100,7 +141,8 @@ public sealed partial class HostViewModel : ObservableObject
     readonly Func<bool> _announceOnLan;
     readonly Func<bool> _allowBrowsers;
     readonly ILocalAddresses _addresses;
-    BannerViewModel? _banner;
+    /// <summary>Everyone connected now, oldest first: one banner each.</summary>
+    readonly List<BannerViewModel> _banners = new();
     ConsentViewModel? _consent;
     CancellationTokenSource? _starting;
     bool _stopping;
@@ -136,7 +178,9 @@ public sealed partial class HostViewModel : ObservableObject
         ? L.Format("Host.ListenEverywhereSummary", Texts.DefaultPort)
         : L.Format("Host.ListenOnSummary", ListenAddress);
     public ConsentViewModel? Consent => _consent;
-    public BannerViewModel? Banner => _banner;
+    /// <summary>The oldest session's banner.</summary>
+    public BannerViewModel? Banner => _banners.FirstOrDefault();
+    public IReadOnlyList<BannerViewModel> Banners => _banners;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsStopped), nameof(IsStarting), nameof(IsHosting), nameof(StateText), nameof(RestartNeeded))]
@@ -212,6 +256,121 @@ public sealed partial class HostViewModel : ObservableObject
 
     [ObservableProperty] private string? _notice;
 
+    // ---- Fixed password ----
+
+    /// <summary>The running agent has a fixed password, from its status.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(PasswordStateText), nameof(PasswordEditLabel))]
+    private bool _passwordSet;
+    [ObservableProperty] private bool _isEditingPassword;
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SavePasswordCommand), nameof(ClearPasswordCommand))]
+    private bool _isSavingPassword;
+    [ObservableProperty] private string _newPassword = "";
+    [ObservableProperty] private string _confirmPassword = "";
+    [ObservableProperty] private string? _passwordError;
+
+    public string PasswordStateText => L.Get(PasswordSet ? "Host.PasswordOn" : "Host.PasswordOff");
+    public string PasswordEditLabel => L.Get(PasswordSet ? "Host.ChangePassword" : "Host.SetPassword");
+
+    [RelayCommand]
+    private void EditPassword()
+    {
+        NewPassword = ConfirmPassword = "";
+        PasswordError = null;
+        IsEditingPassword = true;
+    }
+
+    [RelayCommand]
+    private void CancelPassword()
+    {
+        NewPassword = ConfirmPassword = "";
+        PasswordError = null;
+        IsEditingPassword = false;
+    }
+
+    bool CanChangePassword() => !IsSavingPassword;
+
+    static readonly TimeSpan AgentExitGrace = TimeSpan.FromSeconds(2);
+    static readonly TimeSpan AgentExitPoll = TimeSpan.FromMilliseconds(100);
+
+    [RelayCommand(CanExecute = nameof(CanChangePassword))]
+    private async Task SavePassword()
+    {
+        if (Texts.PasswordProblem(NewPassword, ConfirmPassword) is { } problem)
+        {
+            PasswordError = L.Get(problem);
+            return;
+        }
+        await ApplyPassword(NewPassword, "Host.PasswordSaved");
+    }
+
+    [RelayCommand(CanExecute = nameof(CanChangePassword))]
+    private Task ClearPassword() => ApplyPassword(null, "Host.PasswordCleared");
+
+    async Task ApplyPassword(string? password, string doneKey)
+    {
+        IsSavingPassword = true;
+        PasswordError = null;
+        var error = await _process.SetPassword(password);
+        IsSavingPassword = false;
+        if (error != null)
+        {
+            PasswordError = L.Format("Host.PasswordFailed", error);
+            return;
+        }
+        NewPassword = ConfirmPassword = "";
+        IsEditingPassword = false;
+        await RestartHosting();
+        Notice = L.Get(doneKey);
+    }
+
+    /// <summary>The running agent read its settings when it started: start a new one. Waits
+    /// for the old one to be gone first, or the new start would attach to it as it shuts down.</summary>
+    async Task RestartHosting()
+    {
+        if (!IsHosting) return;
+        Stop();
+        for (var waited = TimeSpan.Zero; _process.IsRunning && waited < AgentExitGrace; waited += AgentExitPoll)
+            await Task.Delay(AgentExitPoll);
+        if (_process.IsRunning) _process.Kill();
+        await Start();
+    }
+
+    // ---- Device ID reset ----
+
+    /// <summary>"Reset" was clicked once: the person confirms before the old ID goes.</summary>
+    [ObservableProperty] private bool _isConfirmingIdReset;
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(ResetDeviceIdCommand))]
+    private bool _isResettingId;
+
+    [RelayCommand]
+    private void AskResetDeviceId() => IsConfirmingIdReset = true;
+
+    [RelayCommand]
+    private void CancelResetDeviceId() => IsConfirmingIdReset = false;
+
+    bool CanResetDeviceId() => !IsResettingId;
+
+    [RelayCommand(CanExecute = nameof(CanResetDeviceId))]
+    private async Task ResetDeviceId()
+    {
+        IsResettingId = true;
+        Error = null;
+        var error = await _process.ResetDeviceId();
+        IsResettingId = false;
+        IsConfirmingIdReset = false;
+        if (error != null)
+        {
+            Notice = L.Format("Host.ResetIdFailed", error);
+            return;
+        }
+        DeviceId = "";
+        await RestartHosting();
+        Notice = L.Get("Host.ResetIdDone");
+    }
+
     public HostViewModel(IAgentLink link, IAgentProcess process, IPermissionProbe permissions, IWindowService windows,
         ILocalAddresses addresses, string deviceName, Func<DateTimeOffset>? now = null, Func<string>? signalServer = null,
         Func<bool>? announceOnLan = null, TailscaleViewModel? tailscale = null, Func<bool>? allowBrowsers = null)
@@ -244,6 +403,23 @@ public sealed partial class HostViewModel : ObservableObject
     public bool IsHosting => State == HostState.Hosting;
     public bool HasError => Error != null;
     public string CodeDisplay => Texts.GroupCode(Code);
+
+    static readonly TimeSpan CopiedFor = TimeSpan.FromSeconds(2);
+    int _copies;
+
+    /// <summary>The value just copied, for two seconds, so its row can say so.</summary>
+    [ObservableProperty] private string? _copied;
+
+    [RelayCommand]
+    private async Task Copy(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+        _windows.CopyText(text);
+        Copied = text;
+        var mine = ++_copies;
+        await Task.Delay(CopiedFor);
+        if (mine == _copies) Copied = null;
+    }
 
     public string StateText => State switch
     {
@@ -281,19 +457,43 @@ public sealed partial class HostViewModel : ObservableObject
             foreach (var ip in tailnet) ConnectOptions.Add(new ConnectOption("Tailscale", Bracket(ip) + suffix));
         foreach (var ip in ips.Where(ip => !IsTailnet(ip)))
             ConnectOptions.Add(new ConnectOption(ip == "127.0.0.1" || ip == "::1" ? L.Get("Host.KindLocalOnly") : L.Get("Host.KindLan"), Bracket(ip) + suffix));
-        if (HasDeviceId) ConnectOptions.Add(new ConnectOption(L.Get("Host.KindDeviceId"), DeviceIdDisplay, L.Get("Host.ViaServer")));
         // Browser access: the page is served on the same addresses, MagicDNS name first.
         if (StartedWithBrowsers == true)
         {
             var web = tailnet.Count > 0 && Tailscale.DnsName.Length > 0
                 ? [Tailscale.DnsName, .. ips.Where(ip => !IsTailnet(ip))]
                 : ips;
+            // HTTPS only. With our own certificate the browser warns once: the person checks
+            // the start of the fingerprint it shows against this one.
+            var detail = _webFingerprint.Length == 0 || _webCertCustom
+                ? L.Get("Host.BrowserDetail")
+                : L.Format("Host.BrowserDetailSelfSigned", ShortFingerprint(_webFingerprint));
             foreach (var h in web.Where(h => h != "127.0.0.1" && h != "::1"))
-                ConnectOptions.Add(new ConnectOption(L.Get("Host.KindBrowser"), $"http://{Bracket(h)}:{WebPort}", L.Get("Host.BrowserDetail")));
+                ConnectOptions.Add(new ConnectOption(L.Get("Host.KindBrowser"), $"https://{Bracket(h)}:{WebPort}", detail));
+            // From anywhere: the signaling server serves the page; there they type the ID.
+            if (HasDeviceId && ServerPage(StartedWithServer ?? _signalServer()) is { } page)
+                ConnectOptions.Add(new ConnectOption(L.Get("Host.KindBrowserServer"), page, L.Format("Host.BrowserServerDetail", DeviceIdDisplay)));
         }
     }
 
     partial void OnStateChanged(HostState value) => RebuildOptions();
+
+    /// <summary>The page on a signaling server, from its wss:// address; null for none.</summary>
+    public static string? ServerPage(string? server)
+    {
+        if (string.IsNullOrWhiteSpace(server)) return null;
+        var s = server.Trim();
+        if (s.StartsWith("wss://", StringComparison.OrdinalIgnoreCase)) s = s[6..];
+        else if (s.Contains("://")) return null;
+        var authority = s.Split('/', '?', '#')[0];
+        return authority.Length == 0 ? null : $"https://{authority}/";
+    }
+
+    string _webFingerprint = "";
+    bool _webCertCustom;
+
+    /// <summary>The first eight bytes of a certificate fingerprint, as browsers print them.</summary>
+    public static string ShortFingerprint(string fp) => string.Join(":", fp.Split(':').Take(8));
 
     static bool IsTailnet(string ip) => System.Net.IPAddress.TryParse(ip, out var a) && Texts.IsTailnetIp(a);
 
@@ -431,10 +631,12 @@ public sealed partial class HostViewModel : ObservableObject
                 HostFingerprint = Texts.Fingerprint(s.DeviceKey);
                 DeviceId = s.Signal == SignalState.Online ? s.ShortId : "";
                 SignalText = s.Signal == SignalState.Off ? "" : Texts.Signal(s.Signal, s.ShortId, s.SignalDetail);
+                _webFingerprint = s.WebFingerprint;
+                PasswordSet = s.PasswordSet;
+                _webCertCustom = s.WebCertCustom;
                 RebuildOptions();
                 SignalProblem = s.Signal == SignalState.Error;
                 if (s.Session != null) ShowBanner(s.Session);
-                else HideBanner();
                 break;
             case AgentMessage.IncomingRequest r:
                 // The agent asks one question at a time; a new one replaces anything stale.
@@ -455,7 +657,7 @@ public sealed partial class HostViewModel : ObservableObject
                 Notice = null;
                 break;
             case AgentMessage.SessionEnded e:
-                if (_banner?.SessionId == e.Id) HideBanner();
+                HideBanner(e.Id);
                 Notice = L.Format("Host.SessionEnded", e.DeviceName);
                 _link.Send(new UiRequest.ListPairings());
                 break;
@@ -469,10 +671,10 @@ public sealed partial class HostViewModel : ObservableObject
                 Notice = Messages.Notice(n);
                 break;
             case AgentMessage.Transfer t:
-                if (_banner?.SessionId == t.SessionId) _banner.Transfers.OnUpdate(t.Info);
+                _banners.FirstOrDefault(b => b.SessionId == t.SessionId)?.Transfers.OnUpdate(t.Info);
                 break;
-            case AgentMessage.Refused { Command: "files" } r when _banner != null:
-                _banner.Transfers.Error = L.Format("Host.CannotSend", r.Reason);
+            case AgentMessage.Refused { Command: "files" } r when _banners.LastOrDefault(b => b.CanSendFiles) is { } sender:
+                sender.Transfers.Error = L.Format("Host.CannotSend", r.Reason);
                 break;
             case AgentMessage.Refused r:
                 Error = r.Command == "policy"
@@ -484,22 +686,28 @@ public sealed partial class HostViewModel : ObservableObject
 
     void ShowBanner(HostSession session)
     {
-        if (_banner != null && _banner.SessionId == session.Id)
+        if (_banners.FirstOrDefault(b => b.SessionId == session.Id) is { } shown)
         {
-            _banner.Session = session;
+            shown.Session = session;
             return;
         }
-        _banner = new BannerViewModel(session, _link, _now());
+        var banner = new BannerViewModel(session, _link, _now());
+        _banners.Add(banner);
         OnPropertyChanged(nameof(Banner));
-        _windows.ShowBanner(_banner);
+        _windows.ShowBanner(banner);
     }
 
-    void HideBanner()
+    void HideBanner(ulong id)
     {
-        if (_banner == null) return;
-        _banner = null;
+        if (_banners.FirstOrDefault(b => b.SessionId == id) is not { } banner) return;
+        _banners.Remove(banner);
         OnPropertyChanged(nameof(Banner));
-        _windows.HideBanner();
+        _windows.HideBanner(banner);
+    }
+
+    void HideBanners()
+    {
+        foreach (var b in _banners.ToList()) HideBanner(b.SessionId);
     }
 
     void Stopped(string? error)
@@ -517,7 +725,7 @@ public sealed partial class HostViewModel : ObservableObject
         Paired.Clear();
         // With no UI the agent itself ends the session and denies the open question.
         _consent?.Expire(L.Get("Host.AgentStopped"));
-        HideBanner();
+        HideBanners();
         if (error != null) Error = error;
     }
 
@@ -624,6 +832,9 @@ public sealed partial class PermissionGuideViewModel : ObservableObject
 
     [RelayCommand]
     private void OpenScreenRecording() => _probe.OpenSettings(PermissionKind.ScreenRecording);
+
+    [RelayCommand]
+    private void RequestAccessibility() => _probe.Request(PermissionKind.Accessibility);
 
     [RelayCommand]
     private void OpenAccessibility() => _probe.OpenSettings(PermissionKind.Accessibility);

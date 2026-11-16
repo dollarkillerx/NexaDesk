@@ -9,7 +9,7 @@
 //! Nothing depends on it.
 
 use std::{
-    io::{Read, Write},
+    io::Read,
     net::{IpAddr, SocketAddr, UdpSocket},
     path::{Path, PathBuf},
     sync::{
@@ -132,7 +132,7 @@ pub fn query_cli_at(path: &Path, timeout: Duration) -> Option<TailscaleInfo> {
 
 #[cfg(unix)]
 pub fn query_localapi_at(path: &Path, timeout: Duration) -> Option<TailscaleInfo> {
-    use std::os::unix::net::UnixStream;
+    use std::{io::Write, os::unix::net::UnixStream};
     let deadline = Instant::now() + timeout;
     let mut s = UnixStream::connect(path).ok()?;
     // Both timeouts before the first byte: macOS refuses setsockopt (EINVAL)
@@ -172,6 +172,7 @@ pub fn query_localapi_at(_: &Path, _: Duration) -> Option<TailscaleInfo> {
 }
 
 /// The body of a complete `200` response, de-chunked.
+#[cfg_attr(not(unix), allow(dead_code))]
 fn http_body(raw: &[u8]) -> Option<Vec<u8>> {
     let split = raw.windows(4).position(|w| w == b"\r\n\r\n")?;
     let head = std::str::from_utf8(&raw[..split]).ok()?;
@@ -404,6 +405,9 @@ pub fn probe_quic(addr: SocketAddr, timeout: Duration, rng: &mut dyn FnMut(&mut 
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::io::Write;
+
     use super::*;
 
     const STATUS: &str = r#"{

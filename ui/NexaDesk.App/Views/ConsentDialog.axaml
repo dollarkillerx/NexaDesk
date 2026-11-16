@@ -17,6 +17,9 @@
     <Border Name="BrowserNote" Classes="tint" IsVisible="{Binding IsBrowser}">
       <TextBlock TextWrapping="Wrap" Text="{l:T Consent.BrowserNote}" />
     </Border>
+    <Border Name="UnverifiedNote" Classes="warn" IsVisible="{Binding IsUnverified}">
+      <TextBlock TextWrapping="Wrap" Text="{l:T Consent.UnverifiedNote}" />
+    </Border>
 
     <Border Classes="subtle">
       <Grid ColumnDefinitions="Auto,14,*" RowDefinitions="Auto,Auto,Auto,Auto" >
@@ -48,10 +51,12 @@
       <CheckBox IsChecked="True" IsEnabled="False" Content="{l:T Consent.PermView}" />
       <CheckBox Name="InputBox" IsChecked="{Binding AllowInput}" IsEnabled="{Binding InputAvailable}" Content="{l:T Consent.PermInput}" />
       <TextBlock Classes="muted" Margin="28,-4,0,2" Text="{Binding InputNote}" />
-      <CheckBox Name="ClipboardBox" IsChecked="{Binding AllowClipboard}" Content="{l:T Consent.PermClipboard}" IsVisible="{Binding IsDevice}" />
+      <CheckBox Name="ClipboardBox" IsChecked="{Binding AllowClipboard}" Content="{l:T Consent.PermClipboard}" />
       <CheckBox Name="AudioBox" IsChecked="{Binding AllowAudio}" Content="{l:T Consent.PermAudio}" IsVisible="{Binding IsDevice}" />
       <CheckBox Name="FileBox" IsChecked="{Binding AllowFile}" Content="{l:T Consent.PermFile}" IsVisible="{Binding IsDevice}" />
       <TextBlock Classes="muted" Margin="28,-4,0,2" Text="{Binding FileNote}" TextWrapping="Wrap" IsVisible="{Binding IsDevice}" />
+      <CheckBox Name="TerminalBox" IsChecked="{Binding AllowTerminal}" Content="{l:T Consent.PermTerminal}" IsVisible="{Binding OfferTerminal}" />
+      <TextBlock Classes="muted" Margin="28,-4,0,2" Text="{l:T Consent.TerminalNote}" TextWrapping="Wrap" IsVisible="{Binding OfferTerminal}" />
     </StackPanel>
 
     <StackPanel Spacing="2" IsVisible="{Binding OfferSave}">

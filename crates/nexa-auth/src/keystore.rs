@@ -42,9 +42,9 @@ pub trait KeyStore: Send + Sync {
     fn delete(&self) -> Result<(), KeyStoreError>;
 }
 
-/// A 0600 file, replaced atomically. Unix only: on other platforms every operation
-/// fails rather than leave a private key under default permissions. §9.1 calls for
-/// DPAPI on Windows, which is not implemented here.
+/// A 0600 file, replaced atomically. On Windows the secret is encrypted with DPAPI for
+/// the signed-in user (§9.1) before it is written; elsewhere every operation fails
+/// rather than leave a private key under default permissions.
 #[derive(Debug, Clone)]
 pub struct FileKeyStore {
     path: PathBuf,
@@ -107,7 +107,129 @@ impl KeyStore for FileKeyStore {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+impl KeyStore for FileKeyStore {
+    fn load(&self) -> Result<Option<Zeroizing<Vec<u8>>>, KeyStoreError> {
+        let meta = match fs::symlink_metadata(&self.path) {
+            Ok(m) => m,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        if meta.file_type().is_symlink() {
+            return Err(KeyStoreError::Symlink);
+        }
+        // DPAPI adds a few hundred bytes around the secret.
+        if meta.len() > MAX_SECRET_LEN + 4096 {
+            return Err(KeyStoreError::TooLarge);
+        }
+        let mut sealed = Vec::new();
+        File::open(&self.path)?
+            .take(MAX_SECRET_LEN + 4096)
+            .read_to_end(&mut sealed)?;
+        dpapi::unprotect(&sealed).map(Some)
+    }
+
+    fn store(&self, secret: &[u8]) -> Result<(), KeyStoreError> {
+        if let Some(dir) = self.path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            fs::create_dir_all(dir)?;
+        }
+        let sealed = dpapi::protect(secret)?;
+        atomic_write(&self.path, &sealed)?;
+        Ok(())
+    }
+
+    fn delete(&self) -> Result<(), KeyStoreError> {
+        match fs::remove_file(&self.path) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Encryption to the signed-in Windows user: only that account on this machine can undo it.
+#[cfg(windows)]
+mod dpapi {
+    use std::ptr::{null, null_mut};
+
+    use windows_sys::Win32::{
+        Foundation::LocalFree,
+        Security::Cryptography::{
+            CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
+        },
+    };
+    use zeroize::Zeroizing;
+
+    use super::KeyStoreError;
+
+    fn blob(data: &[u8]) -> CRYPT_INTEGER_BLOB {
+        CRYPT_INTEGER_BLOB {
+            cbData: data.len() as u32,
+            pbData: data.as_ptr() as *mut u8,
+        }
+    }
+
+    /// Copies DPAPI's output and frees it.
+    fn take(out: CRYPT_INTEGER_BLOB) -> Zeroizing<Vec<u8>> {
+        // SAFETY: DPAPI returned `cbData` bytes at `pbData`, freed with LocalFree.
+        let data = unsafe { std::slice::from_raw_parts(out.pbData, out.cbData as usize) };
+        let copy = Zeroizing::new(data.to_vec());
+        unsafe {
+            std::ptr::write_bytes(out.pbData, 0, out.cbData as usize);
+            LocalFree(out.pbData.cast());
+        }
+        copy
+    }
+
+    pub fn protect(secret: &[u8]) -> Result<Zeroizing<Vec<u8>>, KeyStoreError> {
+        let input = blob(secret);
+        let mut out = CRYPT_INTEGER_BLOB {
+            cbData: 0,
+            pbData: null_mut(),
+        };
+        // SAFETY: the input blob points at `secret` for the call; no prompt, no entropy.
+        let ok = unsafe {
+            CryptProtectData(
+                &input,
+                null(),
+                null(),
+                null(),
+                null(),
+                CRYPTPROTECT_UI_FORBIDDEN,
+                &mut out,
+            )
+        };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(take(out))
+    }
+
+    pub fn unprotect(sealed: &[u8]) -> Result<Zeroizing<Vec<u8>>, KeyStoreError> {
+        let input = blob(sealed);
+        let mut out = CRYPT_INTEGER_BLOB {
+            cbData: 0,
+            pbData: null_mut(),
+        };
+        // SAFETY: as in `protect`.
+        let ok = unsafe {
+            CryptUnprotectData(
+                &input,
+                null_mut(),
+                null(),
+                null(),
+                null(),
+                CRYPTPROTECT_UI_FORBIDDEN,
+                &mut out,
+            )
+        };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(take(out))
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 impl KeyStore for FileKeyStore {
     fn load(&self) -> Result<Option<Zeroizing<Vec<u8>>>, KeyStoreError> {
         Err(KeyStoreError::UnsupportedPlatform)

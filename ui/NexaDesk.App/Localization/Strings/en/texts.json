@@ -85,5 +85,7 @@
   "Texts.Capture.Inactive": "Keyboard not captured: click the screen to start controlling",
   "Texts.Mode.Office": "Office",
   "Texts.Mode.Balanced": "Balanced",
-  "Texts.Mode.Game": "Game"
+  "Texts.Mode.Game": "Game",
+  "Texts.Auth.Request": "No code: only the device ID (who is asking cannot be verified)",
+  "Texts.Perm.Terminal": "command line"
 }

@@ -275,6 +275,7 @@ fn refused(command: &str, reason: impl Into<String>) -> AgentToUi {
 
 fn status_of(agent: &Agent) -> AgentToUi {
     let signal = agent.signal_status();
+    let web = agent.web_certificate();
     AgentBody::Status(Status {
         version: PROTOCOL_VERSION,
         listen: agent.local_addr().to_string(),
@@ -295,6 +296,9 @@ fn status_of(agent: &Agent) -> AgentToUi {
             crate::SignalState::Error(e) => e.clone(),
             _ => signal.note.clone().unwrap_or_default(),
         },
+        web_fingerprint: web.as_ref().map(|w| w.0.clone()).unwrap_or_default(),
+        web_cert_custom: web.is_some_and(|w| w.1),
+        password_set: agent.has_password(),
     })
     .into()
 }
@@ -418,8 +422,11 @@ fn handle(ctx: &Ctx, conn: u64, msg: UiToAgent) -> Option<AgentToUi> {
                 Err(e) => Some(refused("policy", e)),
             }
         }
-        Some(UiBody::Disconnect(_)) => {
-            agent.disconnect();
+        Some(UiBody::Disconnect(s)) => {
+            match s.id {
+                0 => agent.disconnect(),
+                id => agent.disconnect_session(id),
+            }
             None
         }
         Some(UiBody::RotateCode(_)) => {

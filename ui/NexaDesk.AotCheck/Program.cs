@@ -101,7 +101,7 @@ link.Next = null;
 await vm.Host.StartCommand.ExecuteAsync(null);
 link.Raise(new AgentMessage.Status(1, "192.168.1.20:47800", "K7QM2XPA", "AOT Mac", "id", new string('a', 64), null, true));
 Pump();
-Check(Find<SelectableTextBlock>(main, "CodeText").Text == "K7QM-2XPA", "code shown large");
+Check(Find<TextBlock>(main, "CodeText").Text == "K7QM-2XPA", "code shown large");
 Save(main, "main");
 
 link.Raise(new AgentMessage.IncomingRequest(5, "王小明", "id", new string('b', 64), "192.168.1.35:5000", AuthKind.Code,

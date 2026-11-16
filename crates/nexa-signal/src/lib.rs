@@ -1,5 +1,6 @@
 //! `nexa-signal`: signaling over WebSocket, a STUN responder and a UDP relay in
-//! one self-hostable process (docs/DETAILED_DESIGN.md §4.3, §4.6).
+//! one self-hostable process (docs/DETAILED_DESIGN.md §4.3, §4.6); optionally the
+//! browser page and TURN, for browsers anywhere (docs/WEB_CLIENT.md §12).
 //!
 //! The server is untrusted by design. It forwards blobs sealed end to end, and
 //! pairing and consent happen inside the peers' QUIC connection, so a hostile
@@ -12,6 +13,8 @@ pub mod limit;
 pub mod relay;
 pub mod server;
 pub mod stun;
+pub mod turn;
+pub mod web;
 
 use std::{path::Path, sync::Arc};
 
@@ -88,6 +91,7 @@ pub async fn bind(config: &Config) -> Result<(Settings, Sockets), String> {
             relay: relay_limits,
             relay_token_ttl_secs: config.relay.as_ref().map_or(3600, |r| r.token_ttl_secs),
             limits: config.limits.clone(),
+            web: config.web.clone(),
         },
         Sockets { ws, stun, relay },
     ))

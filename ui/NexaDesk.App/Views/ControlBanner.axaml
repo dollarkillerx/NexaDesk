@@ -4,39 +4,61 @@
         xmlns:l="using:NexaDesk.Localization"
         xmlns:views="using:NexaDesk.Views"
         x:Class="NexaDesk.Views.ControlBanner"
-        x:DataType="vm:BannerViewModel"
+        x:DataType="vm:BannerStackViewModel"
         Title="{l:T Banner.WindowTitle}"
-        Width="720" SizeToContent="Height" CanResize="False"
+        SizeToContent="WidthAndHeight" CanResize="False"
         Topmost="True" ShowInTaskbar="False" ShowActivated="False"
         WindowDecorations="None" RequestedThemeVariant="Dark"
         Background="{DynamicResource BannerBrush}">
   <StackPanel>
-    <!-- Orange 40 stripe and dot: the one loud colour on the banner. -->
-    <Border Padding="16,0,8,0" Height="64" BorderBrush="#FF832B" BorderThickness="4,0,0,0">
-      <Grid ColumnDefinitions="Auto,*,Auto,Auto" VerticalAlignment="Center">
-        <Ellipse Width="10" Height="10" Fill="#FF832B" VerticalAlignment="Center" Margin="0,0,14,0" />
-        <StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center">
-          <TextBlock Name="HeadlineText" Text="{Binding Headline}" Foreground="#F4F4F4" FontWeight="SemiBold" FontSize="14"
-                     TextTrimming="CharacterEllipsis" />
-          <TextBlock Foreground="#C6C6C6" FontSize="12" LetterSpacing="0.32" TextTrimming="CharacterEllipsis">
-            <Run Text="{Binding PermsText}" />
-            <Run Text=" · " />
-            <Run Text="{Binding Detail}" />
-          </TextBlock>
-        </StackPanel>
-        <TextBlock Grid.Column="2" Text="{Binding DurationText}" Foreground="#F4F4F4" FontFamily="{DynamicResource MonoFont}"
-                   VerticalAlignment="Center" Margin="12,0,12,0" />
-        <Button Grid.Column="3" Name="BannerDisconnectButton" Classes="danger wide" MinHeight="48" Content="{l:T Banner.Disconnect}" Command="{Binding DisconnectCommand}" />
-      </Grid>
-    </Border>
-    <!-- Only with the file permission: drop files here to send them to the viewer (§3.1 stream 4). -->
-    <Border Name="FilePanel" Background="{DynamicResource CardBrush}" Padding="16,10,16,12" IsVisible="{Binding CanSendFiles}">
-      <StackPanel Spacing="6">
-        <Border Name="DropZone" Classes="subtle" Padding="10,6">
-          <TextBlock Name="DropHintText" Classes="muted" Text="{Binding DropHint}" HorizontalAlignment="Center" />
-        </Border>
-        <views:TransferListView DataContext="{Binding Transfers}" IsVisible="{Binding HasItems}" />
+    <!-- Folded: one small tab for everyone, still saying sessions are running and for how long. -->
+    <Button Name="ExpandBannerButton" Classes="quiet" IsVisible="{Binding IsCollapsed}" Command="{Binding ToggleCollapsedCommand}"
+            ToolTip.Tip="{l:T Banner.Expand}" MinHeight="28" Padding="12,0" BorderBrush="#FF832B" BorderThickness="0,0,0,3">
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <Ellipse Width="8" Height="8" Fill="#FF832B" VerticalAlignment="Center" />
+        <TextBlock Name="FoldedText" Text="{Binding FoldedText}" Foreground="#F4F4F4" FontFamily="{DynamicResource MonoFont}" FontSize="12" VerticalAlignment="Center" />
+        <TextBlock Text="▾" Foreground="#C6C6C6" FontSize="12" VerticalAlignment="Center" />
       </StackPanel>
-    </Border>
+    </Button>
+    <!-- Unfolded: a row per person, one fold button for all. Orange 40 is the one loud colour. -->
+    <Grid ColumnDefinitions="*,Auto" Width="760" IsVisible="{Binding IsExpanded}">
+      <ItemsControl Name="SessionRows" ItemsSource="{Binding Sessions}">
+        <ItemsControl.ItemTemplate>
+          <DataTemplate x:DataType="vm:BannerViewModel">
+            <StackPanel>
+              <Border Padding="16,0,8,0" Height="64" BorderBrush="#FF832B" BorderThickness="4,0,0,1">
+                <Grid ColumnDefinitions="Auto,*,Auto,Auto" VerticalAlignment="Center">
+                  <Ellipse Width="10" Height="10" Fill="#FF832B" VerticalAlignment="Center" Margin="0,0,14,0" />
+                  <StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center">
+                    <TextBlock Name="HeadlineText" Text="{Binding Headline}" Foreground="#F4F4F4" FontWeight="SemiBold" FontSize="14"
+                               TextTrimming="CharacterEllipsis" />
+                    <TextBlock Foreground="#C6C6C6" FontSize="12" LetterSpacing="0.32" TextTrimming="CharacterEllipsis">
+                      <Run Text="{Binding PermsText}" />
+                      <Run Text=" · " />
+                      <Run Text="{Binding Detail}" />
+                    </TextBlock>
+                  </StackPanel>
+                  <TextBlock Grid.Column="2" Text="{Binding DurationText}" Foreground="#F4F4F4" FontFamily="{DynamicResource MonoFont}"
+                             VerticalAlignment="Center" Margin="12,0,12,0" />
+                  <Button Grid.Column="3" Name="BannerDisconnectButton" Classes="danger" MinHeight="48" MinWidth="112"
+                          Content="{l:T Banner.Disconnect}" Command="{Binding DisconnectCommand}" />
+                </Grid>
+              </Border>
+              <!-- Only with the file permission: drop files here to send them to this viewer (§3.1 stream 4). -->
+              <Border Name="FilePanel" Background="{DynamicResource CardBrush}" Padding="16,10,16,12" IsVisible="{Binding CanSendFiles}">
+                <StackPanel Spacing="6">
+                  <Border Name="DropZone" Classes="subtle" Padding="10,6">
+                    <TextBlock Name="DropHintText" Classes="muted" Text="{Binding DropHint}" HorizontalAlignment="Center" />
+                  </Border>
+                  <views:TransferListView DataContext="{Binding Transfers}" IsVisible="{Binding HasItems}" />
+                </StackPanel>
+              </Border>
+            </StackPanel>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+      <Button Grid.Column="1" Name="CollapseBannerButton" Classes="quiet" VerticalAlignment="Stretch" Padding="14,0"
+              Content="{l:T Banner.Collapse}" Command="{Binding ToggleCollapsedCommand}" ToolTip.Tip="{l:T Banner.Collapse}" />
+    </Grid>
   </StackPanel>
 </Window>

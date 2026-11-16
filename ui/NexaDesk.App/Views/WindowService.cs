@@ -1,4 +1,5 @@
 using Avalonia.Controls;
+using Avalonia.Input.Platform;
 using NexaDesk.ViewModels;
 
 namespace NexaDesk.Views;
@@ -6,7 +7,9 @@ namespace NexaDesk.Views;
 /// <summary>Opens and closes the app's windows for the view-models.</summary>
 public sealed class WindowService : IWindowService
 {
+    /// <summary>One banner window for everyone connected.</summary>
     ControlBanner? _banner;
+    readonly BannerStackViewModel _stack = new();
     PermissionGuideWindow? _guide;
     readonly List<Window> _open = new();
 
@@ -14,7 +17,9 @@ public sealed class WindowService : IWindowService
 
     /// <summary>Every window this service has open, for tests.</summary>
     public IReadOnlyList<Window> OpenWindows => _open;
+    /// <summary>The banner window, for tests.</summary>
     public ControlBanner? Banner => _banner;
+    public BannerStackViewModel BannerStack => _stack;
 
     void Track(Window w)
     {
@@ -96,18 +101,23 @@ public sealed class WindowService : IWindowService
 
     public void ShowBanner(BannerViewModel banner)
     {
-        HideBanner();
-        _banner = new ControlBanner { DataContext = banner };
+        if (_stack.Sessions.Contains(banner)) return;
+        _stack.Sessions.Add(banner);
+        if (_banner != null) return;
+        _banner = new ControlBanner { DataContext = _stack };
         Track(_banner);
         _banner.Show();
     }
 
-    public void HideBanner()
+    public void HideBanner(BannerViewModel banner)
     {
-        if (_banner == null) return;
+        _stack.Sessions.Remove(banner);
+        if (_stack.Sessions.Count > 0 || _banner == null) return;
         _banner.MayClose = true;
         _banner.Close();
         _banner = null;
+        // The next first session starts unfolded.
+        _stack.IsCollapsed = false;
     }
 
     public void ShowPermissionGuide(PermissionGuideViewModel guide)
@@ -157,5 +167,10 @@ public sealed class WindowService : IWindowService
         var w = new DiagnosticsWindow { DataContext = diagnostics };
         Track(w);
         w.Show();
+    }
+
+    public void CopyText(string text)
+    {
+        if (Owner?.Clipboard is { } clipboard) _ = clipboard.SetTextAsync(text);
     }
 }

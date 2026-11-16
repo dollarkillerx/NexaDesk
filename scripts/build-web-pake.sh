@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Rebuilds the browser's half of pairing (crates/nexa-web-pake) as WebAssembly and puts
-# it where nexa-web embeds it: crates/nexa-web/web/pake.wasm. Run after changing that
+# it where the page crate embeds it: crates/nexa-web-page/web/pake.wasm. Run after changing that
 # crate; the result is committed, so ordinary builds do not need the wasm32 target.
 #
 #   scripts/build-web-pake.sh
@@ -15,5 +15,5 @@ fi
 export PATH="$HOME/.cargo/bin:$PATH"
 
 cargo build --manifest-path "$ROOT/Cargo.toml" -p nexa-web-pake --target wasm32-unknown-unknown --release
-cp "$ROOT/target/wasm32-unknown-unknown/release/nexa_web_pake.wasm" "$ROOT/crates/nexa-web/web/pake.wasm"
-echo "wrote crates/nexa-web/web/pake.wasm ($(wc -c < "$ROOT/crates/nexa-web/web/pake.wasm") bytes)"
+cp "$ROOT/target/wasm32-unknown-unknown/release/nexa_web_pake.wasm" "$ROOT/crates/nexa-web-page/web/pake.wasm"
+echo "wrote crates/nexa-web-page/web/pake.wasm ($(wc -c < "$ROOT/crates/nexa-web-page/web/pake.wasm") bytes)"

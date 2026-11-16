@@ -25,8 +25,10 @@ public sealed partial class ConsentViewModel : ObservableObject
     public string DeviceName => _req.DeviceName;
     public string DeviceId => _req.DeviceId;
     public string Fingerprint { get; }
-    public string Remote => _req.Remote;
+    public string Remote => Texts.Remote(_req.Remote);
     public string AuthText => Texts.Auth(_req.Auth);
+    /// <summary>Only a device ID: nothing proves who this is.</summary>
+    public bool IsUnverified => _req.Auth == AuthKind.Request;
     public bool IsTakeover => _req.Takeover;
     public bool OfferSave => _req.OfferSave;
     public bool OfferSkipNextTime => _req.OfferSkipNextTime;
@@ -46,6 +48,9 @@ public sealed partial class ConsentViewModel : ObservableObject
     [ObservableProperty] private bool _allowAudio;
     /// <summary>Always starts unticked, even for a device saved with it: files are opt-in each time.</summary>
     [ObservableProperty] private bool _allowFile;
+    /// <summary>A shell on this Mac. Always starts unticked; only browsers can open one so far.</summary>
+    [ObservableProperty] private bool _allowTerminal;
+    public bool OfferTerminal => IsBrowser;
     public string FileNote => L.Format("Consent.FileNote", Texts.DownloadsFolder);
     [ObservableProperty] private bool _saveDevice;
     [ObservableProperty] private bool _skipNextTime;
@@ -74,6 +79,7 @@ public sealed partial class ConsentViewModel : ObservableObject
         _allowInput = req.Perms.Input && req.InputAvailable;
         _allowClipboard = req.Perms.Clipboard;
         _allowAudio = req.Perms.Audio;
+        _allowTerminal = req.Perms.Terminal;
         _saveDevice = req.OfferSave && req.SaveDefault;
         _skipNextTime = false;
         MarkShown(now);
@@ -104,7 +110,8 @@ public sealed partial class ConsentViewModel : ObservableObject
     {
         if (!CanAllow()) return;
         var perms = IsBrowser
-            ? new Permissions(View: true, Input: AllowInput && InputAvailable, Clipboard: false, File: false, Audio: false)
+            ? new Permissions(View: true, Input: AllowInput && InputAvailable, Clipboard: AllowClipboard, File: false, Audio: false,
+                Terminal: AllowTerminal)
             : new Permissions(View: true, Input: AllowInput && InputAvailable, Clipboard: AllowClipboard,
                 File: AllowFile, Audio: AllowAudio);
         Finish(new UiRequest.Decide(ReqId, true, perms, OfferSave && SaveDevice, OfferSkipNextTime && SkipNextTime), L.Get("Consent.Allowed"));

@@ -28,5 +28,8 @@
   "Consent.Denied": "拒否しました",
   "Consent.Cancelled": "相手がリクエストをキャンセルしました",
   "Consent.HeadlineBrowser": "ブラウザ「{0}」がこのMacへの接続を求めています",
-  "Consent.BrowserNote": "これは NexaDesk アプリではなく Web ブラウザです。画面の表示とキーボード・マウスの操作のみが可能で、保存されません。毎回ワンタイムコードが必要です。"
+  "Consent.BrowserNote": "これは NexaDesk アプリではなく Web ブラウザです。画面の表示、キーボード・マウスの操作、チェックした場合はコピーしたテキストのやり取りができます。保存はされません。",
+  "Consent.UnverifiedNote": "相手はワンタイムコードもパスワードも入力せず、デバイス ID だけで接続をリクエストしています。相手が誰かは確認できません。接続を待っている場合にだけ許可してください。",
+  "Consent.PermTerminal": "コマンドライン（ターミナル）",
+  "Consent.TerminalNote": "相手はこの Mac 上であなたとして任意のコマンドを実行できます。信頼できる相手にだけ許可してください。"
 }

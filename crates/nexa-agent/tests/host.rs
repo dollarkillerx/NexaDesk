@@ -12,7 +12,7 @@ use nexa_net::vsock::bind_media_socket;
 use nexa_session::{
     SessionError,
     framed::{open_bi, open_uni},
-    handshake::{Timeouts, ViewerAccepted, ViewerAuth, ViewerConfig, viewer_handshake},
+    handshake::{AuthKind, Timeouts, ViewerAccepted, ViewerAuth, ViewerConfig, viewer_handshake},
     proto::{CloseReason, ControlBody, InputBody, InputMsg, RejectReason, StreamRequest},
 };
 use nexa_wire::{
@@ -240,6 +240,85 @@ async fn wrong_code_is_refused_without_asking() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_fixed_password_lets_in_without_asking_and_the_code_still_asks() {
+    let ui = FakeUi::allowing(perms(true, true, false), false);
+    let h = common::host_with_password(ui.clone(), timeouts(), "correct horse battery").await;
+    assert!(h.agent.has_password());
+
+    // The right password: in without anyone clicking Allow, and still shown as a session.
+    let me = DeviceIdentity::generate();
+    let (_ep, conn) = dial(&h, &me, PeerPolicy::AcceptUnknown).await;
+    let auth = ViewerAuth::Password(Zeroizing::new("correct horse battery".to_owned()));
+    let accepted = viewer_handshake(&conn.unwrap(), viewer_config(&me, auth)).await;
+    assert!(accepted.is_ok(), "{:?}", accepted.err());
+    assert_eq!(
+        ui.prompts(),
+        0,
+        "the password is the owner's: nobody is asked"
+    );
+    until("session running", WAIT, || h.agent.session_active()).await;
+    drop(accepted);
+    until("session over", WAIT, || !h.agent.session_active()).await;
+
+    // A wrong one: refused without asking.
+    let other = DeviceIdentity::generate();
+    let (_ep2, conn) = dial(&h, &other, PeerPolicy::AcceptUnknown).await;
+    let auth = ViewerAuth::Password(Zeroizing::new("wrong horse battery".to_owned()));
+    let result = viewer_handshake(&conn.unwrap(), viewer_config(&other, auth)).await;
+    assert!(result.is_err(), "a wrong password must fail");
+    assert_eq!(ui.prompts(), 0, "no prompt without proof");
+
+    // The one-time code still works too, and asks.
+    let third = DeviceIdentity::generate();
+    let (_ep3, _conn, result) = connect_with_code(&h, &third).await;
+    assert!(result.is_ok(), "{:?}", result.err());
+    assert_eq!(ui.prompts(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_request_without_a_secret_asks_the_person_and_says_it_is_unverified() {
+    let ui = FakeUi::allowing(perms(true, true, false), false);
+    let h = host_with(ui.clone()).await;
+    let me = DeviceIdentity::generate();
+    let (_ep, conn) = dial(&h, &me, PeerPolicy::AcceptUnknown).await;
+    let accepted = viewer_handshake(&conn.unwrap(), viewer_config(&me, ViewerAuth::Request)).await;
+    assert!(accepted.is_ok(), "{:?}", accepted.err());
+    assert_eq!(ui.prompts(), 1);
+    {
+        let asked = ui.asked.lock().unwrap();
+        assert_eq!(asked[0].auth, AuthKind::Request);
+        assert!(
+            !asked[0].prompt.offer_save,
+            "an unverified device is never saved"
+        );
+    }
+    drop(accepted);
+    until("session over", WAIT, || !h.agent.session_active()).await;
+
+    // Turned down: refused.
+    let no = FakeUi::denying();
+    let h = host_with(no.clone()).await;
+    let other = DeviceIdentity::generate();
+    let (_ep2, conn) = dial(&h, &other, PeerPolicy::AcceptUnknown).await;
+    let result = viewer_handshake(&conn.unwrap(), viewer_config(&other, ViewerAuth::Request)).await;
+    assert!(result.is_err());
+    assert_eq!(no.prompts(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn without_a_password_set_password_login_is_refused() {
+    let ui = FakeUi::allowing(perms(true, true, false), false);
+    let h = host_with(ui.clone()).await;
+    assert!(!h.agent.has_password());
+    let me = DeviceIdentity::generate();
+    let (_ep, conn) = dial(&h, &me, PeerPolicy::AcceptUnknown).await;
+    let auth = ViewerAuth::Password(Zeroizing::new("anything goes".to_owned()));
+    let result = viewer_handshake(&conn.unwrap(), viewer_config(&me, auth)).await;
+    assert!(result.is_err());
+    assert_eq!(ui.prompts(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn consent_denied_is_refused() {
     let ui = FakeUi::denying();
     let h = host_with(ui.clone()).await;
@@ -294,38 +373,73 @@ async fn a_silent_peer_times_out() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_second_viewer_needs_consent_to_take_over() {
-    let ui = FakeUi::allowing(perms(true, false, false), false);
+async fn several_viewers_share_the_host_and_leave_one_at_a_time() {
+    let ui = FakeUi::allowing(perms(true, true, false), false);
     let h = host_with(ui.clone()).await;
     let first = DeviceIdentity::generate();
     let (_ep1, conn1, result) = connect_with_code(&h, &first).await;
     let mut accepted1 = result.unwrap();
     begin_stream(&mut accepted1).await;
-    until("first session", WAIT, || h.agent.session_active()).await;
+    until("first session", WAIT, || {
+        h.agent.active_sessions().len() == 1
+    })
+    .await;
 
+    // A second person joins: asked about on their own, nobody is taken over.
     let second = DeviceIdentity::generate();
-    let (_ep2, _conn2, result) = connect_with_code(&h, &second).await;
-    result.unwrap();
+    let (_ep2, conn2, result) = connect_with_code(&h, &second).await;
+    let mut accepted2 = result.unwrap();
+    begin_stream(&mut accepted2).await;
+    assert_eq!(ui.prompts(), 2);
     assert!(
-        lock_prompts_last_takeover(&ui),
-        "§5.3: taking over asks first"
+        !common::lock(&ui.asked).iter().any(|r| r.takeover),
+        "joining is not taking over"
     );
+    until("both sessions", WAIT, || {
+        h.agent.active_sessions().len() == 2
+    })
+    .await;
+    assert!(conn1.close_reason().is_none(), "the first is still there");
 
+    // The first leaves: only its session ends, at once.
+    conn1.close(0u32.into(), b"bye");
+    until("first gone", WAIT, || h.agent.active_sessions().len() == 1).await;
+    assert!(conn2.close_reason().is_none());
+
+    // The host ends the second by its id.
+    let id = h.agent.active_sessions()[0].id;
+    h.agent.disconnect_session(id);
     let goodbye = loop {
-        match accepted1.control.recv().await {
+        match accepted2.control.recv().await {
             Ok(Some(ControlBody::Bye(b))) => break b,
             Ok(Some(_)) => {}
             other => panic!("expected goodbye, got {:?}", other.map(|_| ())),
         }
     };
-    assert_eq!(goodbye.reason, CloseReason::Replaced as i32);
-    tokio::time::timeout(WAIT, conn1.closed())
-        .await
-        .expect("old session closed");
+    assert_eq!(goodbye.reason, CloseReason::HostEnded as i32);
+    until("none left", WAIT, || !h.agent.session_active()).await;
 }
 
-fn lock_prompts_last_takeover(ui: &FakeUi) -> bool {
-    common::lock(&ui.asked).last().is_some_and(|r| r.takeover)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn no_more_than_four_people_at_once() {
+    let ui = FakeUi::allowing(perms(true, false, false), false);
+    let h = host_with(ui.clone()).await;
+    let mut kept = Vec::new();
+    for _ in 0..4 {
+        let me = DeviceIdentity::generate();
+        let (ep, conn, result) = connect_with_code(&h, &me).await;
+        let mut accepted = result.unwrap();
+        begin_stream(&mut accepted).await;
+        kept.push((ep, conn, accepted));
+    }
+    until("four sessions", WAIT, || {
+        h.agent.active_sessions().len() == 4
+    })
+    .await;
+    let fifth = DeviceIdentity::generate();
+    let (_ep, _conn, result) = connect_with_code(&h, &fifth).await;
+    assert!(result.is_err(), "a fifth person is turned away");
+    assert_eq!(ui.prompts(), 4, "without asking anyone");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

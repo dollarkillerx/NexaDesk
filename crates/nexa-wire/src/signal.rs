@@ -16,7 +16,8 @@
 //! } }
 //! message Challenge  { uint32 proto = 1; bytes nonce = 2; }
 //! message Register   { uint32 proto = 1; bytes pubkey = 2; bytes x25519 = 3;
-//!                      bytes x25519_sig = 4; bytes sig = 5; string server_name = 6; }
+//!                      bytes x25519_sig = 4; bytes sig = 5; string server_name = 6;
+//!                      bytes id_seed = 7; }
 //! message Registered { string short_id = 1; repeated string stun_servers = 2;
 //!                      repeated string relays = 3; string stun_note = 4; }
 //! message Lookup     { uint64 req_id = 1; string short_id = 2; }
@@ -96,7 +97,14 @@ pub struct Register {
     /// made for one server cannot be replayed at another.
     #[prost(string, tag = "6")]
     pub server_name: String,
+    /// Mixed into the short ID, at most [`MAX_ID_SEED`] bytes. A host gets a new ID by
+    /// changing it; empty keeps the ID the key always had.
+    #[prost(bytes = "vec", tag = "7")]
+    pub id_seed: Vec<u8>,
 }
+
+/// The longest [`Register::id_seed`] a server accepts.
+pub const MAX_ID_SEED: usize = 32;
 
 #[derive(Clone, PartialEq, Message)]
 pub struct Registered {
@@ -227,6 +235,41 @@ pub struct SignalError {
     pub message: String,
 }
 
+/// Server → host: a browser asks for this host through the server (docs/WEB_CLIENT.md
+/// §12). What follows on `conn` is the browser's side of the direct-access protocol,
+/// as [`BrowserText`]; media goes through TURN on `turn_server` with these credentials.
+#[derive(Clone, PartialEq, Message)]
+pub struct BrowserOpen {
+    #[prost(uint64, tag = "1")]
+    pub conn: u64,
+    /// The browser's address as the server saw it: for the person deciding, and for
+    /// counting pairing attempts.
+    #[prost(string, tag = "2")]
+    pub ip: String,
+    #[prost(string, tag = "3")]
+    pub turn_server: String,
+    #[prost(string, tag = "4")]
+    pub turn_username: String,
+    #[prost(string, tag = "5")]
+    pub turn_password: String,
+}
+
+/// One text frame between a browser and a host, either way.
+#[derive(Clone, PartialEq, Message)]
+pub struct BrowserText {
+    #[prost(uint64, tag = "1")]
+    pub conn: u64,
+    #[prost(string, tag = "2")]
+    pub text: String,
+}
+
+/// The browser, or the host's side of it, is gone.
+#[derive(Clone, PartialEq, Message)]
+pub struct BrowserClose {
+    #[prost(uint64, tag = "1")]
+    pub conn: u64,
+}
+
 #[derive(Clone, PartialEq, Oneof)]
 pub enum ServerBody {
     #[prost(message, tag = "1")]
@@ -245,11 +288,17 @@ pub enum ServerBody {
     Trickle(Trickle),
     #[prost(message, tag = "8")]
     Error(SignalError),
+    #[prost(message, tag = "9")]
+    BrowserOpen(BrowserOpen),
+    #[prost(message, tag = "10")]
+    BrowserText(BrowserText),
+    #[prost(message, tag = "11")]
+    BrowserClose(BrowserClose),
 }
 
 #[derive(Clone, PartialEq, Message)]
 pub struct SignalServerMsg {
-    #[prost(oneof = "ServerBody", tags = "1, 2, 3, 4, 5, 6, 7, 8")]
+    #[prost(oneof = "ServerBody", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11")]
     pub body: Option<ServerBody>,
 }
 
@@ -271,11 +320,15 @@ pub enum ClientBody {
     Answer(Answer),
     #[prost(message, tag = "5")]
     Trickle(Trickle),
+    #[prost(message, tag = "6")]
+    BrowserText(BrowserText),
+    #[prost(message, tag = "7")]
+    BrowserClose(BrowserClose),
 }
 
 #[derive(Clone, PartialEq, Message)]
 pub struct SignalClientMsg {
-    #[prost(oneof = "ClientBody", tags = "1, 2, 3, 4, 5")]
+    #[prost(oneof = "ClientBody", tags = "1, 2, 3, 4, 5, 6, 7")]
     pub body: Option<ClientBody>,
 }
 
@@ -291,9 +344,11 @@ pub const PURPOSE_REGISTER: &str = "signal register";
 
 /// What a `Register.sig` covers: the server's nonce, the X25519 key being
 /// registered and the server name the client dialed.
-pub fn register_message(nonce: &[u8], x25519: &[u8], server_name: &str) -> Vec<u8> {
-    let mut m = Vec::with_capacity(nonce.len() + x25519.len() + server_name.len() + 8);
-    for part in [nonce, x25519, server_name.as_bytes()] {
+pub fn register_message(nonce: &[u8], x25519: &[u8], server_name: &str, id_seed: &[u8]) -> Vec<u8> {
+    let mut m = Vec::with_capacity(nonce.len() + x25519.len() + server_name.len() + 16);
+    // Without a seed the message is what it always was.
+    let seed: &[&[u8]] = if id_seed.is_empty() { &[] } else { &[id_seed] };
+    for part in [nonce, x25519, server_name.as_bytes()].iter().chain(seed) {
         m.extend_from_slice(&(part.len() as u32).to_be_bytes());
         m.extend_from_slice(part);
     }

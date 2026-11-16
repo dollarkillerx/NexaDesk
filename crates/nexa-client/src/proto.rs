@@ -22,6 +22,9 @@ pub enum ConnectAuth {
     Code(String),
     #[prost(string, tag = "6")]
     Password(String),
+    /// No secret: ask the person at the host. Only with a device ID as the address.
+    #[prost(bool, tag = "9")]
+    Request(bool),
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -34,7 +37,7 @@ pub struct ConnectRequest {
     pub mode: i32,
     #[prost(uint32, tag = "7")]
     pub fps: u32,
-    #[prost(oneof = "ConnectAuth", tags = "4, 5, 6")]
+    #[prost(oneof = "ConnectAuth", tags = "4, 5, 6, 9")]
     pub auth: Option<ConnectAuth>,
     /// The nexa-signal server, used when `address` is a device ID.
     #[prost(string, tag = "8")]

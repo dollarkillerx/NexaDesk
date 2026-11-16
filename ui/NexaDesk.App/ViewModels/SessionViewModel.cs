@@ -12,13 +12,16 @@ public interface IWindowService
 {
     void ShowSession(SessionViewModel session);
     void ShowConsent(ConsentViewModel consent);
+    /// <summary>One banner per person connected, stacked at the top of the screen.</summary>
     void ShowBanner(BannerViewModel banner);
-    void HideBanner();
+    void HideBanner(BannerViewModel banner);
     void ShowPermissionGuide(PermissionGuideViewModel guide);
     void ShowDiagnostics(DiagnosticsViewModel diagnostics);
     void ShowKeyboardSettings(KeyboardSettingsViewModel settings);
     /// <summary>Opens a fixed https link in the default browser.</summary>
     void OpenUrl(string url);
+    /// <summary>Puts text on the clipboard.</summary>
+    void CopyText(string text);
 }
 
 /// <summary>

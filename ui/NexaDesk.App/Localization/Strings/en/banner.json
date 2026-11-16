@@ -1,4 +1,7 @@
 {
   "Banner.WindowTitle": "NexaDesk — Being controlled",
-  "Banner.Disconnect": "Disconnect"
+  "Banner.Disconnect": "Disconnect",
+  "Banner.Collapse": "Fold",
+  "Banner.Expand": "Show the banner",
+  "Banner.Folded": "{0} people · {1}"
 }

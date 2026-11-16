@@ -876,6 +876,7 @@ async fn signal_server() -> nexa_signal::Server {
                 connect_per_ip: (100.0, 100.0),
                 ..Default::default()
             },
+            web: None,
         },
         nexa_signal::Sockets {
             ws,

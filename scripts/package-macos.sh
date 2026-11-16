@@ -11,8 +11,9 @@
 #   Contents/MacOS/lib*.dylib             Avalonia's native parts (AvaloniaNative, Skia, HarfBuzz)
 #   Contents/Resources/AppIcon.icns       the app icon (assets/icon, from scripts/make-app-icon.sh)
 #
-# Ad-hoc signing ties macOS privacy grants (Screen Recording, Accessibility) to this exact
-# build: after rebuilding, macOS treats it as a new app and the grants must be given again.
+# Signed with one identity (scripts/make-signing-identity.sh, or NEXA_SIGN_IDENTITY), every
+# build is the same app to macOS and keeps its privacy grants. Ad-hoc signing, the fallback,
+# ties them to this exact build: after rebuilding they must be given again.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -104,14 +105,36 @@ for lproj in "$ROOT/ui/NexaDesk.App/Localization/InfoPlist"/*.lproj; do
   plutil -lint "$APP/Contents/Resources/$(basename "$lproj")/InfoPlist.strings" >/dev/null
 done
 
-step "Ad-hoc signing"
+# One identity for every build, so macOS keeps Screen Recording, Accessibility and
+# Keychain "Always Allow" across rebuilds: NEXA_SIGN_IDENTITY (e.g. a Developer ID), else
+# "NexaDesk Local Signing" from scripts/make-signing-identity.sh, else an Apple
+# Development certificate, else ad-hoc.
+IDENTITY="${NEXA_SIGN_IDENTITY:-}"
+KEYCHAIN_ARGS=()
+if [ -n "${NEXA_SIGN_KEYCHAIN:-}" ]; then KEYCHAIN_ARGS=(--keychain "$NEXA_SIGN_KEYCHAIN"); fi
+if [ -z "$IDENTITY" ] && security find-certificate -c "NexaDesk Local Signing" ${NEXA_SIGN_KEYCHAIN:+"$NEXA_SIGN_KEYCHAIN"} >/dev/null 2>&1; then
+  IDENTITY="NexaDesk Local Signing"
+fi
+# Or an Apple Development certificate, if this Mac has one (Xcode's "Sign to Run Locally").
+if [ -z "$IDENTITY" ]; then
+  IDENTITY=$(security find-identity -v -p codesigning ${NEXA_SIGN_KEYCHAIN:+"$NEXA_SIGN_KEYCHAIN"} 2>/dev/null \
+    | sed -n 's/^ *[0-9]*) \([0-9A-F]\{40\}\) "Apple Development: .*/\1/p' | head -1)
+fi
+if [ -n "$IDENTITY" ]; then
+  step "Signing as \"$IDENTITY\""
+  SIGN=(--sign "$IDENTITY" "${KEYCHAIN_ARGS[@]+"${KEYCHAIN_ARGS[@]}"}")
+else
+  step "Ad-hoc signing (scripts/make-signing-identity.sh keeps permissions across rebuilds)"
+  SIGN=(--sign -)
+fi
 # Inside out: libraries and the helper first, then the bundle, which seals them.
 for lib in "$APP/Contents/MacOS"/*.dylib; do
-  codesign --force --sign - --timestamp=none "$lib"
+  codesign --force "${SIGN[@]}" --timestamp=none "$lib"
 done
-codesign --force --sign - --timestamp=none --identifier app.nexadesk.agent "$APP/Contents/MacOS/nexa-agent"
-codesign --force --sign - --timestamp=none "$APP"
+codesign --force "${SIGN[@]}" --timestamp=none --identifier app.nexadesk.agent "$APP/Contents/MacOS/nexa-agent"
+codesign --force "${SIGN[@]}" --timestamp=none "$APP"
 codesign --verify --strict --deep "$APP"
+codesign -dr - "$APP" 2>&1 | sed -n 's/^designated => /identity: /p'
 
 step "Done"
 du -sh "$APP" | sed 's/^/bundle size: /'

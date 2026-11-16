@@ -656,6 +656,7 @@ fn parse_auth(auth: ConnectAuth) -> Result<(ViewerAuth, Option<DevicePublicKey>)
         }
         ConnectAuth::Code(code) => Ok((ViewerAuth::Code(Zeroizing::new(code)), None)),
         ConnectAuth::Password(p) => Ok((ViewerAuth::Password(Zeroizing::new(p)), None)),
+        ConnectAuth::Request(_) => Ok((ViewerAuth::Request, None)),
     }
 }
 
@@ -870,6 +871,14 @@ async fn establish(
         )
     })?;
     let (auth, pinned) = parse_auth(auth).map_err(|m| (DisconnectReason::InvalidRequest, m))?;
+    // Without a secret, only the key the signaling server holds for a device ID says
+    // who answers; an address alone would let anyone answer.
+    if matches!(auth, ViewerAuth::Request) && normalize_short_id(&request.address).is_none() {
+        return Err((
+            DisconnectReason::InvalidRequest,
+            "asking without a code needs a device ID".to_owned(),
+        ));
+    }
     let device = core
         .device()
         .await
@@ -1291,6 +1300,7 @@ async fn stream_session(
             clipboard: false,
             file: false,
             audio: false,
+            terminal: false,
         });
     // The window was built for what the first connection granted; a reconnect
     // that was given something else (the person at the host decided again)

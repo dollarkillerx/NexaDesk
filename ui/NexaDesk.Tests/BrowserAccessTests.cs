@@ -18,7 +18,9 @@ public class BrowserAccessTests
             new FakeAddresses(["192.168.1.35", "100.101.22.7", "127.0.0.1"]), "Mac", () => Samples.T0,
             new MemorySettings(new AppSettings(AllowBrowsers: allow)));
 
-    static async Task<(MainViewModel, FakeProcess)> Hosting(bool allow)
+    const string Fp = "AB:CD:EF:01:23:45:67:89:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:10:20:30:40:50:60:70:80";
+
+    static async Task<(MainViewModel, FakeProcess)> Hosting(bool allow, string fingerprint = Fp, bool custom = false)
     {
         var link = new FakeLink();
         link.ConnectResults.Enqueue("no socket");
@@ -26,7 +28,7 @@ public class BrowserAccessTests
         var process = new FakeProcess();
         var main = Main(link, process, allow);
         await main.Host.StartCommand.ExecuteAsync(null);
-        link.Raise(Samples.Status() with { Listen = "[::]:47800" });
+        link.Raise(Samples.Status() with { Listen = "[::]:47800", WebFingerprint = allow ? fingerprint : "", WebCertCustom = custom });
         return (main, process);
     }
 
@@ -54,10 +56,32 @@ public class BrowserAccessTests
     {
         var (main, process) = await Hosting(allow: true);
         Assert.Equal("[::]:47801", process.Webs.Single());
-        var browser = main.Host.ConnectOptions.Where(o => o.Address.StartsWith("http://")).Select(o => o.Address).ToList();
-        Assert.Contains("http://192.168.1.35:47801", browser);
-        Assert.Contains("http://100.101.22.7:47801", browser);
-        Assert.DoesNotContain("http://127.0.0.1:47801", browser);
+        var browser = main.Host.ConnectOptions.Where(o => o.Address.StartsWith("https://")).Select(o => o.Address).ToList();
+        Assert.Contains("https://192.168.1.35:47801", browser);
+        Assert.Contains("https://100.101.22.7:47801", browser);
+        Assert.DoesNotContain("https://127.0.0.1:47801", browser);
+        Assert.DoesNotContain(main.Host.ConnectOptions, o => o.Address.StartsWith("http://"));
+    }
+
+    [AvaloniaFact]
+    public async Task A_self_signed_certificate_comes_with_the_start_of_its_fingerprint()
+    {
+        var (main, _) = await Hosting(allow: true);
+        var option = main.Host.ConnectOptions.First(o => o.Address.StartsWith("https://"));
+        Assert.Contains("AB:CD:EF:01:23:45:67:89", option.Detail);
+        Assert.DoesNotContain("AA:BB", option.Detail);
+
+        var (own, _) = await Hosting(allow: true, custom: true);
+        Assert.DoesNotContain("AB:CD", own.Host.ConnectOptions.First(o => o.Address.StartsWith("https://")).Detail);
+    }
+
+    [Fact]
+    public void A_web_fingerprint_is_read_from_the_status()
+    {
+        var bytes = Convert.FromHexString("0a08" + "0801" + "62024142" + "6801");
+        var s = Assert.IsType<AgentMessage.Status>(AgentMessage.Decode(bytes));
+        Assert.Equal("AB", s.WebFingerprint);
+        Assert.True(s.WebCertCustom);
     }
 
     [AvaloniaFact]
@@ -65,7 +89,7 @@ public class BrowserAccessTests
     {
         var (main, process) = await Hosting(allow: false);
         Assert.Null(process.Webs.Single());
-        Assert.DoesNotContain(main.Host.ConnectOptions, o => o.Address.StartsWith("http://"));
+        Assert.DoesNotContain(main.Host.ConnectOptions, o => o.Address.StartsWith("http"));
         Assert.False(main.Host.RestartNeeded);
         main.Settings.AllowBrowsers = true;
         Assert.True(main.Host.RestartNeeded);
@@ -84,7 +108,7 @@ public class BrowserAccessTests
     }
 
     [Fact]
-    public void A_browser_is_offered_view_and_input_only_and_is_never_saved()
+    public void A_browser_is_offered_view_input_and_clipboard_only_and_is_never_saved()
     {
         var req = Samples.Request() with
         {
@@ -100,9 +124,31 @@ public class BrowserAccessTests
         vm.AllowCommand.Execute(null);
         var decided = Assert.IsType<UiRequest.Decide>(link.Sent[^1]);
         Assert.True(decided.Perms.View);
-        Assert.False(decided.Perms.Clipboard);
+        Assert.True(decided.Perms.Clipboard);
         Assert.False(decided.Perms.File);
         Assert.False(decided.Perms.Audio);
         Assert.False(decided.Save);
+    }
+
+    [Fact]
+    public void A_browser_gets_no_clipboard_unless_it_is_ticked()
+    {
+        var req = Samples.Request() with { Browser = true, OfferSave = false, Perms = new Permissions(true, true, false) };
+        var link = new FakeLink();
+        var vm = new ConsentViewModel(req, link, Samples.T0);
+        Assert.False(vm.AllowClipboard);
+        vm.Tick(Samples.T0.AddSeconds(2));
+        vm.AllowCommand.Execute(null);
+        Assert.False(Assert.IsType<UiRequest.Decide>(link.Sent[^1]).Perms.Clipboard);
+    }
+
+    [Fact]
+    public void The_server_page_comes_from_its_signaling_address()
+    {
+        Assert.Equal("https://signal.example.com/", HostViewModel.ServerPage("wss://signal.example.com"));
+        Assert.Equal("https://signal.example.com:8443/", HostViewModel.ServerPage("wss://signal.example.com:8443/path"));
+        Assert.Equal("https://signal.example.com/", HostViewModel.ServerPage("signal.example.com"));
+        Assert.Null(HostViewModel.ServerPage(""));
+        Assert.Null(HostViewModel.ServerPage("ws://127.0.0.1:9000"));
     }
 }

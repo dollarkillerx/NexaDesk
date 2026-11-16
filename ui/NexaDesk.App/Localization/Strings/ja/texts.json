@@ -85,5 +85,7 @@
   "Texts.Capture.Inactive": "キーボード未キャプチャ：画面をクリックすると操作を開始します",
   "Texts.Mode.Office": "オフィス",
   "Texts.Mode.Balanced": "バランス",
-  "Texts.Mode.Game": "ゲーム"
+  "Texts.Mode.Game": "ゲーム",
+  "Texts.Auth.Request": "コードなし、デバイス ID のみ（相手を確認できません）",
+  "Texts.Perm.Terminal": "コマンドライン"
 }

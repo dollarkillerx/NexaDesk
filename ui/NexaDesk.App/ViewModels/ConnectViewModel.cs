@@ -134,7 +134,7 @@ public sealed partial class ConnectViewModel : ObservableObject
     static string IdNeedsServer => L.Get("Connect.IdNeedsServer");
 
     public string? CodeHint =>
-        Code.Length > 0 && Texts.NormalizeCode(Code) == null ? L.Get("Connect.CodeHint") : null;
+        Code.Length > 0 && Texts.SignInFor(Code) == null ? L.Get("Connect.CodeHint") : null;
 
     public ConnectViewModel(IClientCore core, IRecentStore store, IWindowService windows, Func<DateTimeOffset>? now = null,
         Func<string>? signalServer = null, TailscaleViewModel? tailscale = null)
@@ -163,7 +163,14 @@ public sealed partial class ConnectViewModel : ObservableObject
 
     bool IsPaired(string key) => key.Length > 0 && _paired.Contains(key);
 
-    bool CanConnect() => !IsConnecting && Texts.NormalizeTarget(Address) != null && Texts.NormalizeCode(Code) != null;
+    bool CanConnect() => !IsConnecting && Texts.NormalizeTarget(Address) != null && SignIn() != null;
+
+    /// <summary>The code or password typed; with a device ID and nothing typed, a request
+    /// the person at the host answers.</summary>
+    Proto.ConnectAuth? SignIn() =>
+        Code.Length == 0 && Texts.NormalizeDeviceId(Address) != null
+            ? new Proto.ConnectAuth.Request()
+            : Texts.SignInFor(Code);
 
     /// <summary>The server setting changed: an ID typed earlier may now be usable.</summary>
     public void OnServerChanged()
@@ -178,9 +185,9 @@ public sealed partial class ConnectViewModel : ObservableObject
     private void Connect()
     {
         var address = Texts.NormalizeTarget(Address);
-        var code = Texts.NormalizeCode(Code);
-        if (address == null || code == null) return;
-        Start(address, new ConnectAuth.Code(code));
+        var signIn = SignIn();
+        if (address == null || signIn == null) return;
+        Start(address, signIn);
     }
 
     internal void ConnectRecent(RecentDeviceViewModel device)

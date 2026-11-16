@@ -90,6 +90,7 @@ fn auth_kind(a: AuthKind) -> pb::AuthKind {
         AuthKind::Paired => pb::AuthKind::Paired,
         AuthKind::Code => pb::AuthKind::Code,
         AuthKind::Password => pb::AuthKind::Password,
+        AuthKind::Request => pb::AuthKind::Request,
     }
 }
 
@@ -109,6 +110,7 @@ pub(crate) fn answer_of(d: &pb::Decide) -> ConsentAnswer {
             clipboard: p.clipboard,
             file: p.file,
             audio: p.audio,
+            terminal: p.terminal,
         },
         save: d.save,
         skip_next_time: d.skip_next_time,
@@ -379,6 +381,7 @@ mod tests {
                 clipboard: true,
                 file: true,
                 audio: true,
+                terminal: false,
             }),
             save: true,
             skip_next_time: true,

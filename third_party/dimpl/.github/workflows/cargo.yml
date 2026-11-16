@@ -1,0 +1,99 @@
+name: CI
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        # Cover toolchains and crypto providers on Linux.
+        os: [ubuntu-latest]
+        rust: [stable, beta, 1.89.0]
+        # rcgen includes aws-lc-rs and enables certificate-dependent tests.
+        feature: ["rcgen", "rust-crypto"]
+        include:
+          # Building without a crypto provider only needs one check.
+          - os: ubuntu-latest
+            rust: stable
+            feature: ""
+          # Cover other platforms once using the default feature set.
+          - os: macos-latest
+            rust: stable
+            feature: "rcgen"
+          - os: windows-latest
+            rust: stable
+            feature: "rcgen"
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@v1
+        id: toolchain
+        with:
+          toolchain: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Install autotools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install autoconf automake libtool
+      - name: Set MACOSX_DEPLOYMENT_TARGET
+        if: runner.os == 'macOS'
+        run: echo "MACOSX_DEPLOYMENT_TARGET=$(sw_vers -productVersion | cut -d. -f1)" >> $GITHUB_ENV
+      - name: Build
+        run: cargo +${{steps.toolchain.outputs.name}} build --no-default-features --features "${{ matrix.feature }}"
+      - name: Test
+        if: matrix.feature != ''
+        run: cargo +${{steps.toolchain.outputs.name}} test  --no-default-features --features "${{ matrix.feature }}"
+
+  snowflake:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Martin's snowflake formatting rules
+        uses: algesten/snowflake@v1.0.4
+        with:
+          check_diff: true
+          line_width_rules: "CHANGELOG.md:120;c_cpp_properties.json:160;Cargo.toml:199;README.md:180;README.tpl:180;*.md:110;*.rs:110;*.toml:110;DEFAULT=110"
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@v1
+        id: toolchain
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo +${{steps.toolchain.outputs.name}} fmt --all -- --check
+      - name: clippy
+        run: cargo +${{steps.toolchain.outputs.name}} clippy --all-targets -- -D warnings
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: clippy
+      - name: doc
+        run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -Dwarnings
+
+  cargo-deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --all-features

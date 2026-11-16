@@ -3,10 +3,18 @@
 //! The pointer, buttons, keys and wheel the browser sends are drawn into the picture, so
 //! the round trip is visible. Every consent request is accepted with input.
 //!
-//!   cargo run -p nexa-web --example demo [-- <addr:port>]     (default 0.0.0.0:47801)
+//!   cargo run -p nexa-web --example demo [-- <addr:port> [<signal url>]]
+//!
+//! The address defaults to 0.0.0.0:47801. With a signaling server URL (e.g.
+//! ws://127.0.0.1:8443, or wss://… with the server's certificate trusted), the demo also
+//! registers there under a throwaway identity and takes browsers the server puts
+//! through, by the device ID it prints: the across-the-internet path, TURN included.
+//! `NEXA_SIGNAL_CA=<pem>` trusts a server certificate from a CA of your own.
+//! `NEXA_DEMO_PASSWORD=<password>` lets browsers type that instead of the code.
 //!
 //! Open the printed URL from another device, or from this one by its LAN address
-//! (browsers ignore 127.0.0.1 as a WebRTC address), and type the printed code.
+//! (browsers ignore 127.0.0.1 as a WebRTC address), accept the self-signed certificate,
+//! and type the printed code.
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
@@ -48,6 +56,9 @@ mod demo {
         keys: BTreeSet<u32>,
         scroll: i64,
         text: usize,
+        /// What the browser put on the demo's clipboard, and text the demo "copied".
+        clipboard: String,
+        copied: Option<String>,
     }
 
     struct Demo(Arc<Mutex<Seen>>);
@@ -62,6 +73,10 @@ mod demo {
             })
         }
         fn capturer(&self, config: CaptureConfig) -> nexa_media::Result<Box<dyn Capturer>> {
+            println!(
+                "capture {}x{} @ {} fps",
+                config.width, config.height, config.fps
+            );
             Ok(Box::new(Synthetic {
                 seen: self.0.clone(),
                 width: config.width,
@@ -80,12 +95,26 @@ mod demo {
         fn input_sink(&self) -> Result<Box<dyn InputSink>, String> {
             Ok(Box::new(Sink(self.0.clone())))
         }
+        fn clipboard(&self) -> Result<Box<dyn nexa_web::WebClipboard>, String> {
+            Ok(Box::new(Clip(self.0.clone())))
+        }
         fn ask(&self, r: &BrowserRequest, _timeout: Duration) -> BrowserAnswer {
             println!("consent: {} from {} — accepted", r.browser, r.remote);
             BrowserAnswer {
                 allow: true,
                 input: true,
+                clipboard: true,
+                terminal: true,
             }
+        }
+        fn terminal(&self, cols: u16, rows: u16) -> Result<nexa_term::Pty, String> {
+            println!("terminal opened {cols}x{rows}");
+            nexa_term::Pty::spawn(&nexa_term::Spawn {
+                cols,
+                rows,
+                ..Default::default()
+            })
+            .map_err(|e| e.to_string())
         }
         fn event(&self, e: WebEvent) {
             println!("event: {e:?}");
@@ -93,6 +122,20 @@ mod demo {
     }
 
     struct Sink(Arc<Mutex<Seen>>);
+
+    /// F9 in the browser "copies" a line on the demo host, to try the way back.
+    struct Clip(Arc<Mutex<Seen>>);
+
+    impl nexa_web::WebClipboard for Clip {
+        fn poll(&mut self) -> Option<String> {
+            self.0.lock().unwrap().copied.take()
+        }
+        fn set_text(&mut self, text: &str) -> Result<(), String> {
+            println!("clipboard from the browser: {} chars", text.chars().count());
+            self.0.lock().unwrap().clipboard = text.to_string();
+            Ok(())
+        }
+    }
 
     impl InputSink for Sink {
         fn key(&mut self, hid: u32, down: bool, repeat: bool, _: Instant) {
@@ -102,6 +145,12 @@ mod demo {
                 if repeat { "repeat" } else { "" }
             );
             let mut s = self.0.lock().unwrap();
+            if down && hid == (0x07 << 16) | 0x42 {
+                let n = s.clipboard.chars().count();
+                s.copied = Some(format!(
+                    "Copied on the demo host; it last received {n} characters."
+                ));
+            }
             if down {
                 s.keys.insert(hid);
             } else {
@@ -166,7 +215,7 @@ mod demo {
             self.t += 1;
             let (w, h) = (self.width as usize, self.height as usize);
             let seen = self.seen.lock().unwrap();
-            let scroll = (seen.scroll / 4) as i64;
+            let scroll = seen.scroll / 4;
             let mut y = vec![0u8; w * h];
             for row in 0..h {
                 let gy = (row as i64 - scroll).rem_euclid(64);
@@ -227,6 +276,7 @@ mod demo {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn fill(y: &mut [u8], w: usize, h: usize, x0: usize, y0: usize, fw: usize, fh: usize, v: u8) {
         for row in y0..(y0 + fh).min(h) {
             for col in x0..(x0 + fw).min(w) {
@@ -242,6 +292,88 @@ mod demo {
         fill(y, w, h, x0 + s - 2, y0, 2, s, v);
     }
 
+    /// What the signaling task needs of the gateway, which stays in `main`.
+    type Remote = Arc<
+        dyn Fn(
+                nexa_web::RemoteBrowser,
+                tokio::sync::mpsc::Receiver<String>,
+                tokio::sync::mpsc::Sender<String>,
+            ) + Send
+            + Sync,
+    >;
+
+    fn gateway_handle(gateway: &Arc<WebGateway>) -> Remote {
+        let g = gateway.clone();
+        Arc::new(move |b, rx, tx| {
+            g.serve_remote(b, rx, tx);
+        })
+    }
+
+    /// Registers with a signaling server and serves the browsers it puts through, as the
+    /// agent does (nexa-agent's signal.rs), with an identity that lives in memory only.
+    async fn through_server(url: String, serve: Remote) {
+        use std::collections::HashMap;
+
+        use nexa_session::rendezvous::{
+            seal::SignalKeys,
+            signal::{SignalClient, SignalConfig},
+        };
+        use nexa_wire::signal::{BrowserClose, BrowserText, ClientBody, ServerBody};
+
+        let keys = SignalKeys::new(Arc::new(nexa_auth::DeviceIdentity::generate()));
+        // A server with a certificate of its own CA: NEXA_SIGNAL_CA names the CA file.
+        let mut config = SignalConfig::new(url.clone());
+        if let Some(ca) = std::env::var_os("NEXA_SIGNAL_CA") {
+            config = match config.with_ca_file(std::path::Path::new(&ca)) {
+                Ok(c) => c,
+                Err(e) => return eprintln!("NEXA_SIGNAL_CA: {e}"),
+            };
+        }
+        let mut client = match SignalClient::connect(&config, &keys).await {
+            Ok(c) => c,
+            Err(e) => return eprintln!("signaling server {url}: {e}"),
+        };
+        println!("device ID through {url}: {}", client.registration.short_id);
+        let mut browsers: HashMap<u64, tokio::sync::mpsc::Sender<String>> = HashMap::new();
+        while let Some(body) = client.recv().await {
+            match body {
+                ServerBody::BrowserOpen(o) => {
+                    println!("browser through the server from {}", o.ip);
+                    let (in_tx, in_rx) = tokio::sync::mpsc::channel(32);
+                    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<String>(32);
+                    let browser = nexa_web::RemoteBrowser {
+                        ip: o.ip.parse().unwrap_or([0, 0, 0, 0].into()),
+                        turn_server: o.turn_server.parse().expect("TURN address"),
+                        turn: nexa_web::TurnCredentials {
+                            username: o.turn_username,
+                            password: o.turn_password,
+                        },
+                    };
+                    serve(browser, in_rx, out_tx);
+                    browsers.insert(o.conn, in_tx);
+                    let (sender, conn) = (client.sender(), o.conn);
+                    tokio::spawn(async move {
+                        while let Some(text) = out_rx.recv().await {
+                            let _ =
+                                sender.send(ClientBody::BrowserText(BrowserText { conn, text }));
+                        }
+                        let _ = sender.send(ClientBody::BrowserClose(BrowserClose { conn }));
+                    });
+                }
+                ServerBody::BrowserText(t) => {
+                    if let Some(tx) = browsers.get(&t.conn) {
+                        let _ = tx.try_send(t.text);
+                    }
+                }
+                ServerBody::BrowserClose(c) => {
+                    browsers.remove(&c.conn);
+                }
+                _ => {}
+            }
+        }
+        eprintln!("signaling server closed the connection");
+    }
+
     #[tokio::main]
     pub async fn main() {
         let addr: SocketAddr = std::env::args()
@@ -252,11 +384,29 @@ mod demo {
         let code = OneTimeCode::generate();
         let shown = code.current();
         let host = Arc::new(Demo(Arc::new(Mutex::new(Seen::default()))));
-        let gateway = WebGateway::bind(addr, host, code.clone(), WebConfig::default())
+        // HTTPS with a certificate the demo makes for itself, kept next to other temp files.
+        let dir = std::env::temp_dir().join("nexa-web-demo");
+        let tls = nexa_web::WebTls::load_or_create(&dir, &nexa_web::certificate_names())
+            .expect("certificate");
+        println!("certificate SHA-256: {}", tls.fingerprint_text());
+        let gateway = WebGateway::bind(addr, host, code.clone(), WebConfig::default(), Some(tls))
             .await
             .expect("bind");
-        println!("listening on http://{}", gateway.local_addr());
+        println!("listening on https://{}", gateway.local_addr());
+        let gateway = Arc::new(gateway);
+        // A fixed password as well as the code, to try password sign-in.
+        if let Ok(pw) = std::env::var("NEXA_DEMO_PASSWORD") {
+            let stored = nexa_auth::HostPassword::create(&pw).expect("password");
+            gateway.set_password(Some((
+                Arc::new(stored),
+                nexa_auth::PasswordGuard::default(),
+            )));
+            println!("fixed password set");
+        }
         println!("one-time code: {}-{}", &shown[..4], &shown[4..]);
+        if let Some(url) = std::env::args().nth(2) {
+            tokio::spawn(through_server(url, gateway_handle(&gateway)));
+        }
         let mut last = shown.to_string();
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;

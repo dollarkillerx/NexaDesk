@@ -81,6 +81,8 @@ pub enum HelloAuth {
     Known,
     Code,
     Password,
+    /// No secret: the person at the host decides.
+    Request,
 }
 
 /// Reads the requested authentication from a `ClientHello`.
@@ -92,6 +94,7 @@ pub fn hello_auth(hello: &ClientHello) -> Result<HelloAuth, PairError> {
         Some(Auth::Known(true)) => Ok(HelloAuth::Known),
         Some(Auth::Code(true)) => Ok(HelloAuth::Code),
         Some(Auth::Password(true)) => Ok(HelloAuth::Password),
+        Some(Auth::Request(true)) => Ok(HelloAuth::Request),
         _ => Err(PairError::Malformed("no authentication method")),
     }
 }

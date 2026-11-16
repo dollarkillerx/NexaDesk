@@ -48,9 +48,13 @@ public abstract record UiRequest
         protected override void Write(ProtoWriter w) => w.Message(5, m => m.String(1, DeviceKey));
     }
 
-    public sealed record Disconnect : UiRequest
+    /// <summary>Ends one person's session; Id 0 ends them all.</summary>
+    public sealed record Disconnect(ulong Id = 0) : UiRequest
     {
-        protected override void Write(ProtoWriter w) => w.Message(6, _ => { });
+        protected override void Write(ProtoWriter w) => w.Message(6, m =>
+        {
+            if (Id != 0) m.UInt64(1, Id);
+        });
     }
 
     public sealed record RotateCode : UiRequest
@@ -93,7 +97,8 @@ public abstract record UiRequest
     }
 }
 
-public enum AuthKind { Unspecified = 0, Paired = 1, Code = 2, Password = 3 }
+/// <summary>Request: only the device ID, nothing proves who is asking.</summary>
+public enum AuthKind { Unspecified = 0, Paired = 1, Code = 2, Password = 3, Request = 4 }
 
 public enum NoticeKind { Warning = 0, ConnectionFailed = 1, Clipboard = 2 }
 
@@ -109,7 +114,8 @@ public abstract record AgentMessage
 {
     public sealed record Status(uint Version, string Listen, string Code, string DeviceName, string DeviceId,
         string DeviceKey, HostSession? Session, bool InputAvailable,
-        string ShortId = "", SignalState Signal = SignalState.Off, string SignalDetail = "") : AgentMessage;
+        string ShortId = "", SignalState Signal = SignalState.Off, string SignalDetail = "",
+        string WebFingerprint = "", bool WebCertCustom = false, bool PasswordSet = false) : AgentMessage;
 
     public sealed record IncomingRequest(ulong ReqId, string DeviceName, string DeviceId, string DeviceKey,
         string Remote, AuthKind Auth, Permissions Perms, bool OfferSave, bool SaveDefault, bool OfferSkipNextTime,
@@ -191,7 +197,9 @@ public abstract record AgentMessage
         string listen = "", code = "", name = "", did = "", key = "";
         HostSession? session = null;
         var input = false;
-        string shortId = "", detail = "";
+        string shortId = "", detail = "", webFp = "";
+        var webCustom = false;
+        var passwordSet = false;
         var signal = SignalState.Off;
         var r = new ProtoReader(data);
         while (r.Next(out var f))
@@ -209,11 +217,14 @@ public abstract record AgentMessage
                 case 9: shortId = r.String(); break;
                 case 10: signal = (SignalState)r.Int32(); break;
                 case 11: detail = r.String(); break;
+                case 12: webFp = r.String(); break;
+                case 13: webCustom = r.Bool(); break;
+                case 14: passwordSet = r.Bool(); break;
                 default: r.Skip(); break;
             }
         }
         if (!Enum.IsDefined(signal)) signal = SignalState.Off;
-        return new Status(version, listen, code, name, did, key, session, input, shortId, signal, detail);
+        return new Status(version, listen, code, name, did, key, session, input, shortId, signal, detail, webFp, webCustom, passwordSet);
     }
 
     static IncomingRequest DecodeIncoming(ReadOnlySpan<byte> data)

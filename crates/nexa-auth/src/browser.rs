@@ -40,7 +40,7 @@ use crate::{
         AuthMethod, CONFIRM_LEN, HOST_TAG, PairError, SPAKE_MSG_LEN, VIEWER_TAG, confirm_key,
         confirm_ok, confirm_tag, transcript_of,
     },
-    secrets::{Attempt, OneTimeCode, SALT_LEN, Source},
+    secrets::{Attempt, HostPassword, OneTimeCode, PasswordGuard, SALT_LEN, Source},
 };
 
 /// Domain separation for browser exchanges; its SHA-256 salts the confirmation key.
@@ -97,6 +97,7 @@ enum State {
         spake: Box<Spake2<Ed25519Group>>,
         host_msg: Vec<u8>,
         salt: [u8; SALT_LEN],
+        method: AuthMethod,
         attempt: Attempt,
     },
     Finished,
@@ -142,12 +143,51 @@ impl BrowserPairing {
         let (attempt, secret) = code.begin(source)?;
         let mut salt = [0u8; SALT_LEN];
         OsRng.fill_bytes(&mut salt);
+        Ok(Self::start(
+            browser,
+            host,
+            AuthMethod::Code,
+            secret.as_bytes(),
+            salt,
+            attempt,
+        ))
+    }
+
+    /// The same with the host's fixed password: charges `guard` (shared with native
+    /// viewers) and `source`. The salt in the first message is the password's, for the
+    /// browser's Argon2id; the host only ever holds the result.
+    pub fn with_password(
+        browser: DtlsFingerprint,
+        host: DtlsFingerprint,
+        password: &HostPassword,
+        guard: &PasswordGuard,
+        source: Source,
+    ) -> Result<(Self, AuthStep), PairError> {
+        if browser == host {
+            return Err(PairError::SameIdentity);
+        }
+        let attempt = guard.begin(source)?;
+        Ok(Self::start(
+            browser,
+            host,
+            AuthMethod::Password,
+            password.verifier(),
+            *password.salt(),
+            attempt,
+        ))
+    }
+
+    fn start(
+        browser: DtlsFingerprint,
+        host: DtlsFingerprint,
+        method: AuthMethod,
+        secret: &[u8],
+        salt: [u8; SALT_LEN],
+        attempt: Attempt,
+    ) -> (Self, AuthStep) {
         let (id_browser, id_host) = identities(&browser, &host);
-        let (spake, host_msg) = Spake2::<Ed25519Group>::start_b(
-            &Password::new(secret.as_bytes()),
-            &id_browser,
-            &id_host,
-        );
+        let (spake, host_msg) =
+            Spake2::<Ed25519Group>::start_b(&Password::new(secret), &id_browser, &id_host);
         let offer = AuthStep {
             spake_msg: host_msg.clone(),
             confirm: Vec::new(),
@@ -157,16 +197,17 @@ impl BrowserPairing {
             spake: Box::new(spake),
             host_msg,
             salt,
+            method,
             attempt,
         };
-        Ok((
+        (
             Self {
                 browser,
                 host,
                 state,
             },
             offer,
-        ))
+        )
     }
 
     /// Feeds the browser's message. On success, send the returned step back; on any error
@@ -176,6 +217,7 @@ impl BrowserPairing {
             spake,
             host_msg,
             salt,
+            method,
             attempt,
         } = mem::replace(&mut self.state, State::Finished)
         else {
@@ -199,7 +241,7 @@ impl BrowserPairing {
         let transcript = transcript_of(
             &self.browser.0,
             &self.host.0,
-            AuthMethod::Code,
+            method,
             &salt,
             &step.spake_msg,
             &host_msg,
@@ -243,9 +285,41 @@ pub mod reference {
         offer: &AuthStep,
     ) -> Result<(AuthStep, Viewer), PairError> {
         let code = crate::secrets::normalize_code(code)?;
+        answer_with(code.as_bytes(), AuthMethod::Code, browser, host, offer)
+    }
+
+    /// The same with the host's fixed password: Argon2id under the offer's salt first.
+    pub fn answer_password(
+        password: &str,
+        browser: &DtlsFingerprint,
+        host: &DtlsFingerprint,
+        offer: &AuthStep,
+    ) -> Result<(AuthStep, Viewer), PairError> {
+        let salt: [u8; SALT_LEN] = offer
+            .salt
+            .as_slice()
+            .try_into()
+            .map_err(|_| PairError::Malformed("salt length"))?;
+        let verifier = crate::secrets::password_verifier(password, &salt)?;
+        answer_with(
+            verifier.as_slice(),
+            AuthMethod::Password,
+            browser,
+            host,
+            offer,
+        )
+    }
+
+    fn answer_with(
+        secret: &[u8],
+        method: AuthMethod,
+        browser: &DtlsFingerprint,
+        host: &DtlsFingerprint,
+        offer: &AuthStep,
+    ) -> Result<(AuthStep, Viewer), PairError> {
         let (id_browser, id_host) = identities(browser, host);
         let (spake, msg) =
-            Spake2::<Ed25519Group>::start_a(&Password::new(code.as_bytes()), &id_browser, &id_host);
+            Spake2::<Ed25519Group>::start_a(&Password::new(secret), &id_browser, &id_host);
         let spake_key = spake
             .finish(&offer.spake_msg)
             .map_err(|_| PairError::Malformed("spake message"))?;
@@ -253,7 +327,7 @@ pub mod reference {
         let transcript = transcript_of(
             &browser.0,
             &host.0,
-            AuthMethod::Code,
+            method,
             &offer.salt,
             &msg,
             &offer.spake_msg,
@@ -292,6 +366,28 @@ mod tests {
 
     const B: DtlsFingerprint = DtlsFingerprint([1; 32]);
     const H: DtlsFingerprint = DtlsFingerprint([2; 32]);
+
+    #[test]
+    fn a_browser_with_the_password_pairs_and_a_wrong_one_is_charged() {
+        let stored = HostPassword::create("correct horse battery").unwrap();
+        let guard = PasswordGuard::default();
+        let (mut host, offer) =
+            BrowserPairing::with_password(B, H, &stored, &guard, source(1)).unwrap();
+        let (reply, viewer) =
+            reference::answer_password("correct horse battery", &B, &H, &offer).unwrap();
+        let (host_step, verified) = host.on_step(&reply).unwrap();
+        assert_eq!(verified.fingerprint(), B);
+        assert!(reference::host_ok(&viewer, &host_step));
+
+        // A code answer to a password offer fails: the method is in the transcript.
+        let (mut host, offer) =
+            BrowserPairing::with_password(B, H, &stored, &guard, source(2)).unwrap();
+        let (reply, _) = reference::answer_password("wrong horse", &B, &H, &offer).unwrap();
+        assert_eq!(
+            host.on_step(&reply).err(),
+            Some(PairError::ConfirmationFailed)
+        );
+    }
 
     #[test]
     fn a_browser_with_the_code_pairs_and_checks_the_host() {
@@ -349,12 +445,9 @@ mod tests {
         let (reply, _) = reference::answer(&shown, &B, &H, &offer).unwrap();
         host.on_step(&reply).unwrap();
         // The same code again, even with a correct exchange, is consumed.
-        match BrowserPairing::with_code(B, H, &code, source(6)) {
-            Ok((mut again, offer)) => {
-                let (reply, _) = reference::answer(&shown, &B, &H, &offer).unwrap();
-                assert!(again.on_step(&reply).is_err());
-            }
-            Err(_) => {}
+        if let Ok((mut again, offer)) = BrowserPairing::with_code(B, H, &code, source(6)) {
+            let (reply, _) = reference::answer(&shown, &B, &H, &offer).unwrap();
+            assert!(again.on_step(&reply).is_err());
         }
     }
 

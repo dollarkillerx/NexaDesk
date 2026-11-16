@@ -130,6 +130,11 @@ async fn world(tls: bool) -> World {
             },
             relay_token_ttl_secs: 600,
             limits: relaxed_limits(),
+            // TURN shares the first STUN socket: native clients must not notice.
+            web: Some(nexa_signal::config::WebSection {
+                max_allocations: 50,
+                max_per_ip: 8,
+            }),
         },
         Sockets {
             ws,

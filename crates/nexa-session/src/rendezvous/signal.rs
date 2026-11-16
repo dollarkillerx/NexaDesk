@@ -53,6 +53,8 @@ pub struct SignalConfig {
     pub extra_roots: Vec<CertificateDer<'static>>,
     /// Trust only `extra_roots` (tests; a private deployment).
     pub only_extra_roots: bool,
+    /// Mixed into the device ID the server gives this device; a new seed, a new ID.
+    pub id_seed: Vec<u8>,
 }
 
 impl SignalConfig {
@@ -61,6 +63,7 @@ impl SignalConfig {
             url: url.into(),
             extra_roots: Vec::new(),
             only_extra_roots: false,
+            id_seed: Vec::new(),
         }
     }
 
@@ -297,7 +300,7 @@ impl SignalClient {
         };
         let sig = keys.identity().sign_for(
             nexa_wire::signal::PURPOSE_REGISTER,
-            &register_message(&nonce, keys.x25519(), &ep.host),
+            &register_message(&nonce, keys.x25519(), &ep.host, &cfg.id_seed),
         );
         let register = SignalClientMsg::from(ClientBody::Register(Register {
             proto: SIGNAL_PROTOCOL,
@@ -306,6 +309,7 @@ impl SignalClient {
             x25519_sig: keys.x25519_sig().to_vec(),
             sig: sig.to_vec(),
             server_name: ep.host.clone(),
+            id_seed: cfg.id_seed.clone(),
         }));
         sink.send(Message::binary(register.encode_to_vec()))
             .await

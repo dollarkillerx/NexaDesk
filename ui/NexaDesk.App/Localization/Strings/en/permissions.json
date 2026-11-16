@@ -4,8 +4,8 @@
   "Permissions.OpenScreenRecording": "Open Screen Recording settings",
   "Permissions.OpenAccessibility": "Open Accessibility settings",
   "Permissions.Steps": "Steps",
-  "Permissions.Step1": "1. Click a button above to open the matching page in System Settings → Privacy & Security.",
-  "Permissions.Step2": "2. Find NexaDesk in the list and turn it on. If it is not there, click “+” and add NexaDesk.app from Applications.",
+  "Permissions.Step1": "1. Click “Request access”: NexaDesk is added to the matching list in System Settings → Privacy & Security, and macOS offers to open it.",
+  "Permissions.Step2": "2. Turn NexaDesk on in that list. If it is not there, close and reopen System Settings (the list does not refresh by itself), or click “+” and add NexaDesk.app.",
   "Permissions.Step3": "3. Come back here and click “Check again”.",
   "Permissions.Recheck": "Check again",
   "Permissions.Done": "Done"

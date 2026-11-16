@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>NexaDesk</title>
+  <link rel="icon" href="/icon.png">
+  <link rel="stylesheet" href="/vendor/xterm.css">
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header class="shell">
+    <span class="shell-name">Nexa<b>Desk</b></span>
+    <span class="shell-divider"></span>
+    <span class="shell-label" data-t="tagline"></span>
+    <span class="shell-spacer"></span>
+    <span class="tag" id="mode-tag" hidden></span>
+    <button class="shell-action net" id="net" type="button" aria-expanded="false" hidden>
+      <span class="dot" id="net-dot"></span><span id="net-text"></span>
+    </button>
+    <button class="shell-action" id="swap" type="button" aria-pressed="false" hidden></button>
+    <button class="shell-action" id="terminal" type="button" data-t="terminal" aria-pressed="false" hidden></button>
+    <button class="shell-action" id="keyboard" type="button" data-t="keyboard" aria-pressed="false" hidden></button>
+    <button class="shell-action" id="fullscreen" type="button" data-t="fullscreen" hidden></button>
+    <button class="danger" id="disconnect" type="button" data-t="disconnect" hidden></button>
+    <select class="shell-lang" id="lang" aria-label="Language"></select>
+  </header>
+
+  <main id="connect-view" class="page">
+    <section class="tile">
+      <h1 data-t="title"></h1>
+      <p class="body-secondary" data-t="intro"></p>
+      <form id="connect-form" autocomplete="off" novalidate>
+        <div id="device-row" hidden>
+          <label class="label" for="device" data-t="deviceLabel"></label>
+          <input id="device" class="field mono" inputmode="numeric" spellcheck="false"
+                 maxlength="11" placeholder="123 456 789">
+          <p class="helper" id="device-help" data-t="deviceHelp"></p>
+        </div>
+        <label class="label" for="code" data-t="codeLabel"></label>
+        <div class="secret">
+          <input id="code" class="field mono" type="password" inputmode="text" autocapitalize="none"
+                 autocomplete="off" spellcheck="false" maxlength="128" placeholder="ABCD-2345" required>
+          <button type="button" class="reveal" id="reveal" data-t="show" aria-pressed="false"></button>
+        </div>
+        <p class="helper" id="code-help" data-t="codeHelp"></p>
+        <p class="label" data-t="viewLabel"></p>
+        <div class="choice" id="view-choice" role="radiogroup">
+          <button type="button" data-view="screen" role="radio" data-t="view.screen"></button>
+          <button type="button" data-view="terminal" role="radio" data-t="view.terminal"></button>
+        </div>
+        <p class="helper" id="view-help"></p>
+        <button class="primary" id="connect" type="submit">
+          <span data-t="connect"></span>
+        </button>
+      </form>
+      <div class="notification" id="status" role="status" hidden>
+        <span class="progress" id="spinner" hidden></span>
+        <span id="status-text"></span>
+      </div>
+      <p class="helper security" id="security-note" data-t="security"></p>
+    </section>
+  </main>
+
+  <main id="session-view" class="stage" hidden>
+    <video id="screen" autoplay playsinline muted></video>
+    <!-- Where keys, an input method's text and a phone keyboard's typing arrive. -->
+    <textarea id="kbd" class="kbd" autocomplete="off" autocorrect="off" autocapitalize="off"
+              spellcheck="false" aria-label="Keyboard"></textarea>
+    <p class="stage-hint" id="keys-hint"></p>
+    <div class="toast" id="toast" role="status" hidden>
+      <span id="toast-text"></span>
+      <button type="button" id="toast-action" hidden></button>
+    </div>
+    <section class="termpanel" id="termpanel" hidden>
+      <div class="termpanel-bar">
+        <span data-t="terminalTitle"></span>
+        <span class="termpanel-note" id="term-note"></span>
+        <button type="button" class="termpanel-close" id="term-close" data-t="terminalClose"></button>
+      </div>
+      <div class="termpanel-body" id="term-body"></div>
+    </section>
+    <section class="netpanel" id="netpanel" hidden>
+      <h2 data-t="net.title"></h2>
+      <dl>
+        <dt data-t="net.method"></dt><dd id="net-method">—</dd>
+        <dt data-t="net.rtt"></dt><dd id="net-rtt">—</dd>
+        <dt data-t="net.loss"></dt><dd id="net-loss">—</dd>
+        <dt data-t="net.bitrate"></dt><dd id="net-kbps">—</dd>
+        <dt data-t="net.fps"></dt><dd id="net-fps">—</dd>
+        <dt data-t="net.size"></dt><dd id="net-size">—</dd>
+      </dl>
+      <p class="label" data-t="quality"></p>
+      <div class="segmented" id="quality" role="radiogroup">
+        <button type="button" data-q="auto" data-t="q.auto" role="radio"></button>
+        <button type="button" data-q="clear" data-t="q.clear" role="radio"></button>
+        <button type="button" data-q="balanced" data-t="q.balanced" role="radio"></button>
+        <button type="button" data-q="weak" data-t="q.weak" role="radio"></button>
+      </div>
+      <p class="helper" id="quality-note"></p>
+      <p class="label" data-t="res"></p>
+      <div class="segmented" id="resolution" role="radiogroup">
+        <button type="button" data-r="auto" data-t="res.auto" role="radio"></button>
+        <button type="button" data-r="native" data-t="res.native" role="radio"></button>
+        <button type="button" data-r="1080" data-t="res.1080" role="radio"></button>
+        <button type="button" data-r="720" data-t="res.720" role="radio"></button>
+      </div>
+      <p class="helper" id="res-note"></p>
+    </section>
+    <div class="keybar" id="keybar" hidden>
+      <button type="button" data-key="41">Esc</button>
+      <button type="button" data-key="43">Tab</button>
+      <button type="button" data-mod="224" aria-pressed="false">Ctrl</button>
+      <button type="button" data-mod="226" aria-pressed="false">⌥</button>
+      <button type="button" data-mod="227" aria-pressed="false">⌘</button>
+      <button type="button" data-mod="225" aria-pressed="false">Shift</button>
+      <button type="button" data-key="80" aria-label="Left">←</button>
+      <button type="button" data-key="82" aria-label="Up">↑</button>
+      <button type="button" data-key="81" aria-label="Down">↓</button>
+      <button type="button" data-key="79" aria-label="Right">→</button>
+    </div>
+  </main>
+</body>
+</html>

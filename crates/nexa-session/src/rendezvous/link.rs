@@ -47,7 +47,7 @@ use nexa_wire::signal::{
     RelayKind, RelaySession, RelayToken, Rendezvous, WireCandKind, WireCandidate, relay_frame,
     valid_credential,
 };
-use quinn::{AsyncUdpSocket, Endpoint, EndpointConfig, Runtime, TokioRuntime};
+use quinn::{AsyncUdpSocket, Endpoint, EndpointConfig, TokioRuntime};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use super::{signal::SignalConfig, wss::StreamRelay};
@@ -455,7 +455,8 @@ impl Link {
                     }
                     r => r?,
                 };
-                TokioRuntime.wrap_udp_socket(std)?
+                // The filtering in VirtualSocket reads one datagram per receive.
+                nexa_net::vsock::wrap_without_gro(std)?
             }
         };
         let local = inner.local_addr()?;

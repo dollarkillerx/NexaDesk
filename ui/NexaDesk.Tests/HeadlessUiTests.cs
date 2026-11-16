@@ -181,13 +181,54 @@ public class HeadlessUiTests
         Pump();
         Assert.Equal(WindowState.Normal, banner.WindowState);
 
-        Assert.Equal("「王小明的 MacBook Pro」正在控制本机", Find<TextBlock>(banner, "HeadlineText").Text);
-        Click(banner, Find<Button>(banner, "BannerDisconnectButton"));
-        Assert.IsType<UiRequest.Disconnect>(Assert.Single(_link.Sent));
-        _windows.HideBanner();
+        Assert.Equal("「王小明的 MacBook Pro」正在控制本机", Deep<TextBlock>(banner, "HeadlineText").Single().Text);
+
+        // Folded into a small tab, never gone; unfolded again in one click.
+        Click(banner, Find<Button>(banner, "CollapseBannerButton"));
+        Pump();
+        Assert.True(_windows.BannerStack.IsCollapsed);
+        Assert.False(Deep<Button>(banner, "BannerDisconnectButton").Single().IsEffectivelyVisible);
+        Assert.True(Find<Button>(banner, "ExpandBannerButton").IsEffectivelyVisible);
+        Assert.True(banner.IsVisible);
+        Click(banner, Find<Button>(banner, "ExpandBannerButton"));
+        Pump();
+        Assert.False(_windows.BannerStack.IsCollapsed);
+
+        Click(banner, Deep<Button>(banner, "BannerDisconnectButton").Single());
+        Assert.Equal(new UiRequest.Disconnect(7), Assert.Single(_link.Sent));
+        _windows.HideBanner(vm);
         Pump();
         Assert.Empty(_windows.OpenWindows.OfType<ControlBanner>());
     }
+
+    [AvaloniaFact]
+    public void Several_people_share_one_banner_and_one_fold()
+    {
+        var first = new BannerViewModel(Samples.Session(7), _link, DateTimeOffset.Now);
+        var second = new BannerViewModel(Samples.Session(8) with { DeviceName = "李雷的 iPad" }, _link, DateTimeOffset.Now);
+        _windows.ShowBanner(first);
+        _windows.ShowBanner(second);
+        var banner = Assert.Single(_windows.OpenWindows.OfType<ControlBanner>());
+        Pump();
+        Assert.Equal(2, Deep<TextBlock>(banner, "HeadlineText").Count());
+
+        Click(banner, Find<Button>(banner, "CollapseBannerButton"));
+        Pump();
+        Assert.StartsWith("2 人 · ", Find<TextBlock>(banner, "FoldedText").Text);
+
+        // One leaves: the same window, one row, back to just the time when folded.
+        _windows.HideBanner(second);
+        Pump();
+        Assert.Same(banner, Assert.Single(_windows.OpenWindows.OfType<ControlBanner>()));
+        Assert.DoesNotContain("人", Find<TextBlock>(banner, "FoldedText").Text);
+        _windows.HideBanner(first);
+        Pump();
+        Assert.Empty(_windows.OpenWindows.OfType<ControlBanner>());
+    }
+
+    /// <summary>Named controls inside item templates, which FindControl cannot see.</summary>
+    static IEnumerable<T> Deep<T>(Window w, string name) where T : Control =>
+        w.GetVisualDescendants().OfType<T>().Where(c => c.Name == name);
 
     [AvaloniaFact]
     public void Session_capture_follows_activation_and_the_host_key_brings_the_toolbar_back()
@@ -243,7 +284,7 @@ public class HeadlessUiTests
         Assert.Single(_process.Starts);
         _link.Raise(Samples.Status());
         Pump();
-        Assert.Equal("K7QM-2XPA", Find<SelectableTextBlock>(main, "CodeText").Text);
+        Assert.Equal("K7QM-2XPA", Find<TextBlock>(main, "CodeText").Text);
         Assert.True(Find<Button>(main, "StopHostingButton").IsVisible);
 
         _link.Raise(Samples.Request(3));

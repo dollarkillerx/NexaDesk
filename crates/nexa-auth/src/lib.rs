@@ -23,7 +23,9 @@ pub mod secrets;
 pub mod store;
 pub mod tls;
 
-pub use access::{AccessDecision, AccessPolicy, ConsentPrompt, DenyReason, Evidence, decide};
+pub use access::{
+    AccessDecision, AccessPolicy, ConsentPrompt, DenyReason, Evidence, decide, first_contact_perms,
+};
 pub use identity::{DeviceId, DeviceIdentity, DevicePublicKey, IdentityError};
 pub use keystore::{FileKeyStore, KeyStore, KeyStoreError};
 pub use pairing::{

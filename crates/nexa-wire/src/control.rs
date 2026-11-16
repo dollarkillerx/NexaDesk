@@ -77,6 +77,10 @@ pub enum Auth {
     Code(bool),
     #[prost(bool, tag = "7")]
     Password(bool),
+    /// No secret: the viewer reached the host by its device ID, whose key the signaling
+    /// server gave it, and asks the person at the host to let it in.
+    #[prost(bool, tag = "8")]
+    Request(bool),
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -89,7 +93,7 @@ pub struct ClientHello {
     pub os: i32,
     #[prost(message, optional, tag = "4")]
     pub caps: Option<Caps>,
-    #[prost(oneof = "Auth", tags = "5, 6, 7")]
+    #[prost(oneof = "Auth", tags = "5, 6, 7, 8")]
     pub auth: Option<Auth>,
 }
 
@@ -115,6 +119,9 @@ pub struct Permissions {
     pub file: bool,
     #[prost(bool, tag = "5")]
     pub audio: bool,
+    /// A shell on the host: everything the signed-in user can do, without the screen.
+    #[prost(bool, tag = "6")]
+    pub terminal: bool,
 }
 
 #[derive(Clone, PartialEq, Message)]

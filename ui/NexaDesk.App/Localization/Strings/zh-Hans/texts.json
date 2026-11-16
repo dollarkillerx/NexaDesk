@@ -85,5 +85,7 @@
   "Texts.Capture.Inactive": "键盘未捕获：点击画面开始控制",
   "Texts.Mode.Office": "办公",
   "Texts.Mode.Balanced": "均衡",
-  "Texts.Mode.Game": "游戏"
+  "Texts.Mode.Game": "游戏",
+  "Texts.Auth.Request": "未输入码，只凭设备 ID 请求（无法核实对方身份）",
+  "Texts.Perm.Terminal": "命令行"
 }

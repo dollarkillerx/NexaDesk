@@ -149,6 +149,25 @@ public sealed class FakeProcess : IAgentProcess
     public int Kills { get; private set; }
     public event Action<AgentExit>? Exited;
 
+    /// <summary>Passwords set (null = cleared), and what setting one answers.</summary>
+    public List<string?> Passwords { get; } = new();
+    public string? PasswordResult { get; set; }
+
+    public Task<string?> SetPassword(string? password)
+    {
+        Passwords.Add(password);
+        return Task.FromResult(PasswordResult);
+    }
+
+    public int IdResets { get; private set; }
+    public string? IdResetResult { get; set; }
+
+    public Task<string?> ResetDeviceId()
+    {
+        IdResets++;
+        return Task.FromResult(IdResetResult);
+    }
+
     public string? Start(string listen, string deviceName, string signalServer, bool announceOnLan, string? web = null)
     {
         Starts.Add((listen, deviceName));
@@ -202,6 +221,8 @@ public sealed class RecordingWindows : IWindowService
     public int BannerHides { get; private set; }
     public List<PermissionGuideViewModel> Guides { get; } = new();
     public BannerViewModel? Banner { get; private set; }
+    public List<string> Copied { get; } = new();
+    public void CopyText(string text) => Copied.Add(text);
 
     public void ShowSession(SessionViewModel session) => Sessions.Add(session);
     public void ShowConsent(ConsentViewModel consent) => Consents.Add(consent);
@@ -209,13 +230,17 @@ public sealed class RecordingWindows : IWindowService
     public void ShowBanner(BannerViewModel banner)
     {
         Banners.Add(banner);
-        Banner = banner;
+        Shown.Add(banner);
+        Banner = Shown.First();
     }
 
-    public void HideBanner()
+    public List<BannerViewModel> Shown { get; } = new();
+
+    public void HideBanner(BannerViewModel banner)
     {
         BannerHides++;
-        Banner = null;
+        Shown.Remove(banner);
+        Banner = Shown.FirstOrDefault();
     }
 
     public void ShowPermissionGuide(PermissionGuideViewModel guide) => Guides.Add(guide);

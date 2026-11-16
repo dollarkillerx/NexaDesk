@@ -8,6 +8,8 @@
 | WebSocket 中继 | 同上，路径 `/relay` | UDP 被封锁时的最后退路（§4.6） |
 | STUN | UDP 3478（建议两个地址） | 告诉客户端它的公网地址，判断 NAT 类型（§4.2） |
 | UDP 中继 | UDP 3480 | 两端都无法直连时转发流量（§4.6） |
+| 浏览器网页（可选） | 同信令端口，`https://` | 打开 `[web]` 后提供浏览器端网页和 `/web`，让浏览器从任何网络按设备 ID 连接（WEB_CLIENT.md §12） |
+| TURN（可选） | 同第一个 STUN 端口，UDP | 打开 `[web]` 后提供，浏览器会话的画面经此中转 |
 
 **这台服务器是可选的，大多数人不需要它。** NexaDesk 默认不用服务器：同一局域网会自动发现并直接连接；不在同一网络时，推荐两边都安装 Tailscale 并登录同一个账号，Tailscale 会自动打洞，打不通时自动中转。只有不能用 Tailscale、又想按 9 位设备 ID 连接时，才需要按本文自建。
 
@@ -19,6 +21,9 @@
 - 一个域名，例如 `signal.example.com`，解析到这台服务器。
 - **最好有两个公网 IP**。STUN 在两个不同 IP 上应答，客户端才能区分容易打洞和难打洞的 NAT，并在难打洞时预测端口。只有一个 IP 也能用，只是两端都在严格 NAT 后面时更常走中继。
 - 防火墙放行：TCP 443；UDP 3478（第二个 STUN 地址的端口也要放行）；UDP 3480。
+  - 服务器上可能不止一层防火墙：firewalld 之外，还可能有自己写的 nftables 表（`nft list tables`）、fail2ban 的表，以及云厂商控制台里的安全组。每一层都要放行。
+  - 放行后从**另一台机器**确认能连通，不要只在服务器本机测：`nc -z <服务器> 443`。
+- 443 已被别的服务占用时，信令可以用任意端口，例如 `listen = "0.0.0.0:8443"`，客户端填 `wss://signal.example.com:8443`。
 
 带宽：直连的会话不经过服务器。每个中继会话最多占用 `bandwidth_bps`（默认 50 Mbit/s）。
 
@@ -88,6 +93,14 @@ cargo build --release --locked -p nexa-signal
 install -m 0755 target/release/nexa-signal /usr/local/bin/
 ```
 
+小内存的服务器（2 GB 以下）编译时可能内存不足，影响上面已经在跑的服务。这时可以在 Mac 上编译一个静态链接的 Linux x86_64 程序，任何发行版都能直接运行，不需要 Docker：
+
+```bash
+scripts/build-signal-linux.sh
+```
+
+产物是 `target/x86_64-unknown-linux-musl/release/nexa-signal`，复制到服务器后同样用 `install` 安装。
+
 ```bash
 useradd --system --uid 10001 --home-dir /nonexistent --shell /usr/sbin/nologin nexa-signal
 ```
@@ -117,6 +130,16 @@ cd deploy && docker compose up -d --build
 
 被控端注册成功后，窗口里会显示 9 位设备 ID。控制端输入这个 ID 和一次性码即可连接。
 
+**浏览器从任何网络连接（可选）。**在配置里加上：
+
+```toml
+[web]
+max_allocations = 200   # 同时存在的 TURN 分配；每个浏览器会话占两个
+max_per_ip = 8
+```
+
+不需要新的端口：网页在信令端口上（`https://signal.example.com/`），TURN 和第一个 STUN 地址共用一个 UDP 端口。被控端那边要注册在这台服务器上，并打开“允许浏览器连接”；应用里会列出这个网址和设备 ID。对方用浏览器打开网址，输入设备 ID 和一次性码即可。所有浏览器会话的画面都经过服务器，按需要预留带宽。
+
 自签证书只适合测试：把 CA 证书以 `signal-ca.pem` 为名放进两端的数据目录（macOS 默认为 `~/Library/Application Support/NexaDesk`）。命令行被控端也可以用 `--signal-ca` 指定。正式使用请用公开 CA 签发的证书，否则每台设备都要手动放置这个文件。
 
 ## 6. 运维
@@ -124,4 +147,9 @@ cd deploy && docker compose up -d --build
 - **停止**：服务收到 SIGTERM（systemd 停止服务或 `docker stop` 时发出）后正常关闭。
 - **升级**：替换二进制或镜像后重启。被控端会在几秒内重新注册。直连的会话不经过服务器，不受影响。中继令牌的签名密钥只在内存里，重启后旧令牌全部失效，所以**走中继的会话会断开**，控制端会在 30 秒的重连窗口内尝试恢复（§4.4）。最好在没人使用时升级。
 - **限速**：`[limits]` 的默认值能防住常见的扫描和滥用。用 `nexa-signal --example-config` 可以看到全部选项。
-- **未验证**：这些部署文件还没在真实的 Linux 服务器和 Docker 上运行过。已经验证的只有两项：Linux x86_64 的类型检查，以及 macOS 上的 `--check-config` 和 SIGTERM 处理。
+- **验证情况**（2026-11-11）：
+  - 已在一台 Rocky Linux 9（x86_64，1.7 GB 内存）上按本文的 systemd 方式部署：程序用 `scripts/build-signal-linux.sh` 在 Mac 上编译；证书用自签 CA，签给服务器的 IP。单元文件原样可用。
+  - 被控端用 `--relay-only` 运行，控制端按 9 位 ID 跨公网连接：UDP 中继连续 12 次全部成功，画面 60 fps，往返约 21 ms；被控端绑在 127.0.0.1、UDP 出不去时，会自动改走 WebSocket 中继，会话照常建立。
+  - 这次实测发现并修复了一个问题：Linux 内核会把同一来源的一串 UDP 包合并后一次交给程序（GRO），旧版中继把合并后的整块当成一个包，导致视频全部丢失。**升级前部署的服务器请换成新版本。**
+  - 2026-11-15 又在同一台服务器上实测了 `[web]`：浏览器打开 `https://服务器:8443/`，按设备 ID 连到演示主机，画面和输入经服务器的 TURN 中转（往返约 20 ms），17 项自动化检查全部通过。
+  - Docker Compose 方式仍未在真实服务器上运行过。

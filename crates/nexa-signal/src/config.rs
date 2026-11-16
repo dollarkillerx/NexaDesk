@@ -24,7 +24,28 @@ pub struct Config {
     #[serde(default)]
     pub relay: Option<RelaySection>,
     #[serde(default)]
+    pub web: Option<WebSection>,
+    #[serde(default)]
     pub limits: Limits,
+}
+
+/// Browser access across the internet (docs/WEB_CLIENT.md §12): the page on the
+/// signaling port, and TURN on the first STUN address.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebSection {
+    /// TURN allocations at once. Each browser session takes two.
+    #[serde(default = "default_turn_allocations")]
+    pub max_allocations: usize,
+    #[serde(default = "default_turn_per_ip")]
+    pub max_per_ip: usize,
+}
+
+fn default_turn_allocations() -> usize {
+    200
+}
+fn default_turn_per_ip() -> usize {
+    8
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -150,6 +171,11 @@ bandwidth_bps = 50000000
 max_sessions = 1000
 token_ttl_secs = 3600
 
+[web]
+# Browsers anywhere: the page at https://signal.example.com/, and TURN on the first
+# STUN address. A browser session's screen and input go through this server.
+max_allocations = 200
+
 [limits]
 max_connections_per_ip = 32
 "#;
@@ -187,6 +213,11 @@ impl Config {
                     "STUN listens on {a}; set stun.advertise to the address clients reach"
                 )));
             }
+        }
+        if self.web.is_some() && self.stun.listen.is_empty() {
+            return Err(ConfigError::Invalid(
+                "[web] needs a STUN address: TURN runs on the first one".into(),
+            ));
         }
         if let Some(r) = &self.relay
             && self

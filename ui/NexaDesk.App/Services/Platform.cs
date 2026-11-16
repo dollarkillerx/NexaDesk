@@ -54,6 +54,44 @@ public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
         return null;
     }
 
+    public Task<string?> SetPassword(string? password) =>
+        RunSubcommand(password == null ? "clear-password" : "set-password", password);
+
+    public Task<string?> ResetDeviceId() => RunSubcommand("reset-device-id", null);
+
+    /// <summary>Runs one of the agent's subcommands; null on success, else its error.</summary>
+    async Task<string?> RunSubcommand(string command, string? stdin)
+    {
+        var path = Locate();
+        if (path == null) return L.Get("Platform.AgentMissing");
+        var info = new ProcessStartInfo(path)
+        {
+            UseShellExecute = false,
+            RedirectStandardError = true,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+        };
+        info.ArgumentList.Add(command);
+        try
+        {
+            using var p = Process.Start(info);
+            if (p == null) return L.Get("Platform.AgentMissing");
+            // On stdin, never on the command line where other processes could read it.
+            if (stdin != null) await p.StandardInput.WriteLineAsync(stdin);
+            p.StandardInput.Close();
+            var errors = p.StandardError.ReadToEndAsync();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await p.WaitForExitAsync(timeout.Token);
+            if (p.ExitCode == 0) return null;
+            var message = (await errors).Trim();
+            return message.StartsWith("nexa-agent: ") ? message["nexa-agent: ".Length..] : message;
+        }
+        catch (Exception e)
+        {
+            return e.Message;
+        }
+    }
+
     public string? Start(string listen, string deviceName, string signalServer, bool announceOnLan, string? web = null)
     {
         var path = Locate();
@@ -166,9 +204,54 @@ public sealed partial class MacPermissions : IPermissionProbe
             CGRequestScreenCaptureAccess();
             return;
         }
-        // Accessibility has no request API that does not need CoreFoundation dictionaries;
-        // opening the right pane is what the prompt would do anyway.
-        OpenSettings(kind);
+        // The same for Accessibility: adds NexaDesk to its list and shows the system prompt.
+        if (!PromptAccessibility()) OpenSettings(kind);
+    }
+
+    const string CoreFoundation = "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation";
+    const string ApplicationServices = "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices";
+
+    [LibraryImport(ApplicationServices)]
+    [return: MarshalAs(UnmanagedType.U1)]
+    private static partial bool AXIsProcessTrustedWithOptions(nint options);
+
+    [LibraryImport(CoreFoundation)]
+    private static partial nint CFDictionaryCreate(nint allocator, nint[] keys, nint[] values, nint count,
+        nint keyCallBacks, nint valueCallBacks);
+
+    [LibraryImport(CoreFoundation)]
+    private static partial void CFRelease(nint cf);
+
+    /// <summary>AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: true}): macOS lists
+    /// NexaDesk under Accessibility and offers to open the setting. False if it could not ask.</summary>
+    static bool PromptAccessibility()
+    {
+        try
+        {
+            var cf = NativeLibrary.Load(CoreFoundation);
+            var ax = NativeLibrary.Load(ApplicationServices);
+            // Exported globals: the symbol is the variable's address; the key and true are
+            // pointers stored there, the callback tables are passed by their own address.
+            var key = Marshal.ReadIntPtr(NativeLibrary.GetExport(ax, "kAXTrustedCheckOptionPrompt"));
+            var yes = Marshal.ReadIntPtr(NativeLibrary.GetExport(cf, "kCFBooleanTrue"));
+            var dict = CFDictionaryCreate(0, [key], [yes], 1,
+                NativeLibrary.GetExport(cf, "kCFTypeDictionaryKeyCallBacks"),
+                NativeLibrary.GetExport(cf, "kCFTypeDictionaryValueCallBacks"));
+            if (dict == 0) return false;
+            try
+            {
+                AXIsProcessTrustedWithOptions(dict);
+            }
+            finally
+            {
+                CFRelease(dict);
+            }
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 
     public void OpenSettings(PermissionKind kind)

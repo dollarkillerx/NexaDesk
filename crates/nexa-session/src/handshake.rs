@@ -70,6 +70,8 @@ pub enum AuthKind {
     Paired,
     Code,
     Password,
+    /// No secret at all: only a device ID. Nothing proves who is asking.
+    Request,
 }
 
 /// Who is asking: a NexaDesk device, or a web browser (`nexa-web`), which has no device
@@ -135,6 +137,7 @@ impl ConsentAnswer {
                 clipboard: false,
                 file: false,
                 audio: false,
+                terminal: false,
             },
             save: false,
             skip_next_time: false,
@@ -183,7 +186,9 @@ impl PairLimiter {
 
 pub struct HostSecrets {
     pub code: OneTimeCode,
-    pub password: Option<(HostPassword, PasswordGuard)>,
+    /// The fixed password, shared with browser access (`nexa-web`), and the guard that
+    /// counts guesses at it from anywhere.
+    pub password: Option<(std::sync::Arc<HostPassword>, PasswordGuard)>,
 }
 
 pub struct HostConfig {
@@ -366,6 +371,42 @@ async fn authenticate(
                 decision,
             })
         }
+        HelloAuth::Request => {
+            // A paired device is what it always was; anyone else is only asking.
+            let store = lock(&cfg.store);
+            let (auth, decision) = match store.pinned(&peer) {
+                Some(pinned) => (
+                    AuthKind::Paired,
+                    decide(&peer, Evidence::Pinned(pinned), &cfg.policy),
+                ),
+                None => {
+                    drop(store);
+                    // Every request puts a window in front of the person: no more often
+                    // than wrong codes may be tried.
+                    if !cfg.limiter.allow(source) {
+                        return Err((
+                            RejectReason::RateLimited,
+                            "too many attempts, try again later",
+                        ));
+                    }
+                    (
+                        AuthKind::Request,
+                        AccessDecision::NeedsConsent(ConsentPrompt {
+                            perms: nexa_auth::first_contact_perms(),
+                            offer_save: false,
+                            save_default: false,
+                            offer_skip_next_time: false,
+                        }),
+                    )
+                }
+            };
+            Ok(Authenticated {
+                hello,
+                auth,
+                proof: None,
+                decision,
+            })
+        }
         HelloAuth::Code | HelloAuth::Password => {
             if !cfg.limiter.allow(source) {
                 return Err((
@@ -394,7 +435,7 @@ async fn authenticate(
                         .map_err(|e| refusal_of_pair_error(&e))?;
                     (m, offer, AuthKind::Password)
                 }
-                HelloAuth::Known => unreachable!("handled above"),
+                HelloAuth::Known | HelloAuth::Request => unreachable!("handled above"),
             };
             map_stage(control.send(ControlBody::Auth(offer)).await)?;
             let step = match map_stage(control.recv().await)? {
@@ -522,7 +563,14 @@ pub async fn host_handshake_from(
     }
 
     let takeover = session_active();
+    // The fixed password is the owner's own way in, so nobody has to be at the host to
+    // click Allow. The banner still shows the session, and a running session is never
+    // taken over without asking.
+    let by_password = auth == AuthKind::Password
+        && !takeover
+        && matches!(decision, AccessDecision::NeedsConsent(_));
     let prompt = match (&decision, takeover) {
+        _ if by_password => None,
         (AccessDecision::Deny(reason), _) => {
             return Err(refuse(conn, control, refusal_of_deny(*reason)).await);
         }
@@ -566,6 +614,7 @@ pub async fn host_handshake_from(
     let mut perms = match (&decision, &answer) {
         (_, Some(a)) => a.perms.clone(),
         (AccessDecision::Allow { perms }, None) => perms.clone(),
+        (AccessDecision::NeedsConsent(p), None) if by_password => p.perms.clone(),
         _ => unreachable!("every other decision returned above or produced an answer"),
     };
     perms.input &= (cfg.input_available)();
@@ -659,6 +708,9 @@ pub enum ViewerAuth {
     Known,
     Code(Zeroizing<String>),
     Password(Zeroizing<String>),
+    /// No secret: the person at the host decides. Only for a host reached by its device
+    /// ID, whose key the connection is already pinned to.
+    Request,
 }
 
 pub struct ViewerConfig {
@@ -720,6 +772,7 @@ async fn viewer_inner(
     };
     let (mut machine, auth) = match &cfg.auth {
         ViewerAuth::Known => (None, Auth::Known(true)),
+        ViewerAuth::Request => (None, Auth::Request(true)),
         ViewerAuth::Code(code) => (
             Some(ViewerPairing::with_code(build_ctx()?, code).map_err(SessionError::Auth)?),
             Auth::Code(true),
@@ -761,7 +814,9 @@ async fn viewer_inner(
             }
             Some(ControlBody::Accept(accept)) => {
                 // A host must not be able to skip proving it knows the secret.
-                if machine.is_some() || (proof.is_none() && !matches!(cfg.auth, ViewerAuth::Known))
+                if machine.is_some()
+                    || (proof.is_none()
+                        && !matches!(cfg.auth, ViewerAuth::Known | ViewerAuth::Request))
                 {
                     conn.close(close::VIEWER_ENDED.into(), b"protocol error");
                     return Err(SessionError::Protocol(

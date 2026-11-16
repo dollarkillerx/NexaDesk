@@ -1,7 +1,7 @@
 //! Crash-safe file replacement (§11).
 
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::{self, Write},
     path::Path,
 };
@@ -43,6 +43,6 @@ pub(crate) fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
         return Err(e);
     }
     #[cfg(unix)]
-    File::open(dir)?.sync_all()?;
+    fs::File::open(dir)?.sync_all()?;
     Ok(())
 }

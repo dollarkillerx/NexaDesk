@@ -8,6 +8,7 @@
 //! key the rendezvous was sealed with.
 
 use std::{
+    collections::HashMap,
     net::IpAddr,
     sync::{Arc, Mutex},
     time::Duration,
@@ -21,7 +22,9 @@ use nexa_session::rendezvous::{
     seal::SignalKeys,
     signal::{SignalClient, SignalConfig},
 };
-use nexa_wire::signal::{ServerBody, Trickle, group_short_id};
+use nexa_wire::signal::{
+    BrowserClose, BrowserOpen, BrowserText, ClientBody, ServerBody, Trickle, group_short_id,
+};
 use tokio::sync::{Semaphore, watch};
 
 use crate::{AgentEvent, agent::Shared};
@@ -163,6 +166,8 @@ pub(crate) async fn run(shared: Arc<Shared>, setup: SignalSetup, keys: Arc<Signa
             },
         );
         let sessions: Arc<Mutex<Vec<Routed>>> = Arc::default();
+        // Browsers the server put through: where their frames go.
+        let mut browsers: HashMap<u64, tokio::sync::mpsc::Sender<String>> = HashMap::new();
         loop {
             let msg = tokio::select! {
                 m = client.recv() => m,
@@ -234,6 +239,24 @@ pub(crate) async fn run(shared: Arc<Shared>, setup: SignalSetup, keys: Arc<Signa
                             .retain(|(s, _)| *s != session);
                     });
                 }
+                Some(ServerBody::BrowserOpen(open)) => match open_browser(&shared, &client, open) {
+                    Some((conn, tx)) => {
+                        browsers.insert(conn, tx);
+                    }
+                    None => continue,
+                },
+                Some(ServerBody::BrowserText(t)) => {
+                    let full = browsers
+                        .get(&t.conn)
+                        .is_some_and(|tx| tx.try_send(t.text).is_err());
+                    if full {
+                        browsers.remove(&t.conn);
+                    }
+                }
+                Some(ServerBody::BrowserClose(c)) => {
+                    // The session sees its frames end.
+                    browsers.remove(&c.conn);
+                }
                 Some(ServerBody::Trickle(t)) => {
                     let list = sessions.lock().unwrap_or_else(|e| e.into_inner());
                     if let Some((_, tx)) = list.iter().find(|(s, _)| *s == t.session_id) {
@@ -264,6 +287,52 @@ pub(crate) async fn run(shared: Arc<Shared>, setup: SignalSetup, keys: Arc<Signa
     report(&shared, SignalStatus::default());
 }
 
+/// Starts a session for a browser the server put through, and the task that carries
+/// this host's frames back. `None` (after telling the server) when browsers may not
+/// connect or the message makes no sense.
+fn open_browser(
+    shared: &Arc<Shared>,
+    client: &SignalClient,
+    open: BrowserOpen,
+) -> Option<(u64, tokio::sync::mpsc::Sender<String>)> {
+    let conn = open.conn;
+    let sender = client.sender();
+    let parsed = (
+        open.ip.parse::<std::net::IpAddr>(),
+        open.turn_server.parse::<std::net::SocketAddr>(),
+    );
+    let (Ok(ip), Ok(turn_server)) = parsed else {
+        let _ = sender.send(ClientBody::BrowserClose(BrowserClose { conn }));
+        return None;
+    };
+    let (in_tx, in_rx) = tokio::sync::mpsc::channel(32);
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<String>(32);
+    let browser = nexa_web::RemoteBrowser {
+        ip,
+        turn_server,
+        turn: nexa_web::TurnCredentials {
+            username: open.turn_username,
+            password: open.turn_password,
+        },
+    };
+    if !shared.serve_remote_browser(browser, in_rx, out_tx) {
+        let _ = sender.send(ClientBody::BrowserClose(BrowserClose { conn }));
+        return None;
+    }
+    tokio::spawn(async move {
+        while let Some(text) = out_rx.recv().await {
+            if sender
+                .send(ClientBody::BrowserText(BrowserText { conn, text }))
+                .is_err()
+            {
+                return;
+            }
+        }
+        let _ = sender.send(ClientBody::BrowserClose(BrowserClose { conn }));
+    });
+    Some((conn, in_tx))
+}
+
 async fn accept(
     shared: Arc<Shared>,
     r: HostRendezvous,
@@ -279,11 +348,16 @@ async fn accept(
     // One connection per rendezvous: nothing else may use this endpoint.
     r.link.endpoint.set_server_config(None);
     let Some(incoming) = incoming else { return };
-    let remote = r
-        .link
-        .state()
-        .active
-        .map_or(incoming.remote_address(), |a| a.target.wire_addr());
+    // The real path, shown to the person: the peer's address, or the relay's. The
+    // virtual socket's own address (0.0.0.0:0) is only a last resort.
+    let path = |fallback: std::net::SocketAddr| {
+        let state = r.link.state();
+        state
+            .active
+            .or_else(|| state.validated.first().cloned())
+            .map_or(fallback, |a| a.target.wire_addr())
+    };
+    let remote = path(incoming.remote_address());
     let conn = match incoming.await {
         Ok(c) => c,
         Err(e) => {
@@ -304,6 +378,8 @@ async fn accept(
         return;
     }
     drop(permit);
+    // Paths settle while QUIC shakes hands; before that none may be active yet.
+    let remote = path(remote);
     // Charge pairing guesses to the viewer, not to the relay it may come through.
     let origin = origin.unwrap_or(remote.ip());
     crate::agent::serve_connection(conn, shared, remote, origin, Some(r.link.clone())).await;

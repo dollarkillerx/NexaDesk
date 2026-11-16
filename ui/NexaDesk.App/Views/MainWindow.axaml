@@ -2,6 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:NexaDesk.ViewModels"
         xmlns:l="using:NexaDesk.Localization"
+        xmlns:v="using:NexaDesk.Views"
         x:Class="NexaDesk.Views.MainWindow"
         x:DataType="vm:MainViewModel"
         Title="NexaDesk"
@@ -60,9 +61,9 @@
                      IsEnabled="{Binding !IsConnecting}" />
             <TextBlock Classes="errorText" Text="{Binding AddressHint}" IsVisible="{Binding AddressHint, Converter={x:Static ObjectConverters.IsNotNull}}" />
 
-            <TextBlock Classes="label" Text="{l:T Main.OneTimeCode}" Margin="0,6,0,0" />
-            <TextBox Name="CodeBox" Text="{Binding Code}" PlaceholderText="ABCD-2345" MaxLength="12"
-                     FontFamily="{DynamicResource MonoFont}" FontSize="16" IsEnabled="{Binding !IsConnecting}" />
+            <TextBlock Classes="label" Text="{l:T Main.CodeOrPassword}" Margin="0,6,0,0" />
+            <TextBox Name="CodeBox" Classes="revealPasswordButton" Text="{Binding Code}" PlaceholderText="ABCD-2345" MaxLength="128"
+                     PasswordChar="•" FontFamily="{DynamicResource MonoFont}" FontSize="16" IsEnabled="{Binding !IsConnecting}" />
             <TextBlock Classes="errorText" Text="{Binding CodeHint}" IsVisible="{Binding CodeHint, Converter={x:Static ObjectConverters.IsNotNull}}" />
 
             <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,8,0,0">
@@ -261,24 +262,83 @@
               </StackPanel>
             </Expander>
 
-            <!-- Hosting: every way in, then the code -->
+            <!-- Hosting: what to tell the other person first (device ID, code, password), then every
+                 way in. Every value copies itself when clicked. -->
             <StackPanel Spacing="4" IsVisible="{Binding IsHosting}">
-              <TextBlock Classes="section" Text="{l:T Host.AddressesTitle}" Margin="0,6,0,2" />
-              <ItemsControl Name="ConnectOptionsList" ItemsSource="{Binding ConnectOptions}">
-                <ItemsControl.ItemTemplate>
-                  <DataTemplate x:DataType="vm:ConnectOption">
-                    <Grid ColumnDefinitions="88,*" Margin="0,0,0,6">
-                      <Border Classes="badge" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="0,3,0,0">
-                        <TextBlock Text="{Binding Kind}" />
-                      </Border>
-                      <StackPanel Grid.Column="1" Spacing="1">
-                        <SelectableTextBlock Text="{Binding Address}" FontFamily="{DynamicResource MonoFont}" FontSize="16" />
-                        <TextBlock Classes="muted" Text="{Binding Detail}" IsVisible="{Binding HasDetail}" />
+              <Border Name="CredentialsCard" Classes="subtle" Padding="16,12,14,14" Margin="0,6,0,0">
+                <StackPanel Spacing="2">
+                  <Grid ColumnDefinitions="*,Auto" IsVisible="{Binding HasDeviceId}">
+                    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                      <TextBlock Classes="label" Text="{l:T Host.KindDeviceId}" />
+                      <TextBlock Classes="muted" Text="{l:T Host.ViaServer}" />
+                    </StackPanel>
+                    <Button Grid.Column="1" Name="ResetIdButton" Classes="small ghost" Content="{l:T Host.ResetId}"
+                            Command="{Binding AskResetDeviceIdCommand}" IsVisible="{Binding !IsConfirmingIdReset}" />
+                  </Grid>
+                  <Border Name="ResetIdConfirm" Classes="warn" IsVisible="{Binding IsConfirmingIdReset}" Margin="0,4,0,4">
+                    <StackPanel Spacing="8">
+                      <TextBlock TextWrapping="Wrap" Text="{l:T Host.ResetIdConfirm}" />
+                      <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button Name="ConfirmResetIdButton" Classes="small danger" Content="{l:T Host.ResetIdOk}" Command="{Binding ResetDeviceIdCommand}" />
+                        <Button Classes="small ghost" Content="{l:T Host.ResetIdCancel}" Command="{Binding CancelResetDeviceIdCommand}" />
                       </StackPanel>
-                    </Grid>
-                  </DataTemplate>
-                </ItemsControl.ItemTemplate>
-              </ItemsControl>
+                    </StackPanel>
+                  </Border>
+                  <Button Name="DeviceIdButton" Classes="copy big" IsVisible="{Binding HasDeviceId}" Margin="-8,0,0,8"
+                          ToolTip.Tip="{l:T Host.ClickToCopy}" Command="{Binding CopyCommand}" CommandParameter="{Binding DeviceId}">
+                    <StackPanel Orientation="Horizontal" Spacing="14">
+                      <TextBlock Name="DeviceIdText" Classes="big" Text="{Binding DeviceIdDisplay}" />
+                      <Panel VerticalAlignment="Center">
+                        <TextBlock Classes="copyHint" Text="{l:T Host.ClickToCopy}">
+                          <TextBlock.IsVisible>
+                            <MultiBinding Converter="{x:Static v:Same.Differ}">
+                              <Binding Path="DeviceId" />
+                              <Binding Path="Copied" />
+                            </MultiBinding>
+                          </TextBlock.IsVisible>
+                        </TextBlock>
+                        <TextBlock Classes="copied" Text="{l:T Host.Copied}">
+                          <TextBlock.IsVisible>
+                            <MultiBinding Converter="{x:Static v:Same.Values}">
+                              <Binding Path="DeviceId" />
+                              <Binding Path="Copied" />
+                            </MultiBinding>
+                          </TextBlock.IsVisible>
+                        </TextBlock>
+                      </Panel>
+                    </StackPanel>
+                  </Button>
+                  <TextBlock Classes="label" Text="{l:T Main.OneTimeCode}" />
+                  <Grid ColumnDefinitions="*,Auto">
+                    <Button Name="CodeButton" Classes="copy big" Margin="-8,0,0,0"
+                            ToolTip.Tip="{l:T Host.ClickToCopy}" Command="{Binding CopyCommand}" CommandParameter="{Binding CodeDisplay}">
+                      <StackPanel Orientation="Horizontal" Spacing="14">
+                        <TextBlock Name="CodeText" Classes="big" Text="{Binding CodeDisplay}" />
+                        <Panel VerticalAlignment="Center">
+                          <TextBlock Classes="copyHint" Text="{l:T Host.ClickToCopy}">
+                            <TextBlock.IsVisible>
+                              <MultiBinding Converter="{x:Static v:Same.Differ}">
+                                <Binding Path="CodeDisplay" />
+                                <Binding Path="Copied" />
+                              </MultiBinding>
+                            </TextBlock.IsVisible>
+                          </TextBlock>
+                          <TextBlock Classes="copied" Text="{l:T Host.Copied}">
+                            <TextBlock.IsVisible>
+                              <MultiBinding Converter="{x:Static v:Same.Values}">
+                                <Binding Path="CodeDisplay" />
+                                <Binding Path="Copied" />
+                              </MultiBinding>
+                            </TextBlock.IsVisible>
+                          </TextBlock>
+                        </Panel>
+                      </StackPanel>
+                    </Button>
+                    <Button Grid.Column="1" Name="RotateButton" Classes="small onTint" Content="{l:T Host.RotateCode}" Command="{Binding RotateCodeCommand}"
+                            VerticalAlignment="Center" Margin="10,0,0,0" />
+                  </Grid>
+                </StackPanel>
+              </Border>
               <TextBlock Name="SignalStatusText" Classes="muted" TextWrapping="Wrap" Text="{Binding SignalText}">
                 <TextBlock.IsVisible>
                   <MultiBinding Converter="{x:Static BoolConverters.And}">
@@ -290,16 +350,70 @@
               <TextBlock Classes="errorText" TextWrapping="Wrap" Text="{Binding SignalText}" IsVisible="{Binding SignalProblem}" />
               <TextBlock Classes="errorText" TextWrapping="Wrap" IsVisible="{Binding RestartNeeded}"
                          Text="{l:T Host.RestartNeeded}" />
-              <TextBlock Classes="section" Text="{l:T Main.OneTimeCode}" Margin="0,10,0,2" />
-              <Border Classes="subtle" Padding="16,14,14,14">
-                <Grid ColumnDefinitions="*,Auto">
-                  <SelectableTextBlock Name="CodeText" Text="{Binding CodeDisplay}" FontFamily="{DynamicResource MonoFont}"
-                                       FontSize="42" FontWeight="Light" LetterSpacing="4" VerticalAlignment="Center" />
-                  <Button Grid.Column="1" Name="RotateButton" Classes="small onTint" Content="{l:T Host.RotateCode}" Command="{Binding RotateCodeCommand}"
-                          VerticalAlignment="Center" Margin="10,0,0,0" />
-                </Grid>
-              </Border>
+              <TextBlock Classes="section" Text="{l:T Host.FixedPassword}" Margin="0,14,0,2" />
+              <Grid ColumnDefinitions="*,Auto" IsVisible="{Binding !IsEditingPassword}">
+                <TextBlock Name="PasswordStateText" Classes="muted" TextWrapping="Wrap" VerticalAlignment="Center"
+                           Text="{Binding PasswordStateText}" />
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" Margin="10,0,0,0" VerticalAlignment="Center">
+                  <Button Name="EditPasswordButton" Classes="small" Content="{Binding PasswordEditLabel}" Command="{Binding EditPasswordCommand}" />
+                  <Button Name="ClearPasswordButton" Classes="small ghost" Content="{l:T Host.ClearPassword}"
+                          Command="{Binding ClearPasswordCommand}" IsVisible="{Binding PasswordSet}" />
+                </StackPanel>
+              </Grid>
+              <StackPanel Spacing="6" IsVisible="{Binding IsEditingPassword}">
+                <TextBox Name="NewPasswordBox" Classes="revealPasswordButton" PasswordChar="•" MaxLength="128"
+                         Text="{Binding NewPassword}" PlaceholderText="{l:T Host.NewPassword}" />
+                <TextBox Name="ConfirmPasswordBox" Classes="revealPasswordButton" PasswordChar="•" MaxLength="128"
+                         Text="{Binding ConfirmPassword}" PlaceholderText="{l:T Host.ConfirmPassword}" />
+                <TextBlock Classes="muted" TextWrapping="Wrap" Text="{l:T Host.PasswordNote}" />
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                  <Button Name="SavePasswordButton" Classes="small accent" Content="{l:T Host.SavePassword}" Command="{Binding SavePasswordCommand}" />
+                  <Button Classes="small ghost" Content="{l:T Host.CancelPassword}" Command="{Binding CancelPasswordCommand}" />
+                </StackPanel>
+              </StackPanel>
+              <TextBlock Classes="errorText" TextWrapping="Wrap" Text="{Binding PasswordError}"
+                         IsVisible="{Binding PasswordError, Converter={x:Static ObjectConverters.IsNotNull}}" />
               <TextBlock Classes="muted" Margin="2,2,0,0" Text="{l:T Host.ConfirmNote}" />
+              <TextBlock Classes="section" Text="{l:T Host.AddressesTitle}" Margin="0,14,0,2" />
+              <ItemsControl Name="ConnectOptionsList" ItemsSource="{Binding ConnectOptions}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="vm:ConnectOption">
+                    <Grid ColumnDefinitions="88,*" Margin="0,0,0,2">
+                      <Border Classes="badge" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="0,7,0,0">
+                        <TextBlock Text="{Binding Kind}" />
+                      </Border>
+                      <Button Grid.Column="1" Classes="copy" ToolTip.Tip="{l:T Host.ClickToCopy}" Margin="-8,0,0,0"
+                              Command="{Binding $parent[ItemsControl].((vm:HostViewModel)DataContext).CopyCommand}"
+                              CommandParameter="{Binding Address}">
+                        <StackPanel Spacing="1">
+                          <StackPanel Orientation="Horizontal" Spacing="12">
+                            <TextBlock Text="{Binding Address}" FontFamily="{DynamicResource MonoFont}" FontSize="16" />
+                            <Panel VerticalAlignment="Center">
+                              <TextBlock Classes="copyHint" Text="{l:T Host.ClickToCopy}">
+                                <TextBlock.IsVisible>
+                                  <MultiBinding Converter="{x:Static v:Same.Differ}">
+                                    <Binding Path="Address" />
+                                    <Binding Path="$parent[ItemsControl].((vm:HostViewModel)DataContext).Copied" />
+                                  </MultiBinding>
+                                </TextBlock.IsVisible>
+                              </TextBlock>
+                              <TextBlock Classes="copied" Text="{l:T Host.Copied}">
+                                <TextBlock.IsVisible>
+                                  <MultiBinding Converter="{x:Static v:Same.Values}">
+                                    <Binding Path="Address" />
+                                    <Binding Path="$parent[ItemsControl].((vm:HostViewModel)DataContext).Copied" />
+                                  </MultiBinding>
+                                </TextBlock.IsVisible>
+                              </TextBlock>
+                            </Panel>
+                          </StackPanel>
+                          <TextBlock Classes="muted" Text="{Binding Detail}" IsVisible="{Binding HasDetail}" TextWrapping="Wrap" />
+                        </StackPanel>
+                      </Button>
+                    </Grid>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
               <Border Classes="warn" IsVisible="{Binding !InputAvailable}" Margin="0,6,0,0">
                 <StackPanel Spacing="4">
                   <TextBlock TextWrapping="Wrap" Text="{l:T Host.NoAccessibility}" />

@@ -36,16 +36,17 @@ public enum PathKind { Unknown = 0, Direct = 1, Punched = 2, Relay = 3, Tailscal
 /// <summary>Where a connection attempt is (Connecting.stage).</summary>
 public enum ConnectStage { Quic = 0, Resolving = 1, Gathering = 2, Checking = 3 }
 
-public sealed record Permissions(bool View, bool Input, bool Clipboard, bool File = false, bool Audio = false)
+/// <summary>Terminal: a shell on the host, everything the signed-in user can do.</summary>
+public sealed record Permissions(bool View, bool Input, bool Clipboard, bool File = false, bool Audio = false, bool Terminal = false)
 {
     public static readonly Permissions None = new(false, false, false);
 
     internal void Write(ProtoWriter w) =>
-        w.Bool(1, View).Bool(2, Input).Bool(3, Clipboard).Bool(4, File).Bool(5, Audio);
+        w.Bool(1, View).Bool(2, Input).Bool(3, Clipboard).Bool(4, File).Bool(5, Audio).Bool(6, Terminal);
 
     internal static Permissions Read(ReadOnlySpan<byte> data)
     {
-        bool v = false, i = false, c = false, f = false, a = false;
+        bool v = false, i = false, c = false, f = false, a = false, t = false;
         var r = new ProtoReader(data);
         while (r.Next(out var field))
         {
@@ -56,10 +57,11 @@ public sealed record Permissions(bool View, bool Input, bool Clipboard, bool Fil
                 case 3: c = r.Bool(); break;
                 case 4: f = r.Bool(); break;
                 case 5: a = r.Bool(); break;
+                case 6: t = r.Bool(); break;
                 default: r.Skip(); break;
             }
         }
-        return new Permissions(v, i, c, f, a);
+        return new Permissions(v, i, c, f, a, t);
     }
 }
 
@@ -95,6 +97,10 @@ public abstract record ConnectAuth
 {
     public sealed record KnownHost(string Key) : ConnectAuth;
     public sealed record Code(string Value) : ConnectAuth;
+    /// <summary>The host's fixed password.</summary>
+    public sealed record Password(string Value) : ConnectAuth;
+    /// <summary>No secret: ask the person at the host. Only with a device ID.</summary>
+    public sealed record Request : ConnectAuth;
 }
 
 /// <summary>Address is "ip:port" or a 9-digit device ID; SignalServer is used for IDs.</summary>
@@ -108,6 +114,8 @@ public sealed record ConnectRequest(string Address, ulong Tag, StreamMode Mode, 
         {
             case ConnectAuth.KnownHost k: w.String(4, k.Key); break;
             case ConnectAuth.Code c: w.String(5, c.Value); break;
+            case ConnectAuth.Password p: w.String(6, p.Value); break;
+            case ConnectAuth.Request: w.Bool(9, true); break;
         }
         w.String(8, SignalServer);
         return w.ToArray();

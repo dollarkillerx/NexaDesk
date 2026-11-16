@@ -20,7 +20,9 @@ DEMO=$!
 PROFILE=$(mktemp -d)
 trap 'kill $DEMO 2>/dev/null; wait $DEMO 2>/dev/null || true; rm -rf "$PROFILE"' EXIT
 sleep 1
+# The demo serves HTTPS with a certificate it made itself; this throwaway profile takes it.
 "$CHROME" --headless=new --user-data-dir="$PROFILE" --lang=zh-CN --accept-lang=zh-CN \
+    --ignore-certificate-errors \
     --hide-scrollbars --force-device-scale-factor=2 --window-size=1100,540 \
-    --virtual-time-budget=3000 --screenshot="$OUT/web.png" http://127.0.0.1:47811/ 2>/dev/null
+    --virtual-time-budget=3000 --screenshot="$OUT/web.png" https://127.0.0.1:47811/ 2>/dev/null
 echo "$OUT/web.png"

@@ -1,4 +1,4 @@
-//! The accept loop and the single session slot (§5.3).
+//! The accept loop and the running sessions (§5.3): several people at once.
 
 use std::{
     net::{IpAddr, SocketAddr},
@@ -61,6 +61,12 @@ pub struct AgentConfig {
     /// Also let web browsers connect: serve the page, signaling and WebRTC on this TCP
     /// address (`nexa-web`). Off unless set.
     pub web: Option<SocketAddr>,
+    /// The page's certificate. Without one the page is served over plain HTTP, which
+    /// only tests should do.
+    pub web_tls: Option<nexa_web::WebTls>,
+    /// A fixed password viewers and browsers may use instead of the one-time code.
+    /// Every connection is still put to the person at this Mac.
+    pub password: Option<Arc<nexa_auth::HostPassword>>,
 }
 
 #[derive(Debug, Error)]
@@ -75,6 +81,10 @@ pub enum AgentError {
     #[error("could not describe the display: {0}")]
     Screen(String),
 }
+
+/// How many people may be connected at once, from apps and browsers together. Each
+/// has a capture and an encoder of its own.
+pub(crate) const MAX_SESSIONS: usize = 4;
 
 struct ActiveSession {
     id: u64,
@@ -94,8 +104,10 @@ pub(crate) struct Shared {
     pub(crate) ui: Arc<dyn AgentUi>,
     code: OneTimeCode,
     shown_code: Mutex<String>,
-    slot: Mutex<Option<ActiveSession>>,
-    /// Keeps two accepted connections from replacing the old session at once.
+    /// The sessions running now, oldest first: several people may view and control at
+    /// once, each let in on their own.
+    slot: Mutex<Vec<ActiveSession>>,
+    /// Keeps two accepted connections from the same device replacing each other at once.
     replacing: tokio::sync::Mutex<()>,
     next_id: AtomicU64,
     pub(crate) shutdown: watch::Sender<bool>,
@@ -106,6 +118,23 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
+    /// Runs a session for a browser the signaling server put through, if browsers may
+    /// connect at all. Its frames arrive on `rx`; this host's go out on `tx`.
+    pub(crate) fn serve_remote_browser(
+        &self,
+        browser: nexa_web::RemoteBrowser,
+        rx: tokio::sync::mpsc::Receiver<String>,
+        tx: tokio::sync::mpsc::Sender<String>,
+    ) -> bool {
+        match self.web.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            Some(gateway) => {
+                gateway.serve_remote(browser, rx, tx);
+                true
+            }
+            None => false,
+        }
+    }
+
     pub(crate) fn report_code(&self) {
         let code = self.code.current();
         let mut shown = self.shown_code.lock().unwrap_or_else(|e| e.into_inner());
@@ -118,23 +147,37 @@ impl Shared {
     }
 
     pub(crate) fn session_active(&self) -> bool {
-        self.slot
+        !self
+            .slot
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .is_some()
+            .is_empty()
     }
 
-    /// Whether accepting `peer` would take over someone else's session. The
-    /// same device coming back (§4.4 reconnect, its old connection not yet
-    /// timed out here) replaces only its own session: no takeover prompt. The
-    /// access decision itself is unchanged and may still ask.
-    fn session_active_for_other(&self, peer: &nexa_auth::DevicePublicKey) -> bool {
-        let key = peer.to_hex();
-        self.slot
+    /// Sessions running now, from apps and browsers together.
+    pub(crate) fn session_count(&self) -> usize {
+        let native = self.slot.lock().unwrap_or_else(|e| e.into_inner()).len();
+        let browsers = self
+            .web
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
-            .is_some_and(|a| a.info.device_key != key)
+            .map_or(0, |w| w.active_count());
+        native + browsers
+    }
+
+    /// No room for another person. `peer` coming back to replace its own session (§4.4
+    /// reconnect, the old connection not yet timed out here) always fits.
+    pub(crate) fn full_for(&self, peer: Option<&nexa_auth::DevicePublicKey>) -> bool {
+        let returning = peer.is_some_and(|p| {
+            let key = p.to_hex();
+            self.slot
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .any(|a| a.info.device_key == key)
+        });
+        !returning && self.session_count() >= MAX_SESSIONS
     }
 
     fn end_active(&self, reason: CloseReason) {
@@ -143,9 +186,7 @@ impl Shared {
 
     fn end_active_if(&self, reason: CloseReason, f: impl Fn(&SessionInfo) -> bool) {
         let slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(active) = slot.as_ref()
-            && f(&active.info)
-        {
+        for active in slot.iter().filter(|a| f(&a.info)) {
             let _ = active.stop.send(Some(reason));
         }
     }
@@ -154,7 +195,8 @@ impl Shared {
         self.host.store.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Ends whatever is running, waits for it, and installs the new session.
+    /// Adds the new session beside the others. The same device's old session, if it
+    /// is still here (a reconnect), is ended and waited for first.
     async fn take_slot(
         &self,
         info: SessionInfo,
@@ -162,31 +204,38 @@ impl Shared {
         files: session::FileSlot,
     ) -> watch::Sender<bool> {
         let _guard = self.replacing.lock().await;
-        let old = {
+        let old: Vec<ActiveSession> = {
             let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
-            slot.take()
+            let (same, others) = std::mem::take(&mut *slot)
+                .into_iter()
+                .partition(|a| a.info.device_key == info.device_key);
+            *slot = others;
+            same
         };
-        if let Some(old) = old {
+        for old in old {
             let _ = old.stop.send(Some(CloseReason::Replaced));
             let mut done = old.done;
             let _ = tokio::time::timeout(REPLACE_WAIT, done.wait_for(|d| *d)).await;
         }
         let (done_tx, done_rx) = watch::channel(false);
-        *self.slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(ActiveSession {
-            id: info.id,
-            info,
-            stop,
-            done: done_rx,
-            files,
-        });
+        self.slot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(ActiveSession {
+                id: info.id,
+                info,
+                stop,
+                done: done_rx,
+                files,
+            });
         done_tx
     }
 
     fn clear_slot(&self, id: u64) {
-        let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
-        if slot.as_ref().is_some_and(|s| s.id == id) {
-            *slot = None;
-        }
+        self.slot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|s| s.id != id);
     }
 }
 
@@ -225,10 +274,16 @@ impl Agent {
         self.shared.session_active()
     }
 
-    /// The running (or starting) session, as shown to the person at the host.
+    /// The oldest running (or starting) session from an app, as shown to the person at
+    /// the host.
     pub fn active_session(&self) -> Option<SessionInfo> {
+        self.active_sessions().into_iter().next()
+    }
+
+    /// Every running session from an app, oldest first.
+    pub fn active_sessions(&self) -> Vec<SessionInfo> {
         let slot = self.shared.slot.lock().unwrap_or_else(|e| e.into_inner());
-        slot.as_ref().map(|s| s.info.clone())
+        slot.iter().map(|s| s.info.clone()).collect()
     }
 
     pub fn device_name(&self) -> &str {
@@ -311,12 +366,16 @@ impl Agent {
         self.shared.report_code();
     }
 
-    /// The running session's transfers, if it may transfer files.
+    /// The newest session that may transfer files: files dropped on the banner go to it.
     fn transfers(&self) -> Option<nexa_session::transfer::Transfers> {
         let slot = self.shared.slot.lock().unwrap_or_else(|e| e.into_inner());
-        let active = slot.as_ref()?;
-        let files = active.files.lock().unwrap_or_else(|e| e.into_inner());
-        files.clone()
+        slot.iter().rev().find_map(|active| {
+            active
+                .files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+        })
     }
 
     /// Sends files from this Mac to the viewer: the person at the host dropped them
@@ -345,12 +404,53 @@ impl Agent {
         self.transfers().is_some_and(|t| t.answer(id, accept))
     }
 
-    /// The host's way out: ends the running session, native or browser.
+    /// Ends one person's session, from an app or a browser; [`Agent::disconnect`] ends
+    /// them all.
+    pub fn disconnect_session(&self, id: u64) {
+        if let Some(browser) = crate::web::browser_session(id) {
+            if let Some(web) = self
+                .shared
+                .web
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+            {
+                web.disconnect_one(browser);
+            }
+            return;
+        }
+        self.shared
+            .end_active_if(CloseReason::HostEnded, |s| s.id == id);
+    }
+
+    /// The host's way out: ends every running session, native or browser.
     pub fn disconnect(&self) {
         self.shared.end_active(CloseReason::HostEnded);
-        if let Some(web) = self.shared.web.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        if let Some(web) = self
+            .shared
+            .web
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
             web.disconnect();
         }
+    }
+
+    /// Whether viewers may use a fixed password as well as the one-time code.
+    pub fn has_password(&self) -> bool {
+        self.shared.host.secrets.password.is_some()
+    }
+
+    /// SHA-256 of the page's certificate (`AB:CD:…`) and whether it is the person's own,
+    /// when browsers are served HTTPS.
+    pub fn web_certificate(&self) -> Option<(String, bool)> {
+        self.shared
+            .web
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .and_then(|w| w.tls().map(|t| (t.fingerprint_text(), t.custom)))
     }
 
     /// Where browsers connect, when browser access is on.
@@ -381,7 +481,13 @@ impl Agent {
         let _ = self.shared.shutdown.send(true);
         self.shared.end_active(CloseReason::Shutdown);
         // Dropping the gateway stops accepting and ends a browser session.
-        drop(self.shared.web.lock().unwrap_or_else(|e| e.into_inner()).take());
+        drop(
+            self.shared
+                .web
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take(),
+        );
     }
 
     /// Completes once the agent has shut down and closed its session.
@@ -424,6 +530,10 @@ pub async fn start(
     // There must be something to share before anyone is invited to look.
     platform.screen().map_err(AgentError::Screen)?;
     let web = config.web;
+    let web_tls = config.web_tls;
+    let password = config.password;
+    // One count of password guesses, whether they come from apps or browsers.
+    let password_guard = nexa_auth::PasswordGuard::default();
     let (focus_tx, focus_rx) = watch::channel(None);
     let code = OneTimeCode::generate();
     let (shutdown, _) = watch::channel(false);
@@ -446,7 +556,7 @@ pub async fn start(
             store: Arc::new(Mutex::new(store)),
             secrets: HostSecrets {
                 code: code.clone(),
-                password: None,
+                password: password.clone().map(|p| (p, password_guard.clone())),
             },
             policy: AccessPolicy::default(),
             consent: ui.clone(),
@@ -467,7 +577,7 @@ pub async fn start(
         ui: ui.clone(),
         code,
         shown_code: Mutex::new(String::new()),
-        slot: Mutex::new(None),
+        slot: Mutex::new(Vec::new()),
         replacing: tokio::sync::Mutex::new(()),
         next_id: AtomicU64::new(1),
         shutdown,
@@ -497,8 +607,19 @@ pub async fn start(
             ui: ui.clone(),
             shared: Arc::downgrade(&shared),
         });
-        match nexa_web::WebGateway::bind(addr, host, shared.code.clone(), Default::default()).await {
-            Ok(g) => *shared.web.lock().unwrap_or_else(|e| e.into_inner()) = Some(g),
+        match nexa_web::WebGateway::bind(
+            addr,
+            host,
+            shared.code.clone(),
+            Default::default(),
+            web_tls,
+        )
+        .await
+        {
+            Ok(g) => {
+                g.set_password(password.clone().map(|p| (p, password_guard.clone())));
+                *shared.web.lock().unwrap_or_else(|e| e.into_inner()) = Some(g);
+            }
             Err(e) => ui.event(AgentEvent::Warning(format!(
                 "browser access is off: cannot listen on {addr}: {e}"
             ))),
@@ -614,31 +735,19 @@ async fn handle_connection(
     origin: IpAddr,
     link: Option<Arc<Link>>,
 ) {
-    // One session at a time: a browser has the screen (see crate::web).
-    let browser_busy = shared
-        .web
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-        .is_some_and(|w| w.busy());
-    if browser_busy {
+    // Up to MAX_SESSIONS people at once, from apps and browsers together.
+    let peer = nexa_auth::peer_public_key(&conn).ok();
+    if shared.full_for(peer.as_ref()) {
         shared.ui.event(AgentEvent::ConnectionFailed {
             remote,
-            reason: "a browser session is running".into(),
+            reason: format!("{MAX_SESSIONS} people are already connected"),
         });
         conn.close(1u32.into(), b"busy");
         drop(permit);
         return;
     }
-    let result = {
-        let probe = shared.clone();
-        let peer = nexa_auth::peer_public_key(&conn).ok();
-        let active = move || match &peer {
-            Some(p) => probe.session_active_for_other(p),
-            None => probe.session_active(),
-        };
-        host_handshake_from(&conn, &shared.host, &active, remote, origin).await
-    };
+    // Nobody is taken over: a newcomer joins the others, and is asked about as usual.
+    let result = host_handshake_from(&conn, &shared.host, &|| false, remote, origin).await;
     shared.report_code();
     let accepted = match result {
         Ok(a) => a,

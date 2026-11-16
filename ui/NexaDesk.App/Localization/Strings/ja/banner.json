@@ -1,4 +1,7 @@
 {
   "Banner.WindowTitle": "NexaDesk — 操作されています",
-  "Banner.Disconnect": "切断"
+  "Banner.Disconnect": "切断",
+  "Banner.Collapse": "たたむ",
+  "Banner.Expand": "バナーを表示",
+  "Banner.Folded": "{0} 人 · {1}"
 }

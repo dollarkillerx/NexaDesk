@@ -39,6 +39,7 @@ pub fn perms(view: bool, input: bool, clipboard: bool) -> Permissions {
         clipboard,
         file: false,
         audio: false,
+        terminal: false,
     }
 }
 
@@ -388,6 +389,30 @@ pub async fn host_on(
     signal: Option<nexa_agent::SignalSetup>,
     listen: std::net::SocketAddr,
 ) -> Host {
+    host_full(ui, timeouts, signal, listen, None).await
+}
+
+/// An agent with a fixed password as well as its one-time code.
+#[allow(dead_code)]
+pub async fn host_with_password(ui: Arc<FakeUi>, timeouts: Timeouts, password: &str) -> Host {
+    let stored = Arc::new(nexa_auth::HostPassword::create(password).unwrap());
+    host_full(
+        ui,
+        timeouts,
+        None,
+        "127.0.0.1:0".parse().unwrap(),
+        Some(stored),
+    )
+    .await
+}
+
+pub async fn host_full(
+    ui: Arc<FakeUi>,
+    timeouts: Timeouts,
+    signal: Option<nexa_agent::SignalSetup>,
+    listen: std::net::SocketAddr,
+    password: Option<Arc<nexa_auth::HostPassword>>,
+) -> Host {
     let dir = tempfile::tempdir().unwrap();
     let identity = DeviceIdentity::generate();
     let store =
@@ -397,6 +422,8 @@ pub async fn host_on(
         AgentConfig {
             lan_discovery: false,
             web: None,
+            web_tls: None,
+            password,
             listen,
             device_name: "fake host".into(),
             os: Os::Macos,

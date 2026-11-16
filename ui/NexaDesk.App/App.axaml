@@ -547,6 +547,41 @@
       <Setter Property="Background" Value="{DynamicResource DangerPressedBrush}" />
       <Setter Property="Foreground" Value="#FFFFFF" />
     </Style>
+    <!-- Copy: a value that copies itself when clicked; a grey fill under the pointer. -->
+    <Style Selector="Button.copy">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+      <Setter Property="MinHeight" Value="0" />
+      <Setter Property="Padding" Value="8,4" />
+      <Setter Property="Cursor" Value="Hand" />
+      <Setter Property="HorizontalAlignment" Value="Left" />
+    </Style>
+    <Style Selector="Button.copy:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource SubtleHoverBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+    </Style>
+    <Style Selector="Button.copy:pressed /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource CardBorderBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+    </Style>
+    <Style Selector="Button.copy TextBlock.big">
+      <Setter Property="FontFamily" Value="{DynamicResource MonoFont}" />
+      <Setter Property="FontSize" Value="40" />
+      <Setter Property="FontWeight" Value="Light" />
+      <Setter Property="LetterSpacing" Value="4" />
+    </Style>
+    <Style Selector="Button.copy TextBlock.copyHint">
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Foreground" Value="{DynamicResource MutedBrush}" />
+      <Setter Property="Opacity" Value="0" />
+    </Style>
+    <Style Selector="Button.copy:pointerover TextBlock.copyHint">
+      <Setter Property="Opacity" Value="1" />
+    </Style>
+    <Style Selector="Button.copy TextBlock.copied">
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Foreground" Value="{DynamicResource OkBrush}" />
+    </Style>
     <!-- Shell header actions: full height, grey text, white under the pointer. -->
     <Style Selector="Button.shell">
       <Setter Property="Background" Value="Transparent" />
