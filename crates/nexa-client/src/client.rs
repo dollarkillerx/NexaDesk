@@ -1020,7 +1020,14 @@ async fn establish(
 }
 
 fn store_pairing(device: &Device, accepted: &ViewerAccepted, name: &str) -> Result<bool, String> {
-    let Some(proof) = accepted.proof.as_ref() else {
+    // The host keeps no pairing for its fixed password (it lets the owner in without a
+    // prompt, so nobody chose to save one): pinning it here would make the next
+    // connection try a pairing the host refuses, ahead of the kept password.
+    let proof = accepted
+        .proof
+        .as_ref()
+        .filter(|p| p.method() != nexa_auth::AuthMethod::Password);
+    let Some(proof) = proof else {
         lock(&device.store)
             .touch(&accepted.host, unix_now())
             .map_err(|e| e.to_string())?;

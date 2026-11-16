@@ -254,16 +254,18 @@ public sealed partial class ConnectViewModel : ObservableObject
     internal void ConnectRecent(RecentDeviceViewModel device)
     {
         if (IsConnecting) return;
-        if (device.IsPaired)
-        {
-            Start(device.Device.Address, new ConnectAuth.KnownHost(device.HostKey));
-            return;
-        }
-        // Its kept password signs in at once.
+        // Its kept password signs in at once. It comes first: it is what the person
+        // chose to keep, and the host may have no pairing for this device (it keeps
+        // none for its fixed password, and the person there can remove one).
         if (device.HasPassword && _passwords.Load(device.Device.PasswordAccount) is { } kept)
         {
             Start(device.Device.Address, new ConnectAuth.Password(kept));
             if (IsConnecting) _usingKept = device.Device;
+            return;
+        }
+        if (device.IsPaired)
+        {
+            Start(device.Device.Address, new ConnectAuth.KnownHost(device.HostKey));
             return;
         }
         // An ID through the server: ask the person at the host, as with nothing typed.

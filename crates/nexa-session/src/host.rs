@@ -664,12 +664,17 @@ fn run_tx(
             frame_id: f.frame_id,
             capture_ts_us: f.capture_ts_us,
         };
-        let Ok(packets) = packetizer.packetize(&f.data, info, alloc.fec_ratio, max_dg) else {
+        let interval = frame_interval(fps.load(Relaxed));
+        // §4.9 recovery probes: this frame's share of the padding the controller asks for.
+        let padding = (rate.lock().unwrap().recovery_padding_bps(now) as f64 / 8.0
+            * interval.as_secs_f64()) as usize;
+        let Ok(packets) =
+            packetizer.packetize_padded(&f.data, info, alloc.fec_ratio, padding, max_dg)
+        else {
             depth.fetch_sub(1, Relaxed);
             continue;
         };
         let bytes: u64 = packets.iter().map(|x| x.len() as u64).sum();
-        let interval = frame_interval(fps.load(Relaxed));
         let window = rate.lock().unwrap().pacing_window(bytes, interval);
         let start = Instant::now();
         let n = packets.len();

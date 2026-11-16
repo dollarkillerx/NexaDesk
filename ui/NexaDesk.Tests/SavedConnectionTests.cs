@@ -65,6 +65,29 @@ public class SavedConnectionTests
     }
 
     [Fact]
+    public void A_kept_password_comes_before_a_pairing_the_host_may_not_have()
+    {
+        // Signed in with the host's fixed password and kept it; this side also took it
+        // as paired (an older version did). The host keeps no pairing for its password,
+        // so one click must sign in with the password, not as a known device.
+        var (client, recent, passwords) = (new FakeClient(), new MemoryRecent(), new MemorySavedPasswords());
+        var vm = Make(client, recent, passwords);
+        vm.Address = "192.168.1.20";
+        vm.Code = Password;
+        vm.RememberPassword = true;
+        vm.ConnectCommand.Execute(null);
+        client.Raise(new ConnectedEvent(client.Requests[0].Tag, Samples.HostKey, "工作室 Mac mini",
+            new Permissions(true, true, true), 2, true));
+        Assert.True(vm.Recent[0].IsPaired);
+        Assert.True(vm.Recent[0].HasPassword);
+        client.Sessions[0].Close();
+        client.Raise(new DisconnectedEvent(client.Requests[0].Tag, DisconnectReason.ClosedLocally, ""));
+
+        vm.Recent[0].ConnectCommand.Execute(null);
+        Assert.Equal(new ConnectAuth.Password(Password), client.Requests[^1].Auth);
+    }
+
+    [Fact]
     public void A_kept_password_the_host_refuses_is_dropped_and_asked_for_again()
     {
         var device = new RecentDevice("192.168.1.20", "工作室 Mac mini", Samples.HostKey, 1, HasPassword: true);

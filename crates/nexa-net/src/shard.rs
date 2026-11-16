@@ -35,6 +35,9 @@ pub struct FrameInfo {
     pub capture_ts_us: u32,
 }
 
+/// Probe padding is at most this many times the frame's own shards.
+pub const MAX_PROBE_PADDING: usize = 3;
+
 #[derive(Debug, Default)]
 pub struct Packetizer {
     next_seq: u32,
@@ -50,6 +53,21 @@ impl Packetizer {
         fec: f64,
         max_datagram: usize,
     ) -> Result<Vec<Bytes>, ShardError> {
+        self.packetize_padded(frame, info, fec, 0, max_datagram)
+    }
+
+    /// As [`Packetizer::packetize`], with `padding_bytes` more on the wire as extra
+    /// repair shards: the rate controller's probe (§4.9). They are ordinary parity, so
+    /// any receiver takes them, and the receive rate they produce is real traffic.
+    /// At most [`MAX_PROBE_PADDING`] times the frame.
+    pub fn packetize_padded(
+        &mut self,
+        frame: &[u8],
+        info: FrameInfo,
+        fec: f64,
+        padding_bytes: usize,
+        max_datagram: usize,
+    ) -> Result<Vec<Bytes>, ShardError> {
         if max_datagram <= VideoShardHeader::LEN + 1 {
             return Err(ShardError::DatagramTooSmall(max_datagram));
         }
@@ -61,7 +79,11 @@ impl Packetizer {
         if k > usize::from(MAX_SHARDS) {
             return Err(ShardError::FrameTooLarge(k));
         }
-        let m = parity_count(k, fec);
+        let extra = padding_bytes
+            .div_ceil(shard_len)
+            .min(k * MAX_PROBE_PADDING)
+            .min(usize::from(MAX_SHARDS));
+        let m = (parity_count(k, fec) + extra).min(usize::from(MAX_SHARDS));
 
         let mut originals: Vec<Vec<u8>> = Vec::with_capacity(k);
         for i in 0..k {
@@ -369,6 +391,49 @@ mod tests {
             AssemblerEvent::Complete(f) => f,
             other => panic!("expected Complete, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn probe_padding_is_extra_parity_any_receiver_takes() {
+        let frame: Vec<u8> = (0..50_000u32).map(|i| (i * 7) as u8).collect();
+        let info = FrameInfo {
+            stream: 0,
+            flags: 0,
+            ref_epoch: 0,
+            frame_id: 9,
+            capture_ts_us: 0,
+        };
+        let plain = Packetizer::default()
+            .packetize(&frame, info, 0.1, 1200)
+            .unwrap();
+        let padded = Packetizer::default()
+            .packetize_padded(&frame, info, 0.1, 50_000, 1200)
+            .unwrap();
+        let wire = |p: &[Bytes]| p.iter().map(|b| b.len()).sum::<usize>();
+        assert!(
+            wire(&padded) >= wire(&plain) + 50_000,
+            "padding adds its bytes"
+        );
+        // Capped at three times the frame.
+        let capped = Packetizer::default()
+            .packetize_padded(&frame, info, 0.1, 10_000_000, 1200)
+            .unwrap();
+        let (h, _) = VideoShardHeader::parse(&capped[0]).unwrap();
+        assert!(usize::from(h.m) <= usize::from(h.k) * (MAX_PROBE_PADDING + 1));
+        // A receiver rebuilds the frame from the parity alone.
+        let (h, _) = VideoShardHeader::parse(&padded[0]).unwrap();
+        let mut asm = Assembler::new(Duration::from_millis(12), Duration::from_millis(2));
+        let mut out = Vec::new();
+        let t = Instant::now();
+        for p in padded.iter().skip(usize::from(h.k)) {
+            let (h, body) = VideoShardHeader::parse(p).unwrap();
+            asm.push(h, body, t, &mut out);
+        }
+        let done = out.iter().find_map(|e| match e {
+            AssemblerEvent::Complete(f) => Some(f.data.clone()),
+            _ => None,
+        });
+        assert_eq!(done.as_deref(), Some(frame.as_slice()));
     }
 
     #[test]

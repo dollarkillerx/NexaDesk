@@ -88,6 +88,17 @@ const LOSS_EWMA_ALPHA: f64 = 0.3;
 /// what the receiver measured.
 const PROBE_ACCEPT_FACTOR: f64 = 0.85;
 
+/// A cut to below this share of the target marks the old target for recovery: a
+/// short hiccup, or one met while little was being sent (a still screen, where the
+/// receive rate says nothing about the link), would otherwise leave the rate low
+/// for minutes at 8% a second.
+const RECOVERY_CUT_BELOW: f64 = 0.5;
+/// Recovery probes pad up to this multiple of the target, never past the old one.
+const RECOVERY_PROBE_MULTIPLIER: f64 = 3.0;
+const RECOVERY_PROBE_DURATION: Duration = Duration::from_millis(300);
+/// Quiet time after a cut or a probe before the next recovery probe.
+const RECOVERY_PROBE_GAP: Duration = Duration::from_millis(500);
+
 /// Frame trains shorter than this say nothing useful about the bottleneck at
 /// the 250 µs feedback resolution.
 const CAPACITY_MIN_PACKETS: u32 = 8;
@@ -487,6 +498,11 @@ pub struct RateController {
     capacity: Option<f64>,
     probe_ends: Option<Instant>,
     probe_congested: bool,
+    /// What a recovery probe pads up to; `None` for the startup probe.
+    probe_cap: Option<f64>,
+    last_probe_end: Option<Instant>,
+    /// The target before a sharp cut, which recovery probes may climb back to.
+    recover_to: Option<f64>,
     last_update: Option<Instant>,
     last_decrease: Option<Instant>,
     /// Receive rate at the last Overuse, which estimates the bottleneck.
@@ -522,6 +538,9 @@ impl RateController {
             capacity: None,
             probe_ends: Some(now + PROBE_DURATION),
             probe_congested: false,
+            probe_cap: None,
+            last_probe_end: None,
+            recover_to: None,
             last_update: None,
             last_decrease: None,
             congestion_point: None,
@@ -563,8 +582,23 @@ impl RateController {
     /// Extra FEC padding to send right now for the startup probe.
     pub fn probe_padding_bps(&self, now: Instant) -> u64 {
         match self.probe_ends {
-            Some(end) if now < end => (self.target * (PROBE_RATE_MULTIPLIER - 1.0)) as u64,
+            Some(end) if now < end => match self.probe_cap {
+                Some(cap) => (cap - self.target).max(0.0) as u64,
+                None => (self.target * (PROBE_RATE_MULTIPLIER - 1.0)) as u64,
+            },
             _ => 0,
+        }
+    }
+
+    /// The padding for a recovery probe only. It never goes past a rate this link
+    /// carried before the cut, so it is safe to send. (The host does not send the
+    /// startup probe's padding: at twice a guessed initial rate it could flood a
+    /// slow link at the start of every session.)
+    pub fn recovery_padding_bps(&self, now: Instant) -> u64 {
+        if self.probe_cap.is_some() {
+            self.probe_padding_bps(now)
+        } else {
+            0
         }
     }
 
@@ -631,6 +665,8 @@ impl RateController {
         self.capacity = None;
         self.congestion_point = None;
         self.probe_ends = None;
+        self.probe_cap = None;
+        self.recover_to = None;
         self.last_decrease = None;
         self.last_update = Some(now);
     }
@@ -764,12 +800,42 @@ impl RateController {
             self.grown(dt)
         };
 
+        let before = self.target;
         let delay_based = self.delay_based(recv, grown, now);
         let loss_based = self.loss_based(grown, now);
         self.target = delay_based
             .min(loss_based)
             .clamp(self.cfg.min_bps as f64, self.cfg.max_bps as f64);
+        if self.target < RECOVERY_CUT_BELOW * before {
+            self.recover_to = Some(self.recover_to.map_or(before, |r| r.max(before)));
+        }
         self.finish_probe(recv, now);
+        self.maybe_probe_for_recovery(app_limited, now);
+    }
+
+    /// After a sharp cut, short probes find out at once whether the link carries the
+    /// old rate again, instead of growing back to it at 8% a second. Only while the
+    /// encoder wants more than the target (a still screen has nothing to gain), and
+    /// never again once a probe runs into congestion: then the link really is worse.
+    fn maybe_probe_for_recovery(&mut self, app_limited: bool, now: Instant) {
+        let Some(goal) = self.recover_to else { return };
+        if self.target >= goal * 0.95 {
+            self.recover_to = None;
+            return;
+        }
+        let quiet = |t: Option<Instant>| {
+            t.is_none_or(|t| now.saturating_duration_since(t) >= RECOVERY_PROBE_GAP)
+        };
+        if self.probe_ends.is_none()
+            && !app_limited
+            && self.detector.state == DelayState::Normal
+            && quiet(self.last_decrease)
+            && quiet(self.last_probe_end)
+        {
+            self.probe_ends = Some(now + RECOVERY_PROBE_DURATION);
+            self.probe_congested = false;
+            self.probe_cap = Some((self.target * RECOVERY_PROBE_MULTIPLIER).min(goal));
+        }
     }
 
     fn delay_based(&mut self, recv: Option<f64>, grown: f64, now: Instant) -> f64 {
@@ -826,12 +892,19 @@ impl RateController {
         let Some(end) = self.probe_ends else { return };
         if self.probe_congested {
             self.probe_ends = None;
+            self.last_probe_end = Some(now);
+            if self.probe_cap.take().is_some() {
+                // A recovery probe met congestion: the old rate is not there now.
+                self.recover_to = None;
+            }
             return;
         }
         if now < end {
             return;
         }
         self.probe_ends = None;
+        self.probe_cap = None;
+        self.last_probe_end = Some(now);
         if let Some(recv) = recv {
             self.capacity = Some(self.capacity.map_or(recv, |c| c.max(recv)));
             self.target = self
@@ -900,6 +973,8 @@ mod tests {
         capacity: fn(f64) -> f64,
         random_loss: f64,
         app_cap_bps: Option<f64>,
+        /// What the encoder wants at time t (s): a still screen, then video.
+        app_demand: Option<fn(f64) -> f64>,
     }
 
     impl Default for Scenario {
@@ -911,6 +986,7 @@ mod tests {
                 capacity: |_| 20.0 * MBPS,
                 random_loss: 0.0,
                 app_cap_bps: None,
+                app_demand: None,
             }
         }
     }
@@ -1040,6 +1116,9 @@ mod tests {
                 let mut video = alloc.video_bps as f64;
                 if let Some(cap) = s.app_cap_bps {
                     video = video.min(cap);
+                }
+                if let Some(demand) = s.app_demand {
+                    video = video.min(demand(now as f64 / 1e6));
                 }
                 let per_frame = video / 8.0 / s.fps * (0.8 + 0.4 * frame_noise.unit());
                 let padding = ctl.probe_padding_bps(wall) as f64 / 8.0 / s.fps;
@@ -1299,6 +1378,39 @@ mod tests {
             trace.target_at(29.9) / MBPS
         );
         assert!(trace.max_target(3.0, 30.0) <= after_probe * 1.001);
+    }
+
+    /// A still screen (little to send), one short hiccup on the link, then video:
+    /// the hiccup must not leave the rate at the still screen's level for long.
+    #[test]
+    fn a_hiccup_while_the_screen_is_still_does_not_starve_the_video_after() {
+        let capacity = 100.0 * MBPS;
+        let trace = simulate(Scenario {
+            secs: 40.0,
+            initial_bps: 35.0 * MBPS,
+            capacity: |t| {
+                if (5.0..5.3).contains(&t) {
+                    1.0 * MBPS
+                } else {
+                    100.0 * MBPS
+                }
+            },
+            app_demand: Some(|t| if t < 10.0 { 0.3 * MBPS } else { f64::INFINITY }),
+            ..Default::default()
+        });
+        let low = trace.target_at(9.9);
+        let back = trace.first_at_or_above(10.0, 30.0 * MBPS);
+        println!(
+            "[still, hiccup at 5 s, video from 10 s, C=100M] target before video {:.2} Mbps; at 30 Mbps after {:?} s; at 40 s {:.2} Mbps",
+            low / MBPS,
+            back.map(|t| t - 10.0),
+            trace.target_at(39.9) / MBPS
+        );
+        report("still-then-video", &trace, 20.0, 40.0, capacity);
+        assert!(
+            back.is_some_and(|t| t - 10.0 <= 5.0),
+            "the video waited {back:?} s for 30 Mbps"
+        );
     }
 
     #[test]
