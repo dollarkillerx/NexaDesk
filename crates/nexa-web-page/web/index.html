@@ -77,6 +77,8 @@
 
   <main id="session-view" class="stage" hidden>
     <video id="screen" autoplay playsinline muted></video>
+    <!-- The host's cursor where the browser's own pointer is not (cursor.js). -->
+    <img id="remote-cursor" class="remote-cursor" alt="" hidden>
     <!-- Where keys, an input method's text and a phone keyboard's typing arrive. -->
     <textarea id="kbd" class="kbd" autocomplete="off" autocorrect="off" autocapitalize="off"
               spellcheck="false" aria-label="Keyboard"></textarea>

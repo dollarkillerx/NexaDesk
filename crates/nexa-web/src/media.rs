@@ -189,6 +189,8 @@ pub(crate) struct Control {
     pub preset: std::sync::Mutex<Option<Preset>>,
     /// What the thread is sending now: width, height, fps. 0 until the first frame.
     pub sending: std::sync::Mutex<(u32, u32, u32)>,
+    /// Set when the page's channel opens: the cursor feed says everything again.
+    pub cursor_resync: Arc<AtomicBool>,
 }
 
 /// The size sent to the browser: the display's pixels scaled down to fit `max`, even.
@@ -209,6 +211,7 @@ impl MediaThread {
         host: Arc<dyn WebHost>,
         screen: WebScreen,
         config: &WebConfig,
+        show_cursor: bool,
         out: mpsc::Sender<Frame>,
     ) -> Self {
         let control = Arc::new(Control::default());
@@ -219,7 +222,7 @@ impl MediaThread {
         let handle = thread::Builder::new()
             .name("web-capture-encode".into())
             .spawn(move || {
-                if let Err(e) = run(host, screen, start_bps, &ctl, out) {
+                if let Err(e) = run(host, screen, start_bps, show_cursor, &ctl, out) {
                     *ctl.failed.lock().unwrap_or_else(|e| e.into_inner()) = Some(e);
                 }
             })
@@ -232,7 +235,12 @@ impl MediaThread {
 }
 
 /// Capture and encoder settings for `p` on `screen`.
-fn configs(screen: &WebScreen, p: Preset, bitrate_bps: u32) -> (CaptureConfig, EncoderConfig) {
+fn configs(
+    screen: &WebScreen,
+    p: Preset,
+    bitrate_bps: u32,
+    show_cursor: bool,
+) -> (CaptureConfig, EncoderConfig) {
     let (w, h) = stream_size(screen.size_pixels, p.max_size);
     (
         CaptureConfig {
@@ -240,7 +248,7 @@ fn configs(screen: &WebScreen, p: Preset, bitrate_bps: u32) -> (CaptureConfig, E
             width: w,
             height: h,
             fps: p.fps,
-            show_cursor: true,
+            show_cursor,
             chroma: Chroma::Yuv420,
         },
         EncoderConfig {
@@ -268,13 +276,14 @@ fn run(
     host: Arc<dyn WebHost>,
     screen: WebScreen,
     start_bps: u32,
+    show_cursor: bool,
     ctl: &Control,
     out: mpsc::Sender<Frame>,
 ) -> Result<(), String> {
     let take_preset = || ctl.preset.lock().unwrap_or_else(|e| e.into_inner()).take();
     let mut current = take_preset().ok_or("no stream settings")?;
     let mut bitrate = start_bps;
-    let (mut capture, mut encode) = configs(&screen, current, bitrate);
+    let (mut capture, mut encode) = configs(&screen, current, bitrate, show_cursor);
     let mut capturer = host.capturer(capture).map_err(|e| e.to_string())?;
     let mut encoder = host.encoder(encode).map_err(|e| e.to_string())?;
     *ctl.sending.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -289,7 +298,7 @@ fn run(
             && next != current
         {
             current = next;
-            (capture, encode) = configs(&screen, current, bitrate);
+            (capture, encode) = configs(&screen, current, bitrate, show_cursor);
             capturer = host.capturer(capture).map_err(|e| e.to_string())?;
             encoder = host.encoder(encode).map_err(|e| e.to_string())?;
             *ctl.sending.lock().unwrap_or_else(|e| e.into_inner()) =

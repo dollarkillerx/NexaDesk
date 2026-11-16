@@ -7,7 +7,7 @@
 //! host → browser  {type:"answer", sdp, salt, msg}         SPAKE2 offer (no salt, msg for "request")
 //! browser → host  {type:"auth", msg, confirm}             not for "request"
 //! host → browser  {type:"waiting"}                        the person is being asked
-//! host → browser  {type:"accepted", confirm, input, clipboard, terminal, os, name}   or {type:"denied"}
+//! host → browser  {type:"accepted", confirm, input, clipboard, terminal, os, name, cursor}   or {type:"denied"}
 //! host → browser  {type:"candidates", list}       through the server, once let in: this
 //!                                                 host's own addresses, to try directly
 //! host → browser  {type:"ended", reason}
@@ -45,6 +45,7 @@ use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 
 use crate::{
     BrowserAuth, BrowserRequest, Shared, WebEvent, clean_label,
+    cursor::CursorFeed,
     input::{Grants, InputThread},
     media::MediaThread,
     rtc::{self, Cmd, Ended},
@@ -382,6 +383,8 @@ pub(crate) async fn run(mut ws: Pipe, peer: SocketAddr, path: rtc::Path, shared:
     let input_allowed = screen.is_some() && answer.input && host.input_available();
     let clipboard_allowed = screen.is_some() && answer.clipboard;
     let terminal_allowed = answer.terminal;
+    // The cursor beside the picture, where the host can read it.
+    let cursor_source = screen.and_then(|_| host.cursor_source());
     let accepted = json!({
         "type": "accepted",
         "confirm": confirm.map(|c| BASE64.encode(&c)).unwrap_or_default(),
@@ -392,6 +395,9 @@ pub(crate) async fn run(mut ws: Pipe, peer: SocketAddr, path: rtc::Path, shared:
         // Shortcuts are carried over to the host's conventions (Ctrl+C → ⌘C on a Mac).
         "os": std::env::consts::OS,
         "name": shared.config.name,
+        "cursor": cursor_source.is_some(),
+        // The screen in points: the size the cursor is drawn at.
+        "points": screen.map(|s| [s.size_points.0, s.size_points.1]),
     });
     if !send(&mut ws, accepted).await {
         driver.abort();
@@ -399,9 +405,26 @@ pub(crate) async fn run(mut ws: Pipe, peer: SocketAddr, path: rtc::Path, shared:
     }
 
     let (frame_tx, frame_rx) = mpsc::channel(2);
-    let media =
-        screen.map(|screen| MediaThread::spawn(host.clone(), screen, &shared.config, frame_tx));
-    let (out_tx, out_rx) = mpsc::channel(8);
+    let media = screen.map(|screen| {
+        MediaThread::spawn(
+            host.clone(),
+            screen,
+            &shared.config,
+            cursor_source.is_none(),
+            frame_tx,
+        )
+    });
+    // Clipboard text and the cursor, to the page.
+    let (out_tx, out_rx) = mpsc::channel(32);
+    let cursor = match (screen, cursor_source, &media) {
+        (Some(screen), Some(source), Some(m)) => Some(CursorFeed::spawn(
+            source,
+            screen,
+            m.control.cursor_resync.clone(),
+            out_tx.clone(),
+        )),
+        _ => None,
+    };
     let input = screen
         .filter(|_| input_allowed || clipboard_allowed)
         .map(|screen| {
@@ -483,6 +506,7 @@ pub(crate) async fn run(mut ws: Pipe, peer: SocketAddr, path: rtc::Path, shared:
     };
     driver.abort();
     drop(cmd_tx);
+    drop(cursor);
     drop(media);
     let _ = send(&mut ws, json!({"type": "ended", "reason": reason})).await;
     ws.close().await;

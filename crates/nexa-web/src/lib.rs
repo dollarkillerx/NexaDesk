@@ -23,6 +23,7 @@
 //! only one browser session runs at a time. The page is served over HTTPS (`tls`), with
 //! the host's own certificate unless the person provides one; plain HTTP only redirects.
 
+mod cursor;
 mod http;
 mod input;
 mod media;
@@ -180,6 +181,11 @@ pub enum WebEvent {
 pub trait WebHost: Send + Sync + 'static {
     fn screen(&self) -> Result<WebScreen, String>;
     fn capturer(&self, config: CaptureConfig) -> nexa_media::Result<Box<dyn Capturer>>;
+    /// The host's cursor, read beside the picture so the page can draw it at once.
+    /// `None`: it is drawn into the picture instead, and follows the video's delay.
+    fn cursor_source(&self) -> Option<Box<dyn nexa_media::CursorSource>> {
+        None
+    }
     fn encoder(&self, config: EncoderConfig) -> nexa_media::Result<Box<dyn Encoder>>;
     fn input_available(&self) -> bool;
     /// Called once per session on its input thread, only if input was allowed.

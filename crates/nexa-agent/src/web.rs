@@ -62,6 +62,10 @@ impl WebHost for AgentWeb {
         self.platform.capturer(config)
     }
 
+    fn cursor_source(&self) -> Option<Box<dyn nexa_media::CursorSource>> {
+        self.platform.cursor_source()
+    }
+
     fn encoder(&self, config: EncoderConfig) -> nexa_media::Result<Box<dyn Encoder>> {
         self.platform.encoder(config)
     }

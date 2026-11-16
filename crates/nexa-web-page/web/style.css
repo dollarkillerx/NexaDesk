@@ -250,6 +250,14 @@ button { font: inherit; letter-spacing: 0.16px; border-radius: 0; }
   touch-action: none;
 }
 .stage.control #screen { cursor: none; }
+.remote-cursor {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  z-index: 1;
+  will-change: transform;
+}
 .stage-hint {
   position: absolute;
   left: 50%;

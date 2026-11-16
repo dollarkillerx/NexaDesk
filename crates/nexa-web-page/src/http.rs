@@ -15,8 +15,9 @@ pub const MAX_HEAD: usize = 8 * 1024;
 /// Script only from us (plus WebAssembly compilation), connections only back to us.
 /// Inline styles are allowed because the terminal (xterm.js) writes its own `<style>`
 /// elements; scripts stay ours only.
+/// `img-src data:`: the host's cursor arrives as PNG bytes and is shown from a data URL.
 pub const CSP: &str = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; \
-    style-src 'self' 'unsafe-inline'; img-src 'self'; connect-src 'self'; media-src 'self' blob:; \
+    style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; media-src 'self' blob:; \
     base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 pub struct Head {

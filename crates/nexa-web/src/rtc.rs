@@ -470,7 +470,13 @@ async fn run(
                         return Ended::Error("ICE: the browser stopped answering".into());
                     }
                     Event::MediaAdded(m) if m.kind == MediaKind::Video => video = Some(m.mid),
-                    Event::ChannelOpen(id, label) if label == "input" => input_channel = Some(id),
+                    Event::ChannelOpen(id, label) if label == "input" => {
+                        input_channel = Some(id);
+                        // What was said before it opened was lost.
+                        if let Some(c) = &control {
+                            c.cursor_resync.store(true, Relaxed);
+                        }
+                    }
                     // The page opened its terminal: a shell, only if it was granted.
                     Event::ChannelOpen(id, label) if label == "term" => {
                         let Some(host) = &terminal_host else {

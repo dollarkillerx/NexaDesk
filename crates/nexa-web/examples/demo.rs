@@ -70,6 +70,8 @@ mod demo {
         /// What the browser put on the demo's clipboard, and text the demo "copied".
         clipboard: String,
         copied: Option<String>,
+        /// A key was typed: what a Mac does to its cursor, see DemoCursor.
+        typed: bool,
     }
 
     struct Demo(Arc<Mutex<Seen>>);
@@ -99,6 +101,13 @@ mod demo {
         }
         fn encoder(&self, config: EncoderConfig) -> nexa_media::Result<Box<dyn Encoder>> {
             Ok(Box::new(VtEncoder::new(config)?))
+        }
+        /// An arrow where the browser last put the pointer, as a real host's cursor.
+        fn cursor_source(&self) -> Option<Box<dyn nexa_media::CursorSource>> {
+            Some(Box::new(DemoCursor {
+                seen: self.0.clone(),
+                image: Arc::new(arrow()),
+            }))
         }
         fn input_available(&self) -> bool {
             true
@@ -166,6 +175,7 @@ mod demo {
             }
             if down {
                 s.keys.insert(hid);
+                s.typed = true;
             } else {
                 s.keys.remove(&hid);
             }
@@ -204,6 +214,54 @@ mod demo {
             let mut s = self.0.lock().unwrap();
             s.keys.clear();
             s.buttons.clear();
+        }
+    }
+
+    struct DemoCursor {
+        seen: Arc<Mutex<Seen>>,
+        image: Arc<nexa_media::CursorImage>,
+    }
+
+    impl nexa_media::CursorSource for DemoCursor {
+        fn sample(&mut self) -> nexa_media::CursorSample {
+            let seen = self.seen.lock().unwrap();
+            nexa_media::CursorSample {
+                image: Some(self.image.clone()),
+                // NEXA_DEMO_HIDE_ON_TYPE: hidden from the first key on, for good, as a
+                // Mac reports it after typing even while injected moves come in.
+                visible: !(seen.typed && std::env::var_os("NEXA_DEMO_HIDE_ON_TYPE").is_some()),
+                position: Some(seen.pointer),
+            }
+        }
+    }
+
+    /// A 2x arrow, 12 by 18 points: white with a black edge, hot spot at its tip.
+    fn arrow() -> nexa_media::CursorImage {
+        let (w, h) = (24u32, 36u32);
+        let mut rgba = vec![0u8; (w * h * 4) as usize];
+        let inside = |x: i32, y: i32| {
+            (0..32).contains(&y) && x >= 0 && x <= y * 2 / 3 && !(y > 24 && x > 32 - y)
+        };
+        for y in 0..h as i32 {
+            for x in 0..w as i32 {
+                let i = ((y as u32 * w + x as u32) * 4) as usize;
+                if inside(x, y) {
+                    let edge = !(inside(x - 2, y)
+                        && inside(x + 2, y)
+                        && inside(x, y - 2)
+                        && inside(x, y + 2));
+                    let c = if edge { 0 } else { 255 };
+                    rgba[i..i + 4].copy_from_slice(&[c, c, c, 255]);
+                }
+            }
+        }
+        nexa_media::CursorImage {
+            width: w,
+            height: h,
+            rgba,
+            hot_x: 0.0,
+            hot_y: 0.0,
+            scale: 2.0,
         }
     }
 

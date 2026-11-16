@@ -6,6 +6,7 @@ import { setupTouch } from "./touch.js";
 import { watch } from "./stats.js";
 import { RemoteTerminal } from "./term.js";
 import * as saved from "./saved.js";
+import { RemoteCursor } from "./cursor.js";
 
 const $ = (id) => document.getElementById(id);
 const CODE_ALPHABET = /^[A-Z2-7]{8}$/;
@@ -134,6 +135,7 @@ function connect(code, deviceId, method = "code", opts = {}) {
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${path}`);
   const s = { pc, ws, dc: null, input: false, clipboard: false, terminal: false, hostOs: "", ended: false };
   session = s;
+  cursor?.reset();
 
   const finish = (key, { error = true } = {}) => {
     if (s.ended) return;
@@ -167,6 +169,7 @@ function connect(code, deviceId, method = "code", opts = {}) {
   s.dc.onmessage = (e) => {
     let m;
     try { m = JSON.parse(e.data); } catch { return; }
+    if (m && cursor?.message(m)) return;
     if (m?.t === "c" && typeof m.s === "string" && s.clipboard) receiveClip(m.s);
     if (m?.t === "q") showQualityNote(m);
   };
@@ -240,6 +243,9 @@ function connect(code, deviceId, method = "code", opts = {}) {
         // No picture: the host gave only the command line.
         s.video = m.video !== false;
         s.hostOs = typeof m.os === "string" ? m.os : "";
+        // The host sends its cursor beside the picture: the page draws it.
+        s.cursor = m.cursor === true;
+        s.points = m.points;
         s.started = true;
         keep(m, code, deviceId, method, opts);
         showSession(s);
@@ -507,6 +513,7 @@ function showConnect() {
   $("keybar").hidden = true;
   $("toast").hidden = true;
   touch?.reset();
+  cursor?.reset();
   const v = $("screen");
   v.srcObject = null;
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
@@ -514,6 +521,7 @@ function showConnect() {
 
 function showSession(s) {
   document.body.classList.add("in-session");
+  cursor?.enable(s.cursor && s.video !== false, s.points);
   $("connect-view").hidden = true;
   $("session-view").hidden = false;
   $("session-view").classList.toggle("control", s.input);
@@ -711,6 +719,7 @@ function send(msg) {
   const s = session;
   if (!s?.started || !s.input || s.dc?.readyState !== "open") return;
   s.dc.send(JSON.stringify(msg));
+  if ((msg.t === "m" || msg.t === "b") && typeof msg.x === "number") cursor?.sent(msg.x, msg.y);
 }
 
 // Keep under the DataChannel's 256 KiB once encoded.
@@ -794,6 +803,7 @@ const inSession = () => !!session?.started && !$("session-view").hidden;
 
 let keyboard = null;
 let touch = null;
+let cursor = null;
 let pendingMove = null;
 let wheelCarry = { x: 0, y: 0 };
 
@@ -835,6 +845,21 @@ function setupInput() {
       b.setAttribute("aria-pressed", String(latched.has(Number(b.dataset.mod))));
     }
   };
+  cursor = new RemoteCursor(v, $("remote-cursor"), { touch: TOUCH });
+  // The picture moved or changed size: the drawn cursor follows.
+  let relayout = 0;
+  const follow = () => {
+    if (relayout) return;
+    relayout = requestAnimationFrame(() => {
+      relayout = 0;
+      cursor.layout();
+    });
+  };
+  v.addEventListener("resize", follow);
+  window.addEventListener("resize", follow);
+  document.addEventListener("fullscreenchange", follow);
+  $("session-view").addEventListener("touchmove", follow, { passive: true });
+  $("session-view").addEventListener("touchend", follow, { passive: true });
   touch = setupTouch(v, {
     at: fraction,
     move: (f) => send({ t: "m", ...f }),
