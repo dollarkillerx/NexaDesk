@@ -67,7 +67,7 @@ public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
     async Task<string?> RunSubcommand(string command, string? stdin)
     {
         var path = Locate();
-        if (path == null) return L.Get(OperatingSystem.IsWindows() ? "Platform.AgentMissingWindows" : "Platform.AgentMissing");
+        if (path == null) return L.Get("Platform.AgentMissing");
         var info = new ProcessStartInfo(path)
         {
             UseShellExecute = false,
@@ -81,7 +81,7 @@ public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
         try
         {
             using var p = Process.Start(info);
-            if (p == null) return L.Get(OperatingSystem.IsWindows() ? "Platform.AgentMissingWindows" : "Platform.AgentMissing");
+            if (p == null) return L.Get("Platform.AgentMissing");
             // On stdin, never on the command line where other processes could read it.
             if (stdin != null) await p.StandardInput.WriteLineAsync(stdin);
             p.StandardInput.Close();
@@ -101,7 +101,7 @@ public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
     public string? Start(string listen, string deviceName, string signalServer, bool announceOnLan, string? web = null)
     {
         var path = Locate();
-        if (path == null) return L.Get(OperatingSystem.IsWindows() ? "Platform.AgentMissingWindows" : "Platform.AgentMissing");
+        if (path == null) return L.Get("Platform.AgentMissing");
         var info = new ProcessStartInfo(path)
         {
             UseShellExecute = false,

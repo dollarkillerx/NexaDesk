@@ -12,5 +12,6 @@
   "Trust.DontTrust": "Don't trust",
   "Trust.Saved": "The server is now trusted.",
   "Trust.SavedHost": "The server is now trusted: turn remote control off and on again to use it.",
-  "Trust.Failed": "Could not check the server's certificate: {0}"
+  "Trust.Failed": "Could not check the server's certificate: {0}",
+  "Settings.ThisDevice.Windows": "This PC: {0}"
 }

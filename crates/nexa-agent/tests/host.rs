@@ -400,6 +400,17 @@ async fn the_fixed_password_lets_in_without_asking_and_the_code_still_asks() {
         0,
         "the password is the owner's: nobody is asked"
     );
+    // And it may do everything: a view-only owner cannot use the mouse.
+    let granted = accepted.as_ref().unwrap().accept.perms.clone().unwrap();
+    assert!(
+        granted.view
+            && granted.input
+            && granted.clipboard
+            && granted.file
+            && granted.audio
+            && granted.terminal,
+        "{granted:?}"
+    );
     until("session running", WAIT, || h.agent.session_active()).await;
     drop(accepted);
     until("session over", WAIT, || !h.agent.session_active()).await;

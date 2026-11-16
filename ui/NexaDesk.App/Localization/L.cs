@@ -11,7 +11,8 @@ namespace NexaDesk.Localization;
 /// assemblies, so NativeAOT needs nothing special). The language is chosen once at start:
 /// the setting, else the first of macOS's preferred languages that is supported, else
 /// English. A key missing in that language falls back to English, then Chinese, then the
-/// key itself, so a gap shows up as text rather than a crash.
+/// key itself, so a gap shows up as text rather than a crash. On Windows a key's
+/// <c>.Windows</c> wording, where there is one, stands in for it (<see cref="WindowsSuffix"/>).
 ///
 /// Until <see cref="Use"/> or <see cref="Init"/> is called the language is Chinese, which
 /// is what the tests read.
@@ -79,6 +80,29 @@ public static class L
         return English;
     }
 
+    /// <summary>
+    /// The suffix of a key's wording for Windows ("this PC", the notification area, Settings),
+    /// where the plain key says "this Mac", the menu bar or System Settings.
+    /// </summary>
+    public const string WindowsSuffix = ".Windows";
+
+    static readonly AsyncLocal<bool?> PlatformScope = new();
+
+    /// <summary>Whether <c>.Windows</c> wordings are used: on Windows, or in a test that says so.</summary>
+    static bool OnWindows => PlatformScope.Value ?? OperatingSystem.IsWindows();
+
+    /// <summary>Reads as on Windows (or not) for this async flow only, until disposed.</summary>
+    internal static IDisposable ScopedWindows(bool windows = true)
+    {
+        var before = PlatformScope.Value;
+        PlatformScope.Value = windows;
+        return new Restore(() => PlatformScope.Value = before);
+    }
+
+    /// <summary>
+    /// The text for a key. On Windows <c>key.Windows</c> comes first in each language, so callers
+    /// and XAML name only the plain key.
+    /// </summary>
     public static string Get(string key) =>
         Lookup(Current, key) ?? Lookup(English, key) ?? Lookup(Chinese, key) ?? key;
 
@@ -97,8 +121,12 @@ public static class L
         }
     }
 
-    static string? Lookup(string language, string key) =>
-        Strings.Value.Table.TryGetValue(language, out var t) && t.TryGetValue(key, out var s) ? s : null;
+    static string? Lookup(string language, string key)
+    {
+        if (!Strings.Value.Table.TryGetValue(language, out var t)) return null;
+        if (OnWindows && t.TryGetValue(key + WindowsSuffix, out var w)) return w;
+        return t.TryGetValue(key, out var s) ? s : null;
+    }
 
     /// <summary>Every string of every language, for the completeness tests.</summary>
     internal static IReadOnlyDictionary<string, Dictionary<string, string>> Tables => Strings.Value.Table;

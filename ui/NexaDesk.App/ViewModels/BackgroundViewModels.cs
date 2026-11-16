@@ -30,9 +30,8 @@ public sealed partial class LoginItemViewModel : ObservableObject
 
     public string StatusText => Status switch
     {
-        LoginItemStatus.Enabled => L.Get(OperatingSystem.IsWindows() ? "LoginItem.EnabledWindows" : "LoginItem.Enabled"),
-        LoginItemStatus.RequiresApproval =>
-            L.Get(OperatingSystem.IsWindows() ? "LoginItem.RequiresApprovalWindows" : "LoginItem.RequiresApproval"),
+        LoginItemStatus.Enabled => L.Get("LoginItem.Enabled"),
+        LoginItemStatus.RequiresApproval => L.Get("LoginItem.RequiresApproval"),
         LoginItemStatus.NotFound => L.Get("LoginItem.NotFound"),
         LoginItemStatus.Unsupported => L.Get("LoginItem.NeedsMacOS13"),
         _ => L.Get("LoginItem.Off"),

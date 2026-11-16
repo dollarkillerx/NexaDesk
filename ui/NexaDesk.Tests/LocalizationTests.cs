@@ -67,6 +67,60 @@ public partial class LocalizationTests
         }
     }
 
+    /// <summary>
+    /// A <c>.Windows</c> wording only stands in for a key that exists (the parity test above
+    /// already makes it exist in every language), with the same placeholders, and never says Mac.
+    /// The code names only plain keys: <see cref="L.Get"/> picks the wording.
+    /// </summary>
+    [Fact]
+    public void Every_windows_wording_replaces_a_key_with_the_same_placeholders()
+    {
+        var problems = new List<string>();
+        foreach (var (code, _) in L.Languages)
+        {
+            var t = L.Tables[code];
+            foreach (var (key, text) in t.Where(p => p.Key.EndsWith(L.WindowsSuffix, StringComparison.Ordinal)))
+            {
+                var plain = key[..^L.WindowsSuffix.Length];
+                if (!t.TryGetValue(plain, out var base_)) problems.Add($"{code}:{key} has no {plain}");
+                else if (!Placeholders(text).SetEquals(Placeholders(base_))) problems.Add($"{code}:{key} placeholders differ from {plain}");
+                if (text.Contains("Mac", StringComparison.Ordinal)) problems.Add($"{code}:{key} says Mac");
+            }
+        }
+        Assert.Empty(problems);
+        Assert.Contains("Main.MenuBarNote" + L.WindowsSuffix, L.Tables[L.Chinese].Keys);
+
+        foreach (var file in Sources())
+        {
+            var text = File.ReadAllText(file);
+            Assert.DoesNotContain(CodeKey().Matches(text).Select(m => m.Groups[1].Value)
+                .Concat(XamlKey().Matches(text).Select(m => m.Groups[1].Value)), k => k.EndsWith(L.WindowsSuffix));
+        }
+    }
+
+    [Fact]
+    public void Windows_reads_its_own_wording_and_falls_back_to_the_plain_key()
+    {
+        using (L.ScopedWindows())
+        {
+            Assert.Equal("本机：x", L.Format("Settings.ThisDevice", "x"));
+            Assert.Equal("语言", L.Get("Settings.Language"));
+            Assert.Contains("通知区域", L.Get("Main.MenuBarNote"));
+            using (L.Scoped(L.English))
+            {
+                Assert.Equal("This PC: x", L.Format("Settings.ThisDevice", "x"));
+                Assert.Equal("Language", L.Get("Settings.Language"));
+                Assert.Equal("Could not find nexa-agent.exe. Reinstall NexaDesk.", L.Get("Platform.AgentMissing"));
+            }
+            using (L.Scoped(L.Japanese)) Assert.Equal("このPCの操作を許可", L.Get("Main.HostTitle"));
+            Assert.Equal("No.Such.Key", L.Get("No.Such.Key"));
+            using (L.ScopedWindows(false))
+                Assert.Contains("菜单栏", L.Get("Main.MenuBarNote"));
+        }
+        using (L.Scoped(L.English))
+            Assert.Equal(OperatingSystem.IsWindows() ? "This PC: x" : "This Mac: x", L.Format("Settings.ThisDevice", "x"));
+    }
+
     [Fact]
     public void Every_key_the_code_asks_for_exists()
     {
@@ -142,7 +196,7 @@ public partial class LocalizationTests
         using (L.Scoped(L.English))
         {
             Assert.Equal("Language", L.Get("Settings.Language"));
-            Assert.Equal("This Mac: x", L.Format("Settings.ThisDevice", "x"));
+            using (L.ScopedWindows(false)) Assert.Equal("This Mac: x", L.Format("Settings.ThisDevice", "x"));
         }
         using (L.Scoped(L.Japanese)) Assert.Equal("言語", L.Get("Settings.Language"));
         Assert.Equal("语言", L.Get("Settings.Language"));

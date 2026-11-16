@@ -12,5 +12,6 @@
   "Trust.DontTrust": "不信任",
   "Trust.Saved": "已信任这台服务器。",
   "Trust.SavedHost": "已信任这台服务器：关闭再开启“允许控制”后生效。",
-  "Trust.Failed": "无法检查服务器证书：{0}"
+  "Trust.Failed": "无法检查服务器证书：{0}",
+  "Settings.ThisDevice.Windows": "本机：{0}"
 }

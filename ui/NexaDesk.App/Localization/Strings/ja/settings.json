@@ -12,5 +12,6 @@
   "Trust.DontTrust": "信頼しない",
   "Trust.Saved": "このサーバーを信頼しました。",
   "Trust.SavedHost": "このサーバーを信頼しました：操作の許可をオフにしてからオンにすると使われます。",
-  "Trust.Failed": "サーバーの証明書を確認できません：{0}"
+  "Trust.Failed": "サーバーの証明書を確認できません：{0}",
+  "Settings.ThisDevice.Windows": "このPC：{0}"
 }

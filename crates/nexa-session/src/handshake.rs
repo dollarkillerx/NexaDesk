@@ -614,11 +614,10 @@ pub async fn host_handshake_from(
     let mut perms = match (&decision, &answer) {
         (_, Some(a)) => a.perms.clone(),
         (AccessDecision::Allow { perms }, None) => perms.clone(),
-        // The owner, by the fixed password: their own command line too, as in a browser.
-        (AccessDecision::NeedsConsent(p), None) if by_password => Permissions {
-            terminal: true,
-            ..p.perms.clone()
-        },
+        // The owner, by the fixed password: everything a person at the host could
+        // grant, their own command line too, as in a browser. (A first contact's
+        // proposal is view-only, which left the owner unable to use the mouse.)
+        (AccessDecision::NeedsConsent(_), None) if by_password => owner_perms(),
         _ => unreachable!("every other decision returned above or produced an answer"),
     };
     perms.input &= (cfg.input_available)();
@@ -663,6 +662,18 @@ pub async fn host_handshake_from(
         }),
         warning,
     })
+}
+
+/// What the fixed password grants: it is the owner's own way in.
+fn owner_perms() -> Permissions {
+    Permissions {
+        view: true,
+        input: true,
+        clipboard: true,
+        file: true,
+        audio: true,
+        terminal: true,
+    }
 }
 
 /// Applies the person's "save" and "don't ask again" answers.
