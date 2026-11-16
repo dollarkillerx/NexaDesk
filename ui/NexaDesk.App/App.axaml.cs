@@ -72,7 +72,8 @@ public partial class App : Application
                 windows, new LocalAddresses(), deviceName, settings: new SettingsStore(Path.Combine(dataDir, "settings.json")),
                 loginItem: OperatingSystem.IsWindows() ? new RunKeyLoginItem() : new SmAppServiceLoginItem(), keymap: new NativeKeymap(dataDir),
                 viewerPrefs: new ViewerPrefsStore(Path.Combine(dataDir, "viewer-prefs.json")),
-                passwords: new NativeSavedPasswords(), updater: new VelopackUpdater());
+                passwords: new NativeSavedPasswords(), updater: new VelopackUpdater(),
+                serverTrust: new NativeServerTrust());
             if (startupError != null) vm.Connect.IdentityError = startupError;
             var main = new MainWindow { DataContext = vm };
             if (OperatingSystem.IsWindows())

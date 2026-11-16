@@ -1,0 +1,32 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:NexaDesk.ViewModels"
+        xmlns:l="using:NexaDesk.Localization"
+        x:Class="NexaDesk.Views.ServerTrustDialog"
+        x:DataType="vm:ServerTrustViewModel"
+        Title="{l:T Trust.WindowTitle}"
+        Width="520" SizeToContent="Height" CanResize="False"
+        Topmost="True" ShowInTaskbar="True"
+        WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource CardBrush}">
+  <Grid RowDefinitions="Auto,Auto">
+    <StackPanel Margin="16,16,16,20" Spacing="12">
+      <TextBlock Classes="h1" Text="{l:T Trust.Title}" TextWrapping="Wrap" />
+      <TextBlock Name="IntroText" TextWrapping="Wrap" Text="{Binding Intro}" />
+      <StackPanel Spacing="4">
+        <TextBlock Classes="section" Text="{l:T Trust.FingerprintLabel}" />
+        <Border Classes="subtle">
+          <SelectableTextBlock Name="FingerprintText" Text="{Binding Fingerprint}" TextWrapping="Wrap"
+                               FontFamily="{DynamicResource MonoFont}" FontSize="13" />
+        </Border>
+      </StackPanel>
+      <TextBlock Classes="muted" TextWrapping="Wrap" Text="{l:T Trust.Note}" />
+    </StackPanel>
+    <!-- Not trusting is the default and cancel button, and has focus. -->
+    <Grid Grid.Row="1" ColumnDefinitions="*,1,*">
+      <Button Name="TrustButton" Classes="footer" Content="{l:T Trust.Trust}" Command="{Binding TrustCommand}" />
+      <Button Grid.Column="2" Name="DontTrustButton" Classes="accent footer" Content="{l:T Trust.DontTrust}"
+              IsDefault="True" IsCancel="True" Command="{Binding DontTrustCommand}" />
+    </Grid>
+  </Grid>
+</Window>

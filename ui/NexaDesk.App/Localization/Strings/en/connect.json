@@ -40,5 +40,6 @@
   "Connect.SavedPasswordInvalid": "A fixed password is at least 8 characters and does not look like a one-time code.",
   "Connect.SavedPasswordFailed": "Could not keep it in the Keychain: {0}",
   "Connect.SavedPasswordStale": "The saved password no longer works",
-  "Connect.SavedPasswordStaleDetail": "{0}'s fixed password may have changed. The saved one was removed; type it again."
+  "Connect.SavedPasswordStaleDetail": "{0}'s fixed password may have changed. The saved one was removed; type it again.",
+  "Connect.Reason": "Reason: {0}"
 }

@@ -2,5 +2,15 @@
   "Settings.Language": "言語",
   "Settings.LanguageSystem": "システムに合わせる",
   "Settings.LanguageRestart": "NexaDesk を再起動すると反映されます",
-  "Settings.ThisDevice": "このMac：{0}"
+  "Settings.ThisDevice": "このMac：{0}",
+  "Trust.WindowTitle": "シグナリングサーバー",
+  "Trust.Title": "このシグナリングサーバーを信頼しますか？",
+  "Trust.Intro": "{0} の証明書は公的な認証局が発行したものではありません（自前のサーバーではよくあることです）。下のフィンガープリントがサーバーの CA 証明書と一致する場合にだけ信頼してください（サーバーで openssl x509 -noout -fingerprint -sha256 -in <CA 証明書> を実行すると確認できます）。",
+  "Trust.FingerprintLabel": "証明書のフィンガープリント（SHA-256）",
+  "Trust.Note": "信頼すると、このコンピュータ（signal-ca.pem）に保存され、接続にも操作の許可にも使われます。操作の許可は一度オフにしてからオンにすると反映されます。",
+  "Trust.Trust": "信頼する",
+  "Trust.DontTrust": "信頼しない",
+  "Trust.Saved": "このサーバーを信頼しました。",
+  "Trust.SavedHost": "このサーバーを信頼しました：操作の許可をオフにしてからオンにすると使われます。",
+  "Trust.Failed": "サーバーの証明書を確認できません：{0}"
 }

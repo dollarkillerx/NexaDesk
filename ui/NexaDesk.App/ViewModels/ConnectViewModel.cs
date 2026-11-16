@@ -114,6 +114,9 @@ public sealed partial class ConnectViewModel : ObservableObject
     readonly IWindowService _windows;
     readonly Func<DateTimeOffset> _now;
     readonly Func<string> _signalServer;
+
+    /// <summary>A connection by device ID failed on the signaling server's certificate.</summary>
+    public event Action<string>? SignalCertificateProblem;
     readonly Dictionary<ulong, SessionViewModel> _sessions = new();
     readonly HashSet<string> _paired = new(StringComparer.OrdinalIgnoreCase);
     List<RecentDevice> _recent;
@@ -439,7 +442,10 @@ public sealed partial class ConnectViewModel : ObservableObject
                     Error = new ErrorText(L.Get("Connect.SavedPasswordStale"), L.Format("Connect.SavedPasswordStaleDetail", stale.Label.Length > 0 ? stale.Label : stale.Name));
                     FocusCodeRequested?.Invoke();
                 }
-                else if (d.Reason != DisconnectReason.ClosedLocally) Error = Failure(d.Reason, p.Address);
+                else if (d.Reason != DisconnectReason.ClosedLocally) Error = Failure(d.Reason, p.Address, d.Message);
+                // A self-hosted server's certificate: offer to trust it (then connect again).
+                if (d.Reason == DisconnectReason.SignalServer && ServerTrustFlow.IsCertificateProblem(d.Message))
+                    SignalCertificateProblem?.Invoke(_signalServer());
                 _usingKept = null;
                 break;
             case WarningEvent w:
@@ -448,12 +454,16 @@ public sealed partial class ConnectViewModel : ObservableObject
         }
     }
 
-    /// <summary>A failure to get through to an address outside any tailnet points at Tailscale.</summary>
-    static ErrorText Failure(DisconnectReason reason, string address)
+    /// <summary>A failure to get through to an address outside any tailnet points at Tailscale.
+    /// The library's own reason follows as the last line (a certificate the server's
+    /// CA does not sign, a refused request…): the general text alone cannot tell them apart.</summary>
+    internal static ErrorText Failure(DisconnectReason reason, string address, string? message = null)
     {
         var e = Texts.Disconnect(reason);
         var unreachable = reason is DisconnectReason.Network or DisconnectReason.TimedOut or DisconnectReason.NoPath;
-        return unreachable && !Texts.IsTailnetTarget(address) ? new ErrorText(e.Title, $"{e.Detail}\n{Texts.TailscaleAdvice}") : e;
+        var detail = unreachable && !Texts.IsTailnetTarget(address) ? $"{e.Detail}\n{Texts.TailscaleAdvice}" : e.Detail;
+        if (!string.IsNullOrWhiteSpace(message)) detail += "\n" + L.Format("Connect.Reason", message.Trim());
+        return new ErrorText(e.Title, detail);
     }
 
     static string Shown(string address) =>

@@ -201,9 +201,18 @@ fn parse_config(cfg: &[u8]) -> Result<ClientConfig, Abi> {
     ClientConfig::decode(cfg).map_err(|e| Abi(NEXA_E_PARSE, format!("bad config: {e}")))
 }
 
+/// The app's data directory: the one the agent uses too (crates/nexa-agent/src/os_*.rs).
 fn default_data_dir() -> PathBuf {
-    let home = std::env::var_os("HOME").unwrap_or_default();
-    PathBuf::from(home).join("Library/Application Support/NexaDesk")
+    #[cfg(windows)]
+    {
+        let appdata = std::env::var_os("APPDATA").unwrap_or_default();
+        PathBuf::from(appdata).join("NexaDesk")
+    }
+    #[cfg(not(windows))]
+    {
+        let home = std::env::var_os("HOME").unwrap_or_default();
+        PathBuf::from(home).join("Library/Application Support/NexaDesk")
+    }
 }
 
 /// `nexa_init` with the devices supplied by the caller. Not exported from the library:
@@ -779,6 +788,121 @@ pub unsafe extern "C" fn nexa_last_error(buf: *mut u8, cap: usize, written: *mut
 #[cfg(test)]
 pub(crate) fn test_panic() -> i32 {
     guarded(|| panic!("boom"))
+}
+
+/// The trusted roots for a self-hosted signaling server: signal-ca.pem in the data
+/// directory, read by the viewer at each connection and by the agent when it starts.
+fn signal_ca_file() -> PathBuf {
+    default_data_dir().join("signal-ca.pem")
+}
+
+fn signal_config(url: &[u8]) -> Result<nexa_session::rendezvous::signal::SignalConfig, Abi> {
+    let url = std::str::from_utf8(url)
+        .map_err(|_| invalid("server is not UTF-8"))?
+        .trim();
+    if url.is_empty() || url.len() > 512 {
+        return Err(invalid("bad server address"));
+    }
+    let mut config = nexa_session::rendezvous::signal::SignalConfig::new(url.to_owned());
+    let ca = signal_ca_file();
+    if ca.exists() {
+        config = config.with_ca_file(&ca).map_err(|e| invalid(&e))?;
+    }
+    Ok(config)
+}
+
+fn probe(url: &[u8]) -> Result<nexa_session::rendezvous::signal::ServerCertificate, Abi> {
+    let config = signal_config(url)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| Abi(NEXA_E_INTERNAL, e.to_string()))?;
+    runtime
+        .block_on(nexa_session::rendezvous::signal::server_certificate(
+            &config,
+        ))
+        .map_err(|e| Abi(NEXA_E_INTERNAL, e.to_string()))
+}
+
+/// Looks at a signaling server's TLS certificate, so a self-hosted server can be
+/// trusted on first use. `out` receives UTF-8 text: `trusted` or `untrusted`, a
+/// newline, and the SHA-256 fingerprint (AA:BB:…) of the certificate that would be
+/// trusted. Fails when the server cannot be reached, or when trusting its certificate
+/// would not help (it names another server). Blocks for up to about 30 s: never call
+/// it on the main thread.
+///
+/// # Safety
+/// `url` valid for `url_len` bytes, `out` writable for `cap` bytes, `written` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nexa_signal_certificate(
+    url: *const u8,
+    url_len: usize,
+    out: *mut u8,
+    cap: usize,
+    written: *mut usize,
+) -> i32 {
+    guarded(|| {
+        // SAFETY: per the contract.
+        let found = probe(unsafe { bytes_of(url, url_len)? })?;
+        let text = format!(
+            "{}\n{}",
+            if found.trusted {
+                "trusted"
+            } else {
+                "untrusted"
+            },
+            found.fingerprint
+        );
+        // SAFETY: per the contract.
+        unsafe { give(text.as_bytes(), out, cap, written) }
+    })
+}
+
+/// Trusts a signaling server's certificate: looks again, and only if it is still the
+/// one with `fingerprint` (what the person accepted) adds it to signal-ca.pem. The
+/// agent reads that file when remote control next starts. Blocks like
+/// [`nexa_signal_certificate`].
+///
+/// # Safety
+/// `url` valid for `url_len` bytes, `fingerprint` for `fingerprint_len`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nexa_signal_trust(
+    url: *const u8,
+    url_len: usize,
+    fingerprint: *const u8,
+    fingerprint_len: usize,
+) -> i32 {
+    guarded(|| {
+        // SAFETY: per the contract.
+        let (url, expected) = unsafe {
+            (
+                bytes_of(url, url_len)?,
+                bytes_of(fingerprint, fingerprint_len)?,
+            )
+        };
+        let expected = std::str::from_utf8(expected).map_err(|_| invalid("bad fingerprint"))?;
+        let found = probe(url)?;
+        if found.trusted {
+            return Ok(());
+        }
+        if !found.fingerprint.eq_ignore_ascii_case(expected.trim()) {
+            return Err(Abi(
+                NEXA_E_NOT_PERMITTED,
+                "the server's certificate changed since it was shown".to_owned(),
+            ));
+        }
+        let path = signal_ca_file();
+        let mut pem = std::fs::read_to_string(&path).unwrap_or_default();
+        if !pem.is_empty() && !pem.ends_with('\n') {
+            pem.push('\n');
+        }
+        pem.push_str(&found.pem());
+        let dir = path.parent().ok_or_else(|| invalid("no data directory"))?;
+        std::fs::create_dir_all(dir).map_err(|e| Abi(NEXA_E_INTERNAL, e.to_string()))?;
+        let tmp = path.with_extension("pem.tmp");
+        std::fs::write(&tmp, pem).map_err(|e| Abi(NEXA_E_INTERNAL, e.to_string()))?;
+        std::fs::rename(&tmp, &path).map_err(|e| Abi(NEXA_E_INTERNAL, e.to_string()))
+    })
 }
 
 #[cfg(test)]

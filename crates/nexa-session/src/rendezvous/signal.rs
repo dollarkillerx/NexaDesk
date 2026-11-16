@@ -235,6 +235,182 @@ fn tls_config(cfg: &SignalConfig) -> Result<Arc<rustls::ClientConfig>, SignalErr
     Ok(Arc::new(config))
 }
 
+/// A server's certificate, for trusting a self-hosted server on first use: shown to
+/// the person as a fingerprint, saved as a root once they accept it.
+#[derive(Clone, Debug)]
+pub struct ServerCertificate {
+    /// Already trusted (a public CA, or a root saved earlier): nothing to ask.
+    pub trusted: bool,
+    /// The certificate to trust: the top of the chain the server sent (its own CA,
+    /// or the certificate itself when it is self-signed).
+    pub anchor: CertificateDer<'static>,
+    /// SHA-256 of `anchor`, as AA:BB:…
+    pub fingerprint: String,
+}
+
+impl ServerCertificate {
+    /// `anchor` as PEM, for signal-ca.pem.
+    pub fn pem(&self) -> String {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(self.anchor.as_ref());
+        let mut out = String::from("-----BEGIN CERTIFICATE-----\n");
+        for line in b64.as_bytes().chunks(64) {
+            out.push_str(std::str::from_utf8(line).unwrap_or_default());
+            out.push('\n');
+        }
+        out.push_str("-----END CERTIFICATE-----\n");
+        out
+    }
+}
+
+/// SHA-256, upper-case hex pairs joined by colons (as browsers and openssl show it).
+pub fn fingerprint(der: &[u8]) -> String {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(der)
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Connects to the server's TLS port and says whether `cfg` trusts it. When it does
+/// not, finds the certificate that would make it trusted, and checks that it really
+/// does (the server's name must still match): a certificate that would not help is an
+/// error, never something to offer.
+pub async fn server_certificate(cfg: &SignalConfig) -> Result<ServerCertificate, SignalError> {
+    let ep = parse_url(&cfg.url)?;
+    if !ep.tls {
+        return Err(SignalError::BadUrl(cfg.url.clone()));
+    }
+    let first = handshake(&ep, &cfg.url, tls_config(cfg)?).await;
+    if let Ok(chain) = &first {
+        let top = chain.last().cloned().ok_or(SignalError::Protocol)?;
+        return Ok(ServerCertificate {
+            trusted: true,
+            fingerprint: fingerprint(top.as_ref()),
+            anchor: top,
+        });
+    }
+    // Not trusted: see what it presents, without trusting anything.
+    let recorder = Arc::new(Recorder::default());
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let looking = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| SignalError::Tls(e.to_string()))?
+        .dangerous()
+        .with_custom_certificate_verifier(recorder.clone())
+        .with_no_client_auth();
+    handshake(&ep, &cfg.url, Arc::new(looking)).await?;
+    let chain = recorder.chain.lock().map(|c| c.clone()).unwrap_or_default();
+    let anchor = chain.last().cloned().ok_or(SignalError::Protocol)?;
+    // Would trusting it work?
+    let mut with = cfg.clone();
+    with.extra_roots.push(anchor.clone());
+    handshake(&ep, &cfg.url, tls_config(&with)?)
+        .await
+        .map_err(|e| match e {
+            SignalError::Tls(why) => SignalError::Tls(format!(
+                "trusting the server's certificate would not help: {why}"
+            )),
+            other => other,
+        })?;
+    Ok(ServerCertificate {
+        trusted: false,
+        fingerprint: fingerprint(anchor.as_ref()),
+        anchor,
+    })
+}
+
+/// A TLS handshake and nothing else; the certificates the server sent.
+async fn handshake(
+    ep: &Endpoint,
+    url: &str,
+    config: Arc<rustls::ClientConfig>,
+) -> Result<Vec<CertificateDer<'static>>, SignalError> {
+    let run = async {
+        let tcp = TcpStream::connect((ep.host.as_str(), ep.port))
+            .await
+            .map_err(|e| SignalError::Unreachable(e.to_string()))?;
+        let name = ServerName::try_from(ep.host.clone())
+            .map_err(|_| SignalError::BadUrl(url.to_owned()))?;
+        let tls = tokio_rustls::TlsConnector::from(config)
+            .connect(name, tcp)
+            .await
+            .map_err(|e| SignalError::Tls(e.to_string()))?;
+        Ok(tls
+            .get_ref()
+            .1
+            .peer_certificates()
+            .map(|c| c.iter().map(|d| d.clone().into_owned()).collect())
+            .unwrap_or_default())
+    };
+    tokio::time::timeout(PROBE_TIMEOUT, run)
+        .await
+        .map_err(|_| SignalError::Timeout)?
+}
+
+/// Accepts any certificate and keeps the chain: only for looking at what a server
+/// presents. Signatures are still checked, so the chain is the server's own.
+#[derive(Debug, Default)]
+struct Recorder {
+    chain: std::sync::Mutex<Vec<CertificateDer<'static>>>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for Recorder {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        _name: &ServerName<'_>,
+        _ocsp: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        if let Ok(mut chain) = self.chain.lock() {
+            *chain = std::iter::once(end_entity)
+                .chain(intermediates)
+                .map(|c| c.clone().into_owned())
+                .collect();
+        }
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
 fn ws_config() -> WebSocketConfig {
     WebSocketConfig::default()
         .max_message_size(Some(MAX_SIGNAL_MESSAGE))
@@ -410,6 +586,79 @@ impl SignalClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A TLS server on 127.0.0.1 whose certificate for `name` is signed by its own CA;
+    /// it sends the leaf and the CA, as a self-hosted server does.
+    async fn self_signed_server(name: &str) -> (u16, CertificateDer<'static>) {
+        use rustls::pki_types::PrivateKeyDer;
+        let ca_key = rcgen::KeyPair::generate().unwrap();
+        let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        ca_params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "test CA");
+        let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+        let issuer = rcgen::Issuer::new(ca_params, ca_key);
+        let leaf_key = rcgen::KeyPair::generate().unwrap();
+        let leaf = rcgen::CertificateParams::new(vec![name.to_owned()])
+            .unwrap()
+            .signed_by(&leaf_key, &issuer)
+            .unwrap();
+        let ca_der = CertificateDer::from(ca_cert.der().to_vec());
+        let chain = vec![CertificateDer::from(leaf.der().to_vec()), ca_der.clone()];
+        let key = PrivateKeyDer::try_from(leaf_key.serialize_der()).unwrap();
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let config = rustls::ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(chain, key)
+            .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((tcp, _)) = listener.accept().await {
+                let acceptor = acceptor.clone();
+                tokio::spawn(async move {
+                    let _ = acceptor.accept(tcp).await;
+                });
+            }
+        });
+        (port, ca_der)
+    }
+
+    #[tokio::test]
+    async fn an_untrusted_server_offers_its_ca_and_trusting_it_works() {
+        let (port, ca) = self_signed_server("127.0.0.1").await;
+        let cfg = SignalConfig::new(format!("wss://127.0.0.1:{port}"));
+        let found = server_certificate(&cfg).await.unwrap();
+        assert!(!found.trusted);
+        assert_eq!(found.anchor, ca, "the top of the chain: the server's CA");
+        assert_eq!(found.fingerprint, fingerprint(ca.as_ref()));
+        assert_eq!(found.fingerprint.len(), 32 * 3 - 1);
+
+        // Saved as PEM and read back the way the apps do, it is trusted.
+        let dir = std::env::temp_dir().join(format!("nexa-trust-{}-{port}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pem = dir.join("signal-ca.pem");
+        std::fs::write(&pem, found.pem()).unwrap();
+        let cfg = cfg.with_ca_file(&pem).unwrap();
+        let again = server_certificate(&cfg).await.unwrap();
+        assert!(again.trusted);
+        assert_eq!(again.fingerprint, found.fingerprint);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_certificate_for_another_name_is_never_offered() {
+        let (port, _) = self_signed_server("signal.example.com").await;
+        let cfg = SignalConfig::new(format!("wss://127.0.0.1:{port}"));
+        match server_certificate(&cfg).await {
+            Err(SignalError::Tls(why)) => assert!(why.contains("would not help"), "{why}"),
+            other => panic!("expected a TLS error, got {other:?}"),
+        }
+    }
 
     #[test]
     fn parses_server_addresses() {

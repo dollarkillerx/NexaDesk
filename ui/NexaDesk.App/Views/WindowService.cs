@@ -105,6 +105,15 @@ public sealed class WindowService : IWindowService
         if (session.IsToolbarVisible) toolbar.Show(window);
     }
 
+    public void ShowServerTrust(ServerTrustViewModel trust)
+    {
+        var dialog = new ServerTrustDialog { DataContext = trust };
+        trust.Finished += _ => dialog.Close();
+        Track(dialog);
+        dialog.Show();
+        dialog.Activate();
+    }
+
     public void ShowConsent(ConsentViewModel consent)
     {
         var dialog = new ConsentDialog { DataContext = consent };

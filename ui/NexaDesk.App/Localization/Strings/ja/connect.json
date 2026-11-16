@@ -40,5 +40,6 @@
   "Connect.SavedPasswordInvalid": "固定パスワードは 8 文字以上で、ワンタイムコードに見えないものにしてください。",
   "Connect.SavedPasswordFailed": "キーチェーンに保存できませんでした：{0}",
   "Connect.SavedPasswordStale": "保存したパスワードが使えません",
-  "Connect.SavedPasswordStaleDetail": "{0} の固定パスワードが変わった可能性があります。保存したパスワードは削除しました。もう一度入力してください。"
+  "Connect.SavedPasswordStaleDetail": "{0} の固定パスワードが変わった可能性があります。保存したパスワードは削除しました。もう一度入力してください。",
+  "Connect.Reason": "理由：{0}"
 }

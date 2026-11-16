@@ -140,7 +140,7 @@ max_per_ip = 8
 
 不需要新的端口：网页在信令端口上（`https://signal.example.com/`），TURN 和第一个 STUN 地址共用一个 UDP 端口。被控端那边要注册在这台服务器上，并打开“允许浏览器连接”；应用里会列出这个网址和设备 ID。对方用浏览器打开网址，输入设备 ID 和一次性码即可。所有浏览器会话的画面都经过服务器，按需要预留带宽。
 
-自签证书只适合测试：把 CA 证书以 `signal-ca.pem` 为名放进两端的数据目录（macOS 默认为 `~/Library/Application Support/NexaDesk`）。命令行被控端也可以用 `--signal-ca` 指定。正式使用请用公开 CA 签发的证书，否则每台设备都要手动放置这个文件。
+自签证书只适合测试。应用第一次连接自签服务器时（保存服务器地址、按设备 ID 连接、或开启允许控制时）会弹窗显示证书指纹，问是否信任；信任后保存为数据目录里的 `signal-ca.pem`（macOS 为 `~/Library/Application Support/NexaDesk`，Windows 为 `%APPDATA%\NexaDesk`），控制端和被控端都会用。请先在服务器上核对指纹：`openssl x509 -noout -fingerprint -sha256 -in <CA 证书>`。也可以手动把 CA 证书以 `signal-ca.pem` 为名放进数据目录；命令行被控端用 `--signal-ca` 指定。正式使用请用公开 CA 签发的证书。
 
 ## 6. 运维
 

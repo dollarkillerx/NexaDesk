@@ -2,5 +2,15 @@
   "Settings.Language": "语言",
   "Settings.LanguageSystem": "跟随系统",
   "Settings.LanguageRestart": "重启 NexaDesk 后生效",
-  "Settings.ThisDevice": "本机：{0}"
+  "Settings.ThisDevice": "本机：{0}",
+  "Trust.WindowTitle": "信令服务器",
+  "Trust.Title": "信任这台信令服务器？",
+  "Trust.Intro": "{0} 的证书不是公开机构签发的，自建服务器通常都是这样。请核对下面的指纹和服务器的 CA 证书一致再信任（在服务器上运行 openssl x509 -noout -fingerprint -sha256 -in <CA 证书>）。",
+  "Trust.FingerprintLabel": "证书指纹（SHA-256）",
+  "Trust.Note": "信任后保存在本机（signal-ca.pem），连接别人和被控都会用到。被控端要关闭再开启“允许控制”才会生效。",
+  "Trust.Trust": "信任",
+  "Trust.DontTrust": "不信任",
+  "Trust.Saved": "已信任这台服务器。",
+  "Trust.SavedHost": "已信任这台服务器：关闭再开启“允许控制”后生效。",
+  "Trust.Failed": "无法检查服务器证书：{0}"
 }

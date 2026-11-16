@@ -22,6 +22,8 @@ public interface IWindowService
     void OpenUrl(string url);
     /// <summary>Puts text on the clipboard.</summary>
     void CopyText(string text);
+    /// <summary>"Trust this signaling server?"; the view model reports the answer.</summary>
+    void ShowServerTrust(ServerTrustViewModel trust);
 }
 
 /// <summary>

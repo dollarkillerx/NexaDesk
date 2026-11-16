@@ -211,6 +211,32 @@ namespace NexaDesk.Native
         [DllImport(__DllName, EntryPoint = "nexa_last_error", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         public static extern int nexa_last_error(byte* buf, nuint cap, nuint* written);
 
+        /// <summary>
+        ///  Looks at a signaling server's TLS certificate, so a self-hosted server can be
+        ///  trusted on first use. `out` receives UTF-8 text: `trusted` or `untrusted`, a
+        ///  newline, and the SHA-256 fingerprint (AA:BB:…) of the certificate that would be
+        ///  trusted. Fails when the server cannot be reached, or when trusting its certificate
+        ///  would not help (it names another server). Blocks for up to about 30 s: never call
+        ///  it on the main thread.
+        ///
+        ///  # Safety
+        ///  `url` valid for `url_len` bytes, `out` writable for `cap` bytes, `written` writable.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "nexa_signal_certificate", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int nexa_signal_certificate(byte* url, nuint url_len, byte* @out, nuint cap, nuint* written);
+
+        /// <summary>
+        ///  Trusts a signaling server's certificate: looks again, and only if it is still the
+        ///  one with `fingerprint` (what the person accepted) adds it to signal-ca.pem. The
+        ///  agent reads that file when remote control next starts. Blocks like
+        ///  [`nexa_signal_certificate`].
+        ///
+        ///  # Safety
+        ///  `url` valid for `url_len` bytes, `fingerprint` for `fingerprint_len`.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "nexa_signal_trust", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int nexa_signal_trust(byte* url, nuint url_len, byte* fingerprint, nuint fingerprint_len);
+
 
     }
 

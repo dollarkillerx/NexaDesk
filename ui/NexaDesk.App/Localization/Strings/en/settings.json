@@ -2,5 +2,15 @@
   "Settings.Language": "Language",
   "Settings.LanguageSystem": "Follow system",
   "Settings.LanguageRestart": "Takes effect after restarting NexaDesk",
-  "Settings.ThisDevice": "This Mac: {0}"
+  "Settings.ThisDevice": "This Mac: {0}",
+  "Trust.WindowTitle": "Signaling server",
+  "Trust.Title": "Trust this signaling server?",
+  "Trust.Intro": "{0} uses a certificate that no public authority issued, as self-hosted servers usually do. Trust it only if this fingerprint matches the server's CA certificate (on the server: openssl x509 -noout -fingerprint -sha256 -in <CA certificate>).",
+  "Trust.FingerprintLabel": "Certificate fingerprint (SHA-256)",
+  "Trust.Note": "Once trusted, it is kept on this computer (signal-ca.pem) for both connecting and remote control. Turn remote control off and on again for it to take effect there.",
+  "Trust.Trust": "Trust",
+  "Trust.DontTrust": "Don't trust",
+  "Trust.Saved": "The server is now trusted.",
+  "Trust.SavedHost": "The server is now trusted: turn remote control off and on again to use it.",
+  "Trust.Failed": "Could not check the server's certificate: {0}"
 }

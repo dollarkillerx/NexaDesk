@@ -256,6 +256,11 @@ public sealed partial class HostViewModel : ObservableObject
 
     [ObservableProperty] private string? _notice;
 
+    bool _certificateAsked;
+
+    /// <summary>The agent could not reach the signaling server because of its certificate.</summary>
+    public event Action? SignalCertificateProblem;
+
     // ---- Fixed password ----
 
     /// <summary>The running agent has a fixed password, from its status.</summary>
@@ -636,6 +641,12 @@ public sealed partial class HostViewModel : ObservableObject
                 _webCertCustom = s.WebCertCustom;
                 RebuildOptions();
                 SignalProblem = s.Signal == SignalState.Error;
+                // Once per start: the agent cannot trust a self-hosted server's certificate.
+                if (SignalProblem && !_certificateAsked && ServerTrustFlow.IsCertificateProblem(s.SignalDetail))
+                {
+                    _certificateAsked = true;
+                    SignalCertificateProblem?.Invoke();
+                }
                 if (s.Session != null) ShowBanner(s.Session);
                 break;
             case AgentMessage.IncomingRequest r:
@@ -722,6 +733,7 @@ public sealed partial class HostViewModel : ObservableObject
         SignalText = "";
         ConnectOptions.Clear();
         SignalProblem = false;
+        _certificateAsked = false;
         Paired.Clear();
         // With no UI the agent itself ends the session and denies the open question.
         _consent?.Expire(L.Get("Host.AgentStopped"));
@@ -858,7 +870,7 @@ public sealed partial class MainViewModel : ObservableObject
         IPermissionProbe permissions, IWindowService windows, ILocalAddresses addresses, string deviceName,
         Func<DateTimeOffset>? now = null, ISettingsStore? settings = null, ILoginItem? loginItem = null,
         IKeymapService? keymap = null, IViewerPrefs? viewerPrefs = null, ISavedPasswords? passwords = null,
-        IAppUpdater? updater = null)
+        IAppUpdater? updater = null, IServerTrust? serverTrust = null)
     {
         _keymap = keymap;
         _core = core;
@@ -880,6 +892,33 @@ public sealed partial class MainViewModel : ObservableObject
         LoginItem = new LoginItemViewModel(loginItem ?? new NoLoginItem());
         Tray = new TrayViewModel(Host);
         Updates = new UpdatesViewModel(updater ?? NullAppUpdater.Instance, () => Tray.QuitCommand.Execute(null));
+        ServerTrust = new ServerTrustFlow(serverTrust ?? new NoServerTrust(), windows);
+        // A server saved in settings is checked at once; a failure on its certificate,
+        // connecting or hosting, asks too.
+        Settings.ServerChanged += server => _ = CheckServerAsync(server, retryConnect: false);
+        Connect.SignalCertificateProblem += server => _ = CheckServerAsync(server, retryConnect: true);
+        Host.SignalCertificateProblem += () => _ = CheckServerAsync(Settings.SavedServer, retryConnect: false);
+    }
+
+    public ServerTrustFlow ServerTrust { get; }
+
+    async Task CheckServerAsync(string server, bool retryConnect)
+    {
+        if (string.IsNullOrWhiteSpace(server)) return;
+        switch (await ServerTrust.EnsureAsync(server))
+        {
+            case TrustOutcome.NowTrusted when retryConnect:
+                Connect.Error = null;
+                if (Connect.ConnectCommand.CanExecute(null)) Connect.ConnectCommand.Execute(null);
+                if (Host.IsHosting) Host.Notice = L.Get("Trust.SavedHost");
+                break;
+            case TrustOutcome.NowTrusted:
+                Host.Notice = L.Get(Host.IsHosting ? "Trust.SavedHost" : "Trust.Saved");
+                break;
+            case TrustOutcome.Failed when !retryConnect && ServerTrust.LastError is { } why:
+                Host.Notice = L.Format("Trust.Failed", why);
+                break;
+        }
     }
 
     /// <summary>The version and updates from GitHub releases.</summary>
