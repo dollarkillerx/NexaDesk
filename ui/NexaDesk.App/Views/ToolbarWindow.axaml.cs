@@ -62,6 +62,11 @@ public partial class ToolbarWindow : Window
 
     void OnDiagnostics(object? sender, RoutedEventArgs e) => DiagnosticsRequested?.Invoke();
 
+    /// <summary>The host's command line, asked for from the toolbar.</summary>
+    public event Action? TerminalRequested;
+
+    void OnTerminal(object? sender, RoutedEventArgs e) => TerminalRequested?.Invoke();
+
     void OnFullScreen(object? sender, RoutedEventArgs e)
     {
         if (_session == null) return;

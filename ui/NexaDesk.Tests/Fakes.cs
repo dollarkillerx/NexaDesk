@@ -52,6 +52,17 @@ public sealed class FakeSession(ulong tag) : ISession
     public string LastError => "";
     public List<bool> InputActive { get; } = new();
     public List<SessionCommand> Commands { get; } = new();
+    public List<ulong> OpenTerminals { get; } = new();
+    ulong _nextTerminal = 1;
+
+    public int OpenTerminal(nint nsView, out ulong id)
+    {
+        id = _nextTerminal++;
+        OpenTerminals.Add(id);
+        return 0;
+    }
+
+    public void CloseTerminal(ulong id) => OpenTerminals.Remove(id);
     public List<(nint, uint, uint, float)> Attached { get; } = new();
     public int SetInputResult { get; set; }
     public int CloseCount { get; private set; }

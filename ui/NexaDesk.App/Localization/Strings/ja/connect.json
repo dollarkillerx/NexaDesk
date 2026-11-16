@@ -27,5 +27,18 @@
   "Connect.CannotStart": "接続を開始できません",
   "Connect.Connecting": "{0} に接続しています…",
   "Connect.IdentityError": "このMacの識別情報を読み込めません：{0}",
-  "Connect.SessionEnded": "{0} とのセッションが終了しました：{1}"
+  "Connect.SessionEnded": "{0} とのセッションが終了しました：{1}",
+  "Connect.RememberPassword": "パスワードを記憶",
+  "Connect.RememberPasswordTip": "接続できたら固定パスワードを macOS のキーチェーンに保存し、次回は「最近の接続」からクリックするだけでログインできます。",
+  "Connect.PasswordSaved": "パスワード保存済み",
+  "Connect.Edit": "編集",
+  "Connect.EditName": "名前（空欄ならコンピューターの名前）",
+  "Connect.EditPassword": "固定パスワード",
+  "Connect.EditPasswordPlaceholder": "空欄なら変更しません",
+  "Connect.ForgetPassword": "パスワードを保存しない",
+  "Connect.Save": "保存",
+  "Connect.SavedPasswordInvalid": "固定パスワードは 8 文字以上で、ワンタイムコードに見えないものにしてください。",
+  "Connect.SavedPasswordFailed": "キーチェーンに保存できませんでした：{0}",
+  "Connect.SavedPasswordStale": "保存したパスワードが使えません",
+  "Connect.SavedPasswordStaleDetail": "{0} の固定パスワードが変わった可能性があります。保存したパスワードは削除しました。もう一度入力してください。"
 }

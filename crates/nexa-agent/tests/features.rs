@@ -198,6 +198,7 @@ async fn viewer(h: &Host, mode: Mode) -> (Endpoint, Connection, ViewerAccepted) 
             mode: mode as i32,
             fps: 0,
             display: 0,
+            ..Default::default()
         }))
         .await
         .unwrap();
@@ -363,6 +364,7 @@ async fn each_cursor_shape_crosses_the_wire_once_and_not_in_game_mode() {
             mode: Mode::Game as i32,
             fps: 0,
             display: 0,
+            ..Default::default()
         }))
         .await
         .unwrap();

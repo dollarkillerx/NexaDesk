@@ -402,6 +402,27 @@ public class RenderTests
     }
 
     [AvaloniaFact]
+    public void Main_window_with_a_saved_connection_being_edited()
+    {
+        foreach (var theme in Themes())
+            WithTheme(theme, () =>
+            {
+                var recent = new MemoryRecent(
+                    new RecentDevice("546108077", "Studio Mac", Samples.HostKey, Samples.T0.ToUnixTimeSeconds() - 3600, "书房的 Mac", true),
+                    new RecentDevice("192.168.1.20", "MacBook Air", "", Samples.T0.ToUnixTimeSeconds() - 86400));
+                var vm = new MainViewModel(new FakeClient(), recent, new FakeLink(), new FakeProcess(), new FakePermissions(),
+                    new RecordingWindows(), new FakeAddresses("192.168.1.35", "127.0.0.1"), "王小明的 MacBook Pro", () => Samples.T0,
+                    passwords: new MemorySavedPasswords());
+                vm.Connect.Code = "correct horse battery";
+                vm.Connect.Recent[0].EditCommand.Execute(null);
+                var w = new MainWindow { DataContext = vm, Height = 980 };
+                w.Show();
+                Save(w, "main-saved-connection", theme);
+                w.Close();
+            });
+    }
+
+    [AvaloniaFact]
     public void Main_window_with_login_and_menu_bar_settings()
     {
         foreach (var theme in Themes())

@@ -17,6 +17,7 @@ pub mod negotiate;
 pub mod proto;
 pub mod reconnect;
 pub mod rendezvous;
+pub mod terminal;
 pub mod transfer;
 pub mod viewer;
 

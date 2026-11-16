@@ -614,7 +614,11 @@ pub async fn host_handshake_from(
     let mut perms = match (&decision, &answer) {
         (_, Some(a)) => a.perms.clone(),
         (AccessDecision::Allow { perms }, None) => perms.clone(),
-        (AccessDecision::NeedsConsent(p), None) if by_password => p.perms.clone(),
+        // The owner, by the fixed password: their own command line too, as in a browser.
+        (AccessDecision::NeedsConsent(p), None) if by_password => Permissions {
+            terminal: true,
+            ..p.perms.clone()
+        },
         _ => unreachable!("every other decision returned above or produced an answer"),
     };
     perms.input &= (cfg.input_available)();

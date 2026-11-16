@@ -12,6 +12,8 @@ pub enum StreamType {
     Input = 2,
     Clipboard = 3,
     File = 4,
+    /// The host's command line: `nexa_session::terminal`, one shell per stream.
+    Terminal = 5,
 }
 
 impl StreamType {
@@ -21,6 +23,7 @@ impl StreamType {
             2 => Ok(Self::Input),
             3 => Ok(Self::Clipboard),
             4 => Ok(Self::File),
+            5 => Ok(Self::Terminal),
             _ => Err(WireError::Invalid("stream type")),
         }
     }

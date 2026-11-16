@@ -56,5 +56,19 @@
   "Hud.Segment.Decode": "Decode",
   "Hud.Segment.PresentQueue": "Present queue",
   "Hud.Segment.Present": "Present",
-  "Hud.Segment.Total": "Total"
+  "Hud.Segment.Total": "Total",
+  "Toolbar.Quality": "Quality",
+  "Toolbar.QualityTip": "Auto follows the network; Clear sends the host's own pixels; Balanced caps the bitrate, smooth on most networks; Weak: at most 720 lines, 30 fps and a low bitrate.",
+  "Toolbar.Resolution": "Resolution",
+  "Toolbar.ResolutionTip": "Auto: as sharp as this window; Native: the host screen's own resolution; 1080p / 720p: at most that many lines, to save data.",
+  "Toolbar.NetTip": "How the picture travels, latency and frame rate. Click for loss, bitrate and latency by stage.",
+  "Session.Quality.Auto": "Auto",
+  "Session.Quality.Clear": "Clear",
+  "Session.Quality.Balanced": "Balanced",
+  "Session.Quality.Weak": "Weak network",
+  "Session.Resolution.Auto": "Auto",
+  "Session.Resolution.Native": "Native",
+  "Toolbar.Terminal": "Terminal",
+  "Toolbar.TerminalTip": "Opens the host's command line (its shell) in a window. Closing the window ends the shell.",
+  "Terminal.Title": "Terminal on {0}"
 }

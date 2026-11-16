@@ -25,7 +25,10 @@ use nexa_session::{
     host::{HostMedia, HostOptions, HostParams, RebuildReason, Rebuilt, StreamRebuilder},
     input::{InjectThread, PointMap, pump_input_stream},
     negotiate::{self, Chosen},
-    proto::{CloseReason, ControlBody, ControlMsg, Goodbye, StreamRequest, close},
+    proto::{
+        CloseReason, ControlBody, ControlMsg, Goodbye, LINES_NATIVE, StreamQuality, StreamRequest,
+        close,
+    },
     transfer::{self, CONFIRM_TIMEOUT, TransferConfig, Transfers},
 };
 use nexa_wire::{
@@ -56,6 +59,8 @@ pub(crate) struct SessionEnv {
     pub caps: Caps,
     pub device: nexa_clip::DeviceId,
     pub files: FileSettings,
+    /// Starts a shell for a viewer granted the terminal.
+    pub shell: crate::shell::Spawner,
 }
 
 /// The running session's transfers, for [`crate::Agent::send_files`] and friends.
@@ -135,6 +140,71 @@ struct Builder {
     cursor: Arc<CursorControl>,
 }
 
+/// What the viewer asked of the picture beyond mode, frame rate and display (§6.7):
+/// how good it may be, and how many lines.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct View {
+    quality: StreamQuality,
+    lines: u32,
+    window: (u32, u32),
+}
+
+/// The smallest window a picture is fitted to: below it, text would be lost.
+const SMALLEST_WINDOW: (u32, u32) = (640, 360);
+
+impl View {
+    fn of(r: &StreamRequest) -> Self {
+        Self {
+            quality: StreamQuality::try_from(r.quality).unwrap_or(StreamQuality::Auto),
+            lines: r.lines,
+            window: (r.window_w, r.window_h),
+        }
+    }
+
+    /// The box the picture must fit in, on top of what the codec allows.
+    fn bound(&self) -> (u32, u32) {
+        const ANY: (u32, u32) = (u32::MAX, u32::MAX);
+        match (self.lines, self.quality) {
+            (LINES_NATIVE, _) => ANY,
+            (n, _) if n > LINES_NATIVE => (u32::MAX, n),
+            (_, StreamQuality::Clear) => ANY,
+            (_, StreamQuality::Weak) => (u32::MAX, 720),
+            // As large as the viewer's window shows it; no window said, the host's own.
+            _ if self.window.0 == 0 || self.window.1 == 0 => ANY,
+            _ => (
+                self.window.0.max(SMALLEST_WINDOW.0),
+                self.window.1.max(SMALLEST_WINDOW.1),
+            ),
+        }
+    }
+
+    /// What decides the picture's size: a change in it means a new pipeline.
+    fn size_key(&self) -> (u32, u32) {
+        self.bound()
+    }
+
+    /// The highest frame rate this quality wants; 0 for no limit.
+    fn fps_cap(&self) -> u32 {
+        if self.quality == StreamQuality::Weak {
+            30
+        } else {
+            0
+        }
+    }
+
+    /// The most the rate controller may send.
+    fn ceiling_bps(&self) -> u64 {
+        match self.quality {
+            StreamQuality::Auto | StreamQuality::Clear => MAX_RATE_BPS,
+            StreamQuality::Balanced => 12_000_000,
+            StreamQuality::Weak => 2_500_000,
+        }
+    }
+}
+
+/// The rate controller's ceiling when the viewer sets none.
+const MAX_RATE_BPS: u64 = 200_000_000;
+
 fn bitrate_for(w: u32, h: u32, fps: u32) -> u32 {
     let bits = f64::from(w) * f64::from(h) * f64::from(fps) * 0.1;
     (bits as u32).clamp(MIN_BITRATE, MAX_BITRATE)
@@ -155,7 +225,13 @@ fn display_at(platform: &dyn Platform, index: u32) -> nexa_media::Result<ScreenI
 }
 
 impl Builder {
-    fn build(&self, mode: Mode, fps: u32, display: u32) -> nexa_media::Result<Pipeline> {
+    fn build(
+        &self,
+        mode: Mode,
+        fps: u32,
+        display: u32,
+        view: View,
+    ) -> nexa_media::Result<Pipeline> {
         let Chosen {
             codec,
             chroma,
@@ -164,7 +240,13 @@ impl Builder {
         } = negotiate::choose(&self.host, &self.viewer, mode)
             .ok_or(MediaError::Unsupported("no common codec"))?;
         let screen = display_at(&*self.platform, display)?;
-        let (w, h) = negotiate::fit_size(screen.size_pixels.0, screen.size_pixels.1, max_w, max_h);
+        let (bound_w, bound_h) = view.bound();
+        let (w, h) = negotiate::fit_size(
+            screen.size_pixels.0,
+            screen.size_pixels.1,
+            max_w.min(bound_w),
+            max_h.min(bound_h),
+        );
         let fps = negotiate::choose_fps(
             fps,
             mode,
@@ -172,6 +254,10 @@ impl Builder {
             self.viewer.max_fps,
             screen.refresh_hz,
         );
+        let fps = match view.fps_cap() {
+            0 => fps,
+            cap => fps.min(cap),
+        };
         let viewer_cursor = self.viewer_draws_cursor && mode != Mode::Game;
         let capturer = self.platform.capturer(CaptureConfig {
             display: screen.display_id,
@@ -188,7 +274,7 @@ impl Builder {
             width: w,
             height: h,
             fps,
-            bitrate_bps: bitrate_for(w, h, fps),
+            bitrate_bps: bitrate_for(w, h, fps).min(view.ceiling_bps() as u32),
         })?;
         let config = StreamConfig {
             display,
@@ -221,6 +307,8 @@ struct Rebuilder {
     mode: Mode,
     fps: u32,
     display: u32,
+    /// Quality and size: set by the session as the viewer asks, read at each rebuild.
+    view: Arc<std::sync::Mutex<View>>,
     /// The streamed display's platform id, for audio capture.
     display_id: Arc<AtomicU32>,
     control: mpsc::UnboundedSender<ControlBody>,
@@ -235,12 +323,13 @@ impl StreamRebuilder for Rebuilder {
             self.fps = fps;
             self.display = display;
         }
-        let mut built = self.builder.build(self.mode, self.fps, self.display);
+        let view = *self.view.lock().unwrap_or_else(|e| e.into_inner());
+        let mut built = self.builder.build(self.mode, self.fps, self.display, view);
         if built.is_err() && (self.mode, self.fps, self.display) != previous {
             // The viewer asked for something this host cannot do (a display that
             // went away, say): stay on what worked rather than end the session.
             (self.mode, self.fps, self.display) = previous;
-            built = self.builder.build(self.mode, self.fps, self.display);
+            built = self.builder.build(self.mode, self.fps, self.display, view);
         }
         match built {
             Ok(p) => {
@@ -467,9 +556,12 @@ pub(crate) async fn run(
     });
 
     let mut current = (mode_of(&request), request.fps, display);
+    let view = Arc::new(std::sync::Mutex::new(View::of(&request)));
+    // The size the running pipeline was built for.
+    let mut built_key = View::of(&request).size_key();
     let pipeline = {
-        let (b, mode, fps) = (builder.clone(), current.0, current.1);
-        tokio::task::spawn_blocking(move || b.build(mode, fps, display)).await
+        let (b, mode, fps, v) = (builder.clone(), current.0, current.1, View::of(&request));
+        tokio::task::spawn_blocking(move || b.build(mode, fps, display, v)).await
     };
     let pipeline = match pipeline {
         Ok(Ok(p)) => p,
@@ -527,9 +619,10 @@ pub(crate) async fn run(
             fps: config.fps,
             mode: current.0,
             rate: RateConfig {
-                initial_bps: u64::from(bitrate_for(config.w, config.h, config.fps)),
+                initial_bps: u64::from(bitrate_for(config.w, config.h, config.fps))
+                    .min(View::of(&request).ceiling_bps()),
                 min_bps: 300_000,
-                max_bps: 200_000_000,
+                max_bps: View::of(&request).ceiling_bps(),
             },
         },
         on_pointer,
@@ -539,6 +632,7 @@ pub(crate) async fn run(
                 mode: current.0,
                 fps: request.fps,
                 display,
+                view: view.clone(),
                 display_id: display_id.clone(),
                 control: ctl_tx.clone(),
                 failed: failed_tx,
@@ -581,6 +675,7 @@ pub(crate) async fn run(
     let (uni_task, bi_task) = spawn_acceptors(&conn, in_tx);
     let mut input_task: Option<JoinHandle<()>> = None;
     let mut clipboard: Option<ClipSession> = None;
+    let mut shells: Vec<AbortOnDrop> = Vec::new();
     let mut focus = env.focus.clone();
     if let Some(f) = focus.borrow_and_update().clone() {
         let _ = ctl_tx.send(ControlBody::Focus(f));
@@ -601,7 +696,12 @@ pub(crate) async fn run(
             msg = recv.next::<ControlMsg>() => match msg {
                 Ok(Some(ControlMsg { body: Some(ControlBody::Request(r)) })) => {
                     let next = (mode_of(&r), r.fps, r.display);
-                    deferred = (next != current).then_some(next);
+                    let asked = View::of(&r);
+                    // The ceiling at once; the size, if it changed, with the next rebuild.
+                    media.set_max_bps(asked.ceiling_bps());
+                    *view.lock().unwrap_or_else(|e| e.into_inner()) = asked;
+                    let resize = asked.size_key() != built_key;
+                    deferred = (next != current || resize).then_some(next);
                 }
                 Ok(Some(ControlMsg { body: Some(ControlBody::Audio(a)) })) => {
                     // Without the audio permission there is nothing to switch on.
@@ -627,6 +727,7 @@ pub(crate) async fn run(
             _ = tokio::time::sleep_until((last_rebuild + MIN_REBUILD_INTERVAL).into()), if deferred.is_some() => {
                 if let Some(next) = deferred.take() {
                     current = next;
+                    built_key = view.lock().unwrap_or_else(|e| e.into_inner()).size_key();
                     last_rebuild = Instant::now();
                     media.request_rebuild(RebuildReason::Requested {
                         mode: next.0,
@@ -666,6 +767,15 @@ pub(crate) async fn run(
                     // Refused unread: nothing is written without the permission.
                     None => transfer::refuse(send, file_recv),
                 },
+                Inbound::Bi(StreamType::Terminal, send, term_recv) => {
+                    let task = if perms.terminal {
+                        tokio::spawn(crate::shell::serve(send, term_recv, env.shell.clone()))
+                    } else {
+                        tokio::spawn(crate::shell::refuse(send, term_recv))
+                    };
+                    // Aborted with the session: the shells end with it.
+                    shells.push(AbortOnDrop(Some(task)));
+                }
                 Inbound::Bi(_, send, other) => {
                     other.stop();
                     drop(send);
@@ -815,6 +925,51 @@ mod tests {
         assert_eq!(g.to_points(1, 0, 0), Some((100.0, 50.0)));
         assert_eq!(g.points_to_stream(101.0, 51.0), Some((1, 1, 1)));
         assert_eq!(g.stream_pixels_per_point(), 1.0);
+    }
+
+    fn view(quality: StreamQuality, lines: u32, window: (u32, u32)) -> View {
+        View {
+            quality,
+            lines,
+            window,
+        }
+    }
+
+    #[test]
+    fn the_picture_follows_the_viewer_s_choices() {
+        const ANY: (u32, u32) = (u32::MAX, u32::MAX);
+        let window = (1440, 900);
+        // Auto fits the window; with no window said, the host's own pixels.
+        assert_eq!(view(StreamQuality::Auto, 0, window).bound(), window);
+        assert_eq!(view(StreamQuality::Auto, 0, (0, 0)).bound(), ANY);
+        // A tiny window still gets a readable picture.
+        assert_eq!(
+            view(StreamQuality::Auto, 0, (300, 200)).bound(),
+            SMALLEST_WINDOW
+        );
+        // Clear is the host's own pixels, Weak at most 720 lines, whatever the window.
+        assert_eq!(view(StreamQuality::Clear, 0, window).bound(), ANY);
+        assert_eq!(
+            view(StreamQuality::Weak, 0, window).bound(),
+            (u32::MAX, 720)
+        );
+        // A resolution chosen wins over the quality's.
+        assert_eq!(view(StreamQuality::Weak, LINES_NATIVE, window).bound(), ANY);
+        assert_eq!(
+            view(StreamQuality::Clear, 1080, window).bound(),
+            (u32::MAX, 1080)
+        );
+    }
+
+    #[test]
+    fn quality_sets_the_ceiling_and_weak_the_frame_rate() {
+        let at = |q| view(q, 0, (0, 0));
+        assert_eq!(at(StreamQuality::Auto).ceiling_bps(), MAX_RATE_BPS);
+        assert_eq!(at(StreamQuality::Clear).ceiling_bps(), MAX_RATE_BPS);
+        assert!(at(StreamQuality::Balanced).ceiling_bps() < MAX_RATE_BPS);
+        assert!(at(StreamQuality::Weak).ceiling_bps() < at(StreamQuality::Balanced).ceiling_bps());
+        assert_eq!(at(StreamQuality::Weak).fps_cap(), 30);
+        assert_eq!(at(StreamQuality::Auto).fps_cap(), 0);
     }
 
     #[test]

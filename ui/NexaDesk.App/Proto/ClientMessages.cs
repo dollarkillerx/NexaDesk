@@ -5,6 +5,9 @@ namespace NexaDesk.Proto;
 
 public enum StreamMode { Office = 0, Balanced = 1, Game = 2 }
 
+/// <summary>How good the picture may be: how high the host lets the bitrate go.</summary>
+public enum StreamQuality { Auto = 0, Clear = 1, Balanced = 2, Weak = 3 }
+
 public enum CaptureState { Inactive = 0, Active = 1, Degraded = 2, Unavailable = 3 }
 
 public enum DisconnectReason
@@ -160,6 +163,20 @@ public abstract record SessionCommand
     public sealed record SetAudio(bool Enabled) : SessionCommand
     {
         public override byte[] Encode() => new ProtoWriter().Message(20, w => w.Bool(1, Enabled)).ToArray();
+    }
+
+    /// <summary>How good the picture may be; the host applies the ceiling at once.</summary>
+    public sealed record SetQuality(StreamQuality Quality) : SessionCommand
+    {
+        public override byte[] Encode() => new ProtoWriter().Message(25, w => w.UInt32(1, (uint)Quality)).ToArray();
+    }
+
+    /// <summary>How many lines the host sends: <see cref="FitView"/>, <see cref="Native"/>, or a cap such as 1080.</summary>
+    public sealed record SetResolution(uint Lines) : SessionCommand
+    {
+        public const uint FitView = 0;
+        public const uint Native = 1;
+        public override byte[] Encode() => new ProtoWriter().Message(26, w => w.UInt32(1, Lines)).ToArray();
     }
 
     /// <summary>Stream another of the host's displays (DisplayInfo.Id).</summary>

@@ -25,6 +25,9 @@ public interface ISession
     int DetachView();
     int SetInputActive(bool active);
     int Send(SessionCommand command);
+    /// <summary>Shows the host's command line in <paramref name="nsView"/>; <paramref name="id"/> closes it. Main thread.</summary>
+    int OpenTerminal(nint nsView, out ulong id);
+    void CloseTerminal(ulong id);
     string LastError { get; }
     void Close();
 }
@@ -75,7 +78,41 @@ public interface IPermissionProbe
     void OpenSettings(PermissionKind kind);
 }
 
-public sealed record RecentDevice(string Address, string Name, string HostKey, long LastConnected);
+/// <summary>
+/// A host connected to before. <paramref name="Label"/> is the person's own name for it
+/// (empty: the host's); <paramref name="HasPassword"/> says its fixed password is in the
+/// Keychain (see <see cref="ISavedPasswords"/>), never the password itself.
+/// </summary>
+public sealed record RecentDevice(string Address, string Name, string HostKey, long LastConnected,
+    string Label = "", bool HasPassword = false)
+{
+    /// <summary>What the Keychain item is filed under: the host's key once known, else its address.</summary>
+    public string PasswordAccount => HostKey.Length > 0 ? HostKey : Address;
+}
+
+/// <summary>Saved connections' fixed passwords, in the login Keychain. Nothing else keeps them.</summary>
+public interface ISavedPasswords
+{
+    /// <summary>Null when kept, else why not.</summary>
+    string? Save(string account, string password);
+    /// <summary>The kept password, or null when there is none or it cannot be read.</summary>
+    string? Load(string account);
+    void Delete(string account);
+}
+
+public sealed class MemorySavedPasswords : ISavedPasswords
+{
+    public Dictionary<string, string> Kept { get; } = new();
+    public string? Refusal { get; set; }
+    public string? Save(string account, string password)
+    {
+        if (Refusal != null) return Refusal;
+        Kept[account] = password;
+        return null;
+    }
+    public string? Load(string account) => Kept.GetValueOrDefault(account);
+    public void Delete(string account) => Kept.Remove(account);
+}
 
 public interface IRecentStore
 {
@@ -94,6 +131,23 @@ public interface ILocalAddresses
 /// Language: a supported language code, or empty to follow macOS; applies at the next start.</summary>
 public sealed record AppSettings(string SignalServer = "", bool AnnounceOnLan = true, string Language = "",
     bool AllowBrowsers = false);
+
+/// <summary>The viewer's picture choices, remembered for the next session.</summary>
+public sealed record ViewerPrefs(string Quality = "auto", string Resolution = "auto");
+
+/// <summary>viewer-prefs.json: apart from settings.json, which the settings window saves whole.</summary>
+public interface IViewerPrefs
+{
+    ViewerPrefs Load();
+    void Save(ViewerPrefs prefs);
+}
+
+public sealed class MemoryViewerPrefs(ViewerPrefs? initial = null) : IViewerPrefs
+{
+    public ViewerPrefs Current { get; private set; } = initial ?? new ViewerPrefs();
+    public ViewerPrefs Load() => Current;
+    public void Save(ViewerPrefs prefs) => Current = prefs;
+}
 
 public interface ISettingsStore
 {

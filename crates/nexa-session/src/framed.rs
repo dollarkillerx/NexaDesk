@@ -14,6 +14,8 @@ pub const MAX_INPUT_FRAME: usize = 16 * 1024;
 pub const MAX_CLIPBOARD_FRAME: usize = DEFAULT_MAX_FRAME;
 /// A file chunk ([`crate::transfer::CHUNK`]) and its envelope.
 pub const MAX_FILE_FRAME: usize = 128 * 1024;
+/// A terminal chunk ([`crate::terminal::CHUNK`]) and its envelope.
+pub const MAX_TERMINAL_FRAME: usize = 64 * 1024;
 
 const READ_CHUNK: usize = 8192;
 
@@ -21,6 +23,8 @@ const READ_CHUNK: usize = 8192;
 pub fn priority_of(kind: StreamType) -> i32 {
     match kind {
         StreamType::Control | StreamType::Input => 10,
+        // Typing answered at once, above a clipboard or a file going by.
+        StreamType::Terminal => 5,
         StreamType::Clipboard => 0,
         StreamType::File => -10,
     }
@@ -32,6 +36,7 @@ fn max_frame_of(kind: StreamType) -> usize {
         StreamType::Input => MAX_INPUT_FRAME,
         StreamType::Clipboard => MAX_CLIPBOARD_FRAME,
         StreamType::File => MAX_FILE_FRAME,
+        StreamType::Terminal => MAX_TERMINAL_FRAME,
     }
 }
 

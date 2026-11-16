@@ -16,3 +16,5 @@ pub mod proto;
 mod real;
 #[cfg(target_os = "macos")]
 mod real_cursor;
+#[cfg(target_os = "macos")]
+pub mod terminal;

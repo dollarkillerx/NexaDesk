@@ -290,6 +290,7 @@ async fn begin_stream(accepted: &mut ViewerAccepted) {
             mode: Mode::Balanced as i32,
             fps: 0,
             display: 0,
+            ..Default::default()
         }))
         .await
         .unwrap();

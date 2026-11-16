@@ -13,7 +13,11 @@ use nexa_session::{
     SessionError,
     framed::{open_bi, open_uni},
     handshake::{AuthKind, Timeouts, ViewerAccepted, ViewerAuth, ViewerConfig, viewer_handshake},
-    proto::{CloseReason, ControlBody, InputBody, InputMsg, RejectReason, StreamRequest},
+    proto::{
+        CloseReason, ControlBody, InputBody, InputMsg, LINES_NATIVE, RejectReason, StreamQuality,
+        StreamRequest,
+    },
+    terminal::{EXIT_DENIED, TermBody, TermMsg, TermSize},
 };
 use nexa_wire::{
     control::{ButtonEvent, KeyEvent, KeyStateSync, Mode, Os, StreamConfig, TextInput},
@@ -100,6 +104,7 @@ async fn begin_stream(accepted: &mut ViewerAccepted) -> StreamConfig {
             mode: Mode::Balanced as i32,
             fps: 0,
             display: 0,
+            ..Default::default()
         }))
         .await
         .unwrap();
@@ -153,6 +158,145 @@ async fn correct_code_with_consent_is_accepted_and_negotiates_a_stream() {
     })
     .await;
     assert!(h.agent.session_active());
+}
+
+/// The next stream config, after asking for `request`.
+async fn ask(accepted: &mut ViewerAccepted, request: StreamRequest) -> StreamConfig {
+    accepted
+        .control
+        .send(ControlBody::Request(request))
+        .await
+        .unwrap();
+    tokio::time::timeout(WAIT, async {
+        loop {
+            match accepted.control.recv().await.unwrap() {
+                Some(ControlBody::Config(c)) => return c,
+                Some(_) => {}
+                None => panic!("control stream ended"),
+            }
+        }
+    })
+    .await
+    .expect("a new stream config")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn quality_and_resolution_shape_the_picture() {
+    let ui = FakeUi::allowing(perms(true, false, false), true);
+    let h = host_with(ui.clone()).await;
+    let me = DeviceIdentity::generate();
+    let (_ep, _conn, result) = connect_with_code(&h, &me).await;
+    let mut accepted = result.unwrap();
+    let first = begin_stream(&mut accepted).await;
+    assert_eq!((first.w, first.h, first.fps), (1920, 1080, 60));
+    let balanced = StreamRequest {
+        mode: Mode::Balanced as i32,
+        ..Default::default()
+    };
+
+    // A weak network: at most 720 lines and 30 fps.
+    let weak = ask(
+        &mut accepted,
+        StreamRequest {
+            quality: StreamQuality::Weak as i32,
+            ..balanced.clone()
+        },
+    )
+    .await;
+    assert_eq!((weak.w, weak.h, weak.fps), (1280, 720, 30));
+    // Auto fits the viewer's window.
+    let fitted = ask(
+        &mut accepted,
+        StreamRequest {
+            window_w: 1600,
+            window_h: 1000,
+            ..balanced.clone()
+        },
+    )
+    .await;
+    assert_eq!((fitted.w, fitted.h, fitted.fps), (1600, 900, 60));
+    // Native: the host's own pixels, whatever the window.
+    let native = ask(
+        &mut accepted,
+        StreamRequest {
+            lines: LINES_NATIVE,
+            window_w: 1600,
+            window_h: 1000,
+            ..balanced.clone()
+        },
+    )
+    .await;
+    assert_eq!((native.w, native.h), (1920, 1080));
+}
+
+/// Opens a terminal stream and reads what comes back until `done` says so.
+async fn terminal_until(
+    conn: &Connection,
+    keys: &[u8],
+    done: impl Fn(&str, Option<&str>) -> bool,
+) -> (String, Option<String>) {
+    let (mut send, mut recv) = open_bi(conn, StreamType::Terminal).await.unwrap();
+    send.send(&TermMsg::from(TermBody::Open(TermSize {
+        cols: 80,
+        rows: 24,
+    })))
+    .await
+    .unwrap();
+    send.send(&TermMsg::from(TermBody::Data(keys.to_vec())))
+        .await
+        .unwrap();
+    let (mut out, mut exit) = (String::new(), None);
+    tokio::time::timeout(WAIT, async {
+        while !done(&out, exit.as_deref()) {
+            match recv.next::<TermMsg>().await {
+                Ok(Some(TermMsg {
+                    body: Some(TermBody::Data(d)),
+                })) => out.push_str(&String::from_utf8_lossy(&d)),
+                Ok(Some(TermMsg {
+                    body: Some(TermBody::Exit(why)),
+                })) => exit = Some(why),
+                Ok(Some(_)) => {}
+                _ => break,
+            }
+        }
+    })
+    .await
+    .expect("terminal answered");
+    (out, exit)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_terminal_needs_its_permission() {
+    let ui = FakeUi::allowing(perms(true, true, false), true);
+    let h = host_with(ui.clone()).await;
+    let me = DeviceIdentity::generate();
+    let (_ep, conn, result) = connect_with_code(&h, &me).await;
+    let mut accepted = result.unwrap();
+    begin_stream(&mut accepted).await;
+    let (out, exit) = terminal_until(&conn, b"echo nope\r", |_, e| e.is_some()).await;
+    assert_eq!(exit.as_deref(), Some(EXIT_DENIED));
+    assert!(out.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_granted_terminal_runs_a_shell() {
+    let granted = nexa_wire::control::Permissions {
+        terminal: true,
+        ..perms(true, true, false)
+    };
+    let ui = FakeUi::allowing(granted, true);
+    let h = host_with(ui.clone()).await;
+    let me = DeviceIdentity::generate();
+    let (_ep, conn, result) = connect_with_code(&h, &me).await;
+    let mut accepted = result.unwrap();
+    begin_stream(&mut accepted).await;
+    assert!(accepted.accept.perms.as_ref().is_some_and(|p| p.terminal));
+    // The answer is computed, so it cannot be the echo of what was typed.
+    let (out, _) = terminal_until(&conn, b"echo $((6*7))nexa\r", |o, e| {
+        o.contains("42nexa") || e.is_some()
+    })
+    .await;
+    assert!(out.contains("42nexa"), "shell output: {out:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -653,6 +797,7 @@ async fn a_requested_mode_change_rebuilds_and_announces() {
             mode: Mode::Game as i32,
             fps: 0,
             display: 0,
+            ..Default::default()
         }))
         .await
         .unwrap();

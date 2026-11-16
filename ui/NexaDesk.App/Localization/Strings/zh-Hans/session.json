@@ -56,5 +56,19 @@
   "Hud.Segment.Decode": "解码",
   "Hud.Segment.PresentQueue": "等待呈现",
   "Hud.Segment.Present": "呈现",
-  "Hud.Segment.Total": "总计"
+  "Hud.Segment.Total": "总计",
+  "Toolbar.Quality": "画质",
+  "Toolbar.QualityTip": "自动：随网络调整；清晰：对方屏幕的原始像素；均衡：限制码率，大多数网络都流畅；弱网：最多 720 行、30 帧、低码率。",
+  "Toolbar.Resolution": "分辨率",
+  "Toolbar.ResolutionTip": "自动：跟这个窗口一样清晰；原生：对方屏幕的原始分辨率；1080p / 720p：最多这么多行，省流量。",
+  "Toolbar.NetTip": "连接方式、延迟和帧率。点开看丢包、码率和各段延迟。",
+  "Session.Quality.Auto": "自动",
+  "Session.Quality.Clear": "清晰",
+  "Session.Quality.Balanced": "均衡",
+  "Session.Quality.Weak": "弱网",
+  "Session.Resolution.Auto": "自动",
+  "Session.Resolution.Native": "原生",
+  "Toolbar.Terminal": "终端",
+  "Toolbar.TerminalTip": "在新窗口里打开对方电脑的命令行（shell）。关掉窗口就结束这个 shell。",
+  "Terminal.Title": "{0} 的终端"
 }

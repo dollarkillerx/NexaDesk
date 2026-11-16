@@ -573,6 +573,140 @@ pub unsafe extern "C" fn nexa_keymap_save(req: *const u8, len: usize) -> i32 {
     })
 }
 
+/// Shows the host's command line in `nsview` (a live NSView, filled as it resizes) and
+/// starts a shell there once the page is laid out; `id` names it for
+/// [`nexa_terminal_close`]. Needs `Permissions.terminal`, or the page says "denied".
+/// Main thread only.
+///
+/// # Safety
+/// `nsview` a live NSView; `id` writable.
+#[cfg(target_os = "macos")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nexa_terminal_open(
+    s: *mut NexaSession,
+    nsview: *mut c_void,
+    id: *mut u64,
+) -> i32 {
+    guarded(|| {
+        let session = session_of(s)?;
+        if id.is_null() {
+            return Err(invalid("null id"));
+        }
+        // SAFETY: per the contract.
+        let opened =
+            unsafe { crate::terminal::attach(session, nsview) }.map_err(|e| Abi(NEXA_E_VIEW, e))?;
+        // SAFETY: checked non-null; writable per the contract.
+        unsafe { *id = opened };
+        Ok(())
+    })
+}
+
+/// Takes the terminal away; its shell ends. Main thread only.
+#[cfg(target_os = "macos")]
+#[unsafe(no_mangle)]
+pub extern "C" fn nexa_terminal_close(id: u64) -> i32 {
+    guarded(|| {
+        crate::terminal::detach(id);
+        Ok(())
+    })
+}
+
+/// The Keychain service under which saved connections keep a host's fixed password.
+const SAVED_PASSWORD_SERVICE: &str = "NexaDesk saved connection";
+
+/// A saved connection's password item: `account` names the connection (its host key,
+/// or its address before the host is known).
+fn saved_password(account: &[u8]) -> Result<impl nexa_auth::keystore::KeyStore, Abi> {
+    let account = std::str::from_utf8(account).map_err(|_| invalid("account is not UTF-8"))?;
+    if account.is_empty() || account.len() > 256 {
+        return Err(invalid("bad account"));
+    }
+    #[cfg(target_os = "macos")]
+    let store = nexa_auth::keystore::KeychainStore::new(SAVED_PASSWORD_SERVICE, account);
+    #[cfg(not(target_os = "macos"))]
+    let store = nexa_auth::keystore::FileKeyStore::new(
+        default_data_dir().join("saved-passwords").join(account),
+    );
+    Ok(store)
+}
+
+/// Keeps `password` for the saved connection `account` in the login Keychain,
+/// replacing one kept before.
+///
+/// # Safety
+/// `account` valid for `account_len` bytes, `password` for `password_len`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nexa_saved_password_set(
+    account: *const u8,
+    account_len: usize,
+    password: *const u8,
+    password_len: usize,
+) -> i32 {
+    guarded(|| {
+        // SAFETY: per the contract.
+        let (account, password) = unsafe {
+            (
+                bytes_of(account, account_len)?,
+                bytes_of(password, password_len)?,
+            )
+        };
+        if password.is_empty() || password.len() > 1024 {
+            return Err(invalid("bad password"));
+        }
+        use nexa_auth::keystore::KeyStore;
+        saved_password(account)?
+            .store(password)
+            .map_err(|e| Abi(NEXA_E_INTERNAL, e.to_string()))
+    })
+}
+
+/// The kept password, into `out`; `written` 0 and `NEXA_OK` when none is kept.
+///
+/// # Safety
+/// `account` valid for `account_len` bytes; `out` writable for `cap`, `written` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nexa_saved_password_get(
+    account: *const u8,
+    account_len: usize,
+    out: *mut u8,
+    cap: usize,
+    written: *mut usize,
+) -> i32 {
+    guarded(|| {
+        // SAFETY: per the contract.
+        let account = unsafe { bytes_of(account, account_len)? };
+        use nexa_auth::keystore::KeyStore;
+        let kept = saved_password(account)?
+            .load()
+            .map_err(|e| Abi(NEXA_E_INTERNAL, e.to_string()))?;
+        // SAFETY: per the contract.
+        unsafe {
+            give(
+                kept.as_deref().map_or(&[][..], |k| k.as_slice()),
+                out,
+                cap,
+                written,
+            )
+        }
+    })
+}
+
+/// Forgets the kept password; succeeds when there was none.
+///
+/// # Safety
+/// `account` valid for `account_len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nexa_saved_password_delete(account: *const u8, account_len: usize) -> i32 {
+    guarded(|| {
+        // SAFETY: per the contract.
+        let account = unsafe { bytes_of(account, account_len)? };
+        use nexa_auth::keystore::KeyStore;
+        saved_password(account)?
+            .delete()
+            .map_err(|e| Abi(NEXA_E_INTERNAL, e.to_string()))
+    })
+}
+
 /// 1 when symbol keys type what this Mac's keyboard prints on them (the default), 0
 /// when they go by key position. Needs no client handle.
 #[unsafe(no_mangle)]

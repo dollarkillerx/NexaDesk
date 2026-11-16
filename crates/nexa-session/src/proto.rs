@@ -8,7 +8,10 @@
 //! ```protobuf
 //! message SessionReject { RejectReason reason = 1; string message = 2; }
 //! message StreamRequest { Mode mode = 1; uint32 fps = 2;     // viewer → host, 0 = host's choice
-//!                         uint32 display = 3; }              // index into SessionAccept.displays
+//!                         uint32 display = 3;                // index into SessionAccept.displays
+//!                         StreamQuality quality = 4;         // how high the bitrate may go
+//!                         uint32 lines = 5;                  // 0 = fit the window below, 1 = native
+//!                         uint32 window_w = 6; uint32 window_h = 7; }  // the viewer's view, pixels
 //! message Goodbye       { CloseReason reason = 1; string message = 2; }
 //! message CursorMoved   { sint32 x = 1; sint32 y = 2; uint32 display = 3; }  // host → viewer
 //! message AudioControl  { bool enabled = 1; }                // viewer → host
@@ -103,6 +106,37 @@ pub struct StreamRequest {
     /// Which of `SessionAccept.displays` to stream (§6.7). 0 is the first.
     #[prost(uint32, tag = "3")]
     pub display: u32,
+    /// How high the bitrate may go. Hosts before it send as Auto.
+    #[prost(enumeration = "StreamQuality", tag = "4")]
+    pub quality: i32,
+    /// The most lines to send: [`LINES_AUTO`] fits the viewer's window (or, with no
+    /// window given, sends the host's own pixels), [`LINES_NATIVE`] always the host's own.
+    #[prost(uint32, tag = "5")]
+    pub lines: u32,
+    /// The viewer's view in pixels, for [`LINES_AUTO`]; 0 when it has not said.
+    #[prost(uint32, tag = "6")]
+    pub window_w: u32,
+    #[prost(uint32, tag = "7")]
+    pub window_h: u32,
+}
+
+/// `StreamRequest.lines`: fit the viewer's window.
+pub const LINES_AUTO: u32 = 0;
+/// `StreamRequest.lines`: the host's own pixels, whatever the window.
+pub const LINES_NATIVE: u32 = 1;
+
+/// How the viewer weighs picture against network (the web page's choices too).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Enumeration)]
+#[repr(i32)]
+pub enum StreamQuality {
+    /// Whatever the network carries.
+    Auto = 0,
+    /// The host's own pixels, as much bitrate as the network carries.
+    Clear = 1,
+    /// A moderate ceiling: smooth on most networks.
+    Balanced = 2,
+    /// A weak network: 720 lines, 30 fps, a low ceiling.
+    Weak = 3,
 }
 
 /// Host → viewer: a program on the host moved the cursor (§6.9). Stream pixels.
@@ -249,6 +283,10 @@ mod tests {
             mode: nexa_wire::control::Mode::Game as i32,
             fps: 120,
             display: 1,
+            quality: StreamQuality::Weak as i32,
+            lines: 720,
+            window_w: 2560,
+            window_h: 1440,
         })
         .into();
         assert_eq!(ControlMsg::decode(m.encode_to_vec().as_slice()).unwrap(), m);

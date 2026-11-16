@@ -544,6 +544,7 @@ pub async fn start(
         caps: config.caps.clone(),
         device: nexa_clip::DeviceId(*identity.device_id().as_bytes()),
         files: config.files.clone(),
+        shell: crate::shell::login_shell(),
     });
     let signal_setup = config.signal.clone();
     let shared = Arc::new(Shared {

@@ -62,7 +62,9 @@ public partial class App : Application
             var vm = new MainViewModel(core, new RecentStore(Path.Combine(dataDir, "recent.json")),
                 new AgentLink(Path.Combine(dataDir, Ipc.SocketName), ui), new AgentProcess(ui), new MacPermissions(),
                 windows, new LocalAddresses(), deviceName, settings: new SettingsStore(Path.Combine(dataDir, "settings.json")),
-                loginItem: new SmAppServiceLoginItem(), keymap: new NativeKeymap(dataDir));
+                loginItem: new SmAppServiceLoginItem(), keymap: new NativeKeymap(dataDir),
+                viewerPrefs: new ViewerPrefsStore(Path.Combine(dataDir, "viewer-prefs.json")),
+                passwords: new NativeSavedPasswords());
             if (startupError != null) vm.Connect.IdentityError = startupError;
             var main = new MainWindow { DataContext = vm };
             windows.Owner = main;

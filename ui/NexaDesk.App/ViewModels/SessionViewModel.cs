@@ -46,6 +46,8 @@ public sealed partial class SessionViewModel : ObservableObject
     public TransferListViewModel Transfers { get; }
     public HudViewModel Hud { get; } = new();
     public bool CanSendFiles => Perms.File;
+    /// <summary>The host granted its command line: the toolbar offers a terminal.</summary>
+    public bool CanUseTerminal => Perms.Terminal;
     public string Title => $"{HostName} — NexaDesk";
     public string PermsText => Texts.Permissions(Perms);
     public string HostKeyHint => L.Get("Session.HostKeyHint");
@@ -104,8 +106,10 @@ public sealed partial class SessionViewModel : ObservableObject
     [RelayCommand]
     private void ToggleHud() => IsHudVisible = !IsHudVisible;
 
-    public SessionViewModel(ISession session, ConnectedEvent connected, string address, Func<DateTimeOffset>? now = null)
+    public SessionViewModel(ISession session, ConnectedEvent connected, string address, Func<DateTimeOffset>? now = null,
+        IViewerPrefs? prefs = null)
     {
+        _prefs = prefs ?? new MemoryViewerPrefs();
         Session = session;
         Address = address;
         HostName = string.IsNullOrWhiteSpace(connected.HostName) ? address : connected.HostName;
@@ -119,6 +123,65 @@ public sealed partial class SessionViewModel : ObservableObject
         _displayFromHost = true;
         SelectedDisplay = Displays.FirstOrDefault();
         _displayFromHost = false;
+        // The last session's choices; the host starts on Auto, so only others are said.
+        var saved = _prefs.Load();
+        _selectedQuality = Qualities.FirstOrDefault(q => q.Key == saved.Quality) ?? Qualities[0];
+        _selectedResolution = Resolutions.FirstOrDefault(r => r.Key == saved.Resolution) ?? Resolutions[0];
+        if (_selectedQuality != Qualities[0]) Session.Send(new SessionCommand.SetQuality(QualityOf(_selectedQuality.Key)));
+        if (_selectedResolution != Resolutions[0]) Session.Send(new SessionCommand.SetResolution(LinesOf(_selectedResolution.Key)));
+    }
+
+    // ----- picture: quality and resolution ---------------------------------------------
+
+    readonly IViewerPrefs _prefs;
+
+    public IReadOnlyList<StreamChoice> Qualities { get; } =
+    [
+        new("auto", L.Get("Session.Quality.Auto")),
+        new("clear", L.Get("Session.Quality.Clear")),
+        new("balanced", L.Get("Session.Quality.Balanced")),
+        new("weak", L.Get("Session.Quality.Weak")),
+    ];
+
+    public IReadOnlyList<StreamChoice> Resolutions { get; } =
+    [
+        new("auto", L.Get("Session.Resolution.Auto")),
+        new("native", L.Get("Session.Resolution.Native")),
+        new("1080", "1080p"),
+        new("720", "720p"),
+    ];
+
+    [ObservableProperty] private StreamChoice _selectedQuality;
+    [ObservableProperty] private StreamChoice _selectedResolution;
+
+    public static StreamQuality QualityOf(string key) => key switch
+    {
+        "clear" => StreamQuality.Clear,
+        "balanced" => StreamQuality.Balanced,
+        "weak" => StreamQuality.Weak,
+        _ => StreamQuality.Auto,
+    };
+
+    public static uint LinesOf(string key) => key switch
+    {
+        "native" => SessionCommand.SetResolution.Native,
+        "1080" => 1080,
+        "720" => 720,
+        _ => SessionCommand.SetResolution.FitView,
+    };
+
+    partial void OnSelectedQualityChanged(StreamChoice value)
+    {
+        if (IsEnded || value == null) return;
+        Session.Send(new SessionCommand.SetQuality(QualityOf(value.Key)));
+        _prefs.Save(_prefs.Load() with { Quality = value.Key });
+    }
+
+    partial void OnSelectedResolutionChanged(StreamChoice value)
+    {
+        if (IsEnded || value == null) return;
+        Session.Send(new SessionCommand.SetResolution(LinesOf(value.Key)));
+        _prefs.Save(_prefs.Load() with { Resolution = value.Key });
     }
 
     public string AudioText => !Perms.Audio ? L.Get("Session.AudioNotShared") : IsMuted ? L.Get("Session.AudioMuted") : L.Get("Session.AudioPlaying");
@@ -391,7 +454,35 @@ public sealed partial class DiagnosticsViewModel(string address) : ObservableObj
         FpsText = $"{(s.Presented - last.Presented) / dt:F0} fps";
         var mbps = (s.RxBytes - last.RxBytes) * 8 / dt / 1e6;
         BitrateText = mbps >= 1 ? $"{mbps:F1} Mbps" : $"{mbps * 1000:F0} kbps";
+        var lossPct = complete + lost == 0 ? 0 : 100.0 * lost / (complete + lost);
+        var rttMs = s.RttUs / 1000.0;
+        // One line for the toolbar: how it travels, how quickly, how smoothly.
+        var how = s.Path == PathKind.Unknown ? L.Get("Texts.Path.Unknown") : Texts.Path(s.Path, "");
+        Summary = s.RttUs == 0 ? $"{how} · {FpsText}" : $"{how} · {rttMs:F0} ms · {FpsText}";
+        Level = s.RttUs == 0 ? NetLevel.Unknown
+            : rttMs > 150 || lossPct > 3 ? NetLevel.Poor
+            : rttMs > 60 || lossPct > 0.5 ? NetLevel.Fair
+            : NetLevel.Good;
     }
+
+    /// <summary>The toolbar's one line about the network.</summary>
+    [ObservableProperty] private string _summary = L.Get("Diagnostics.Establishing");
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsGood), nameof(IsFair), nameof(IsPoor))]
+    private NetLevel _level = NetLevel.Unknown;
+
+    public bool IsGood => Level is NetLevel.Good or NetLevel.Unknown;
+    public bool IsFair => Level == NetLevel.Fair;
+    public bool IsPoor => Level == NetLevel.Poor;
+}
+
+public enum NetLevel { Unknown, Good, Fair, Poor }
+
+/// <summary>A quality or resolution in the toolbar's pickers.</summary>
+public sealed record StreamChoice(string Key, string Label)
+{
+    public override string ToString() => Label;
 }
 
 /// <summary>A display in the toolbar's picker.</summary>

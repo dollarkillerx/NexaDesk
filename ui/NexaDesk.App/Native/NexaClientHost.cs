@@ -148,6 +148,16 @@ internal sealed unsafe class NativeSession(NexaSession* handle, ulong tag) : ISe
 
     public int DetachView() => _handle == null ? NEXA_E_BAD_HANDLE : Check(nexa_session_detach_view(_handle));
 
+    public int OpenTerminal(nint nsView, out ulong id)
+    {
+        ulong opened = 0;
+        var rc = _handle == null ? NEXA_E_BAD_HANDLE : Check(nexa_terminal_open(_handle, (void*)nsView, &opened));
+        id = opened;
+        return rc;
+    }
+
+    public void CloseTerminal(ulong id) => nexa_terminal_close(id);
+
     public int SetInputActive(bool active) =>
         _handle == null ? NEXA_E_BAD_HANDLE : Check(nexa_session_set_input_active(_handle, active));
 

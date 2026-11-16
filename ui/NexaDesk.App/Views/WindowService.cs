@@ -33,7 +33,20 @@ public sealed class WindowService : IWindowService
         var toolbar = new ToolbarWindow { DataContext = session };
         HudWindow? hud = null;
         DiagnosticsWindow? diagnostics = null;
+        TerminalWindow? terminal = null;
         toolbar.Follow(window);
+        toolbar.TerminalRequested += () =>
+        {
+            if (terminal != null)
+            {
+                terminal.Activate();
+                return;
+            }
+            terminal = new TerminalWindow(session);
+            terminal.Closed += (_, _) => terminal = null;
+            Track(terminal);
+            terminal.Show();
+        };
         toolbar.DiagnosticsRequested += () =>
         {
             if (diagnostics != null)
@@ -74,6 +87,7 @@ public sealed class WindowService : IWindowService
         session.Ended += (_, _, _) =>
         {
             diagnostics?.Close();
+            terminal?.Close();
             hud?.Close();
             toolbar.Close();
             window.Close();
@@ -81,6 +95,7 @@ public sealed class WindowService : IWindowService
         window.Closed += (_, _) =>
         {
             diagnostics?.Close();
+            terminal?.Close();
             hud?.Close();
             toolbar.Close();
         };

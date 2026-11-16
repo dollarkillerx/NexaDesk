@@ -133,6 +133,52 @@ namespace NexaDesk.Native
         public static extern int nexa_keymap_save(byte* req, nuint len);
 
         /// <summary>
+        ///  Shows the host's command line in `nsview` (a live NSView, filled as it resizes) and
+        ///  starts a shell there once the page is laid out; `id` names it for
+        ///  [`nexa_terminal_close`]. Needs `Permissions.terminal`, or the page says "denied".
+        ///  Main thread only.
+        ///
+        ///  # Safety
+        ///  `nsview` a live NSView; `id` writable.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "nexa_terminal_open", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int nexa_terminal_open(NexaSession* s, void* nsview, ulong* id);
+
+        /// <summary>
+        ///  Takes the terminal away; its shell ends. Main thread only.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "nexa_terminal_close", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int nexa_terminal_close(ulong id);
+
+        /// <summary>
+        ///  Keeps `password` for the saved connection `account` in the login Keychain,
+        ///  replacing one kept before.
+        ///
+        ///  # Safety
+        ///  `account` valid for `account_len` bytes, `password` for `password_len`.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "nexa_saved_password_set", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int nexa_saved_password_set(byte* account, nuint account_len, byte* password, nuint password_len);
+
+        /// <summary>
+        ///  The kept password, into `out`; `written` 0 and `NEXA_OK` when none is kept.
+        ///
+        ///  # Safety
+        ///  `account` valid for `account_len` bytes; `out` writable for `cap`, `written` writable.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "nexa_saved_password_get", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int nexa_saved_password_get(byte* account, nuint account_len, byte* @out, nuint cap, nuint* written);
+
+        /// <summary>
+        ///  Forgets the kept password; succeeds when there was none.
+        ///
+        ///  # Safety
+        ///  `account` valid for `account_len` bytes.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "nexa_saved_password_delete", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int nexa_saved_password_delete(byte* account, nuint account_len);
+
+        /// <summary>
         ///  1 when symbol keys type what this Mac's keyboard prints on them (the default), 0
         ///  when they go by key position. Needs no client handle.
         /// </summary>

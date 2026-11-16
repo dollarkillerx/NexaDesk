@@ -857,14 +857,14 @@ public sealed partial class MainViewModel : ObservableObject
     public MainViewModel(IClientCore core, IRecentStore recent, IAgentLink link, IAgentProcess process,
         IPermissionProbe permissions, IWindowService windows, ILocalAddresses addresses, string deviceName,
         Func<DateTimeOffset>? now = null, ISettingsStore? settings = null, ILoginItem? loginItem = null,
-        IKeymapService? keymap = null)
+        IKeymapService? keymap = null, IViewerPrefs? viewerPrefs = null, ISavedPasswords? passwords = null)
     {
         _keymap = keymap;
         _core = core;
         DeviceName = deviceName;
         Settings = new SettingsViewModel(settings ?? new MemorySettings());
         Tailscale = new TailscaleViewModel(windows);
-        Connect = new ConnectViewModel(core, recent, windows, now, () => Settings.SavedServer, Tailscale);
+        Connect = new ConnectViewModel(core, recent, windows, now, () => Settings.SavedServer, Tailscale, viewerPrefs, passwords);
         Host = new HostViewModel(link, process, permissions, windows, addresses, deviceName, now, () => Settings.SavedServer,
             () => Settings.AnnounceOnLan, Tailscale, () => Settings.AllowBrowsers);
         Settings.ServerChanged += _ =>

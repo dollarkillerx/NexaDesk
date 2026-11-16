@@ -11,6 +11,7 @@ mod host_audio;
 mod host_cursor;
 pub mod ipc;
 mod session;
+mod shell;
 pub mod signal;
 mod ui_host;
 mod web;

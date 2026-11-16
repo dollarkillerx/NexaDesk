@@ -36,7 +36,7 @@ use nexa_session::{
     },
     proto::{
         AudioControl, CandidateUpdate, CloseReason, ControlBody, ControlMsg, Goodbye, InputMsg,
-        RejectReason, StreamRequest,
+        RejectReason, StreamQuality, StreamRequest,
     },
     reconnect::Backoff,
     rendezvous::{
@@ -289,7 +289,7 @@ impl Core {
             stream: Mutex::new(StreamRequest {
                 mode: request.mode,
                 fps: request.fps,
-                display: 0,
+                ..Default::default()
             }),
             cursor: Arc::new(Mutex::new(CursorState::default())),
             audio: Mutex::new(None),
@@ -322,6 +322,9 @@ impl Core {
 pub enum SessionCtl {
     Stream(StreamRequest),
     Control(ControlBody),
+    /// A terminal the app opened: its stream, on this connection.
+    #[cfg(target_os = "macos")]
+    Terminal(crate::terminal::TermLink),
 }
 
 /// The handle behind `NexaSession*`. All methods return immediately.
@@ -381,6 +384,14 @@ impl Session {
         };
         if let Some(ctl) = lock(&self.command).as_ref() {
             let _ = ctl.send(SessionCtl::Stream(request));
+        }
+    }
+
+    /// Asks the connection for a terminal stream (the page is ready for it).
+    #[cfg(target_os = "macos")]
+    pub(crate) fn open_terminal(&self, link: crate::terminal::TermLink) {
+        if let Some(ctl) = lock(&self.command).as_ref() {
+            let _ = ctl.send(SessionCtl::Terminal(link));
         }
     }
 
@@ -480,6 +491,18 @@ impl Session {
             view.scale = scale;
         });
         self.repaint();
+        // The host fits the picture to this view (unless told a size); small changes,
+        // as while dragging a corner, are not worth a new picture.
+        let (sent_w, sent_h) = {
+            let r = lock(&self.stream);
+            (r.window_w, r.window_h)
+        };
+        if w > 0 && h > 0 && window_changed((sent_w, sent_h), (w, h)) {
+            self.send_stream_request(|r| {
+                r.window_w = w;
+                r.window_h = h;
+            });
+        }
     }
 
     pub fn detach_view(&self) {
@@ -516,6 +539,16 @@ impl Session {
                     r.mode = m.mode;
                     r.fps = m.fps;
                 });
+                return Ok(());
+            }
+            Command::Quality(q) => {
+                let quality =
+                    StreamQuality::try_from(q.quality as i32).map_err(|_| "unknown quality")?;
+                self.send_stream_request(|r| r.quality = quality as i32);
+                return Ok(());
+            }
+            Command::Resolution(res) => {
+                self.send_stream_request(|r| r.lines = res.lines);
                 return Ok(());
             }
             Command::Display(d) => {
@@ -1388,10 +1421,11 @@ async fn stream_session(
                 }
             })
         });
+    // What was asked for so far (quality, size, display), kept across reconnects.
     let _ = ctl_tx.send(ControlBody::Request(StreamRequest {
         mode: request.mode,
         fps: request.fps,
-        display: lock(&session.stream).display,
+        ..lock(&session.stream).clone()
     }));
 
     let (cmd_tx, mut cmd_rx) = async_mpsc::unbounded_channel();
@@ -1582,6 +1616,10 @@ async fn stream_session(
                 }
                 SessionCtl::Control(body) => {
                     let _ = ctl_tx.send(body);
+                }
+                #[cfg(target_os = "macos")]
+                SessionCtl::Terminal(link) => {
+                    tokio::spawn(crate::terminal::run(conn.clone(), link));
                 }
             },
             _ = stats.tick() => {
@@ -1950,8 +1988,22 @@ fn reason_of_close_code(code: u64) -> DisconnectReason {
     }
 }
 
+/// Whether the view changed enough (a tenth either way) to tell the host.
+fn window_changed(sent: (u32, u32), now: (u32, u32)) -> bool {
+    let far = |a: u32, b: u32| a == 0 || b.abs_diff(a) * 10 > a;
+    far(sent.0, now.0) || far(sent.1, now.1)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_host_hears_of_a_view_only_when_it_changed_enough() {
+        assert!(super::window_changed((0, 0), (1440, 900)));
+        assert!(!super::window_changed((1440, 900), (1450, 905)));
+        assert!(super::window_changed((1440, 900), (1800, 900)));
+        assert!(super::window_changed((1440, 900), (1440, 700)));
+    }
+
     use super::*;
     use nexa_net::tailscale::TsPeer;
 

@@ -56,5 +56,19 @@
   "Hud.Segment.Decode": "デコード",
   "Hud.Segment.PresentQueue": "表示待ち",
   "Hud.Segment.Present": "表示",
-  "Hud.Segment.Total": "合計"
+  "Hud.Segment.Total": "合計",
+  "Toolbar.Quality": "画質",
+  "Toolbar.QualityTip": "自動：ネットワークに合わせて調整。高画質：相手の画面の元のピクセル。バランス：ビットレートを抑え、ほとんどのネットワークで滑らか。低速回線：最大 720 行・30 fps・低ビットレート。",
+  "Toolbar.Resolution": "解像度",
+  "Toolbar.ResolutionTip": "自動：このウインドウと同じ精細さ。ネイティブ：相手の画面の解像度。1080p / 720p：最大その行数で、通信量を節約。",
+  "Toolbar.NetTip": "接続方法、遅延、フレームレート。クリックすると損失、ビットレート、区間ごとの遅延を表示します。",
+  "Session.Quality.Auto": "自動",
+  "Session.Quality.Clear": "高画質",
+  "Session.Quality.Balanced": "バランス",
+  "Session.Quality.Weak": "低速回線",
+  "Session.Resolution.Auto": "自動",
+  "Session.Resolution.Native": "ネイティブ",
+  "Toolbar.Terminal": "ターミナル",
+  "Toolbar.TerminalTip": "相手のコンピューターのコマンドライン（シェル）を別ウインドウで開きます。ウインドウを閉じるとシェルも終了します。",
+  "Terminal.Title": "{0} のターミナル"
 }

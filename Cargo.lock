@@ -1376,8 +1376,10 @@ dependencies = [
 name = "nexa-client"
 version = "0.1.0"
 dependencies = [
+ "block2",
  "bytes",
  "csbindgen",
+ "data-encoding",
  "dispatch2",
  "libc",
  "nexa-agent",
@@ -1396,6 +1398,7 @@ dependencies = [
  "objc2-foundation",
  "prost",
  "quinn",
+ "serde_json",
  "tempfile",
  "tokio",
  "zeroize",

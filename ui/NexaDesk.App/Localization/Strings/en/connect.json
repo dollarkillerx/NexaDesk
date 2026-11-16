@@ -27,5 +27,18 @@
   "Connect.CannotStart": "Could not start connecting",
   "Connect.Connecting": "Connecting to {0}…",
   "Connect.IdentityError": "Could not load this Mac's identity: {0}",
-  "Connect.SessionEnded": "Session with {0} ended: {1}"
+  "Connect.SessionEnded": "Session with {0} ended: {1}",
+  "Connect.RememberPassword": "Remember password",
+  "Connect.RememberPasswordTip": "Once it gets in, the fixed password is kept in the macOS Keychain: next time, one click in Recent signs in.",
+  "Connect.PasswordSaved": "Password saved",
+  "Connect.Edit": "Edit",
+  "Connect.EditName": "Name (empty: the computer's own name)",
+  "Connect.EditPassword": "Fixed password",
+  "Connect.EditPasswordPlaceholder": "Leave empty to keep it",
+  "Connect.ForgetPassword": "Stop keeping the password",
+  "Connect.Save": "Save",
+  "Connect.SavedPasswordInvalid": "A fixed password is at least 8 characters and does not look like a one-time code.",
+  "Connect.SavedPasswordFailed": "Could not keep it in the Keychain: {0}",
+  "Connect.SavedPasswordStale": "The saved password no longer works",
+  "Connect.SavedPasswordStaleDetail": "{0}'s fixed password may have changed. The saved one was removed; type it again."
 }

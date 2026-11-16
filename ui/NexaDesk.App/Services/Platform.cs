@@ -307,8 +307,49 @@ public sealed partial class MacPermissions : IPermissionProbe
 }
 
 [JsonSerializable(typeof(AppSettings))]
+[JsonSerializable(typeof(ViewerPrefs))]
 [JsonSourceGenerationOptions(WriteIndented = true, PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 internal sealed partial class SettingsJson : JsonSerializerContext;
+
+/// <summary>viewer-prefs.json in the data directory. A damaged file reads as defaults.</summary>
+public sealed class ViewerPrefsStore(string path) : IViewerPrefs
+{
+    static readonly string[] Qualities = ["auto", "clear", "balanced", "weak"];
+    static readonly string[] Resolutions = ["auto", "native", "1080", "720"];
+
+    public ViewerPrefs Load()
+    {
+        try
+        {
+            if (!File.Exists(path)) return new ViewerPrefs();
+            using var f = File.OpenRead(path);
+            if (f.Length > 1 << 12) return new ViewerPrefs();
+            var p = JsonSerializer.Deserialize(f, SettingsJson.Default.ViewerPrefs) ?? new ViewerPrefs();
+            // Only what the app itself would have written is honoured.
+            return new ViewerPrefs(
+                Qualities.Contains(p.Quality) ? p.Quality : "auto",
+                Resolutions.Contains(p.Resolution) ? p.Resolution : "auto");
+        }
+        catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException)
+        {
+            return new ViewerPrefs();
+        }
+    }
+
+    public void Save(ViewerPrefs prefs)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            var tmp = path + ".tmp";
+            File.WriteAllText(tmp, JsonSerializer.Serialize(prefs, SettingsJson.Default.ViewerPrefs));
+            File.Move(tmp, path, overwrite: true);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+}
 
 /// <summary>settings.json in the data directory. A damaged file reads as defaults.</summary>
 public sealed class SettingsStore(string path) : ISettingsStore

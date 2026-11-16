@@ -65,6 +65,8 @@
             <TextBox Name="CodeBox" Classes="revealPasswordButton" Text="{Binding Code}" PlaceholderText="ABCD-2345" MaxLength="128"
                      PasswordChar="•" FontFamily="{DynamicResource MonoFont}" FontSize="16" IsEnabled="{Binding !IsConnecting}" />
             <TextBlock Classes="errorText" Text="{Binding CodeHint}" IsVisible="{Binding CodeHint, Converter={x:Static ObjectConverters.IsNotNull}}" />
+            <CheckBox Name="RememberPasswordBox" Content="{l:T Connect.RememberPassword}" IsChecked="{Binding RememberPassword}"
+                      IsVisible="{Binding CodeIsPassword}" ToolTip.Tip="{l:T Connect.RememberPasswordTip}" />
 
             <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,8,0,0">
               <Button Name="ConnectButton" Classes="accent wide" Content="{l:T Main.Connect}" Command="{Binding ConnectCommand}" IsDefault="True"
@@ -153,7 +155,7 @@
               <ItemsControl.ItemTemplate>
                 <DataTemplate x:DataType="vm:RecentDeviceViewModel">
                   <Border Classes="item" Margin="0,0,0,6">
-                    <Grid ColumnDefinitions="Auto,*,Auto">
+                    <Grid ColumnDefinitions="Auto,*,Auto" RowDefinitions="Auto,Auto">
                       <Border Classes="iconTile small" Margin="0,0,10,0">
                         <Path Classes="icon" Data="{StaticResource IconMonitor}" />
                       </Border>
@@ -163,13 +165,31 @@
                           <Border Classes="badge">
                             <TextBlock Text="{Binding PairedText}" />
                           </Border>
+                          <Border Classes="badge" IsVisible="{Binding HasPassword}">
+                            <TextBlock Text="{l:T Connect.PasswordSaved}" />
+                          </Border>
                         </StackPanel>
                         <TextBlock Classes="muted" Text="{Binding Address}" />
                         <TextBlock Classes="muted" Text="{Binding LastSeen, StringFormat={l:T Main.LastConnected}}" />
                       </StackPanel>
                       <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
                         <Button Classes="small tertiary" Content="{l:T Main.Connect}" Command="{Binding ConnectCommand}" />
-                        <Button Classes="small ghost" Content="{l:T Connect.Remove}" Command="{Binding RemoveCommand}" />
+                        <Button Classes="small ghost" Content="{l:T Connect.Edit}" Command="{Binding EditCommand}" />
+                      </StackPanel>
+                      <!-- Its name, its kept password, or away with it. -->
+                      <StackPanel Grid.Row="1" Grid.ColumnSpan="3" Spacing="6" Margin="0,10,0,0" IsVisible="{Binding IsEditing}">
+                        <TextBlock Classes="label" Text="{l:T Connect.EditName}" />
+                        <TextBox Text="{Binding EditLabel}" PlaceholderText="{Binding HostName}" MaxLength="64" />
+                        <TextBlock Classes="label" Text="{l:T Connect.EditPassword}" />
+                        <TextBox Classes="revealPasswordButton" Text="{Binding EditPassword}" PasswordChar="•" MaxLength="128"
+                                 PlaceholderText="{l:T Connect.EditPasswordPlaceholder}" IsEnabled="{Binding !ForgetPassword}" />
+                        <CheckBox Content="{l:T Connect.ForgetPassword}" IsChecked="{Binding ForgetPassword}" IsVisible="{Binding HasPassword}" />
+                        <TextBlock Classes="errorText" Text="{Binding EditError}" IsVisible="{Binding EditError, Converter={x:Static ObjectConverters.IsNotNull}}" />
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                          <Button Classes="small accent" Content="{l:T Connect.Save}" Command="{Binding SaveEditCommand}" />
+                          <Button Classes="small" Content="{l:T Connect.Cancel}" Command="{Binding CancelEditCommand}" />
+                          <Button Classes="small danger" Content="{l:T Connect.Remove}" Command="{Binding RemoveCommand}" Margin="16,0,0,0" />
+                        </StackPanel>
                       </StackPanel>
                     </Grid>
                   </Border>

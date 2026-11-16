@@ -549,6 +549,17 @@ impl RateController {
         self.mode = mode;
     }
 
+    /// A new ceiling, as the viewer's quality choice sets it: the target drops under
+    /// it at once and never climbs past it.
+    pub fn set_max_bps(&mut self, max_bps: u64) {
+        self.cfg.max_bps = max_bps.max(self.cfg.min_bps);
+        self.target = self.target.min(self.cfg.max_bps as f64);
+    }
+
+    pub fn max_bps(&self) -> u64 {
+        self.cfg.max_bps
+    }
+
     /// Extra FEC padding to send right now for the startup probe.
     pub fn probe_padding_bps(&self, now: Instant) -> u64 {
         match self.probe_ends {
@@ -1319,6 +1330,26 @@ mod tests {
             "target {}",
             trace.target_at(1.5)
         );
+    }
+
+    #[test]
+    fn a_lower_ceiling_takes_effect_at_once() {
+        let t0 = Instant::now();
+        let mut c = RateController::new(
+            RateConfig {
+                initial_bps: 20_000_000,
+                min_bps: 300_000,
+                max_bps: 200_000_000,
+            },
+            Mode::Balanced,
+            t0,
+        );
+        c.set_max_bps(2_000_000);
+        assert_eq!(c.target_bps(), 2_000_000);
+        assert_eq!(c.max_bps(), 2_000_000);
+        // Never under the floor.
+        c.set_max_bps(1);
+        assert_eq!(c.max_bps(), 300_000);
     }
 
     fn controller(t: Instant, bps: u64) -> RateController {

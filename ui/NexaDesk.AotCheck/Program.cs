@@ -147,6 +147,8 @@ sealed class Session(ulong tag) : ISession
     public int DetachView() => 0;
     public int SetInputActive(bool a) => 0;
     public int Send(SessionCommand c) => 0;
+    public int OpenTerminal(nint v, out ulong id) { id = 1; return 0; }
+    public void CloseTerminal(ulong id) { }
     public void Close() => IsClosed = true;
 }
 

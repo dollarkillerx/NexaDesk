@@ -12,7 +12,9 @@ public sealed partial class RecentDeviceViewModel(ConnectViewModel owner, Recent
     : ObservableObject
 {
     public RecentDevice Device { get; } = device;
-    public string Name => string.IsNullOrWhiteSpace(Device.Name) ? Address : Device.Name;
+    public string Name => Device.Label.Length > 0 ? Device.Label
+        : string.IsNullOrWhiteSpace(Device.Name) ? Address : Device.Name;
+    public bool HasPassword => Device.HasPassword;
     /// <summary>As shown: an ID in groups of three, or the address.</summary>
     public string Address => Texts.NormalizeDeviceId(Device.Address) is { } id
         ? $"ID {Texts.GroupDeviceId(id)}"
@@ -31,6 +33,46 @@ public sealed partial class RecentDeviceViewModel(ConnectViewModel owner, Recent
 
     [RelayCommand]
     private void Remove() => owner.RemoveRecent(this);
+
+    // ----- the inline editor: name, kept password ---------------------------------------
+
+    [ObservableProperty] private bool _isEditing;
+    [ObservableProperty] private string _editLabel = "";
+    [ObservableProperty] private string _editPassword = "";
+    [ObservableProperty] private bool _forgetPassword;
+    [ObservableProperty] private string? _editError;
+
+    /// <summary>What the name box shows greyed out: the host's own name.</summary>
+    public string HostName => string.IsNullOrWhiteSpace(Device.Name) ? Address : Device.Name;
+
+    [RelayCommand]
+    private void Edit()
+    {
+        EditLabel = Device.Label;
+        EditPassword = "";
+        ForgetPassword = false;
+        EditError = null;
+        IsEditing = !IsEditing;
+    }
+
+    [RelayCommand]
+    private void CancelEdit()
+    {
+        EditPassword = "";
+        IsEditing = false;
+    }
+
+    [RelayCommand]
+    private void SaveEdit()
+    {
+        var password = ForgetPassword ? null : EditPassword.Length > 0 ? EditPassword : "";
+        EditError = owner.UpdateRecent(this, EditLabel.Trim(), password, ForgetPassword);
+        if (EditError == null)
+        {
+            EditPassword = "";
+            IsEditing = false;
+        }
+    }
 }
 
 /// <summary>A NexaDesk host in this machine's tailnet (§4.7), from the Tailscale LocalAPI.</summary>
@@ -63,6 +105,12 @@ public sealed partial class ConnectViewModel : ObservableObject
 {
     readonly IClientCore _core;
     readonly IRecentStore _store;
+    readonly IViewerPrefs _viewerPrefs;
+    readonly ISavedPasswords _passwords;
+    /// <summary>The password typed for this attempt, to keep if it gets in and keeping was asked.</summary>
+    string? _passwordToKeep;
+    /// <summary>The saved connection whose kept password this attempt uses.</summary>
+    RecentDevice? _usingKept;
     readonly IWindowService _windows;
     readonly Func<DateTimeOffset> _now;
     readonly Func<string> _signalServer;
@@ -105,8 +153,14 @@ public sealed partial class ConnectViewModel : ObservableObject
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(ConnectCommand))]
-    [NotifyPropertyChangedFor(nameof(CodeHint))]
+    [NotifyPropertyChangedFor(nameof(CodeHint), nameof(CodeIsPassword))]
     private string _code = "";
+
+    /// <summary>What is typed is a fixed password, not a one-time code: it can be kept.</summary>
+    public bool CodeIsPassword => Texts.SignInFor(Code) is ConnectAuth.Password;
+
+    /// <summary>"记住密码": keep the fixed password in the Keychain once it gets in.</summary>
+    [ObservableProperty] private bool _rememberPassword;
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(ConnectCommand))]
@@ -137,8 +191,11 @@ public sealed partial class ConnectViewModel : ObservableObject
         Code.Length > 0 && Texts.SignInFor(Code) == null ? L.Get("Connect.CodeHint") : null;
 
     public ConnectViewModel(IClientCore core, IRecentStore store, IWindowService windows, Func<DateTimeOffset>? now = null,
-        Func<string>? signalServer = null, TailscaleViewModel? tailscale = null)
+        Func<string>? signalServer = null, TailscaleViewModel? tailscale = null, IViewerPrefs? viewerPrefs = null,
+        ISavedPasswords? passwords = null)
     {
+        _viewerPrefs = viewerPrefs ?? new MemoryViewerPrefs();
+        _passwords = passwords ?? new MemorySavedPasswords();
         Tailscale = tailscale ?? new TailscaleViewModel(windows);
         Tailscale.Changed += () => OnPropertyChanged(nameof(ShowTailscaleAdvice));
         _core = core;
@@ -188,6 +245,7 @@ public sealed partial class ConnectViewModel : ObservableObject
         var signIn = SignIn();
         if (address == null || signIn == null) return;
         Start(address, signIn);
+        if (IsConnecting && RememberPassword && signIn is ConnectAuth.Password p) _passwordToKeep = p.Value;
     }
 
     internal void ConnectRecent(RecentDeviceViewModel device)
@@ -198,10 +256,50 @@ public sealed partial class ConnectViewModel : ObservableObject
             Start(device.Device.Address, new ConnectAuth.KnownHost(device.HostKey));
             return;
         }
+        // Its kept password signs in at once.
+        if (device.HasPassword && _passwords.Load(device.Device.PasswordAccount) is { } kept)
+        {
+            Start(device.Device.Address, new ConnectAuth.Password(kept));
+            if (IsConnecting) _usingKept = device.Device;
+            return;
+        }
+        // An ID through the server: ask the person at the host, as with nothing typed.
+        if (Texts.NormalizeDeviceId(device.Device.Address) != null && _signalServer().Length > 0)
+        {
+            Start(device.Device.Address, new ConnectAuth.Request());
+            return;
+        }
         Address = Texts.NormalizeDeviceId(device.Device.Address) is { } id ? Texts.GroupDeviceId(id) : device.Device.Address;
         Code = "";
         Error = new ErrorText(L.Get("Connect.CodeNeeded"), L.Format("Connect.NotPairedDetail", device.Name));
         FocusCodeRequested?.Invoke();
+    }
+
+    /// <summary>The editor's changes: a name of the person's own (empty: the host's),
+    /// a new password to keep (null: none; empty: leave as it is), or the kept one dropped.
+    /// Null when done, else why not.</summary>
+    internal string? UpdateRecent(RecentDeviceViewModel device, string label, string? password, bool forget)
+    {
+        if (password is { Length: > 0 } && Texts.SignInFor(password) is not ConnectAuth.Password)
+            return L.Get("Connect.SavedPasswordInvalid");
+        var at = _recent.FindIndex(r => r.Address == device.Device.Address && r.HostKey == device.HostKey);
+        if (at < 0) return null;
+        var entry = _recent[at] with { Label = label };
+        if (forget)
+        {
+            _passwords.Delete(entry.PasswordAccount);
+            entry = entry with { HasPassword = false };
+        }
+        else if (password is { Length: > 0 })
+        {
+            if (_passwords.Save(entry.PasswordAccount, password) is { } refused)
+                return L.Format("Connect.SavedPasswordFailed", refused);
+            entry = entry with { HasPassword = true };
+        }
+        _recent[at] = entry;
+        _store.Save(_recent);
+        RebuildRecent();
+        return null;
     }
 
     /// <summary>A tailnet device: a paired one connects at once, anything else needs its code.</summary>
@@ -225,6 +323,7 @@ public sealed partial class ConnectViewModel : ObservableObject
 
     internal void RemoveRecent(RecentDeviceViewModel device)
     {
+        if (device.HasPassword) _passwords.Delete(device.Device.PasswordAccount);
         _recent.RemoveAll(r => r.Address == device.Device.Address && r.HostKey == device.HostKey);
         _store.Save(_recent);
         RebuildRecent();
@@ -264,6 +363,8 @@ public sealed partial class ConnectViewModel : ObservableObject
         p.Session.Close();
         IsConnecting = false;
         ProgressText = "";
+        _passwordToKeep = null;
+        _usingKept = null;
     }
 
     public void OnClientEvent(ClientEvent ev)
@@ -318,7 +419,7 @@ public sealed partial class ConnectViewModel : ObservableObject
                 ProgressText = "";
                 Code = "";
                 Remember(p.Address, c);
-                var vm = new SessionViewModel(p.Session, c, Shown(p.Address), _now);
+                var vm = new SessionViewModel(p.Session, c, Shown(p.Address), _now, _viewerPrefs);
                 vm.Ended += OnSessionEnded;
                 _sessions[p.Tag] = vm;
                 _windows.ShowSession(vm);
@@ -328,7 +429,18 @@ public sealed partial class ConnectViewModel : ObservableObject
                 IsConnecting = false;
                 ProgressText = "";
                 p.Session.Close();
-                if (d.Reason != DisconnectReason.ClosedLocally) Error = Failure(d.Reason, p.Address);
+                _passwordToKeep = null;
+                if (d.Reason == DisconnectReason.AuthFailed && _usingKept is { } stale)
+                {
+                    // The host's password changed: drop the kept one and ask for it again.
+                    ForgetKept(stale);
+                    Address = Shown(stale.Address);
+                    Code = "";
+                    Error = new ErrorText(L.Get("Connect.SavedPasswordStale"), L.Format("Connect.SavedPasswordStaleDetail", stale.Label.Length > 0 ? stale.Label : stale.Name));
+                    FocusCodeRequested?.Invoke();
+                }
+                else if (d.Reason != DisconnectReason.ClosedLocally) Error = Failure(d.Reason, p.Address);
+                _usingKept = null;
                 break;
             case WarningEvent w:
                 ProgressText = Messages.Warning(w);
@@ -355,11 +467,37 @@ public sealed partial class ConnectViewModel : ObservableObject
         Error = new ErrorText(L.Format("Connect.SessionEnded", vm.HostName, e.Title), e.Detail);
     }
 
+    void ForgetKept(RecentDevice device)
+    {
+        _passwords.Delete(device.PasswordAccount);
+        var at = _recent.FindIndex(r => r.Address == device.Address && r.HostKey == device.HostKey);
+        if (at >= 0) _recent[at] = _recent[at] with { HasPassword = false };
+        _store.Save(_recent);
+        RebuildRecent();
+    }
+
     void Remember(string address, ConnectedEvent c)
     {
         if (c.PairedNow && c.HostKey.Length > 0) _paired.Add(c.HostKey);
+        // The person's name for it and its kept password stay with it.
+        var before = _recent.FirstOrDefault(r => r.Address == address || (c.HostKey.Length > 0 && r.HostKey == c.HostKey));
         _recent.RemoveAll(r => r.Address == address || (c.HostKey.Length > 0 && r.HostKey == c.HostKey));
-        _recent.Insert(0, new RecentDevice(address, c.HostName, c.HostKey, _now().ToUnixTimeSeconds()));
+        var entry = new RecentDevice(address, c.HostName, c.HostKey, _now().ToUnixTimeSeconds(),
+            before?.Label ?? "", before?.HasPassword ?? false);
+        if (before is { HasPassword: true } && before.PasswordAccount != entry.PasswordAccount
+            && _passwords.Load(before.PasswordAccount) is { } moved)
+        {
+            // Kept under the address before the host's key was known: file it under the key.
+            _passwords.Save(entry.PasswordAccount, moved);
+            _passwords.Delete(before.PasswordAccount);
+        }
+        if (_passwordToKeep is { } typed)
+        {
+            entry = entry with { HasPassword = _passwords.Save(entry.PasswordAccount, typed) == null };
+            _passwordToKeep = null;
+        }
+        _usingKept = null;
+        _recent.Insert(0, entry);
         if (_recent.Count > 20) _recent.RemoveRange(20, _recent.Count - 20);
         _store.Save(_recent);
         RebuildRecent();

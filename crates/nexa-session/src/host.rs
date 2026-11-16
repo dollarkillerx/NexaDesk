@@ -337,6 +337,14 @@ impl HostMedia {
         self.send_cmd(Cmd::PathSwitched);
     }
 
+    /// The most the rate controller may send, from the viewer's quality choice.
+    pub fn set_max_bps(&self, max_bps: u64) {
+        self.rate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_max_bps(max_bps);
+    }
+
     /// Asks the capture thread to rebuild the pipeline (§6.7).
     pub fn request_rebuild(&self, reason: RebuildReason) {
         self.send_cmd(Cmd::Rebuild(reason));

@@ -89,6 +89,21 @@ pub struct SetAudio {
     pub enabled: bool,
 }
 
+/// How good the picture may be (`nexa_session::proto::StreamQuality`: 0 auto, 1 clear,
+/// 2 balanced, 3 weak).
+#[derive(Clone, PartialEq, Message)]
+pub struct SetQuality {
+    #[prost(uint32, tag = "1")]
+    pub quality: u32,
+}
+
+/// How many lines the host sends: 0 fits this view, 1 the host's own pixels, more a cap.
+#[derive(Clone, PartialEq, Message)]
+pub struct SetResolution {
+    #[prost(uint32, tag = "1")]
+    pub lines: u32,
+}
+
 /// Stream another of the host's displays (`Connected.displays[i].id`).
 #[derive(Clone, PartialEq, Message)]
 pub struct SelectDisplay {
@@ -150,11 +165,18 @@ pub enum Command {
     CancelTransfer(CancelTransfer),
     #[prost(message, tag = "24")]
     AnswerTransfer(AnswerTransfer),
+    #[prost(message, tag = "25")]
+    Quality(SetQuality),
+    #[prost(message, tag = "26")]
+    Resolution(SetResolution),
 }
 
 #[derive(Clone, PartialEq, Message)]
 pub struct SessionCommand {
-    #[prost(oneof = "Command", tags = "1, 2, 3, 4, 5, 6, 20, 21, 22, 23, 24")]
+    #[prost(
+        oneof = "Command",
+        tags = "1, 2, 3, 4, 5, 6, 20, 21, 22, 23, 24, 25, 26"
+    )]
     pub cmd: Option<Command>,
 }
 
@@ -850,6 +872,20 @@ mod tests {
         assert_eq!(
             hex(&e.encode_to_vec()),
             "da020e0a0c0a01611201621a0163220164"
+        );
+    }
+
+    /// The same golden bytes as ui/NexaDesk.Tests/PictureChoiceTests.cs.
+    #[test]
+    fn picture_commands_match_the_csharp_golden_bytes() {
+        let cmd = |c| SessionCommand { cmd: Some(c) }.encode_to_vec();
+        assert_eq!(
+            hex(&cmd(Command::Quality(SetQuality { quality: 3 }))),
+            "ca01020803"
+        );
+        assert_eq!(
+            hex(&cmd(Command::Resolution(SetResolution { lines: 1080 }))),
+            "d2010308b808"
         );
     }
 
