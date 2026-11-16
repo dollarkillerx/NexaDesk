@@ -400,6 +400,53 @@ async fn control_writer(mut send: FramedSend, mut rx: mpsc::UnboundedReceiver<Co
     send.finish_and_flush(FLUSH_TIMEOUT).await;
 }
 
+/// Every [`STREAM_LOG_EVERY`], one line: frames encoded and skipped per second, the
+/// mean encode time, Mbit/s sent, and the rate controller's target and link estimate.
+async fn log_stream(media: Arc<HostMedia>, session: u64, (w, h, fps): (u32, u32, u32)) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let s = media.stats.clone();
+    let read = || {
+        (
+            s.encoded.load(Relaxed),
+            s.skipped_no_room.load(Relaxed),
+            s.encode_us.load(Relaxed),
+            s.bytes_sent.load(Relaxed),
+        )
+    };
+    let mut last = read();
+    let mut last_stalls = 0;
+    let mut tick = tokio::time::interval(STREAM_LOG_EVERY);
+    tick.tick().await;
+    loop {
+        tick.tick().await;
+        let now = read();
+        let secs = STREAM_LOG_EVERY.as_secs_f64();
+        let (frames, skipped) = (now.0 - last.0, now.1 - last.1);
+        let encode_ms = if frames > 0 {
+            (now.2 - last.2) as f64 / frames as f64 / 1e3
+        } else {
+            0.0
+        };
+        let sent = (now.3 - last.3) as f64 * 8.0 / secs / 1e6;
+        let (target, link, stalls) = media.rate_snapshot();
+        let link = link.map_or("unknown".to_owned(), |l| {
+            format!("{:.1} Mbit/s", l as f64 / 1e6)
+        });
+        eprintln!(
+            "nexa-agent: session {session} stream {w}x{h}@{fps}: {:.1} frames/s, {:.1} skipped/s, encode {encode_ms:.1} ms, sent {sent:.2} Mbit/s, target {:.2} Mbit/s, encoder {:.2} Mbit/s, link {link}, {} radio stalls",
+            frames as f64 / secs,
+            skipped as f64 / secs,
+            target as f64 / 1e6,
+            s.encoder_bps.load(Relaxed) as f64 / 1e6,
+            stalls - last_stalls,
+        );
+        last = now;
+        last_stalls = stalls;
+    }
+}
+
+const STREAM_LOG_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
 struct AbortOnDrop(Option<tokio::task::JoinHandle<()>>);
 
 impl Drop for AbortOnDrop {
@@ -640,6 +687,14 @@ pub(crate) async fn run(
             thread_init: env.platform.thread_init(),
         },
     ));
+    // What the stream does, in the log every few seconds: what was encoded, skipped
+    // for want of room and sent, against the rate controller's target. A blurry or
+    // slow picture can then be traced to its cause after the fact.
+    let _stream_log = AbortOnDrop(Some(tokio::spawn(log_stream(
+        media.clone(),
+        session_id,
+        (config.w, config.h, config.fps),
+    ))));
     // §4.9: one bulk budget for the clipboard and every file transfer.
     let bulk = BulkLimiter::new(Arc::new(media.bulk_rate()));
     // Files exist only for sessions granted them, in both directions.

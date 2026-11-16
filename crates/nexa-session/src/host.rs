@@ -60,6 +60,12 @@ pub struct HostParams {
 #[derive(Default, Debug)]
 pub struct HostStats {
     pub encoded: AtomicU64,
+    /// Time spent in `Encoder::encode`, in µs, over all frames.
+    pub encode_us: AtomicU64,
+    /// Video bytes handed to the connection, repair and probe padding included.
+    pub bytes_sent: AtomicU64,
+    /// The bitrate last given to the encoder.
+    pub encoder_bps: AtomicU64,
     pub skipped_no_room: AtomicU64,
     pub idle_refreshes: AtomicU64,
     pub packets: AtomicU64,
@@ -338,6 +344,13 @@ impl HostMedia {
     }
 
     /// The most the rate controller may send, from the viewer's quality choice.
+    /// The rate controller's target and its estimate of the link, in bit/s, and the
+    /// radio stalls it has set aside so far.
+    pub fn rate_snapshot(&self) -> (u64, Option<u64>, u64) {
+        let rate = self.rate.lock().unwrap_or_else(|e| e.into_inner());
+        (rate.target_bps(), rate.link_capacity_bps(), rate.stalls())
+    }
+
     pub fn set_max_bps(&self, max_bps: u64) {
         self.rate
             .lock()
@@ -593,7 +606,12 @@ fn run_encoder(
             continue;
         }
         buf.clear();
-        match encoder.encode(&frame, next_id, EncodeOpts { force_key }, &mut buf) {
+        let started = Instant::now();
+        let encoded = encoder.encode(&frame, next_id, EncodeOpts { force_key }, &mut buf);
+        stats
+            .encode_us
+            .fetch_add(started.elapsed().as_micros() as u64, Relaxed);
+        match encoded {
             Ok(meta) => {
                 let mut f = 0;
                 if meta.key {
@@ -652,6 +670,7 @@ fn run_tx(
         let now = Instant::now();
         let alloc = rate.lock().unwrap().allocation(now);
         if let Some(bps) = throttle.update(alloc.video_bps, now) {
+            stats.encoder_bps.store(bps, Relaxed);
             let _ = cmds.send(Cmd::SetBitrate(bps.min(u64::from(u32::MAX)) as u32));
         }
         let Some(max_dg) = conn.max_datagram_size() else {
@@ -690,10 +709,12 @@ fn run_tx(
                 }
                 thread::sleep(Duration::from_micros(100));
             }
+            let len = pkt.len() as u64;
             if tx.send(pkt, Some(f.frame_id), &rate).is_err() {
                 return;
             }
             stats.packets.fetch_add(1, Relaxed);
+            stats.bytes_sent.fetch_add(len, Relaxed);
         }
         depth.fetch_sub(1, Relaxed);
     }
