@@ -560,6 +560,9 @@ function showSession(s) {
   $("net-text").textContent = "…";
   showQualityChoice();
   showResolutionChoice();
+  // Only someone who may type has keys to choose about.
+  $("symbols-group").hidden = !s.input;
+  showSymbolsChoice();
   s.stopStats = watch(s.pc, showNet);
   keyboard.focus();
 }
@@ -662,6 +665,26 @@ function sendResolution() {
   const m = { t: "s", m: resolution(), ...windowPixels() };
   sentWindow = `${m.m} ${m.w}x${m.h}`;
   s.dc.send(JSON.stringify(m));
+}
+
+const SYMBOLS_KEY = "nexadesk.symbols";
+
+/** "chars": symbols as printed on this keyboard; "keys": as key positions. */
+function symbolsMode() {
+  try {
+    return localStorage.getItem(SYMBOLS_KEY) === "keys" ? "keys" : "chars";
+  } catch {
+    return "chars";
+  }
+}
+
+function showSymbolsChoice() {
+  const k = symbolsMode();
+  for (const b of document.querySelectorAll("#symbols button")) {
+    b.setAttribute("aria-checked", String(b.dataset.k === k));
+  }
+  $("symbols-note").textContent = t("symbolsHelp." + k);
+  if (keyboard) keyboard.symbols = k === "chars";
 }
 
 function showResolutionChoice() {
@@ -935,6 +958,14 @@ function setupInput() {
     sendQuality();
     keyboard.focus();
   });
+  $("symbols").addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b?.dataset.k) return;
+    try { localStorage.setItem(SYMBOLS_KEY, b.dataset.k); } catch {}
+    keyboard.release();
+    showSymbolsChoice();
+    keyboard.focus();
+  });
   $("resolution").addEventListener("click", (e) => {
     const b = e.target.closest("button");
     if (!b?.dataset.r) return;
@@ -982,6 +1013,7 @@ function setupLanguage() {
       $("keys-hint").textContent = t(TOUCH ? "touchHint" : "keysHint");
       showSwap();
       showResolutionChoice();
+      showSymbolsChoice();
     }
   });
 }

@@ -2,6 +2,11 @@
 
 const STRINGS = {
   "zh-Hans": {
+    "symbols": "符号键",
+    "symbols.chars": "按键上的字",
+    "symbols.keys": "按键的位置",
+    "symbolsHelp.chars": "符号按你键盘上印的输入。两边键盘布局不同时用这个，比如用日文键盘控制英文键盘的 Mac。",
+    "symbolsHelp.keys": "符号键按位置发送，打出什么由对方的键盘布局决定。",
     "saved.title": "已保存的连接",
     "saved.new": "新的连接",
     "saved.password": "已保存密码",
@@ -124,6 +129,11 @@ const STRINGS = {
     "error.format": "一次性码是 8 位字母和数字，固定密码至少 8 位。",
   },
   en: {
+    "symbols": "Symbol keys",
+    "symbols.chars": "As printed",
+    "symbols.keys": "By position",
+    "symbolsHelp.chars": "Symbols are typed as printed on your keyboard. Use this when the two keyboards differ, such as a Japanese keyboard controlling a Mac set to US.",
+    "symbolsHelp.keys": "Symbol keys are sent by position; the host's layout decides what they type.",
     "saved.title": "Saved connections",
     "saved.new": "New connection",
     "saved.password": "Password saved",
@@ -246,6 +256,11 @@ const STRINGS = {
     "error.format": "A one-time code is 8 letters and digits; a fixed password is at least 8 characters.",
   },
   ja: {
+    "symbols": "記号キー",
+    "symbols.chars": "刻印どおり",
+    "symbols.keys": "キーの位置",
+    "symbolsHelp.chars": "記号はお使いのキーボードの刻印どおりに入力されます。日本語キーボードから英語配列の Mac を操作するときなど、配列が違う場合に使います。",
+    "symbolsHelp.keys": "記号キーは位置のまま送られ、入力される文字は相手の配列で決まります。",
     "saved.title": "保存した接続",
     "saved.new": "新しい接続",
     "saved.password": "パスワード保存済み",

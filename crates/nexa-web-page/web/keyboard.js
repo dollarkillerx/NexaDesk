@@ -1,6 +1,9 @@
 // The keyboard, into the host. Three ways in, one hidden text field to catch them all:
 //
 // - Physical keys go as HID usages (keys.js), so shortcuts and games work.
+// - Symbols go as the character this keyboard prints on them (unless the person asks for
+//   positions): a Japanese keyboard and an American one put @, [, : and the like on
+//   different keys, so the key's position would type something else on the host.
 // - Text an input method composes (Chinese, Japanese…) or a phone keyboard types goes as
 //   text, which the host types as Unicode: the keys that made it mean nothing there.
 // - A paste sends the browser's clipboard text first, then the paste keystroke, on the
@@ -28,6 +31,16 @@ const ENTER = 0x28, BACKSPACE = 0x2a, DELETE = 0x4c;
 const TEXT_CHUNK = 240;
 // How long a paste keystroke waits for the browser's paste event.
 const PASTE_WAIT = 400;
+
+/** A symbol typed with no shortcut modifier: sent as the character, not the key.
+ *  Letters, digits and space stay keys: every Latin layout agrees on them, and games
+ *  and single-key shortcuts need them as keys. */
+export function isSymbol(e) {
+  if ([...e.key].length !== 1) return false;
+  // ⌘ or Ctrl makes a shortcut; AltGr (Ctrl+Alt on Windows) makes a character.
+  if ((e.metaKey || e.ctrlKey) && !e.getModifierState?.("AltGraph")) return false;
+  return !/[\p{L}\p{N}\s]/u.test(e.key);
+}
 
 /** HID usage of a character on a US keyboard, with whether Shift makes it; or null. */
 function hidForChar(ch) {
@@ -77,6 +90,10 @@ export class Keyboard {
     this.onLatch = () => {};
     this.pendingPaste = null;
     this.swallowUp = new Set();
+    /** Keys whose symbol went as text: their key-up is nobody's business. */
+    this.typedUp = new Set();
+    /** Symbols as printed on this keyboard (true) or as key positions (false). */
+    this.symbols = true;
     this.composing = false;
 
     field.addEventListener("keydown", (e) => this.key(e, true));
@@ -162,8 +179,14 @@ export class Keyboard {
     const c = this.hid(e);
     if (c === undefined) return;
 
-    if (!isDown && this.swallowUp.delete(c)) {
+    if (!isDown && (this.swallowUp.delete(c) || this.typedUp.delete(c))) {
       e.preventDefault();
+      return;
+    }
+    if (isDown && this.symbols && !this.latched.size && isSymbol(e)) {
+      e.preventDefault();
+      this.typedUp.add(c);
+      this.send({ t: "s", s: e.key });
       return;
     }
     if (isDown && this.isPaste(e, c)) {
@@ -237,6 +260,7 @@ export class Keyboard {
     this.pendingPaste = null;
     this.held.clear();
     this.swallowUp.clear();
+    this.typedUp.clear();
     this.clearLatch();
     this.send({ t: "r" });
   }
