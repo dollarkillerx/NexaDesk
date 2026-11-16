@@ -612,6 +612,7 @@ pub extern "C" fn nexa_terminal_close(id: u64) -> i32 {
 }
 
 /// The Keychain service under which saved connections keep a host's fixed password.
+#[cfg(target_os = "macos")]
 const SAVED_PASSWORD_SERVICE: &str = "NexaDesk saved connection";
 
 /// A saved connection's password item: `account` names the connection (its host key,

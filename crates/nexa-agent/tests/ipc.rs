@@ -1,6 +1,10 @@
 //! The desktop UI's IPC (§5.3) against a real agent on loopback, with fake devices and
 //! a hand-rolled UI client that can misbehave. Nothing here touches the screen, the
 //! Keychain, the pasteboard or the input system.
+//!
+//! Unix only: the Windows named pipe gets its own tests with the Windows host
+//! (docs/WINDOWS.md, stage 2).
+#![cfg(unix)]
 
 mod common;
 

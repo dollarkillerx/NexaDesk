@@ -1,7 +1,8 @@
 //! Local IPC for the desktop UI (§5.3).
 //!
 //! A Unix socket in the data directory, mode 0600, and every connection's peer must
-//! have this process's uid: the check runs before a single byte is read. Frames use
+//! have this process's uid: the check runs before a single byte is read. On Windows,
+//! a named pipe only this user may open ([`transport`]). Frames use
 //! the reliable-stream framing (`varint length + body`) carrying the messages in
 //! `proto/agent_ipc.proto`. The first frame must be `Hello`; anything malformed,
 //! oversized or late closes the connection.
@@ -12,10 +13,10 @@
 
 mod hub;
 pub mod proto;
+mod transport;
 
 use std::{
     io,
-    os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -28,12 +29,11 @@ use prost::Message;
 use thiserror::Error;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{
-        UnixListener, UnixStream,
-        unix::{OwnedReadHalf, OwnedWriteHalf},
-    },
     sync::{mpsc, watch},
 };
+#[cfg(windows)]
+pub use transport::pipe_name;
+use transport::{Cleanup, Listener, Reader, Writer};
 
 use self::{
     hub::{OUTBOUND_QUEUE, Outgoing},
@@ -78,64 +78,32 @@ impl IpcConfig {
     }
 }
 
+/// This process's uid; 0 on Windows, where the pipe's access list does the check.
 pub fn current_uid() -> u32 {
+    #[cfg(unix)]
     // SAFETY: getuid has no preconditions and cannot fail.
-    unsafe { libc::getuid() }
-}
-
-fn io_err(path: &Path) -> impl FnOnce(io::Error) -> IpcError + '_ {
-    move |source| IpcError::Io {
-        path: path.to_owned(),
-        source,
-    }
+    return unsafe { libc::getuid() };
+    #[cfg(not(unix))]
+    0
 }
 
 /// A bound socket that is not yet accepting.
 pub struct IpcListener {
     config: IpcConfig,
-    listener: UnixListener,
-    ino: (u64, u64),
+    listener: Listener,
+    cleanup: Cleanup,
 }
 
 impl IpcListener {
-    /// Binds the socket. A socket left by a dead agent is replaced; a live one is an
-    /// error, as is anything at the path that is not our socket. Must be called
-    /// inside a tokio runtime.
+    /// Binds the socket (or pipe). A socket left by a dead agent is replaced; a live
+    /// one is an error, as is anything at the path that is not our socket. Must be
+    /// called inside a tokio runtime.
     pub fn bind(config: IpcConfig) -> Result<Self, IpcError> {
-        let path = config.path.clone();
-        let dir = path.parent().unwrap_or(Path::new("."));
-        if !dir.exists() {
-            std::fs::DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(dir)
-                .map_err(io_err(dir))?;
-        }
-        let me = current_uid();
-        let meta = std::fs::metadata(dir).map_err(io_err(dir))?;
-        if meta.uid() != me || meta.mode() & 0o022 != 0 {
-            return Err(IpcError::UnsafeDirectory(dir.to_owned()));
-        }
-        match std::fs::symlink_metadata(&path) {
-            Ok(m) if m.file_type().is_socket() && m.uid() == me => {
-                match std::os::unix::net::UnixStream::connect(&path) {
-                    Ok(_) => return Err(IpcError::AlreadyRunning(path)),
-                    Err(_) => std::fs::remove_file(&path).map_err(io_err(&path))?,
-                }
-            }
-            Ok(_) => return Err(IpcError::NotOurSocket(path)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(io_err(&path)(e)),
-        }
-        let listener = UnixListener::bind(&path).map_err(io_err(&path))?;
-        // The peer uid check below covers the moment before this applies.
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-            .map_err(io_err(&path))?;
-        let m = std::fs::symlink_metadata(&path).map_err(io_err(&path))?;
+        let (listener, cleanup) = Listener::bind(&config)?;
         Ok(Self {
             config,
             listener,
-            ino: (m.dev(), m.ino()),
+            cleanup,
         })
     }
 
@@ -151,7 +119,6 @@ impl IpcListener {
             hub,
             agent,
             on_shutdown,
-            expected_uid: self.config.expected_uid,
             hello_timeout: self.config.hello_timeout,
             stop: stop_rx,
         });
@@ -159,7 +126,7 @@ impl IpcListener {
         let task = tokio::spawn(accept_loop(listener, ctx));
         IpcServer {
             path: self.config.path,
-            ino: self.ino,
+            cleanup: self.cleanup,
             stop,
             task,
         }
@@ -170,7 +137,7 @@ impl IpcListener {
 /// removes the socket.
 pub struct IpcServer {
     path: PathBuf,
-    ino: (u64, u64),
+    cleanup: Cleanup,
     stop: watch::Sender<bool>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -186,11 +153,7 @@ impl Drop for IpcServer {
         let _ = self.stop.send(true);
         self.task.abort();
         // Only if it is still the socket this server created.
-        if let Ok(m) = std::fs::symlink_metadata(&self.path)
-            && (m.dev(), m.ino()) == self.ino
-        {
-            let _ = std::fs::remove_file(&self.path);
-        }
+        self.cleanup.remove();
     }
 }
 
@@ -198,12 +161,11 @@ struct Ctx {
     hub: Arc<IpcHub>,
     agent: Arc<Agent>,
     on_shutdown: Arc<dyn Fn() + Send + Sync>,
-    expected_uid: u32,
     hello_timeout: Duration,
     stop: watch::Receiver<bool>,
 }
 
-async fn accept_loop(listener: UnixListener, ctx: Arc<Ctx>) {
+async fn accept_loop(mut listener: Listener, ctx: Arc<Ctx>) {
     let mut stop = ctx.stop.clone();
     loop {
         let accepted = tokio::select! {
@@ -211,9 +173,11 @@ async fn accept_loop(listener: UnixListener, ctx: Arc<Ctx>) {
             _ = stop.wait_for(|s| *s) => return,
         };
         match accepted {
-            Ok((stream, _)) => {
-                tokio::spawn(connection(stream, ctx.clone()));
+            Ok(Some((rd, wr))) => {
+                tokio::spawn(connection(rd, wr, ctx.clone()));
             }
+            // Another user's process: dropped before a byte was read.
+            Ok(None) => {}
             Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
         }
     }
@@ -238,7 +202,7 @@ enum ReadError {
 
 /// Cancel-safe: the only await is the read, before any byte is consumed.
 async fn read_msg(
-    rd: &mut OwnedReadHalf,
+    rd: &mut Reader,
     decoder: &mut FrameDecoder,
     buf: &mut [u8],
 ) -> Result<UiToAgent, ReadError> {
@@ -256,7 +220,7 @@ async fn read_msg(
     }
 }
 
-async fn write_msg(wr: &mut OwnedWriteHalf, msg: &AgentToUi) -> bool {
+async fn write_msg(wr: &mut Writer, msg: &AgentToUi) -> bool {
     let mut out = bytes::BytesMut::new();
     encode_frame(&msg.encode_to_vec(), &mut out);
     matches!(
@@ -324,13 +288,7 @@ fn key_of(hex: &str) -> Option<DevicePublicKey> {
     DevicePublicKey::from_hex(hex).ok()
 }
 
-async fn connection(stream: UnixStream, ctx: Arc<Ctx>) {
-    // Before anything is read: a process of another user gets nothing at all.
-    let Ok(cred) = stream.peer_cred() else { return };
-    if cred.uid() != ctx.expected_uid {
-        return;
-    }
-    let (mut rd, mut wr) = stream.into_split();
+async fn connection(mut rd: Reader, mut wr: Writer, ctx: Arc<Ctx>) {
     let mut decoder = FrameDecoder::new(MAX_FRAME);
     let mut buf = vec![0u8; 4096];
 

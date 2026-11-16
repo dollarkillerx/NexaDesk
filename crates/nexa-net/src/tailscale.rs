@@ -448,6 +448,7 @@ mod tests {
         assert!(parse_status(b"not json").is_none());
     }
 
+    #[cfg(unix)]
     /// A stand-in for the Mac app's command line.
     fn fake_cli(dir: &Path, name: &str, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
@@ -457,6 +458,7 @@ mod tests {
         path
     }
 
+    #[cfg(unix)]
     #[test]
     fn reads_the_command_line_and_gives_up_on_a_slow_or_failing_one() {
         let dir = tempdir();
@@ -500,6 +502,7 @@ mod tests {
         assert!(!info.self_name.is_empty());
     }
 
+    #[cfg(unix)]
     fn fake_localapi(dir: &Path, response: Vec<u8>) -> PathBuf {
         use std::os::unix::net::UnixListener;
         let path = dir.join("tailscaled.sock");
@@ -515,6 +518,7 @@ mod tests {
         path
     }
 
+    #[cfg(unix)]
     #[test]
     fn reads_a_fake_localapi_including_chunked() {
         let dir = tempdir();
@@ -539,6 +543,7 @@ mod tests {
         assert_eq!(mon.direct("100.64.0.99".parse().unwrap()), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn failures_are_silent() {
         let dir = tempdir();
@@ -548,6 +553,7 @@ mod tests {
         let _ = discover_local();
     }
 
+    #[cfg(unix)]
     fn tempdir() -> PathBuf {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let t = std::time::SystemTime::now()

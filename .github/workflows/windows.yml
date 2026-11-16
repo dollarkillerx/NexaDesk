@@ -1,0 +1,64 @@
+# Windows: builds and tests everything, then publishes the app's files as an artifact
+# (docs/WINDOWS.md). Screen capture, encoding and input are checked on a real PC: this
+# machine has no GPU and no desktop session worth capturing.
+name: Windows
+
+on:
+  push:
+    branches: [main, windows]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+          rustc --version
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: windows-cargo-
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Rust tests
+        run: cargo test --workspace --no-fail-fast
+
+      - name: App tests
+        run: dotnet test ui/NexaDesk.Tests
+
+      - name: Build for shipping
+        run: |
+          cargo build --release -p nexa-client -p nexa-agent -p nexa-term-host
+          dotnet publish ui/NexaDesk.App -c Release -r win-x64 -o dist/windows
+          Copy-Item target/release/nexa_client.dll dist/windows/
+          Copy-Item target/release/nexa-agent.exe dist/windows/
+          Copy-Item target/release/nexa-term-host.exe dist/windows/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexadesk-windows-x64
+          path: dist/windows
+          if-no-files-found: error
