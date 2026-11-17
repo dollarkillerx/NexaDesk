@@ -509,3 +509,42 @@ fn format_table_matches_the_design() {
 fn poll_interval_matches_the_design() {
     assert_eq!(POLL_INTERVAL, Duration::from_millis(100));
 }
+
+/// Each session has its own backend on the one system pasteboard, and NSPasteboard is
+/// not thread-safe: two sessions polling while one writes crashed the viewer in
+/// `-[NSPasteboard _updateTypeCacheIfNeeded]` (a collection changed while it was being
+/// enumerated). Every pasteboard call now takes one process-wide lock.
+#[test]
+fn two_backends_on_one_pasteboard_can_be_used_at_once() {
+    let board = PrivateBoard::new();
+    let resolver: PromiseResolver = Arc::new(|_, _| None);
+    let shared = SendBoard(board.0.clone());
+    let threads: Vec<_> = (0..4u64)
+        .map(|n| {
+            let (shared, resolver) = (shared.clone(), resolver.clone());
+            std::thread::spawn(move || {
+                let shared = shared;
+                let mut b = MacClipboardBackend::new(shared.0.clone(), resolver);
+                for i in 0..400u64 {
+                    let generation = generation(n * 1000 + i + 1);
+                    let text = format!("thread {n} copy {i}");
+                    let info = FormatInfo::of(ClipKind::Text, text.as_bytes());
+                    let inline = [(ClipKind::Text, Bytes::from(text.into_bytes()))];
+                    let _ = b.write_promise(generation, &[info], &inline);
+                    let _ = b.poll();
+                    let _ = b.read(ClipKind::Text);
+                    let _ = b.snapshot();
+                }
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap();
+    }
+}
+
+/// A pasteboard handle moved to test threads, as each session's own backend holds one.
+#[derive(Clone)]
+struct SendBoard(Retained<NSPasteboard>);
+// SAFETY: only used through MacClipboardBackend, as the sessions use the general one.
+unsafe impl Send for SendBoard {}

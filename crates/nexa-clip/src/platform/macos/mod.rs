@@ -9,7 +9,7 @@
 //! PNG, the canonical image format.
 
 use std::collections::BTreeSet;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -198,6 +198,17 @@ impl PromiseProvider {
     }
 }
 
+/// NSPasteboard is not thread-safe, and every session has its own backend on the one
+/// system pasteboard: two sessions polling while one wrote crashed the app inside
+/// `-[NSPasteboard _updateTypeCacheIfNeeded]`. Every call on a pasteboard in this
+/// process holds this lock. The promise provider never takes it: AppKit calls it while
+/// a reader (perhaps one of ours) holds it.
+static BOARD: Mutex<()> = Mutex::new(());
+
+fn board_lock() -> MutexGuard<'static, ()> {
+    BOARD.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// What this backend last wrote.
 struct Written {
     generation: Gen,
@@ -215,8 +226,9 @@ pub struct MacClipboardBackend {
     written: Option<Written>,
 }
 
-// SAFETY: every method takes `&mut self`, so the pasteboard handle is used by
-// one thread at a time; NSPasteboard is not confined to the main thread. The
+// SAFETY: every call on the pasteboard holds the process-wide `BOARD` lock, so it is
+// used by one thread at a time across all backends; NSPasteboard is not confined to
+// the main thread. The
 // provider's ivars are Send + Sync. AppKit calls the provider on its own thread
 // while this one may replace the contents, so each call retains the provider and
 // the item it was given.
@@ -225,7 +237,10 @@ unsafe impl Send for MacClipboardBackend {}
 impl MacClipboardBackend {
     /// Uses `board`; the caller decides which pasteboard this is.
     pub fn new(board: Retained<NSPasteboard>, resolver: PromiseResolver) -> Self {
-        let change_count = board.changeCount();
+        let change_count = {
+            let _board = board_lock();
+            board.changeCount()
+        };
         Self {
             board,
             resolver,
@@ -244,18 +259,24 @@ impl MacClipboardBackend {
     /// every [`POLL_INTERVAL`] and feed the result to
     /// [`ClipEvent::LocalChanged`](crate::ClipEvent::LocalChanged).
     pub fn poll(&mut self) -> Result<Option<LocalSnapshot>> {
+        let _board = board_lock();
         let count = self.board.changeCount();
         if count == self.change_count {
             return Ok(None);
         }
         self.change_count = count;
-        Ok(Some(self.snapshot()))
+        Ok(Some(self.snapshot_locked()))
     }
 
     /// Describes the clipboard as it is now, without touching our own promises.
     pub fn snapshot(&self) -> LocalSnapshot {
+        let _board = board_lock();
+        self.snapshot_locked()
+    }
+
+    fn snapshot_locked(&self) -> LocalSnapshot {
         let sensitive = self.has_type(CONCEALED_TYPE);
-        let Some(owner) = self.owner_on_board() else {
+        let Some(owner) = self.owner_locked() else {
             return self.third_party_snapshot(sensitive);
         };
         let formats = self
@@ -291,6 +312,11 @@ impl MacClipboardBackend {
 
     /// The generation in the owner marker, if the clipboard has one.
     pub fn owner_on_board(&self) -> Option<Gen> {
+        let _board = board_lock();
+        self.owner_locked()
+    }
+
+    fn owner_locked(&self) -> Option<Gen> {
         let value = self.board.stringForType(&ns(OWNER_TYPE))?;
         parse_owner(&value.to_string())
     }
@@ -325,7 +351,7 @@ impl MacClipboardBackend {
         let Some(written) = &self.written else {
             return false;
         };
-        self.owner_on_board() == Some(written.generation)
+        self.owner_locked() == Some(written.generation)
             && written.promised.contains(&kind)
             && !written
                 .provider
@@ -359,6 +385,7 @@ impl ClipboardBackend for MacClipboardBackend {
     }
 
     fn read(&mut self, kind: ClipKind) -> Result<Vec<u8>> {
+        let _board = board_lock();
         if self.is_open_promise(kind) {
             return Err(ClipError::Deferred(kind));
         }
@@ -405,6 +432,7 @@ impl ClipboardBackend for MacClipboardBackend {
             Some(provider)
         };
 
+        let _board = board_lock();
         self.board.clearContents();
         let writing: Retained<ProtocolObject<dyn NSPasteboardWriting>> =
             ProtocolObject::from_retained(item);
