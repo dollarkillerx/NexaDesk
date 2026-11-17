@@ -170,18 +170,25 @@ public sealed class WindowService : IWindowService
 
     public void OpenUrl(string url)
     {
-        // Only links this app wrote: never anything that came over the network.
-        if (!url.StartsWith("https://", StringComparison.Ordinal)) return;
+        if (OpenUrlCommand(url, OperatingSystem.IsWindows()) is not { } command) return;
         try
         {
-            using var _ = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("/usr/bin/open", [url])
-            {
-                UseShellExecute = false,
-            });
+            using var _ = System.Diagnostics.Process.Start(command);
         }
         catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException)
         {
         }
+    }
+
+    /// <summary>How to open <paramref name="url"/> in the default browser: <c>open</c> on macOS,
+    /// the shell on Windows (which has no <c>/usr/bin/open</c>, so the link did nothing there).
+    /// Only https links this app wrote, never anything that came over the network.</summary>
+    internal static System.Diagnostics.ProcessStartInfo? OpenUrlCommand(string url, bool windows)
+    {
+        if (!url.StartsWith("https://", StringComparison.Ordinal)) return null;
+        return windows
+            ? new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true }
+            : new System.Diagnostics.ProcessStartInfo("/usr/bin/open", [url]) { UseShellExecute = false };
     }
 
     public void ShowKeyboardSettings(KeyboardSettingsViewModel settings)

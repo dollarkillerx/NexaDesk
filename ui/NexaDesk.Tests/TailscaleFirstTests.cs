@@ -235,4 +235,21 @@ public class TailscaleFirstTests
             }
         }
     }
+
+    [Fact]
+    public void The_download_link_opens_in_the_browser_on_macOS_and_Windows()
+    {
+        var mac = WindowService.OpenUrlCommand(TailscaleViewModel.DownloadUrl, windows: false)!;
+        Assert.Equal("/usr/bin/open", mac.FileName);
+        Assert.Equal([TailscaleViewModel.DownloadUrl], mac.ArgumentList);
+        Assert.False(mac.UseShellExecute);
+
+        // Windows has no /usr/bin/open: the shell opens the default browser.
+        var win = WindowService.OpenUrlCommand(TailscaleViewModel.DownloadUrl, windows: true)!;
+        Assert.Equal(TailscaleViewModel.DownloadUrl, win.FileName);
+        Assert.True(win.UseShellExecute);
+
+        Assert.Null(WindowService.OpenUrlCommand("file:///etc/passwd", windows: true));
+        Assert.Null(WindowService.OpenUrlCommand("http://example.com", windows: false));
+    }
 }
