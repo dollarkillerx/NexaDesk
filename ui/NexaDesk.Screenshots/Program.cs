@@ -1,5 +1,6 @@
 // README screenshots: the real App, views and view-models, headless, with fakes and
-// made-up data. Usage: NexaDesk.Screenshots <output dir>.
+// made-up data. Usage: NexaDesk.Screenshots <output dir> [language: zh-Hans | en | ja].
+// Chinese by default; in English or Japanese the made-up device names are English.
 
 using Avalonia;
 using Avalonia.Controls;
@@ -8,12 +9,16 @@ using Avalonia.Media.Imaging;
 using Avalonia.Styling;
 using Avalonia.Threading;
 using NexaDesk;
+using NexaDesk.Localization;
 using NexaDesk.Proto;
 using NexaDesk.Services;
 using NexaDesk.ViewModels;
 using NexaDesk.Views;
 
 var outDir = args.Length > 0 ? args[0] : "docs/images";
+var language = args.Length > 1 ? args[1] : "zh-Hans";
+L.Init(language, []);
+string Name(string chinese, string english) => language.StartsWith("zh", StringComparison.Ordinal) ? chinese : english;
 Directory.CreateDirectory(outDir);
 const double Scale = 2;
 
@@ -52,19 +57,19 @@ var temp = Directory.CreateTempSubdirectory("nexadesk-shots");
 var store = new RecentStore(Path.Combine(temp.FullName, "recent.json"));
 const string StudioKey = "5c1e9a7f03b2d84e6a1f97c2b05d3e8814a6f0c97d2b3e5a1c8f604d92e7b13a";
 store.Save([
-    new RecentDevice("studio.tail1234.ts.net:47800", "工作室 Mac mini", StudioKey, now.AddHours(-2).ToUnixTimeSeconds()),
-    new RecentDevice("192.168.1.42:47800", "客厅 iMac", "", now.AddDays(-3).ToUnixTimeSeconds()),
+    new RecentDevice("studio.tail1234.ts.net:47800", Name("工作室 Mac mini", "Studio Mac mini"), StudioKey, now.AddHours(-2).ToUnixTimeSeconds()),
+    new RecentDevice("192.168.1.42:47800", Name("客厅 iMac", "Living room iMac"), "", now.AddDays(-3).ToUnixTimeSeconds()),
 ]);
 var settings = new MemorySettings(new AppSettings(SignalServer: "wss://signal.example.com:8443"));
-var vm = new MainViewModel(client, store, link, new Process(), new Perms(), windows, new Addresses(), "我的 MacBook Pro", () => now, settings);
-client.Raise(new ReadyEvent(0, new string('3', 64), [new KnownHost(StudioKey, "工作室 Mac mini", 0)], ""));
+var vm = new MainViewModel(client, store, link, new Process(), new Perms(), windows, new Addresses(), Name("我的 MacBook Pro", "My MacBook Pro"), () => now, settings);
+client.Raise(new ReadyEvent(0, new string('3', 64), [new KnownHost(StudioKey, Name("工作室 Mac mini", "Studio Mac mini"), 0)], ""));
 client.Raise(new TailnetDevicesEvent(0,
     [
         new TailnetDevice("studio", "100.84.17.23:47800", true, "macOS", "studio.tail1234.ts.net"),
         new TailnetDevice("office-mbp", "100.92.5.110:47800", false, "macOS", "office-mbp.tail1234.ts.net"),
     ],
     TailscaleState.Running, "macbook-pro", "macbook-pro.tail1234.ts.net", ["100.71.3.58"]));
-client.Raise(new LanDevicesEvent(0, [new LanDevice("客厅 iMac", "192.168.1.42:47800", "macOS", "8e2f61d07a9c4b35")]));
+client.Raise(new LanDevicesEvent(0, [new LanDevice(Name("客厅 iMac", "Living room iMac"), "192.168.1.42:47800", "macOS", "8e2f61d07a9c4b35")]));
 
 // Taller than the default so both device lists show without scrolling.
 var main = new MainWindow { DataContext = vm, Height = 1010 };
@@ -74,10 +79,10 @@ Pump();
 
 link.Next = null;
 await vm.Host.StartCommand.ExecuteAsync(null);
-link.Raise(new AgentMessage.Status(1, "[::]:47800", "K7QM2XPA", "我的 MacBook Pro", "3f9a1c07d2e84b56", new string('a', 64), null, true,
+link.Raise(new AgentMessage.Status(1, "[::]:47800", "K7QM2XPA", Name("我的 MacBook Pro", "My MacBook Pro"), "3f9a1c07d2e84b56", new string('a', 64), null, true,
     ShortId: "271828182", Signal: SignalState.Online, PasswordSet: true));
 link.Raise(new AgentMessage.Pairings([
-    new PairedDevice("9d4b2e71c0a83f56e1b7d9204c6a58f3b2e0d1c7a94f6e8b03d5c2a17e9b4f60", "a41c7e09b3d25f68", "设计部 MacBook Air",
+    new PairedDevice("9d4b2e71c0a83f56e1b7d9204c6a58f3b2e0d1c7a94f6e8b03d5c2a17e9b4f60", "a41c7e09b3d25f68", Name("设计部 MacBook Air", "Design MacBook Air"),
         new Permissions(true, true, true, true, false), (ulong)now.AddDays(-12).ToUnixTimeSeconds(), (ulong)now.AddDays(-1).ToUnixTimeSeconds(), false),
 ]));
 Pump();
@@ -86,7 +91,7 @@ Application.Current!.RequestedThemeVariant = ThemeVariant.Dark;
 Shot(main, "main-dark");
 Application.Current.RequestedThemeVariant = ThemeVariant.Light;
 
-link.Raise(new AgentMessage.IncomingRequest(5, "设计部 MacBook Air", "a41c7e09b3d25f68",
+link.Raise(new AgentMessage.IncomingRequest(5, Name("设计部 MacBook Air", "Design MacBook Air"), "a41c7e09b3d25f68",
     "9d4b2e71c0a83f56e1b7d9204c6a58f3b2e0d1c7a94f6e8b03d5c2a17e9b4f60", "100.92.5.110:51934", AuthKind.Code,
     new Permissions(true, true, true, true, false), true, false, false, false, 60_000, true));
 Pump();
@@ -97,7 +102,7 @@ Shot(dialog, "consent");
 dialog.Close();
 Pump();
 
-link.Raise(new AgentMessage.SessionStarted(new HostSession(9, "设计部 MacBook Air", "a41c7e09b3d25f68",
+link.Raise(new AgentMessage.SessionStarted(new HostSession(9, Name("设计部 MacBook Air", "Design MacBook Air"), "a41c7e09b3d25f68",
     "9d4b2e71c0a83f56e1b7d9204c6a58f3b2e0d1c7a94f6e8b03d5c2a17e9b4f60", "100.92.5.110:51934",
     new Permissions(true, true, true, true, false))));
 // A second person at the same time: a browser with only the command line.
@@ -118,7 +123,7 @@ if (windows.Banner is { } banner)
 vm.Connect.Address = "studio.tail1234.ts.net";
 vm.Connect.Code = "abcd-2345";
 vm.Connect.ConnectCommand.Execute(null);
-client.Raise(new ConnectedEvent(client.Last!.Tag, StudioKey, "工作室 Mac mini", new Permissions(true, true, true, true, true), 2, false));
+client.Raise(new ConnectedEvent(client.Last!.Tag, StudioKey, Name("工作室 Mac mini", "Studio Mac mini"), new Permissions(true, true, true, true, true), 2, false));
 Pump();
 var session = windows.OpenWindows.OfType<SessionWindow>().Single();
 var svm = (SessionViewModel)session.DataContext!;
