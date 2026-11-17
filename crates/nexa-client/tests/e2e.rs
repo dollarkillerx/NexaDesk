@@ -374,6 +374,50 @@ async fn video_flows_and_the_view_can_attach_at_any_time() {
         .await;
 }
 
+/// The host removed this device's pairing (or never kept one): signing in as a known
+/// device is refused, and this side forgets its stale pairing too, so the app stops
+/// showing the host as paired.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pairing_the_host_no_longer_has_is_forgotten_here() {
+    let h = make_host(perms(true, false, false)).await;
+    let (viewer, session) = connected(&h, 1).await;
+    let key = h.agent.public_key().to_hex();
+    viewer
+        .wait_event(
+            "pinned here",
+            |b| matches!(b, EventBody::Ready(r) if r.hosts.iter().any(|x| x.key == key)),
+        )
+        .await;
+    // SAFETY: handles are registry ids.
+    unsafe { abi::nexa_session_close(session) };
+    until("first session gone", WAIT, || !h.agent.session_active()).await;
+    for record in h.agent.pairings() {
+        assert!(h.agent.revoke_pairing(&record.pubkey).unwrap());
+    }
+
+    // Only what arrives from here on counts: the first Ready had no hosts either.
+    let from = lock(&viewer.events.0).len();
+    let _session = viewer.connect(ConnectRequest {
+        address: h.addr.to_string(),
+        tag: 2,
+        mode: Mode::Office as i32,
+        fps: 0,
+        auth: Some(ConnectAuth::KnownHost(key.clone())),
+        signal_server: String::new(),
+    });
+    viewer
+        .wait_event("refused as not paired", |b| {
+            matches!(b, EventBody::Disconnected(d) if d.reason == DisconnectReason::NotPaired as i32)
+        })
+        .await;
+    until("forgotten here", WAIT, || {
+        lock(&viewer.events.0)[from..].iter().any(|e| {
+            matches!(&e.body, Some(EventBody::Ready(r)) if !r.hosts.iter().any(|x| x.key == key))
+        })
+    })
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_paired_viewer_reconnects_with_its_pin_and_a_wrong_pin_is_named() {
     let h = make_host(perms(true, false, false)).await;
@@ -1214,4 +1258,69 @@ async fn a_dropped_session_of_a_device_that_needs_consent_asks_again() {
         !last.takeover,
         "its own dropped session is not someone else's"
     );
+}
+
+/// What a terminal callback receives, for the test below.
+#[derive(Default)]
+struct TermSeen {
+    data: std::sync::Mutex<Vec<u8>>,
+    exit: std::sync::Mutex<Option<String>>,
+}
+
+unsafe extern "C" fn on_terminal(
+    user: *mut std::ffi::c_void,
+    kind: u32,
+    data: *const u8,
+    len: usize,
+) {
+    // SAFETY: `user` is the test's TermSeen, alive until close; `data` valid for `len`.
+    let (seen, bytes) = unsafe {
+        (
+            &*(user as *const TermSeen),
+            std::slice::from_raw_parts(data, len),
+        )
+    };
+    if kind == abi::NEXA_TERMINAL_DATA {
+        lock(&seen.data).extend_from_slice(bytes);
+    } else {
+        *lock(&seen.exit) = Some(String::from_utf8_lossy(bytes).into_owned());
+    }
+}
+
+/// The ABI the app's terminal control (MySSH's TerminalView) uses, end to end: the
+/// host's real shell answers what is typed, and nothing is delivered after close.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_terminal_opened_through_the_abi_runs_the_host_shell() {
+    let granted = nexa_wire::control::Permissions {
+        terminal: true,
+        ..perms(true, true, false)
+    };
+    let h = make_host(granted).await;
+    let (_viewer, session) = connected(&h, 1).await;
+    let seen = Box::new(TermSeen::default());
+    let user = &*seen as *const TermSeen as *mut std::ffi::c_void;
+    let mut id = 0u64;
+    // SAFETY: a live session; `seen` outlives the terminal (closed below).
+    let rc = unsafe { abi::nexa_terminal_start(session, 80, 24, Some(on_terminal), user, &mut id) };
+    assert_eq!(rc, abi::NEXA_OK);
+    // The answer is computed, so it cannot be the echo of what was typed.
+    let typed = b"echo $((6*7))nexa\r";
+    // SAFETY: a buffer of its own length.
+    assert_eq!(
+        unsafe { abi::nexa_terminal_write(id, typed.as_ptr(), typed.len()) },
+        abi::NEXA_OK
+    );
+    until("the host's shell answered", WAIT, || {
+        String::from_utf8_lossy(&lock(&seen.data)).contains("42nexa")
+    })
+    .await;
+    assert_eq!(abi::nexa_terminal_resize(id, 120, 40), abi::NEXA_OK);
+    assert_eq!(abi::nexa_terminal_close(id), abi::NEXA_OK);
+    // SAFETY: as above.
+    assert_eq!(
+        unsafe { abi::nexa_terminal_write(id, typed.as_ptr(), typed.len()) },
+        abi::NEXA_E_BAD_HANDLE,
+        "closed"
+    );
+    drop(seen);
 }

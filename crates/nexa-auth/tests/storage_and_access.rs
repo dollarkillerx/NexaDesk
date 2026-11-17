@@ -320,6 +320,64 @@ fn an_unattended_pairing_is_allowed_and_other_pairings_ask() {
     }
 }
 
+/// The terminal granted when a device was saved goes with it: a remembered device
+/// that connects without asking gets its command line back, as granted.
+#[test]
+fn a_saved_terminal_grant_is_kept_and_allowed_again() {
+    let (host, viewer) = (DeviceIdentity::generate(), DeviceIdentity::generate());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("p.json");
+    let (_, proof) = pair_in_memory(&viewer, &host);
+    let granted = Perms {
+        view: true,
+        input: true,
+        terminal: true,
+        ..Perms::default()
+    };
+    {
+        let mut store = store_at(&path, &host);
+        store.add(&proof, "laptop", granted, 1).unwrap();
+        store.set_unattended(&viewer.public_key(), true).unwrap();
+    }
+    let store = store_at(&path, &host);
+    let peer = viewer.public_key();
+    assert_eq!(store.pinned(&peer).unwrap().record().perms, granted);
+    let decision = decide(
+        &peer,
+        Evidence::Pinned(store.pinned(&peer).unwrap()),
+        &AccessPolicy::default(),
+    );
+    assert!(matches!(decision, AccessDecision::Allow { perms } if perms.terminal && perms.input));
+}
+
+/// Files written before the terminal was kept still verify and load (it reads as not
+/// granted), and a file with no terminal grant does not mention it, so an older
+/// version, which refuses unknown fields, can still read it.
+#[test]
+fn pairings_from_before_the_terminal_field_still_load() {
+    let (host, viewer) = (DeviceIdentity::generate(), DeviceIdentity::generate());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("p.json");
+    let (_, proof) = pair_in_memory(&viewer, &host);
+    store_at(&path, &host)
+        .add(&proof, "laptop", view_only(), 1)
+        .unwrap();
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(
+        !text.contains("terminal"),
+        "not granted, not written: {text}"
+    );
+    let store = store_at(&path, &host);
+    assert!(
+        !store
+            .pinned(&viewer.public_key())
+            .unwrap()
+            .record()
+            .perms
+            .terminal
+    );
+}
+
 #[test]
 fn a_correct_code_always_needs_consent() {
     let (host, viewer) = (DeviceIdentity::generate(), DeviceIdentity::generate());

@@ -19,6 +19,12 @@ namespace NexaDesk.Native
         ///  `kind` for `nexa_session_attach_view`.
         /// </summary>
         public const uint NEXA_VIEW_NSVIEW = 1;
+        /// <summary>
+        ///  A Windows `HWND` (a child window the picture fills).
+        /// </summary>
+        public const uint NEXA_VIEW_HWND = 2;
+        public const uint NEXA_TERMINAL_DATA = 0;
+        public const uint NEXA_TERMINAL_EXIT = 1;
 
 
 
@@ -133,19 +139,35 @@ namespace NexaDesk.Native
         public static extern int nexa_keymap_save(byte* req, nuint len);
 
         /// <summary>
-        ///  Shows the host's command line in `nsview` (a live NSView, filled as it resizes) and
-        ///  starts a shell there once the page is laid out; `id` names it for
-        ///  [`nexa_terminal_close`]. Needs `Permissions.terminal`, or the page says "denied".
-        ///  Main thread only.
+        ///  Opens the host's command line in a terminal `cols` × `rows` cells: its output goes to
+        ///  `cb` until [`nexa_terminal_close`]; `id` names it for the other `nexa_terminal_*`
+        ///  calls. Needs `Permissions.terminal`, or the shell ends at once with "denied".
         ///
         ///  # Safety
-        ///  `nsview` a live NSView; `id` writable.
+        ///  `s` a session handle; `id` writable; `cb` and `user` valid, and callable from any
+        ///  thread, until `nexa_terminal_close(id)` returns.
         /// </summary>
-        [DllImport(__DllName, EntryPoint = "nexa_terminal_open", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-        public static extern int nexa_terminal_open(NexaSession* s, void* nsview, ulong* id);
+        [DllImport(__DllName, EntryPoint = "nexa_terminal_start", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int nexa_terminal_start(NexaSession* s, uint cols, uint rows, delegate* unmanaged[Cdecl]<void*, uint, byte*, nuint, void> cb, void* user, ulong* id);
 
         /// <summary>
-        ///  Takes the terminal away; its shell ends. Main thread only.
+        ///  Sends keys (or pasted text) to a terminal.
+        ///
+        ///  # Safety
+        ///  `data` valid for `len` bytes.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "nexa_terminal_write", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int nexa_terminal_write(ulong id, byte* data, nuint len);
+
+        /// <summary>
+        ///  Tells the host's shell the terminal's new size in cells.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "nexa_terminal_resize", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int nexa_terminal_resize(ulong id, uint cols, uint rows);
+
+        /// <summary>
+        ///  Closes a terminal; its shell ends. When this returns its callback is not running and
+        ///  will not be called again.
         /// </summary>
         [DllImport(__DllName, EntryPoint = "nexa_terminal_close", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         public static extern int nexa_terminal_close(ulong id);

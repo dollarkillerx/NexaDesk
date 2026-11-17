@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
+using NexaDesk.Localization;
 using NexaDesk.ViewModels;
 
 namespace NexaDesk.Views;
@@ -35,8 +36,39 @@ public partial class SessionWindow : Window
     protected override void OnDataContextChanged(EventArgs e)
     {
         base.OnDataContextChanged(e);
-        if (Vm is { } vm) Video.Session = vm.Session;
+        if (Vm is not { } vm) return;
+        Video.Session = vm.Session;
+        UseMenu(vm);
     }
+
+    /// <summary>
+    /// The way back to a folded toolbar besides its tab: a 会话 menu in the
+    /// menu bar (macOS) and the same key as the host key. While input is captured the
+    /// library sees that key first (the host key: keyboard released, toolbar shown);
+    /// otherwise the menu's key equivalent or this window's key binding does it.
+    /// </summary>
+    void UseMenu(SessionViewModel vm)
+    {
+        var showKey = OperatingSystem.IsWindows()
+            ? new KeyGesture(Key.G, KeyModifiers.Control | KeyModifiers.Alt)
+            : new KeyGesture(Key.G, KeyModifiers.Control | KeyModifiers.Alt | KeyModifiers.Meta);
+        KeyBindings.Clear();
+        KeyBindings.Add(new KeyBinding { Gesture = showKey, Command = vm.ShowToolbarCommand });
+
+        var show = new NativeMenuItem { Header = L.Get("Toolbar.MenuExpand"), Command = vm.ShowToolbarCommand, Gesture = showKey };
+        var hide = new NativeMenuItem { Header = L.Get("Toolbar.MenuCollapse"), Command = vm.CollapseToolbarCommand };
+        var fullScreen = new NativeMenuItem { Header = L.Get("Toolbar.FullScreen") };
+        fullScreen.Click += (_, _) => ToggleFullScreen();
+        var items = new List<NativeMenuItemBase> { show, hide, new NativeMenuItemSeparator(), fullScreen };
+        var session = new NativeMenu();
+        foreach (var item in items) session.Items.Add(item);
+        var bar = new NativeMenu();
+        bar.Items.Add(new NativeMenuItem { Header = L.Get("Toolbar.MenuSession"), Menu = session });
+        NativeMenu.SetMenu(this, bar);
+    }
+
+    public void ToggleFullScreen() =>
+        WindowState = WindowState == WindowState.FullScreen ? WindowState.Normal : WindowState.FullScreen;
 
     bool InVideo(PointerEventArgs e, out Point px)
     {

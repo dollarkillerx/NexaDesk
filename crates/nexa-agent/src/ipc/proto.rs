@@ -39,7 +39,7 @@ impl From<nexa_auth::Perms> for Permissions {
             clipboard: p.clipboard,
             file: p.file,
             audio: p.audio,
-            terminal: false,
+            terminal: p.terminal,
         }
     }
 }

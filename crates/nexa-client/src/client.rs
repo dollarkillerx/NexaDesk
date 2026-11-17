@@ -358,7 +358,6 @@ pub enum SessionCtl {
     Stream(StreamRequest),
     Control(ControlBody),
     /// A terminal the app opened: its stream, on this connection.
-    #[cfg(target_os = "macos")]
     Terminal(crate::terminal::TermLink),
 }
 
@@ -425,7 +424,6 @@ impl Session {
     }
 
     /// Asks the connection for a terminal stream (the page is ready for it).
-    #[cfg(target_os = "macos")]
     pub(crate) fn open_terminal(&self, link: crate::terminal::TermLink) {
         if let Some(ctl) = lock(&self.command).as_ref() {
             let _ = ctl.send(SessionCtl::Terminal(link));
@@ -1057,6 +1055,15 @@ async fn establish(
     let accepted = match accepted {
         Ok(a) => a,
         Err(SessionError::Rejected { reason, message }) => {
+            // The host has no pairing for this device (it never saved one, or it was
+            // removed there): this side's is stale. Forgetting it clears the app's
+            // "paired" mark, so the next connection asks for a code or uses a password.
+            if reason == RejectReason::NotPaired
+                && let Some(host) = pinned
+                && lock(&device.store).revoke(&host).unwrap_or(false)
+            {
+                core.report_ready().await;
+            }
             return Err((reason_of_rejection(reason), message));
         }
         Err(SessionError::Auth(e)) => return Err((DisconnectReason::AuthFailed, e.to_string())),
@@ -1098,6 +1105,7 @@ fn store_pairing(device: &Device, accepted: &ViewerAccepted, name: &str) -> Resu
         clipboard: p.is_some_and(|p| p.clipboard),
         file: p.is_some_and(|p| p.file),
         audio: p.is_some_and(|p| p.audio),
+        terminal: p.is_some_and(|p| p.terminal),
     };
     lock(&device.store)
         .add(proof, name, perms, unix_now())
@@ -1684,7 +1692,6 @@ async fn stream_session(
                 SessionCtl::Control(body) => {
                     let _ = ctl_tx.send(body);
                 }
-                #[cfg(target_os = "macos")]
                 SessionCtl::Terminal(link) => {
                     tokio::spawn(crate::terminal::run(conn.clone(), link));
                 }

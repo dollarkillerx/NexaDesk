@@ -106,5 +106,6 @@
   "Host.ResetIdDone": "设备 ID 已重置：新 ID 注册成功后会显示在这里。",
   "Host.ResetIdFailed": "无法重置设备 ID：{0}",
   "Host.UsingTerminal": "「{0}」正在使用本机命令行",
-  "Host.UsingTerminal.Windows": "「{0}」正在使用本机命令行"
+  "Host.UsingTerminal.Windows": "「{0}」正在使用本机命令行",
+  "Host.NoPairedDevices": "还没有保存的设备。用固定密码登录不会保存设备；要保存，请用一次性码连接，并在允许时勾选“保存这台设备”：之后它就不用再输入代码，也可以再设置为不经询问直接连接。"
 }

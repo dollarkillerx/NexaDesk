@@ -43,6 +43,8 @@ pub const NEXA_E_VIEW: i32 = -8;
 
 /// `kind` for `nexa_session_attach_view`.
 pub const NEXA_VIEW_NSVIEW: u32 = 1;
+/// A Windows `HWND` (a child window the picture fills).
+pub const NEXA_VIEW_HWND: u32 = 2;
 
 /// Opaque client handle.
 #[repr(C)]
@@ -202,7 +204,7 @@ fn parse_config(cfg: &[u8]) -> Result<ClientConfig, Abi> {
 }
 
 /// The app's data directory: the one the agent uses too (crates/nexa-agent/src/os_*.rs).
-fn default_data_dir() -> PathBuf {
+pub(crate) fn default_data_dir() -> PathBuf {
     #[cfg(windows)]
     {
         let appdata = std::env::var_os("APPDATA").unwrap_or_default();
@@ -298,16 +300,20 @@ pub unsafe extern "C" fn nexa_init(
     user: *mut c_void,
     out: *mut *mut NexaClient,
 ) -> i32 {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         let mut defaulted_cfg = Vec::new();
         let defaulted = guarded(|| {
             // SAFETY: per the contract.
             let mut config = parse_config(unsafe { bytes_of(cfg, len)? })?;
             if config.downloads_dir.is_empty() {
+                #[cfg(windows)]
+                let home = std::env::var_os("USERPROFILE").unwrap_or_default();
+                #[cfg(not(windows))]
                 let home = std::env::var_os("HOME").unwrap_or_default();
                 config.downloads_dir = PathBuf::from(home)
-                    .join("Downloads/NexaDesk")
+                    .join("Downloads")
+                    .join("NexaDesk")
                     .to_string_lossy()
                     .into_owned();
             }
@@ -330,7 +336,7 @@ pub unsafe extern "C" fn nexa_init(
             )
         }
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = (cfg, len, cb, user, out);
         remember("this platform is not supported yet".to_owned());
@@ -582,18 +588,36 @@ pub unsafe extern "C" fn nexa_keymap_save(req: *const u8, len: usize) -> i32 {
     })
 }
 
-/// Shows the host's command line in `nsview` (a live NSView, filled as it resizes) and
-/// starts a shell there once the page is laid out; `id` names it for
-/// [`nexa_terminal_close`]. Needs `Permissions.terminal`, or the page says "denied".
-/// Main thread only.
+/// Output of a terminal: `kind` 0 is bytes from the host's shell, 1 its end (a UTF-8
+/// reason; nothing follows). Called on the session's threads; `data` is valid only for
+/// the call.
+#[allow(non_camel_case_types)]
+pub type nexa_terminal_cb =
+    Option<unsafe extern "C" fn(user: *mut c_void, kind: u32, data: *const u8, len: usize)>;
+
+pub const NEXA_TERMINAL_DATA: u32 = 0;
+pub const NEXA_TERMINAL_EXIT: u32 = 1;
+
+/// `user` crosses to the session's threads with the callback, as the caller promises.
+struct UserPtr(*mut c_void);
+// SAFETY: the caller keeps `user` valid and usable from any thread until
+// `nexa_terminal_close` returns (see `nexa_terminal_start`).
+unsafe impl Send for UserPtr {}
+
+/// Opens the host's command line in a terminal `cols` × `rows` cells: its output goes to
+/// `cb` until [`nexa_terminal_close`]; `id` names it for the other `nexa_terminal_*`
+/// calls. Needs `Permissions.terminal`, or the shell ends at once with "denied".
 ///
 /// # Safety
-/// `nsview` a live NSView; `id` writable.
-#[cfg(target_os = "macos")]
+/// `s` a session handle; `id` writable; `cb` and `user` valid, and callable from any
+/// thread, until `nexa_terminal_close(id)` returns.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn nexa_terminal_open(
+pub unsafe extern "C" fn nexa_terminal_start(
     s: *mut NexaSession,
-    nsview: *mut c_void,
+    cols: u32,
+    rows: u32,
+    cb: nexa_terminal_cb,
+    user: *mut c_void,
     id: *mut u64,
 ) -> i32 {
     guarded(|| {
@@ -601,21 +625,62 @@ pub unsafe extern "C" fn nexa_terminal_open(
         if id.is_null() {
             return Err(invalid("null id"));
         }
-        // SAFETY: per the contract.
-        let opened =
-            unsafe { crate::terminal::attach(session, nsview) }.map_err(|e| Abi(NEXA_E_VIEW, e))?;
+        let Some(f) = cb else {
+            return Err(invalid("null callback"));
+        };
+        let user = UserPtr(user);
+        let out = Box::new(move |o: crate::terminal::TermOut<'_>| {
+            let (kind, bytes) = match o {
+                crate::terminal::TermOut::Data(d) => (NEXA_TERMINAL_DATA, d),
+                crate::terminal::TermOut::Exit(why) => (NEXA_TERMINAL_EXIT, why.as_bytes()),
+            };
+            let u = &user;
+            // SAFETY: per the contract, valid until close, which waits for this call.
+            unsafe { f(u.0, kind, bytes.as_ptr(), bytes.len()) };
+        });
+        let (opened, link) = crate::terminal::start(crate::terminal::size(cols, rows), out);
+        session.open_terminal(link);
         // SAFETY: checked non-null; writable per the contract.
         unsafe { *id = opened };
         Ok(())
     })
 }
 
-/// Takes the terminal away; its shell ends. Main thread only.
-#[cfg(target_os = "macos")]
+/// Sends keys (or pasted text) to a terminal.
+///
+/// # Safety
+/// `data` valid for `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nexa_terminal_write(id: u64, data: *const u8, len: usize) -> i32 {
+    guarded(|| {
+        // SAFETY: per the contract.
+        let bytes = unsafe { bytes_of(data, len)? };
+        if crate::terminal::write(id, bytes) {
+            Ok(())
+        } else {
+            Err(Abi(NEXA_E_BAD_HANDLE, "no such terminal".into()))
+        }
+    })
+}
+
+/// Tells the host's shell the terminal's new size in cells.
+#[unsafe(no_mangle)]
+pub extern "C" fn nexa_terminal_resize(id: u64, cols: u32, rows: u32) -> i32 {
+    guarded(|| {
+        if crate::terminal::resize(id, cols, rows) {
+            Ok(())
+        } else {
+            Err(Abi(NEXA_E_BAD_HANDLE, "no such terminal".into()))
+        }
+    })
+}
+
+/// Closes a terminal; its shell ends. When this returns its callback is not running and
+/// will not be called again.
 #[unsafe(no_mangle)]
 pub extern "C" fn nexa_terminal_close(id: u64) -> i32 {
     guarded(|| {
-        crate::terminal::detach(id);
+        crate::terminal::close(id);
         Ok(())
     })
 }

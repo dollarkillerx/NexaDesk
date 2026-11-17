@@ -75,7 +75,17 @@ public sealed partial class SessionViewModel : ObservableObject
     private CaptureState _capture = CaptureState.Inactive;
 
     [ObservableProperty] private string _clipboardText;
-    [ObservableProperty] private bool _isToolbarVisible = true;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsToolbarCollapsed))]
+    private bool _isToolbarVisible = true;
+
+    /// <summary>The toolbar is folded into a small tab (host name and ▾) that unfolds it.</summary>
+    public bool IsToolbarCollapsed => !IsToolbarVisible;
+    /// <summary>The key that releases the keyboard and shows the toolbar, as this platform writes it.</summary>
+    public static string ShowToolbarKeys => OperatingSystem.IsWindows() ? "Ctrl+Alt+G" : "⌃⌥⌘G";
+    /// <summary>The tab's tooltip, and the collapse button's: how the toolbar comes back.</summary>
+    public string ShowToolbarTip => L.Format("Toolbar.ExpandOrMove", ShowToolbarKeys);
+    public string CollapseToolbarTip => L.Format("Toolbar.CollapseTip", ShowToolbarKeys);
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CaptureText))]
@@ -258,8 +268,13 @@ public sealed partial class SessionViewModel : ObservableObject
         UpdateCapture();
     }
 
+    /// <summary>The tab, the menu item or the shortcut: the toolbar unfolds, capture is untouched.</summary>
     [RelayCommand]
-    private void ToggleToolbar() => IsToolbarVisible = !IsToolbarVisible;
+    private void ShowToolbar() => IsToolbarVisible = true;
+
+    /// <summary>Folds the toolbar into its tab.</summary>
+    [RelayCommand]
+    private void CollapseToolbar() => IsToolbarVisible = false;
 
     /// <summary>Whether input is captured right now, as last asked of the library.</summary>
     public bool InputActive => _inputSent == true;

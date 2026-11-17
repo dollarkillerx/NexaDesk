@@ -11,15 +11,17 @@
         WindowDecorations="None" RequestedThemeVariant="Dark"
         Background="{DynamicResource BannerBrush}">
   <StackPanel>
-    <!-- Folded: one small tab for everyone, still saying sessions are running and for how long. -->
-    <Button Name="ExpandBannerButton" Classes="quiet" IsVisible="{Binding IsCollapsed}" Command="{Binding ToggleCollapsedCommand}"
-            ToolTip.Tip="{l:T Banner.Expand}" MinHeight="28" Padding="12,0" BorderBrush="#FF832B" BorderThickness="0,0,0,3">
-      <StackPanel Orientation="Horizontal" Spacing="8">
+    <!-- Folded: one small tab for everyone, still saying sessions are running and for how long.
+         A click unfolds it; dragging moves it (code-behind tells the two apart). -->
+    <Border Name="ExpandBannerButton" IsVisible="{Binding IsCollapsed}" Cursor="Hand"
+            ToolTip.Tip="{l:T Banner.ExpandOrMove}" MinHeight="28" Padding="12,0" Background="Transparent"
+            BorderBrush="#FF832B" BorderThickness="0,0,0,3">
+      <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
         <Ellipse Width="8" Height="8" Fill="#FF832B" VerticalAlignment="Center" />
         <TextBlock Name="FoldedText" Text="{Binding FoldedText}" Foreground="#F4F4F4" FontFamily="{DynamicResource MonoFont}" FontSize="12" VerticalAlignment="Center" />
         <TextBlock Text="▾" Foreground="#C6C6C6" FontSize="12" VerticalAlignment="Center" />
       </StackPanel>
-    </Button>
+    </Border>
     <!-- Unfolded: a row per person, one fold button for all. Orange 40 is the one loud colour. -->
     <Grid ColumnDefinitions="*,Auto" Width="760" IsVisible="{Binding IsExpanded}">
       <ItemsControl Name="SessionRows" ItemsSource="{Binding Sessions}">

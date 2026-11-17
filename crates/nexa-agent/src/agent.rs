@@ -336,6 +336,7 @@ impl Agent {
                 clipboard: c.clipboard && perms.clipboard,
                 file: c.file && perms.file,
                 audio: c.audio && perms.audio,
+                terminal: c.terminal && perms.terminal,
             };
             store.set_perms(key, narrowed).map_err(|e| e.to_string())?;
             store
@@ -350,7 +351,8 @@ impl Agent {
                     || (s.perms.input && !narrowed.input)
                     || (s.perms.clipboard && !narrowed.clipboard)
                     || (s.perms.file && !narrowed.file)
-                    || (s.perms.audio && !narrowed.audio))
+                    || (s.perms.audio && !narrowed.audio)
+                    || (s.perms.terminal && !narrowed.terminal))
         });
         Ok(true)
     }

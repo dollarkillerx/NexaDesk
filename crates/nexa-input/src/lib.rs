@@ -8,6 +8,7 @@ pub mod keytable;
 #[cfg(any(target_os = "macos", windows))]
 pub mod platform;
 pub mod rewriter;
+pub mod scanfilter;
 pub mod user;
 
 pub use hid::{Chord, ChordKey, Hid, ModSet};

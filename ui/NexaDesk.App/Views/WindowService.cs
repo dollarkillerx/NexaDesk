@@ -31,10 +31,12 @@ public sealed class WindowService : IWindowService
     {
         var window = new SessionWindow { DataContext = session };
         var toolbar = new ToolbarWindow { DataContext = session };
+        var handle = new ToolbarHandleWindow { DataContext = session };
         HudWindow? hud = null;
         DiagnosticsWindow? diagnostics = null;
         TerminalWindow? terminal = null;
         toolbar.Follow(window);
+        handle.Follow(window);
         toolbar.TerminalRequested += () =>
         {
             if (terminal != null)
@@ -77,11 +79,17 @@ public sealed class WindowService : IWindowService
             if (e.PropertyName != nameof(SessionViewModel.IsToolbarVisible)) return;
             if (session.IsToolbarVisible && !toolbar.IsVisible)
             {
+                handle.Hide();
                 toolbar.Show(window);
                 toolbar.Place();
             }
             else if (!session.IsToolbarVisible && toolbar.IsVisible)
+            {
                 toolbar.Hide();
+                // Folded, not gone: the tab stays in sight to unfold it.
+                handle.Show(window);
+                handle.Place();
+            }
         };
         session.ActivateRequested += () => window.Activate();
         session.Ended += (_, _, _) =>
@@ -89,6 +97,7 @@ public sealed class WindowService : IWindowService
             diagnostics?.Close();
             terminal?.Close();
             hud?.Close();
+            handle.Close();
             toolbar.Close();
             window.Close();
         };
@@ -97,12 +106,15 @@ public sealed class WindowService : IWindowService
             diagnostics?.Close();
             terminal?.Close();
             hud?.Close();
+            handle.Close();
             toolbar.Close();
         };
         Track(window);
         Track(toolbar);
+        Track(handle);
         window.Show();
         if (session.IsToolbarVisible) toolbar.Show(window);
+        else handle.Show(window);
     }
 
     public void ShowServerTrust(ServerTrustViewModel trust)

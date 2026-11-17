@@ -150,6 +150,10 @@ public sealed partial class HostViewModel : ObservableObject
     bool _stopping;
 
     public ObservableCollection<PairedDeviceViewModel> Paired { get; } = new();
+
+    /// <summary>Hosting with nothing saved: the list explains how a device gets there, since
+    /// signing in with the fixed password never saves one.</summary>
+    public bool NoPairedDevices => IsHosting && Paired.Count == 0;
     public IReadOnlyList<string> AddressSuggestions { get; }
 
     /// <summary>This Mac's Tailscale: how people outside the LAN reach it, with no server of ours.</summary>
@@ -185,7 +189,8 @@ public sealed partial class HostViewModel : ObservableObject
     public IReadOnlyList<BannerViewModel> Banners => _banners;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsStopped), nameof(IsStarting), nameof(IsHosting), nameof(StateText), nameof(RestartNeeded))]
+    [NotifyPropertyChangedFor(nameof(IsStopped), nameof(IsStarting), nameof(IsHosting), nameof(StateText), nameof(RestartNeeded),
+        nameof(NoPairedDevices))]
     [NotifyCanExecuteChangedFor(nameof(StartCommand), nameof(StopCommand), nameof(RotateCodeCommand))]
     private HostState _state = HostState.Stopped;
 
@@ -384,6 +389,7 @@ public sealed partial class HostViewModel : ObservableObject
         Action<bool>? rememberHosting = null)
     {
         _rememberHosting = rememberHosting ?? (_ => { });
+        Paired.CollectionChanged += (_, _) => OnPropertyChanged(nameof(NoPairedDevices));
         Tailscale = tailscale ?? new TailscaleViewModel(windows);
         Tailscale.Changed += () =>
         {

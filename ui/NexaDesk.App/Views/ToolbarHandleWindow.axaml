@@ -1,0 +1,25 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:NexaDesk.ViewModels"
+        xmlns:l="using:NexaDesk.Localization"
+        x:Class="NexaDesk.Views.ToolbarHandleWindow"
+        x:DataType="vm:SessionViewModel"
+        Title="{l:T Toolbar.Title}"
+        SizeToContent="WidthAndHeight" CanResize="False"
+        Topmost="True" ShowInTaskbar="False" ShowActivated="False"
+        WindowDecorations="None" RequestedThemeVariant="Dark"
+        Background="{DynamicResource ToolbarBrush}">
+  <!-- The folded toolbar: still says who this is and whether the link is up. A click unfolds
+       it; dragging moves it (code-behind tells the two apart). -->
+  <Border Name="ExpandToolbarTab" Cursor="Hand" Background="Transparent" MinHeight="28" Padding="12,0"
+          BorderBrush="{DynamicResource CardBorderBrush}" BorderThickness="1"
+          ToolTip.Tip="{Binding ShowToolbarTip}">
+    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+      <Ellipse Width="8" Height="8" VerticalAlignment="Center" Fill="{DynamicResource OkBrush}" IsVisible="{Binding !IsReconnecting}" />
+      <Ellipse Width="8" Height="8" VerticalAlignment="Center" Fill="{DynamicResource WarnBrush}" IsVisible="{Binding IsReconnecting}" />
+      <TextBlock Name="FoldedHostName" Text="{Binding HostName}" FontSize="12" MaxWidth="160" TextTrimming="CharacterEllipsis"
+                 VerticalAlignment="Center" />
+      <TextBlock Text="▾" Foreground="#C6C6C6" FontSize="12" VerticalAlignment="Center" />
+    </StackPanel>
+  </Border>
+</Window>

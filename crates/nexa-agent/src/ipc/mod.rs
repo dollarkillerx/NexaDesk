@@ -351,6 +351,7 @@ fn perms_of(p: Option<proto::Permissions>) -> Perms {
         clipboard: p.clipboard,
         file: p.file,
         audio: p.audio,
+        terminal: p.terminal,
     }
 }
 

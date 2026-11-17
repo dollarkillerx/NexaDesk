@@ -106,5 +106,6 @@
   "Host.ResetIdDone": "Device ID reset: the new one shows here once it is registered.",
   "Host.ResetIdFailed": "Could not reset the device ID: {0}",
   "Host.UsingTerminal": "“{0}” is using this Mac's command line",
-  "Host.UsingTerminal.Windows": "“{0}” is using this PC's command line"
+  "Host.UsingTerminal.Windows": "“{0}” is using this PC's command line",
+  "Host.NoPairedDevices": "No saved devices yet. Signing in with the fixed password never saves a device. To save one, connect with the one-time code and tick \"Remember this device\" when allowing it: it then needs no code, and you can later let it connect without asking."
 }

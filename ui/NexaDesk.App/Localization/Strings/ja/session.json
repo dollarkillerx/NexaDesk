@@ -24,7 +24,6 @@
   "Toolbar.HudTip": "画面上に段階別の遅延、経路、フレームレートを表示します",
   "Toolbar.Diagnostics": "診断",
   "Toolbar.FullScreen": "フルスクリーン",
-  "Toolbar.Hide": "隠す",
   "Toolbar.Disconnect": "切断",
   "Diagnostics.Title": "接続の診断",
   "Diagnostics.Path": "経路",
@@ -70,5 +69,11 @@
   "Session.Resolution.Native": "ネイティブ",
   "Toolbar.Terminal": "ターミナル",
   "Toolbar.TerminalTip": "相手のコンピューターのコマンドライン（シェル）を別ウインドウで開きます。ウインドウを閉じるとシェルも終了します。",
-  "Terminal.Title": "{0} のターミナル"
+  "Terminal.Title": "{0} のターミナル",
+  "Toolbar.MenuSession": "セッション",
+  "Toolbar.Collapse": "たたむ",
+  "Toolbar.ExpandOrMove": "クリックでツールバーを開く（{0}）、ドラッグで移動",
+  "Toolbar.CollapseTip": "ツールバーを小さなタブにたたみます。タブをクリックするか、{0} を押すか、「セッション」メニューから開けます。",
+  "Toolbar.MenuExpand": "ツールバーを開く",
+  "Toolbar.MenuCollapse": "ツールバーをたたむ"
 }

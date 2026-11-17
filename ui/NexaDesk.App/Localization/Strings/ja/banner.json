@@ -3,5 +3,6 @@
   "Banner.Disconnect": "切断",
   "Banner.Collapse": "たたむ",
   "Banner.Expand": "バナーを表示",
-  "Banner.Folded": "{0} 人 · {1}"
+  "Banner.Folded": "{0} 人 · {1}",
+  "Banner.ExpandOrMove": "クリックで接続中の相手を表示、ドラッグで移動"
 }

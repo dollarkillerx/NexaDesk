@@ -59,6 +59,15 @@ pub struct Perms {
     pub clipboard: bool,
     pub file: bool,
     pub audio: bool,
+    /// The host's command line. Missing in files from before it was kept (read as
+    /// false), and written only when granted, so a file without it stays readable by
+    /// an older version (whose `deny_unknown_fields` would refuse the field).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub terminal: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl From<Perms> for Permissions {
@@ -69,7 +78,7 @@ impl From<Perms> for Permissions {
             clipboard: p.clipboard,
             file: p.file,
             audio: p.audio,
-            terminal: false,
+            terminal: p.terminal,
         }
     }
 }

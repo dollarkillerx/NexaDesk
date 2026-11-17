@@ -25,9 +25,9 @@ public interface ISession
     int DetachView();
     int SetInputActive(bool active);
     int Send(SessionCommand command);
-    /// <summary>Shows the host's command line in <paramref name="nsView"/>; <paramref name="id"/> closes it. Main thread.</summary>
-    int OpenTerminal(nint nsView, out ulong id);
-    void CloseTerminal(ulong id);
+    /// <summary>The host's command line, <paramref name="cols"/> × <paramref name="rows"/> cells to start
+    /// with; disposing it ends the shell. Null, with the status, if it could not open.</summary>
+    (NexaDesk.Terminal.ITerminalBackend? Terminal, int Status) StartTerminal(int cols, int rows);
     string LastError { get; }
     void Close();
 }

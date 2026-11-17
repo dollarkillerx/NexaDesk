@@ -24,7 +24,6 @@
   "Toolbar.HudTip": "Show latency by stage, path and frame rate over the screen",
   "Toolbar.Diagnostics": "Diagnostics",
   "Toolbar.FullScreen": "Full screen",
-  "Toolbar.Hide": "Hide",
   "Toolbar.Disconnect": "Disconnect",
   "Diagnostics.Title": "Connection diagnostics",
   "Diagnostics.Path": "Path",
@@ -70,5 +69,11 @@
   "Session.Resolution.Native": "Native",
   "Toolbar.Terminal": "Terminal",
   "Toolbar.TerminalTip": "Opens the host's command line (its shell) in a window. Closing the window ends the shell.",
-  "Terminal.Title": "Terminal on {0}"
+  "Terminal.Title": "Terminal on {0}",
+  "Toolbar.MenuSession": "Session",
+  "Toolbar.Collapse": "Fold",
+  "Toolbar.ExpandOrMove": "Click to unfold the toolbar ({0}); drag to move",
+  "Toolbar.CollapseTip": "Folds the toolbar into a small tab. Click the tab, press {0}, or use the Session menu to unfold it.",
+  "Toolbar.MenuExpand": "Unfold Toolbar",
+  "Toolbar.MenuCollapse": "Fold Toolbar"
 }

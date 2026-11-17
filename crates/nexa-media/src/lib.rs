@@ -13,6 +13,7 @@ use nexa_wire::control::{Chroma, Codec, Mode};
 
 pub mod caps_cache;
 pub mod convert;
+pub mod layout;
 #[cfg(target_os = "macos")]
 pub mod macos;
 #[cfg(windows)]

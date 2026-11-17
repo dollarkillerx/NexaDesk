@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Platform;
@@ -9,9 +10,21 @@ namespace NexaDesk.Views;
 /// The video (§10.2): Avalonia's default native child view, handed to Rust, which
 /// presents into it from its own thread. Sizes are in pixels rounded the same way
 /// layout rounds, at the window's current scaling.
+/// On Windows the view is a STATIC child window: static controls let the mouse through
+/// to the window beneath (HTTRANSPARENT), so the session window keeps its pointer events.
 /// </summary>
-public sealed class VideoHost : NativeControlHost
+public sealed partial class VideoHost : NativeControlHost
 {
+    [LibraryImport("user32.dll", EntryPoint = "CreateWindowExW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
+    private static partial nint CreateWindowEx(uint exStyle, string className, string? windowName, uint style,
+        int x, int y, int width, int height, nint parent, nint menu, nint instance, nint param);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool DestroyWindow(nint hwnd);
+
+    const uint WsChild = 0x40000000, WsVisible = 0x10000000, WsClipSiblings = 0x04000000;
+
     TopLevel? _top;
     bool _attached;
 
@@ -30,8 +43,8 @@ public sealed class VideoHost : NativeControlHost
 
     protected override IPlatformHandle CreateNativeControlCore(IPlatformHandle parent)
     {
-        var handle = base.CreateNativeControlCore(parent);
-        if (Session is { IsClosed: false } session && handle.HandleDescriptor == "NSView")
+        var handle = OperatingSystem.IsWindows() ? CreateWindowsChild(parent) : base.CreateNativeControlCore(parent);
+        if (Session is { IsClosed: false } session && handle.HandleDescriptor is "NSView" or "HWND")
         {
             var (w, h, s) = PixelSize();
             // nexa_session_attach_view must run on the main thread, which this is.
@@ -43,12 +56,25 @@ public sealed class VideoHost : NativeControlHost
         return handle;
     }
 
+    IPlatformHandle CreateWindowsChild(IPlatformHandle parent)
+    {
+        var (w, h, _) = PixelSize();
+        var hwnd = CreateWindowEx(0, "STATIC", null, WsChild | WsVisible | WsClipSiblings,
+            0, 0, Math.Max(1, (int)w), Math.Max(1, (int)h), parent.Handle, 0, 0, 0);
+        return hwnd == 0 ? base.CreateNativeControlCore(parent) : new PlatformHandle(hwnd, "HWND");
+    }
+
     protected override void DestroyNativeControlCore(IPlatformHandle control)
     {
         if (_attached)
         {
             Session?.DetachView();
             _attached = false;
+        }
+        if (OperatingSystem.IsWindows() && control.HandleDescriptor == "HWND")
+        {
+            DestroyWindow(control.Handle);
+            return;
         }
         base.DestroyNativeControlCore(control);
     }
