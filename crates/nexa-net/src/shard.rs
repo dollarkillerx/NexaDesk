@@ -155,6 +155,8 @@ pub enum AssemblerEvent {
 struct Slot {
     h: VideoShardHeader,
     first_rx: Instant,
+    /// When its latest shard arrived: the deadline runs from here.
+    last_rx: Instant,
     orig: Vec<Option<Vec<u8>>>,
     rec: Vec<Option<Vec<u8>>>,
     count: usize,
@@ -224,6 +226,7 @@ impl Assembler {
         let slot = self.slots[i].get_or_insert_with(|| Slot {
             h,
             first_rx: now,
+            last_rx: now,
             orig: vec![None; usize::from(h.k)],
             rec: vec![None; usize::from(h.m)],
             count: 0,
@@ -250,6 +253,7 @@ impl Assembler {
         }
         *cell = Some(payload.to_vec());
         slot.count += 1;
+        slot.last_rx = now;
 
         if slot.count >= k {
             let slot = self.slots[i].take().expect("present");
@@ -338,12 +342,18 @@ impl Assembler {
     }
 
     /// Applies §6.2's loss rules. Call regularly and after every `push`.
+    ///
+    /// The deadline runs from a frame's latest shard, not its first: a frame that is
+    /// still arriving is not lost. A key frame takes longer than the deadline to
+    /// arrive whenever it is paced over several frame intervals or crosses a slow
+    /// link (300 kB at 5 Mbit/s: half a second), and counted from its first shard it
+    /// could then never be received at all.
     pub fn poll(&mut self, now: Instant, out: &mut Vec<AssemblerEvent>) {
         while let Some(next) = self.next {
             let i = Self::idx(next);
             let timed_out = self.slots[i]
                 .as_ref()
-                .is_some_and(|s| s.h.frame_id == next && now >= s.first_rx + self.deadline);
+                .is_some_and(|s| s.h.frame_id == next && now >= s.last_rx + self.deadline);
             let overtaken = self
                 .newest_complete_at
                 .is_some_and(|(id, at)| newer(id, next) && now >= at + self.reorder_grace);
@@ -535,6 +545,41 @@ mod tests {
         a.poll(t0 + Duration::from_millis(11), &mut out);
         assert!(out.is_empty());
         a.poll(t0 + Duration::from_millis(12), &mut out);
+        assert_eq!(out, [AssemblerEvent::Lost { frame_id: 1 }]);
+    }
+
+    /// A key frame whose shards take longer than the deadline to arrive (paced over
+    /// several frame intervals, or behind a slow link) is still arriving, not lost;
+    /// one whose shards stop coming is lost a deadline after the last of them.
+    #[test]
+    fn a_frame_that_is_still_arriving_is_not_lost() {
+        let f = frame(60_000, 3);
+        let pkts = Packetizer::default()
+            .packetize(&f, info(1), 0.0, MAX_DG)
+            .unwrap();
+        let step = Duration::from_millis(1);
+        // 53 shards, one a millisecond: 53 ms against a 12 ms deadline.
+        let (mut a, t0, mut out) = (asm(), Instant::now(), Vec::new());
+        for (i, pk) in pkts.iter().enumerate() {
+            let now = t0 + step * i as u32;
+            feed(&mut a, pk, now, &mut out);
+            a.poll(now, &mut out);
+        }
+        assert!(pkts.len() > 40, "{}", pkts.len());
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(complete(&out[0]).data, f);
+
+        // The same frame with its last shard missing.
+        let (mut a, mut out) = (asm(), Vec::new());
+        let mut last = t0;
+        for (i, pk) in pkts[..pkts.len() - 1].iter().enumerate() {
+            last = t0 + step * i as u32;
+            feed(&mut a, pk, last, &mut out);
+            a.poll(last, &mut out);
+        }
+        a.poll(last + Duration::from_millis(11), &mut out);
+        assert!(out.is_empty(), "{out:?}");
+        a.poll(last + Duration::from_millis(12), &mut out);
         assert_eq!(out, [AssemblerEvent::Lost { frame_id: 1 }]);
     }
 
