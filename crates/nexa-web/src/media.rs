@@ -265,6 +265,9 @@ fn configs(
     )
 }
 
+/// A stream's capture and encode stages.
+type Stages = (Box<dyn Capturer>, Box<dyn Encoder>);
+
 /// The capture and encode stages for one stream setting. To replace running stages, let
 /// go of the old ones first: DXGI desktop duplication allows one per display per
 /// process, so a capture made while the old one is alive fails (`DuplicateOutput`,
@@ -273,7 +276,7 @@ fn stages(
     host: &dyn WebHost,
     capture: CaptureConfig,
     encode: EncoderConfig,
-) -> Result<(Box<dyn Capturer>, Box<dyn Encoder>), String> {
+) -> Result<Stages, String> {
     let capturer = host.capturer(capture).map_err(|e| e.to_string())?;
     let encoder = host.encoder(encode).map_err(|e| e.to_string())?;
     Ok((capturer, encoder))
