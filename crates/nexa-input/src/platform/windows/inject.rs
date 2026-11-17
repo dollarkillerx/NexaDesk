@@ -126,11 +126,14 @@ impl Injector {
         Self::default()
     }
 
-    pub fn key(&mut self, hid: Hid, down: bool, _repeat: bool, _now: Instant) {
+    pub fn key(&mut self, hid: Hid, down: bool, repeat: bool, now: Instant) {
         let Some(code) = scancode_of(hid) else {
             self.dropped_keys += 1;
             return;
         };
+        if down && !repeat {
+            self.restart_timeout_if_idle(now);
+        }
         let mut flags = KEYEVENTF_SCANCODE;
         if code & 0xE000 == 0xE000 {
             flags |= KEYEVENTF_EXTENDEDKEY;
@@ -155,10 +158,13 @@ impl Injector {
         send(&[mouse_input(dx, dy, 0, MOUSEEVENTF_MOVE)]);
     }
 
-    pub fn button(&mut self, button: u32, down: bool, at: Option<(f64, f64)>, _now: Instant) {
+    pub fn button(&mut self, button: u32, down: bool, at: Option<(f64, f64)>, now: Instant) {
         let Some((flags, data)) = button_flags(button, down) else {
             return;
         };
+        if down {
+            self.restart_timeout_if_idle(now);
+        }
         let mut inputs = Vec::with_capacity(2);
         if let Some((x, y)) = at {
             inputs.push(absolute_move(x, y));
@@ -194,6 +200,16 @@ impl Injector {
         send(&inputs);
     }
 
+    /// A new press after a quiet period starts a fresh 3 s window, as on macOS. Without
+    /// it a viewer that never says what it holds (a browser) had every key and button let
+    /// go at the first `poll_timeout`, 100 ms into any pause: a held Ctrl, Shift or drag
+    /// ended before the next key or move.
+    fn restart_timeout_if_idle(&mut self, now: Instant) {
+        if self.held_keys.is_empty() && self.held_buttons.is_empty() {
+            self.last_sync = Some(now);
+        }
+    }
+
     /// Lets go of keys the viewer no longer holds.
     pub fn apply_key_state(&mut self, pressed: &[u32], now: Instant) {
         self.last_sync = Some(now);
@@ -209,13 +225,18 @@ impl Injector {
     }
 
     pub fn poll_timeout(&mut self, now: Instant) {
-        let holding = !self.held_keys.is_empty() || !self.held_buttons.is_empty();
-        let quiet = self
-            .last_sync
-            .is_none_or(|t| now.saturating_duration_since(t) >= SYNC_TIMEOUT);
-        if holding && quiet {
+        if self.timed_out(now) {
             self.release_all(now);
         }
+    }
+
+    /// Whether something is held and the viewer has not confirmed it for `SYNC_TIMEOUT`.
+    fn timed_out(&self, now: Instant) -> bool {
+        let holding = !self.held_keys.is_empty() || !self.held_buttons.is_empty();
+        holding
+            && self
+                .last_sync
+                .is_none_or(|t| now.saturating_duration_since(t) >= SYNC_TIMEOUT)
     }
 
     pub fn release_all(&mut self, now: Instant) {
@@ -225,5 +246,42 @@ impl Injector {
         for k in self.held_keys.clone() {
             self.key(Hid(k), false, false, now);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Only the bookkeeping that decides when held input is let go: nothing is sent, so
+    /// the desktop running the tests gets no keys. `key` and `button` call
+    /// `restart_timeout_if_idle` for each press as below.
+    #[test]
+    fn a_viewer_that_never_says_what_it_holds_keeps_a_held_key_for_the_timeout() {
+        let t0 = Instant::now();
+        let mut injector = Injector::new();
+        // A browser: Ctrl goes down and no key state ever follows.
+        injector.restart_timeout_if_idle(t0);
+        injector.held_keys.insert(0x0007_00E0);
+        assert!(!injector.timed_out(t0 + Duration::from_millis(100)));
+        assert!(!injector.timed_out(t0 + Duration::from_millis(2900)));
+        assert!(injector.timed_out(t0 + SYNC_TIMEOUT));
+
+        // A second key while Ctrl is held does not stretch the window.
+        injector.restart_timeout_if_idle(t0 + Duration::from_secs(2));
+        assert!(injector.timed_out(t0 + SYNC_TIMEOUT));
+
+        // Let go of everything; the next press starts again.
+        injector.held_keys.clear();
+        assert!(!injector.timed_out(t0 + Duration::from_secs(10)));
+        let t1 = t0 + Duration::from_secs(10);
+        injector.restart_timeout_if_idle(t1);
+        injector.held_buttons.insert(0);
+        assert!(!injector.timed_out(t1 + Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn nothing_held_never_times_out() {
+        assert!(!Injector::new().timed_out(Instant::now() + SYNC_TIMEOUT * 10));
     }
 }
