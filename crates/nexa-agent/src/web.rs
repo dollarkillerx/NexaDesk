@@ -89,7 +89,7 @@ impl WebHost for AgentWeb {
 
     fn clipboard(&self) -> Result<Box<dyn WebClipboard>, String> {
         // Everything is written inline, so nothing is ever promised or fetched later.
-        let board = self.platform.clipboard(Arc::new(|_, _| None))?;
+        let board = self.platform.clipboard()?;
         Ok(Box::new(BrowserClipboard {
             board,
             next: 1,

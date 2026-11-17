@@ -7,6 +7,30 @@ namespace NexaDesk.Native;
 /// <summary>Saved connections' passwords in the login Keychain, through nexa_saved_password_*.</summary>
 public sealed unsafe class NativeSavedPasswords : ISavedPasswords
 {
+    readonly object _gate = new();
+    /// <summary>The Keychain calls run off the UI thread, one after another in the order asked,
+    /// so a delete and a save of the same account cannot swap.</summary>
+    Task _tail = Task.CompletedTask;
+
+    Task<T> InTurn<T>(Func<T> call)
+    {
+        lock (_gate)
+        {
+            var next = _tail.ContinueWith(_ => call(), CancellationToken.None,
+                TaskContinuationOptions.None, TaskScheduler.Default);
+            _tail = next;
+            return next;
+        }
+    }
+
+    public Task<string?> SaveAsync(string account, string password) => InTurn(() => Save(account, password));
+    public Task<string?> LoadAsync(string account) => InTurn(() => Load(account));
+    public Task DeleteAsync(string account) => InTurn(() =>
+    {
+        Delete(account);
+        return true;
+    });
+
     public string? Save(string account, string password)
     {
         try

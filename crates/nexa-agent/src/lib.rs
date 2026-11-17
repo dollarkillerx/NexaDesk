@@ -22,11 +22,7 @@ use nexa_clip::ClipNotice;
 use nexa_media::{
     AudioCapture, AudioEncoder, CaptureConfig, Capturer, CursorSource, Encoder, EncoderConfig,
 };
-use nexa_session::{
-    clip::{ClipPlatform, PromiseResolver},
-    handshake::Consent,
-    input::InputSink,
-};
+use nexa_session::{clip::ClipPlatform, handshake::Consent, input::InputSink};
 use nexa_wire::control::Permissions;
 
 pub use agent::{Agent, AgentConfig, AgentError, FileSettings, start};
@@ -76,7 +72,7 @@ pub trait Platform: Send + Sync + 'static {
     /// Called once per session, on the inject thread, only if the session may inject.
     fn input_sink(&self) -> Result<Box<dyn InputSink>, String>;
     /// Called once per session, only if the session may use the clipboard.
-    fn clipboard(&self, resolver: PromiseResolver) -> Result<Box<dyn ClipPlatform>, String>;
+    fn clipboard(&self) -> Result<Box<dyn ClipPlatform>, String>;
     /// Thread setup for the media threads (§1.1).
     fn thread_init(&self) -> Option<fn()> {
         None

@@ -11,7 +11,7 @@ use nexa_session::{
     viewer::AudioSink,
 };
 
-use crate::deps::{AudioOutput, AudioRender, Deps};
+use crate::deps::{AudioOutput, AudioRender};
 
 pub struct AudioPlayback {
     playout: Arc<Mutex<Playout>>,
@@ -49,23 +49,31 @@ impl AudioPlayback {
         })
     }
 
-    /// Mute (`false`) stops the output device; unmute starts it on an empty buffer.
-    pub fn set_enabled(&mut self, deps: &dyn Deps, enabled: bool) -> Result<(), String> {
-        if enabled == self.enabled.load(Relaxed) {
-            return Ok(());
+    /// Unmuting, first half: an empty buffer and what the new output device will pull
+    /// from, or `None` if already playing. Starting the device can take a while (a
+    /// Bluetooth or AirPlay output), so the caller does that without holding this.
+    pub fn prepare_enable(&mut self) -> Option<AudioRender> {
+        if self.enabled.load(Relaxed) {
+            return None;
         }
-        if enabled {
-            self.playout
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .reset();
-            self.output = Some(deps.audio_output(self.render())?);
-            self.enabled.store(true, Relaxed);
-        } else {
-            self.enabled.store(false, Relaxed);
-            self.output = None;
-        }
-        Ok(())
+        self.playout
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .reset();
+        Some(self.render())
+    }
+
+    /// Unmuting, second half: the started device plays from now on.
+    pub fn install(&mut self, output: Box<dyn AudioOutput>) {
+        self.output = Some(output);
+        self.enabled.store(true, Relaxed);
+    }
+
+    /// Mutes. Returns the output device to stop, which the caller drops outside any lock.
+    #[must_use]
+    pub fn disable(&mut self) -> Option<Box<dyn AudioOutput>> {
+        self.enabled.store(false, Relaxed);
+        self.output.take()
     }
 
     pub fn enabled(&self) -> bool {

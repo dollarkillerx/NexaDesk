@@ -18,7 +18,7 @@ use nexa_session::rendezvous::link::Link;
 use nexa_session::{
     SessionError,
     bulk::BulkLimiter,
-    clip::{ClipCallbacks, ClipChannel, ClipSession, PromiseMode},
+    clip::{ClipCallbacks, ClipChannel, ClipSession},
     cursor::{InjectHistory, StreamGeometry},
     framed::{FramedRecv, FramedSend, accept_bi, accept_uni},
     handshake::{ControlChannel, FLUSH_TIMEOUT, HANDSHAKE_TIMEOUT, HostAccepted},
@@ -890,7 +890,7 @@ fn start_clipboard(
     bulk: Arc<BulkLimiter>,
 ) -> Option<ClipSession> {
     let channel = ClipChannel::default();
-    let backend = match env.platform.clipboard(channel.resolver()) {
+    let backend = match env.platform.clipboard() {
         Ok(b) => b,
         Err(e) => {
             env.ui
@@ -902,11 +902,10 @@ fn start_clipboard(
     Some(channel.spawn(
         backend,
         env.device,
-        // The agent has no UI whose main thread a slow promise could freeze.
-        PromiseMode::Lazy,
         (send, recv),
         ClipCallbacks {
             on_gate_release: Box::new(|_| {}),
+            on_gate_progress: Box::new(|_| {}),
             on_notice: Box::new(move |n| ui.event(AgentEvent::ClipboardNotice(n))),
         },
         bulk,

@@ -1,18 +1,20 @@
 //! Drives [`ClipSync`] over the Clipboard stream on the `clipboard` thread (§1, §8).
 //!
-//! Promised formats, §8.6's open note: AppKit calls the promise provider on the owner's
-//! main thread, and a synchronous fetch there would freeze the UI. So there are two
-//! modes, and the UI side (the viewer) never lets a promise reach the pasteboard:
+//! Promised formats, §8.6's open note: AppKit calls a promise provider on the owner's
+//! main thread, and a synchronous fetch there blocks that thread, and the app that is
+//! pasting, until the content has arrived. So no promise ever reaches the pasteboard,
+//! on the viewer or the agent: every non-inline format is fetched first, then
+//! everything is written as ordinary data. The pasteboard entry appears when the data
+//! is here; until then the previous contents stay. The peer's paste gate keeps a paste
+//! waiting while this side is still fetching (`ClipCommand::GateProgress`), so the paste
+//! lands on the new content.
 //!
-//! - [`PromiseMode::Eager`]: fetch every non-inline format first, then write everything
-//!   as ordinary data. The pasteboard entry appears when the data is here; until then
-//!   the previous contents stay. Nothing ever blocks in a provider.
-//! - [`PromiseMode::Lazy`]: write promises and let the provider block in the resolver,
-//!   for the agent, whose main thread has no UI to freeze and where promises keep the
-//!   §8.3 paste gate fast.
+//! (Up to 0.1.3 the agent wrote promises and answered them from the main thread, which
+//! then waited out the whole download of a large image, and crashed when the clipboard
+//! changed meanwhile.)
 
 use std::{
-    collections::{BTreeSet, HashMap, VecDeque},
+    collections::{BTreeSet, VecDeque},
     sync::{
         Arc,
         mpsc::{self, Receiver, RecvTimeoutError, SyncSender},
@@ -36,16 +38,9 @@ use crate::{
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const QUEUE: usize = 256;
 const OUTBOUND_QUEUE: usize = 32;
-/// Longest a provider call may block on the agent. The fetch itself gives up after
-/// 10 s without progress (§8.2); this also covers a large transfer that keeps moving.
-const RESOLVE_LIMIT: Duration = Duration::from_secs(60);
 /// Frames this large are bulk (§4.9) and wait for the session's [`BulkLimiter`];
 /// announcements and acknowledgements below it go straight out.
 const BULK_MIN_FRAME: usize = 4096;
-
-/// Answers a promise on whichever thread AppKit calls it (same shape as
-/// `nexa_clip::platform::macos::PromiseResolver`).
-pub type PromiseResolver = Arc<dyn Fn(Gen, ClipKind) -> Option<Vec<u8>> + Send + Sync>;
 
 /// A pasteboard the driver can poll.
 pub trait ClipPlatform: ClipboardBackend {
@@ -53,26 +48,15 @@ pub trait ClipPlatform: ClipboardBackend {
     fn poll(&mut self) -> nexa_clip::Result<Option<LocalSnapshot>>;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PromiseMode {
-    Lazy,
-    Eager,
-}
-
 enum DriverMsg {
     Received(ClipMessage),
     StreamEnded,
-    Promise {
-        generation: Gen,
-        kind: ClipKind,
-        reply: SyncSender<Option<Vec<u8>>>,
-    },
     PasteQuery(SyncSender<Option<Gen>>),
     Policy(ClipPolicy),
     Stop,
 }
 
-/// Creates the channel first, so a backend can be built around its resolver.
+/// The driver's queue, made before the backend.
 pub struct ClipChannel {
     tx: SyncSender<DriverMsg>,
     rx: Receiver<DriverMsg>,
@@ -86,27 +70,11 @@ impl Default for ClipChannel {
 }
 
 impl ClipChannel {
-    /// Blocks its caller while the content is fetched; see the module notes.
-    pub fn resolver(&self) -> PromiseResolver {
-        let tx = self.tx.clone();
-        Arc::new(move |generation, kind| {
-            let (reply, answer) = mpsc::sync_channel(1);
-            tx.send(DriverMsg::Promise {
-                generation,
-                kind,
-                reply,
-            })
-            .ok()?;
-            answer.recv_timeout(RESOLVE_LIMIT).ok().flatten()
-        })
-    }
-
     /// Starts the driver and the two stream tasks. Must run inside a tokio runtime.
     pub fn spawn(
         self,
         backend: Box<dyn ClipPlatform>,
         device: DeviceId,
-        mode: PromiseMode,
         streams: (FramedSend, FramedRecv),
         callbacks: ClipCallbacks,
         bulk: Arc<BulkLimiter>,
@@ -127,10 +95,8 @@ impl ClipChannel {
             backend,
             sync: ClipSync::new(device, config),
             out: out_tx,
-            mode,
             callbacks,
             prefetch: None,
-            waiters: HashMap::new(),
         };
         let thread = thread::Builder::new()
             .name("clipboard".into())
@@ -148,6 +114,8 @@ impl ClipChannel {
 pub struct ClipCallbacks {
     /// `ClipCommand::GateRelease`, for `InputGate::on_applied`.
     pub on_gate_release: Box<dyn Fn(Gen) + Send>,
+    /// `ClipCommand::GateProgress`, for `InputGate::on_progress`.
+    pub on_gate_progress: Box<dyn Fn(Gen) + Send>,
     pub on_notice: Box<dyn Fn(ClipNotice) + Send>,
 }
 
@@ -165,9 +133,13 @@ pub struct ClipHandle {
 impl ClipHandle {
     /// What a paste must wait for. Polls the pasteboard first, so a copy made moments
     /// ago is seen; `limit` bounds the wait if the clipboard thread is busy.
+    ///
+    /// Never blocks longer than `limit`: it runs on the input thread, where a wait stops
+    /// every key and click. A full queue (the driver busy with a large transfer) answers
+    /// `None`, which lets the paste go as if nothing were pending.
     pub fn paste_requirement(&self, limit: Duration) -> Option<Gen> {
         let (reply, answer) = mpsc::sync_channel(1);
-        self.tx.send(DriverMsg::PasteQuery(reply)).ok()?;
+        self.tx.try_send(DriverMsg::PasteQuery(reply)).ok()?;
         answer.recv_timeout(limit).ok().flatten()
     }
 
@@ -233,8 +205,6 @@ async fn write_loop(
     }
 }
 
-type Waiters = HashMap<(Gen, ClipKind), Vec<SyncSender<Option<Vec<u8>>>>>;
-
 struct Prefetch {
     generation: Gen,
     formats: Vec<FormatInfo>,
@@ -246,10 +216,8 @@ struct Driver {
     backend: Box<dyn ClipPlatform>,
     sync: ClipSync<Instant>,
     out: async_mpsc::Sender<ClipMessage>,
-    mode: PromiseMode,
     callbacks: ClipCallbacks,
     prefetch: Option<Prefetch>,
-    waiters: Waiters,
 }
 
 impl Driver {
@@ -265,21 +233,7 @@ impl Driver {
             match rx.recv_timeout(wake.saturating_duration_since(now)) {
                 Ok(DriverMsg::Stop) | Err(RecvTimeoutError::Disconnected) => break,
                 Ok(DriverMsg::Received(m)) => self.feed(ClipEvent::Received(m)),
-                Ok(DriverMsg::StreamEnded) => {
-                    self.feed(ClipEvent::Disconnected);
-                    self.fail_waiters();
-                }
-                Ok(DriverMsg::Promise {
-                    generation,
-                    kind,
-                    reply,
-                }) => {
-                    self.waiters
-                        .entry((generation, kind))
-                        .or_default()
-                        .push(reply);
-                    self.feed(ClipEvent::FetchRequested { generation, kind });
-                }
+                Ok(DriverMsg::StreamEnded) => self.feed(ClipEvent::Disconnected),
                 Ok(DriverMsg::PasteQuery(reply)) => {
                     self.poll_backend();
                     let _ = reply.try_send(self.sync.paste_requirement());
@@ -297,15 +251,6 @@ impl Driver {
             }
         }
         self.feed(ClipEvent::Disconnected);
-        self.fail_waiters();
-    }
-
-    fn fail_waiters(&mut self) {
-        for (_, waiters) in self.waiters.drain() {
-            for w in waiters {
-                let _ = w.try_send(None);
-            }
-        }
     }
 
     fn poll_backend(&mut self) {
@@ -317,14 +262,6 @@ impl Driver {
     fn feed(&mut self, event: ClipEvent) {
         let commands = self.sync.handle(event, Instant::now());
         self.apply(commands);
-    }
-
-    fn reply_to_waiters(&mut self, generation: Gen, kind: ClipKind, data: Option<&Bytes>) {
-        if let Some(waiters) = self.waiters.remove(&(generation, kind)) {
-            for w in waiters {
-                let _ = w.try_send(data.map(|d| d.to_vec()));
-            }
-        }
     }
 
     fn apply(&mut self, commands: Vec<ClipCommand>) {
@@ -358,18 +295,16 @@ impl Driver {
                     generation,
                     kind,
                     data,
-                } => {
-                    self.reply_to_waiters(generation, kind, Some(&data));
-                    self.on_prefetched(generation, kind, Some(data))
-                }
+                } => self.on_prefetched(generation, kind, Some(data)),
                 ClipCommand::FailDeferred {
                     generation, kind, ..
-                } => {
-                    self.reply_to_waiters(generation, kind, None);
-                    self.on_prefetched(generation, kind, None)
-                }
+                } => self.on_prefetched(generation, kind, None),
                 ClipCommand::GateRelease { generation } => {
                     (self.callbacks.on_gate_release)(generation);
+                    Vec::new()
+                }
+                ClipCommand::GateProgress { generation } => {
+                    (self.callbacks.on_gate_progress)(generation);
                     Vec::new()
                 }
                 ClipCommand::Notify(notice) => {
@@ -392,7 +327,7 @@ impl Driver {
             .map(|f| f.kind)
             .filter(|k| !inline.iter().any(|(kind, _)| kind == k))
             .collect();
-        if self.mode == PromiseMode::Lazy || missing.is_empty() {
+        if missing.is_empty() {
             let result = self.backend.write_promise(generation, &formats, &inline);
             return self
                 .sync
@@ -455,5 +390,29 @@ impl Driver {
             },
             Instant::now(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_paste_query_does_not_wait_on_a_full_queue() {
+        let (tx, _rx) = mpsc::sync_channel(1);
+        tx.try_send(DriverMsg::StreamEnded).unwrap();
+        let handle = ClipHandle { tx };
+        let started = Instant::now();
+        assert_eq!(handle.paste_requirement(Duration::from_millis(30)), None);
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_paste_query_waits_at_most_its_limit() {
+        let (tx, _rx) = mpsc::sync_channel(4);
+        let handle = ClipHandle { tx };
+        let started = Instant::now();
+        assert_eq!(handle.paste_requirement(Duration::from_millis(30)), None);
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 }

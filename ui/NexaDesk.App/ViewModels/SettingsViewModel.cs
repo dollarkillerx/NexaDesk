@@ -46,7 +46,14 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     partial void OnSelectedLanguageChanged(LanguageOption value) => Persist();
 
-    void Persist() => _store.Save(new AppSettings(SavedServer, AnnounceOnLan, SelectedLanguage?.Code ?? "", AllowBrowsers));
+    /// <summary>Saves what this window shows; ResumeHosting, which the host keeps, is left as it is.</summary>
+    void Persist() => _store.Save(_store.Load() with
+    {
+        SignalServer = SavedServer,
+        AnnounceOnLan = AnnounceOnLan,
+        Language = SelectedLanguage?.Code ?? "",
+        AllowBrowsers = AllowBrowsers,
+    });
 
     /// <summary>
     /// Whether web browsers may connect (crates/nexa-web): the agent then also serves a page

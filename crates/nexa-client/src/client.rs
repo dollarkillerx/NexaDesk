@@ -28,7 +28,7 @@ use nexa_net::{
 use nexa_session::{
     SessionError,
     bulk::{BulkLimiter, UplinkScavenger},
-    clip::{ClipCallbacks, ClipChannel, ClipHandle, ClipSession, PromiseMode},
+    clip::{ClipCallbacks, ClipChannel, ClipHandle, ClipSession},
     framed::{FramedSend, accept_bi, open_bi, open_uni},
     handshake::{
         ControlChannel, FLUSH_TIMEOUT, Timeouts, ViewerAccepted, ViewerAuth, ViewerConfig,
@@ -95,6 +95,40 @@ fn lock<T: ?Sized>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// Serializes events onto the callback thread's queue.
+/// What mute and unmute last asked for, and the turn the workers applying it take.
+#[derive(Default)]
+struct AudioSwitch {
+    wanted: AtomicBool,
+    turn: Mutex<()>,
+}
+
+/// Starts or stops the output device without holding `audio` while it does. A session
+/// that ended meanwhile (`audio` taken) just drops the new device.
+fn apply_audio(
+    deps: &dyn Deps,
+    audio: &Mutex<Option<AudioPlayback>>,
+    enabled: bool,
+) -> Result<(), String> {
+    if enabled {
+        let Some(render) = lock(audio).as_mut().and_then(AudioPlayback::prepare_enable) else {
+            return Ok(());
+        };
+        let output = deps.audio_output(render)?;
+        let unused = match lock(audio).as_mut() {
+            Some(a) => {
+                a.install(output);
+                None
+            }
+            None => Some(output),
+        };
+        drop(unused);
+    } else {
+        let stopped = lock(audio).as_mut().and_then(AudioPlayback::disable);
+        drop(stopped);
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct EventTx(Sender<Vec<u8>>);
 
@@ -292,7 +326,8 @@ impl Core {
                 ..Default::default()
             }),
             cursor: Arc::new(Mutex::new(CursorState::default())),
-            audio: Mutex::new(None),
+            audio: Arc::new(Mutex::new(None)),
+            audio_switch: Arc::new(AudioSwitch::default()),
             lock_stats: Arc::new(Mutex::new(LockStats::default())),
             transfers: Mutex::new(None),
         });
@@ -350,7 +385,9 @@ pub struct Session {
     /// The host's cursor over the video (§6.9).
     cursor: Arc<Mutex<CursorState>>,
     /// Only in sessions granted the audio permission.
-    audio: Mutex<Option<AudioPlayback>>,
+    audio: Arc<Mutex<Option<AudioPlayback>>>,
+    /// Mute and unmute, applied in turn off the caller's thread: see `set_audio`.
+    audio_switch: Arc<AudioSwitch>,
     lock_stats: Arc<Mutex<LockStats>>,
     /// Only while connected, and only if the host granted `file`.
     transfers: Mutex<Option<Transfers>>,
@@ -396,29 +433,43 @@ impl Session {
     }
 
     /// Mutes or unmutes system audio, locally first and then at the host.
+    ///
+    /// Returns at once: starting or stopping the output device can take a while (a
+    /// Bluetooth or AirPlay output), and this is called on the UI thread. The work runs
+    /// on a worker, without the lock the stats read; requests apply in turn, the last
+    /// one winning.
     fn set_audio(&self, enabled: bool) -> Result<(), &'static str> {
-        let mut audio = lock(&self.audio);
-        let Some(a) = audio.as_mut() else {
+        if lock(&self.audio).is_none() {
             return Err("the host did not share its audio");
-        };
-        if a.set_enabled(&*self.core.deps, enabled).is_err() {
-            drop(audio);
-            self.core.events.send(
-                self.tag,
-                EventBody::Warning(Warning::new(
-                    WarningCode::AudioOutput,
-                    "this Mac's audio output could not start",
-                    "",
-                )),
-            );
-            return Ok(());
         }
-        drop(audio);
-        if let Some(ctl) = lock(&self.command).as_ref() {
-            let _ = ctl.send(SessionCtl::Control(ControlBody::Audio(AudioControl {
-                enabled,
-            })));
-        }
+        self.audio_switch.wanted.store(enabled, Relaxed);
+        let (switch, audio, core, tag) = (
+            self.audio_switch.clone(),
+            self.audio.clone(),
+            self.core.clone(),
+            self.tag,
+        );
+        let ctl = lock(&self.command).clone();
+        self.core.handle.spawn_blocking(move || {
+            let _turn = lock(&switch.turn);
+            let enabled = switch.wanted.load(Relaxed);
+            if apply_audio(&*core.deps, &audio, enabled).is_err() {
+                core.events.send(
+                    tag,
+                    EventBody::Warning(Warning::new(
+                        WarningCode::AudioOutput,
+                        "this Mac's audio output could not start",
+                        "",
+                    )),
+                );
+                return;
+            }
+            if let Some(ctl) = ctl {
+                let _ = ctl.send(SessionCtl::Control(ControlBody::Audio(AudioControl {
+                    enabled,
+                })));
+            }
+        });
         Ok(())
     }
     pub fn tag(&self) -> u64 {
@@ -438,6 +489,13 @@ impl Session {
     /// Ends the session. The view stops being drawn before this returns.
     pub fn close(&self) {
         self.presenter.detach();
+        // The view's cursor too: the UI closes before it detaches the view, and a detach
+        // after close never reaches here, which kept the view and its tracking area.
+        // The ordinary cursor comes back first, as when the session ends by itself.
+        let display: Option<Box<dyn CursorDisplay>> = lock(&self.cursor).detach();
+        if let Some(mut display) = display {
+            display.reset();
+        }
         self.stop_input();
         let _ = self.close.send(true);
     }
@@ -1500,16 +1558,18 @@ async fn stream_session(
                 let channel = ClipChannel::default();
                 let device_id = nexa_clip::DeviceId(*device.identity.device_id().as_bytes());
                 let release_to = session.input_tx.clone();
+                let progress_to = session.input_tx.clone();
                 let events = core.events.clone();
                 let started = channel.spawn(
                     backend,
                     device_id,
-                    // §8.6: a promise here would block the UI thread on a slow fetch.
-                    PromiseMode::Eager,
                     streams,
                     ClipCallbacks {
                         on_gate_release: Box::new(move |generation| {
                             let _ = release_to.send(InputCmd::GateRelease(generation));
+                        }),
+                        on_gate_progress: Box::new(move |generation| {
+                            let _ = progress_to.send(InputCmd::GateProgress(generation));
                         }),
                         on_notice: Box::new(move |notice| {
                             events.send(tag, EventBody::Clipboard(clipboard_notice(notice)));
@@ -1710,10 +1770,11 @@ async fn stream_session(
     *lock(&session.clip) = None;
     let media = lock(&session.media).take();
     let rx = tokio::task::spawn_blocking(move || {
-        let rx = input_thread.and_then(|thread| thread.join().ok());
+        // The clipboard first: the input thread may be asking it about a paste.
         if let Some(c) = clipboard {
             c.stop();
         }
+        let rx = input_thread.and_then(|thread| thread.join().ok());
         if let Some(m) = media {
             m.stop();
         }

@@ -64,6 +64,42 @@ public class SavedConnectionTests
         Assert.Equal(new ConnectAuth.Password(Password), Assert.Single(client.Requests).Auth);
     }
 
+    /// <summary>The Keychain as it is when it asks the person first (an unlock, or
+    /// "allow access" after an update): nothing comes back until they answer.</summary>
+    sealed class AskingKeychain(MemorySavedPasswords inner) : ISavedPasswords
+    {
+        public TaskCompletionSource Answered { get; } = new();
+        public string? Save(string account, string password) => inner.Save(account, password);
+        public string? Load(string account) => inner.Load(account);
+        public void Delete(string account) => inner.Delete(account);
+
+        public async Task<string?> LoadAsync(string account)
+        {
+            await Answered.Task;
+            return inner.Load(account);
+        }
+    }
+
+    [Fact]
+    public async Task One_click_does_not_wait_on_the_keychain_in_the_window()
+    {
+        var device = new RecentDevice("192.168.1.20", "工作室 Mac mini", Samples.HostKey, 1, HasPassword: true);
+        var inner = new MemorySavedPasswords();
+        inner.Kept[Samples.HostKey] = Password;
+        var keychain = new AskingKeychain(inner);
+        var client = new FakeClient();
+        var vm = new ConnectViewModel(client, new MemoryRecent(device), new RecordingWindows(), () => Samples.T0,
+            () => Server, passwords: keychain);
+
+        var clicked = vm.Recent[0].ConnectCommand.ExecuteAsync(null);
+        Assert.False(clicked.IsCompleted, "the click returns while the Keychain asks");
+        Assert.Empty(client.Requests);
+
+        keychain.Answered.SetResult();
+        await clicked;
+        Assert.Equal(new ConnectAuth.Password(Password), Assert.Single(client.Requests).Auth);
+    }
+
     [Fact]
     public void A_kept_password_comes_before_a_pairing_the_host_may_not_have()
     {

@@ -16,6 +16,10 @@ public sealed class AgentLink(string socketPath, IUiDispatcher ui) : IAgentLink
     static readonly TimeSpan HelloTimeout = TimeSpan.FromSeconds(3);
 
     readonly object _gate = new();
+    /// <summary>One connect at a time: two at once (the attach at startup and the person
+    /// clicking Start) would each install a socket, and the first would be left open with
+    /// nobody reading it while the agent sends it consent prompts.</summary>
+    readonly SemaphoreSlim _connecting = new(1, 1);
     Stream? _socket;
     int _generation;
 
@@ -80,7 +84,29 @@ public sealed class AgentLink(string socketPath, IUiDispatcher ui) : IAgentLink
 
     public async Task<string?> ConnectAsync(CancellationToken ct)
     {
+        try
+        {
+            await _connecting.WaitAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return L.Get("Agent.Timeout");
+        }
+        try
+        {
+            return await ConnectOnceAsync(ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _connecting.Release();
+        }
+    }
+
+    async Task<string?> ConnectOnceAsync(CancellationToken ct)
+    {
         Close();
+        int expected;
+        lock (_gate) expected = _generation;
         Stream? socket = null;
         try
         {
@@ -106,11 +132,20 @@ public sealed class AgentLink(string socketPath, IUiDispatcher ui) : IAgentLink
             int generation;
             lock (_gate)
             {
+                // Closed while this was connecting: the link stays closed.
+                if (_generation != expected)
+                {
+                    socket.Dispose();
+                    return L.Get("Agent.Closed");
+                }
                 _socket = socket;
                 generation = ++_generation;
+                IsConnected = true;
             }
-            IsConnected = true;
-            ui.Post(() => MessageReceived?.Invoke(first));
+            ui.Post(() =>
+            {
+                if (generation == _generation) MessageReceived?.Invoke(first);
+            });
             _ = Task.Run(() => ReadLoop(socket, decoder, generation));
             return null;
         }
@@ -213,9 +248,9 @@ public sealed class AgentLink(string socketPath, IUiDispatcher ui) : IAgentLink
             socket = _socket;
             _socket = null;
             _generation++;
+            IsConnected = false;
         }
         if (socket == null) return;
-        IsConnected = false;
         if (socket is NetworkStream ns)
         {
             try { ns.Socket.Shutdown(SocketShutdown.Both); } catch (Exception e) when (e is SocketException or ObjectDisposedException) { }

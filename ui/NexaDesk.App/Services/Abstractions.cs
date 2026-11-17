@@ -90,7 +90,9 @@ public sealed record RecentDevice(string Address, string Name, string HostKey, l
     public string PasswordAccount => HostKey.Length > 0 ? HostKey : Address;
 }
 
-/// <summary>Saved connections' fixed passwords, in the login Keychain. Nothing else keeps them.</summary>
+/// <summary>Saved connections' fixed passwords, in the login Keychain. Nothing else keeps them.
+/// The UI uses the Async forms: the Keychain may ask the person (an unlock, or "allow access"
+/// after an update) and waits for the answer, which must not freeze the window.</summary>
 public interface ISavedPasswords
 {
     /// <summary>Null when kept, else why not.</summary>
@@ -98,6 +100,14 @@ public interface ISavedPasswords
     /// <summary>The kept password, or null when there is none or it cannot be read.</summary>
     string? Load(string account);
     void Delete(string account);
+
+    Task<string?> SaveAsync(string account, string password) => Task.FromResult(Save(account, password));
+    Task<string?> LoadAsync(string account) => Task.FromResult(Load(account));
+    Task DeleteAsync(string account)
+    {
+        Delete(account);
+        return Task.CompletedTask;
+    }
 }
 
 public sealed class MemorySavedPasswords : ISavedPasswords
@@ -128,9 +138,12 @@ public interface ILocalAddresses
 
 /// <summary>Preferences kept in settings.json. SignalServer is already normalized, or empty.
 /// AnnounceOnLan: whether the host is announced to viewers on the LAN (§4.11).
-/// Language: a supported language code, or empty to follow macOS; applies at the next start.</summary>
+/// Language: a supported language code, or empty to follow macOS; applies at the next start.
+/// ResumeHosting: remote control is turned on at start. On by default (a fresh install, or a
+/// settings.json from before this field); the person stopping it switches it off until they
+/// start it again, and quitting or restarting to update leaves it as it was.</summary>
 public sealed record AppSettings(string SignalServer = "", bool AnnounceOnLan = true, string Language = "",
-    bool AllowBrowsers = false);
+    bool AllowBrowsers = false, bool ResumeHosting = true);
 
 /// <summary>The viewer's picture choices, remembered for the next session.</summary>
 public sealed record ViewerPrefs(string Quality = "auto", string Resolution = "auto");

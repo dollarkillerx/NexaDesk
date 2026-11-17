@@ -141,6 +141,8 @@ public sealed partial class HostViewModel : ObservableObject
     readonly Func<bool> _announceOnLan;
     readonly Func<bool> _allowBrowsers;
     readonly ILocalAddresses _addresses;
+    /// <summary>Keeps whether hosting should come back at the next start (AppSettings.ResumeHosting).</summary>
+    readonly Action<bool> _rememberHosting;
     /// <summary>Everyone connected now, oldest first: one banner each.</summary>
     readonly List<BannerViewModel> _banners = new();
     ConsentViewModel? _consent;
@@ -335,7 +337,7 @@ public sealed partial class HostViewModel : ObservableObject
     async Task RestartHosting()
     {
         if (!IsHosting) return;
-        Stop();
+        StopAgent();
         for (var waited = TimeSpan.Zero; _process.IsRunning && waited < AgentExitGrace; waited += AgentExitPoll)
             await Task.Delay(AgentExitPoll);
         if (_process.IsRunning) _process.Kill();
@@ -378,8 +380,10 @@ public sealed partial class HostViewModel : ObservableObject
 
     public HostViewModel(IAgentLink link, IAgentProcess process, IPermissionProbe permissions, IWindowService windows,
         ILocalAddresses addresses, string deviceName, Func<DateTimeOffset>? now = null, Func<string>? signalServer = null,
-        Func<bool>? announceOnLan = null, TailscaleViewModel? tailscale = null, Func<bool>? allowBrowsers = null)
+        Func<bool>? announceOnLan = null, TailscaleViewModel? tailscale = null, Func<bool>? allowBrowsers = null,
+        Action<bool>? rememberHosting = null)
     {
+        _rememberHosting = rememberHosting ?? (_ => { });
         Tailscale = tailscale ?? new TailscaleViewModel(windows);
         Tailscale.Changed += () =>
         {
@@ -579,6 +583,17 @@ public sealed partial class HostViewModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// At startup, when remote control should be on (Windows login, or AppSettings.ResumeHosting):
+    /// an agent still running is picked up, else a new one is started. Start checks Screen
+    /// Recording first and, without it, starts nothing and shows the usual notice and guide.
+    /// </summary>
+    public async Task AttachOrStartAsync()
+    {
+        await TryAttachExistingAsync();
+        if (StartCommand.CanExecute(null)) await StartCommand.ExecuteAsync(null);
+    }
+
     /// <summary>At startup: picks up an agent that is still running from before.</summary>
     public async Task TryAttachExistingAsync()
     {
@@ -591,11 +606,20 @@ public sealed partial class HostViewModel : ObservableObject
     {
         State = HostState.Hosting;
         Error = null;
+        _rememberHosting(true);
         _link.Send(new UiRequest.ListPairings());
     }
 
+    /// <summary>The person stops remote control (here or in the menu bar): it stays off at the next
+    /// start too. Quitting, an update restart and the agent dying leave the choice as it was.</summary>
     [RelayCommand(CanExecute = nameof(IsHosting))]
     private void Stop()
+    {
+        _rememberHosting(false);
+        StopAgent();
+    }
+
+    void StopAgent()
     {
         _stopping = true;
         _link.Send(new UiRequest.Shutdown());
@@ -875,11 +899,13 @@ public sealed partial class MainViewModel : ObservableObject
         _keymap = keymap;
         _core = core;
         DeviceName = deviceName;
-        Settings = new SettingsViewModel(settings ?? new MemorySettings());
+        settings ??= new MemorySettings();
+        _settings = settings;
+        Settings = new SettingsViewModel(settings);
         Tailscale = new TailscaleViewModel(windows);
         Connect = new ConnectViewModel(core, recent, windows, now, () => Settings.SavedServer, Tailscale, viewerPrefs, passwords);
         Host = new HostViewModel(link, process, permissions, windows, addresses, deviceName, now, () => Settings.SavedServer,
-            () => Settings.AnnounceOnLan, Tailscale, () => Settings.AllowBrowsers);
+            () => Settings.AnnounceOnLan, Tailscale, () => Settings.AllowBrowsers, RememberHosting);
         Settings.ServerChanged += _ =>
         {
             Connect.OnServerChanged();
@@ -901,6 +927,24 @@ public sealed partial class MainViewModel : ObservableObject
     }
 
     public ServerTrustFlow ServerTrust { get; }
+
+    readonly ISettingsStore _settings;
+
+    void RememberHosting(bool on)
+    {
+        var s = _settings.Load();
+        if (s.ResumeHosting != on) _settings.Save(s with { ResumeHosting = on });
+    }
+
+    /// <summary>
+    /// Whether this start turns remote control on, so that someone who restarts NexaDesk from
+    /// afar (an update, or quit and reopen) is not locked out. On by default, a fresh install
+    /// included. Security: the person's own Stop switches it off for every later start until
+    /// they start hosting again; nothing else does. Being on only opens the door as Start
+    /// always has: consent, pairings, the one-time code and the password still apply, and on
+    /// macOS nothing starts without Screen Recording.
+    /// </summary>
+    public bool ResumesHosting => _settings.Load().ResumeHosting;
 
     async Task CheckServerAsync(string server, bool retryConnect)
     {

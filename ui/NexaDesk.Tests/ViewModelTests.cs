@@ -713,6 +713,45 @@ public class AgentLinkTests
     }
 
     [Fact]
+    public async Task Two_connects_at_once_leave_one_link_and_close_the_other()
+    {
+        using var agent = new FakeAgent();
+        var link = new AgentLink(agent.Path, new QueueDispatcher());
+        // The attach at startup, and the person clicking Start while it runs.
+        var attach = link.ConnectAsync(CancellationToken.None);
+        var start = link.ConnectAsync(CancellationToken.None);
+
+        await agent.AcceptAndReadFrame();
+        var first = agent.Client!;
+        agent.Send("0a0c0801 1a084b37514d32585041");
+        Assert.Null(await attach);
+
+        await agent.AcceptAndReadFrame();
+        agent.Send("0a0c0801 1a084b37514d32585041");
+        Assert.Null(await start);
+        Assert.True(link.IsConnected);
+        // The first connection was closed, not left open with nobody reading it.
+        var buf = new byte[16];
+        var read = first.ReceiveAsync(buf);
+        Assert.Same(read, await Task.WhenAny(read, Task.Delay(TimeSpan.FromSeconds(5))));
+        Assert.Equal(0, await read);
+    }
+
+    [Fact]
+    public async Task Closing_while_connecting_leaves_the_link_closed()
+    {
+        using var agent = new FakeAgent();
+        var link = new AgentLink(agent.Path, new QueueDispatcher());
+        var connecting = link.ConnectAsync(CancellationToken.None);
+        await agent.AcceptAndReadFrame();
+        link.Close();
+        agent.Send("0a0c0801 1a084b37514d32585041");
+        Assert.NotNull(await connecting);
+        Assert.False(link.IsConnected);
+        link.Send(new UiRequest.RotateCode()); // ignored: nothing is attached
+    }
+
+    [Fact]
     public async Task No_socket_is_an_error_not_an_exception()
     {
         var link = new AgentLink(SocketPath(), new QueueDispatcher());

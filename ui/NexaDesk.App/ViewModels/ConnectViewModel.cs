@@ -29,7 +29,7 @@ public sealed partial class RecentDeviceViewModel(ConnectViewModel owner, Recent
     public string PairedText => IsPaired ? L.Get("Connect.Paired") : L.Get("Connect.NotPaired");
 
     [RelayCommand]
-    private void Connect() => owner.ConnectRecent(this);
+    private Task Connect() => owner.ConnectRecentAsync(this);
 
     [RelayCommand]
     private void Remove() => owner.RemoveRecent(this);
@@ -63,10 +63,10 @@ public sealed partial class RecentDeviceViewModel(ConnectViewModel owner, Recent
     }
 
     [RelayCommand]
-    private void SaveEdit()
+    private async Task SaveEdit()
     {
         var password = ForgetPassword ? null : EditPassword.Length > 0 ? EditPassword : "";
-        EditError = owner.UpdateRecent(this, EditLabel.Trim(), password, ForgetPassword);
+        EditError = await owner.UpdateRecentAsync(this, EditLabel.Trim(), password, ForgetPassword);
         if (EditError == null)
         {
             EditPassword = "";
@@ -251,14 +251,16 @@ public sealed partial class ConnectViewModel : ObservableObject
         if (IsConnecting && RememberPassword && signIn is ConnectAuth.Password p) _passwordToKeep = p.Value;
     }
 
-    internal void ConnectRecent(RecentDeviceViewModel device)
+    internal async Task ConnectRecentAsync(RecentDeviceViewModel device)
     {
         if (IsConnecting) return;
         // Its kept password signs in at once. It comes first: it is what the person
         // chose to keep, and the host may have no pairing for this device (it keeps
         // none for its fixed password, and the person there can remove one).
-        if (device.HasPassword && _passwords.Load(device.Device.PasswordAccount) is { } kept)
+        if (device.HasPassword && await _passwords.LoadAsync(device.Device.PasswordAccount) is { } kept)
         {
+            // Another attempt may have started while the Keychain answered.
+            if (IsConnecting) return;
             Start(device.Device.Address, new ConnectAuth.Password(kept));
             if (IsConnecting) _usingKept = device.Device;
             return;
@@ -283,7 +285,7 @@ public sealed partial class ConnectViewModel : ObservableObject
     /// <summary>The editor's changes: a name of the person's own (empty: the host's),
     /// a new password to keep (null: none; empty: leave as it is), or the kept one dropped.
     /// Null when done, else why not.</summary>
-    internal string? UpdateRecent(RecentDeviceViewModel device, string label, string? password, bool forget)
+    internal async Task<string?> UpdateRecentAsync(RecentDeviceViewModel device, string label, string? password, bool forget)
     {
         if (password is { Length: > 0 } && Texts.SignInFor(password) is not ConnectAuth.Password)
             return L.Get("Connect.SavedPasswordInvalid");
@@ -292,15 +294,19 @@ public sealed partial class ConnectViewModel : ObservableObject
         var entry = _recent[at] with { Label = label };
         if (forget)
         {
-            _passwords.Delete(entry.PasswordAccount);
+            await _passwords.DeleteAsync(entry.PasswordAccount);
             entry = entry with { HasPassword = false };
         }
         else if (password is { Length: > 0 })
         {
-            if (_passwords.Save(entry.PasswordAccount, password) is { } refused)
+            if (await _passwords.SaveAsync(entry.PasswordAccount, password) is { } refused)
                 return L.Format("Connect.SavedPasswordFailed", refused);
             entry = entry with { HasPassword = true };
         }
+        // The list may have changed while the Keychain answered.
+        at = _recent.FindIndex(r => r.Address == device.Device.Address && r.HostKey == device.HostKey);
+        if (at < 0) return null;
+        entry = _recent[at] with { Label = label, HasPassword = entry.HasPassword };
         _recent[at] = entry;
         _store.Save(_recent);
         RebuildRecent();
@@ -328,7 +334,7 @@ public sealed partial class ConnectViewModel : ObservableObject
 
     internal void RemoveRecent(RecentDeviceViewModel device)
     {
-        if (device.HasPassword) _passwords.Delete(device.Device.PasswordAccount);
+        if (device.HasPassword) _ = _passwords.DeleteAsync(device.Device.PasswordAccount);
         _recent.RemoveAll(r => r.Address == device.Device.Address && r.HostKey == device.HostKey);
         _store.Save(_recent);
         RebuildRecent();
@@ -481,7 +487,7 @@ public sealed partial class ConnectViewModel : ObservableObject
 
     void ForgetKept(RecentDevice device)
     {
-        _passwords.Delete(device.PasswordAccount);
+        _ = _passwords.DeleteAsync(device.PasswordAccount);
         var at = _recent.FindIndex(r => r.Address == device.Address && r.HostKey == device.HostKey);
         if (at >= 0) _recent[at] = _recent[at] with { HasPassword = false };
         _store.Save(_recent);
@@ -496,21 +502,33 @@ public sealed partial class ConnectViewModel : ObservableObject
         _recent.RemoveAll(r => r.Address == address || (c.HostKey.Length > 0 && r.HostKey == c.HostKey));
         var entry = new RecentDevice(address, c.HostName, c.HostKey, _now().ToUnixTimeSeconds(),
             before?.Label ?? "", before?.HasPassword ?? false);
-        if (before is { HasPassword: true } && before.PasswordAccount != entry.PasswordAccount
-            && _passwords.Load(before.PasswordAccount) is { } moved)
-        {
-            // Kept under the address before the host's key was known: file it under the key.
-            _passwords.Save(entry.PasswordAccount, moved);
-            _passwords.Delete(before.PasswordAccount);
-        }
-        if (_passwordToKeep is { } typed)
-        {
-            entry = entry with { HasPassword = _passwords.Save(entry.PasswordAccount, typed) == null };
-            _passwordToKeep = null;
-        }
+        // Kept under the address before the host's key was known: file it under the key.
+        var movedFrom = before is { HasPassword: true } && before.PasswordAccount != entry.PasswordAccount
+            ? before.PasswordAccount
+            : null;
+        var typed = _passwordToKeep;
+        _passwordToKeep = null;
         _usingKept = null;
         _recent.Insert(0, entry);
         if (_recent.Count > 20) _recent.RemoveRange(20, _recent.Count - 20);
+        _store.Save(_recent);
+        RebuildRecent();
+        if (movedFrom != null || typed != null) _ = KeepPasswordAsync(entry, movedFrom, typed);
+    }
+
+    /// <summary>The Keychain half of <see cref="Remember"/>, which may wait on the person.</summary>
+    async Task KeepPasswordAsync(RecentDevice entry, string? movedFrom, string? typed)
+    {
+        if (movedFrom != null && await _passwords.LoadAsync(movedFrom) is { } moved)
+        {
+            await _passwords.SaveAsync(entry.PasswordAccount, moved);
+            await _passwords.DeleteAsync(movedFrom);
+        }
+        if (typed == null) return;
+        var kept = await _passwords.SaveAsync(entry.PasswordAccount, typed) == null;
+        var at = _recent.FindIndex(r => r.Address == entry.Address && r.HostKey == entry.HostKey);
+        if (at < 0 || _recent[at].HasPassword == kept) return;
+        _recent[at] = _recent[at] with { HasPassword = kept };
         _store.Save(_recent);
         RebuildRecent();
     }

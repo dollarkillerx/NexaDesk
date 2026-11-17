@@ -13,10 +13,7 @@ use nexa_media::{
     CaptureConfig, Capturer, CursorSource, Encoder, EncoderConfig,
     windows::{Display, DxgiCapturer, MfEncoder, WinCursorSource, displays},
 };
-use nexa_session::{
-    clip::{ClipPlatform, PromiseResolver},
-    input::InputSink,
-};
+use nexa_session::{clip::ClipPlatform, input::InputSink};
 
 use nexa_agent::{Platform, ScreenInfo};
 
@@ -131,7 +128,7 @@ impl Platform for RealPlatform {
         Ok(Box::new(InjectorSink(Injector::new())))
     }
 
-    fn clipboard(&self, _resolver: PromiseResolver) -> Result<Box<dyn ClipPlatform>, String> {
+    fn clipboard(&self) -> Result<Box<dyn ClipPlatform>, String> {
         Ok(Box::new(Clipboard(WindowsClipboard::new())))
     }
 }

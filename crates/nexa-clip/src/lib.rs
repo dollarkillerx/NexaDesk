@@ -26,7 +26,10 @@ mod types;
 mod wire;
 
 pub use backend::{ClipError, ClipboardBackend, FakeBackend, Result};
-pub use gate::{EventClass, GateStats, HoldEnded, InputGate, PASTE_GATE_TIMEOUT, ReleaseReason};
+pub use gate::{
+    EventClass, GateStats, HoldEnded, InputGate, PASTE_GATE_MAX_HOLD, PASTE_GATE_PROGRESS_GRACE,
+    PASTE_GATE_TIMEOUT, ReleaseReason,
+};
 pub use sync::{
     ClipCommand, ClipConfig, ClipEvent, ClipNotice, ClipPolicy, ClipSync, FetchFailure,
     LocalSnapshot,

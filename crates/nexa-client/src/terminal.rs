@@ -4,16 +4,19 @@
 //!
 //! Keys and sizes come from the page through a script message handler; output goes
 //! back with `evaluateJavaScript`. WebKit is only touched on the main thread; the
-//! stream runs on the session's runtime and posts what arrives to the main queue.
+//! stream runs on the session's runtime and posts what arrives to the main queue,
+//! coalesced (see [`Outbox`]) so a flood of output (`yes`, `cat` of a large file)
+//! cannot bury the main thread.
 
 use std::{
     cell::RefCell,
     collections::HashMap,
     ffi::c_void,
     sync::{
-        Arc, Once,
+        Arc, LazyLock, Mutex, Once,
         atomic::{AtomicU64, Ordering::Relaxed},
     },
+    time::Duration,
 };
 
 use data_encoding::BASE64;
@@ -56,6 +59,39 @@ pub struct TermLink {
 enum TermOut {
     Data(Vec<u8>),
     Exit(String),
+}
+
+/// Output on its way to one terminal's page. Whatever arrives before the main thread
+/// gets to it goes out together: one main-queue task and one script call at a time,
+/// however many chunks the host sends.
+#[derive(Default)]
+struct Outbox {
+    data: Vec<u8>,
+    exit: Option<String>,
+    /// A flush is queued on the main thread.
+    scheduled: bool,
+}
+
+/// Output held for a page at most. Past it the stream is not read until the page has
+/// caught up, so a flood slows the host down instead of filling memory here.
+const MAX_PENDING: usize = 1 << 20;
+
+static OUTBOXES: LazyLock<Mutex<HashMap<u64, Outbox>>> = LazyLock::new(Default::default);
+
+fn outboxes() -> std::sync::MutexGuard<'static, HashMap<u64, Outbox>> {
+    OUTBOXES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Adds `out` to the terminal's outbox. Returns whether a flush has to be queued, and
+/// the bytes now waiting.
+fn queue(boxes: &mut HashMap<u64, Outbox>, id: u64, out: TermOut) -> (bool, usize) {
+    let outbox = boxes.entry(id).or_default();
+    match out {
+        TermOut::Data(d) => outbox.data.extend_from_slice(&d),
+        TermOut::Exit(why) => outbox.exit = Some(why),
+    }
+    let schedule = !std::mem::replace(&mut outbox.scheduled, true);
+    (schedule, outbox.data.len())
 }
 
 const HANDLER: &str = "nexa";
@@ -238,7 +274,7 @@ fn on_message(id: u64, text: &str) {
 
 /// Shows `data` as if the host had sent it (the self-test example's echo).
 pub fn show(id: u64, data: Vec<u8>) {
-    post(id, TermOut::Data(data));
+    let _ = post(id, TermOut::Data(data));
 }
 
 /// Runs `js` in the terminal's page and hands its result, as text, to `done` (main thread).
@@ -264,8 +300,30 @@ pub fn eval(id: u64, js: &str, done: impl Fn(Option<String>) + 'static) {
     });
 }
 
-fn post(id: u64, out: TermOut) {
-    DispatchQueue::main().exec_async(move || deliver(id, out));
+/// Hands `out` to the main thread. Returns the bytes waiting for this terminal's page.
+fn post(id: u64, out: TermOut) -> usize {
+    let (schedule, pending) = queue(&mut outboxes(), id, out);
+    if schedule {
+        DispatchQueue::main().exec_async(move || flush(id));
+    }
+    pending
+}
+
+fn pending(id: u64) -> usize {
+    outboxes().get(&id).map_or(0, |b| b.data.len())
+}
+
+/// On the main thread: everything that arrived since the last flush, output first.
+fn flush(id: u64) {
+    let Some(outbox) = outboxes().remove(&id) else {
+        return;
+    };
+    if !outbox.data.is_empty() {
+        deliver(id, TermOut::Data(outbox.data));
+    }
+    if let Some(why) = outbox.exit {
+        deliver(id, TermOut::Exit(why));
+    }
 }
 
 fn deliver(id: u64, out: TermOut) {
@@ -291,10 +349,14 @@ pub(crate) async fn run(conn: Connection, link: TermLink) {
     let TermLink { id, size, mut cmds } = link;
     let (mut send, mut recv) = match open_bi(&conn, StreamType::Terminal).await {
         Ok(s) => s,
-        Err(e) => return post(id, TermOut::Exit(e.to_string())),
+        Err(e) => {
+            post(id, TermOut::Exit(e.to_string()));
+            return;
+        }
     };
     if let Err(e) = send.send(&TermMsg::from(TermBody::Open(size))).await {
-        return post(id, TermOut::Exit(e.to_string()));
+        post(id, TermOut::Exit(e.to_string()));
+        return;
     }
     loop {
         tokio::select! {
@@ -313,7 +375,14 @@ pub(crate) async fn run(conn: Connection, link: TermLink) {
                 None => break,
             },
             msg = recv.next::<TermMsg>() => match msg {
-                Ok(Some(TermMsg { body: Some(TermBody::Data(d)) })) => post(id, TermOut::Data(d)),
+                Ok(Some(TermMsg { body: Some(TermBody::Data(d)) })) => {
+                    if post(id, TermOut::Data(d)) > MAX_PENDING {
+                        // The page is behind: let it catch up before reading on.
+                        while pending(id) > MAX_PENDING / 2 && !cmds.is_closed() {
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                    }
+                }
                 Ok(Some(TermMsg { body: Some(TermBody::Exit(why)) })) => {
                     post(id, TermOut::Exit(why));
                     break;
@@ -372,6 +441,36 @@ term.focus();
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use super::{Outbox, TermOut, queue};
+
+    #[test]
+    fn output_waiting_for_the_page_goes_out_in_one_flush() {
+        let mut boxes: HashMap<u64, Outbox> = HashMap::new();
+        assert_eq!(
+            queue(&mut boxes, 7, TermOut::Data(b"ab".to_vec())),
+            (true, 2)
+        );
+        for _ in 0..1000 {
+            let (schedule, _) = queue(&mut boxes, 7, TermOut::Data(b"c".to_vec()));
+            assert!(!schedule, "one flush is already queued");
+        }
+        assert_eq!(
+            queue(&mut boxes, 7, TermOut::Exit("bye".into())),
+            (false, 1002)
+        );
+        // Another terminal has its own outbox.
+        assert!(queue(&mut boxes, 8, TermOut::Data(b"x".to_vec())).0);
+
+        let flushed = boxes.remove(&7).unwrap();
+        assert_eq!(flushed.data.len(), 1002);
+        assert!(flushed.data.starts_with(b"abc"));
+        assert_eq!(flushed.exit.as_deref(), Some("bye"));
+        // After a flush the next output queues a new one.
+        assert!(queue(&mut boxes, 7, TermOut::Data(b"d".to_vec())).0);
+    }
+
     #[test]
     fn the_page_carries_xterm_and_its_bridge() {
         let page = super::page();

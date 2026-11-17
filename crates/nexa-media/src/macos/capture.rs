@@ -13,7 +13,7 @@ use dispatch2::{DispatchQueue, DispatchQueueAttr, DispatchQoS, DispatchRetained}
 use nexa_wire::control::Chroma;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2::{AnyThread, DefinedClass, define_class, msg_send};
+use objc2::{AnyThread, DefinedClass, Message, define_class, msg_send};
 use objc2_core_foundation::{CFDictionary, CFNumber, CFRetained, CFString};
 use objc2_core_graphics::{
     CGDisplayCopyDisplayMode, CGDisplayMode, CGMainDisplayID, CGPreflightScreenCaptureAccess,
@@ -83,8 +83,10 @@ define_class!(
     unsafe impl SCStreamOutput for StreamOutput {
         #[unsafe(method(stream:didOutputSampleBuffer:ofType:))]
         unsafe fn on_sample(&self, _stream: &SCStream, sample: &CMSampleBuffer, kind: SCStreamOutputType) {
+            // The stream holds its outputs weakly: keep this one for the call.
+            let this = self.retain();
             if kind == SCStreamOutputType::Screen {
-                on_screen_sample(self.ivars(), sample);
+                on_screen_sample(this.ivars(), sample);
             }
         }
     }
@@ -92,7 +94,8 @@ define_class!(
     unsafe impl SCStreamDelegate for StreamOutput {
         #[unsafe(method(stream:didStopWithError:))]
         unsafe fn on_stop(&self, _stream: &SCStream, _error: &NSError) {
-            let mailbox = self.ivars();
+            let this = self.retain();
+            let mailbox = this.ivars();
             mailbox.lock().stream_stopped = true;
             mailbox.arrived.notify_all();
         }
@@ -178,6 +181,22 @@ pub(super) fn start_stream(stream: &SCStream) -> Result<()> {
         Ok(Some(status)) => Err(MediaError::Os { what: "SCStream start", status }),
         Err(_) => Err(MediaError::Other("timed out starting capture".into())),
     }
+}
+
+/// Stops `stream` for good before its output may be released: stopped, the output
+/// removed, and `queue` (the output's serial sample queue) drained, so no callback is
+/// still running. Stopping alone does not wait for one in flight, and gives up after 2 s.
+pub(super) fn shut_down_stream(
+    stream: &SCStream,
+    output: &ProtocolObject<dyn SCStreamOutput>,
+    kind: SCStreamOutputType,
+    queue: &DispatchQueue,
+) {
+    stop_stream(stream);
+    // SAFETY: `output` was added to `stream` for `kind`; failing just means it is gone.
+    let _ = unsafe { stream.removeStreamOutput_type_error(output, kind) };
+    // Serial: once this empty block has run, every callback queued before it has ended.
+    queue.exec_sync(|| {});
 }
 
 pub(super) fn stop_stream(stream: &SCStream) {
@@ -335,7 +354,11 @@ impl ScreenCapturer {
                 .map_err(|e| apple_error("SCStream addStreamOutput", &e))?;
             stream
         };
-        start_stream(&stream)?;
+        if let Err(e) = start_stream(&stream) {
+            // A start that timed out may still succeed later, with nobody left to stop it.
+            shut_down_stream(&stream, ProtocolObject::from_ref(&*output), SCStreamOutputType::Screen, &queue);
+            return Err(e);
+        }
 
         Ok(Self {
             // Watched displays do not go to sleep: a sleeping one stops the picture.
@@ -423,6 +446,11 @@ impl Capturer for ScreenCapturer {
 
 impl Drop for ScreenCapturer {
     fn drop(&mut self) {
-        stop_stream(&self.stream);
+        shut_down_stream(
+            &self.stream,
+            ProtocolObject::from_ref(&*self._output),
+            SCStreamOutputType::Screen,
+            &self._queue,
+        );
     }
 }

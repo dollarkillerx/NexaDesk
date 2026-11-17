@@ -22,7 +22,7 @@ use nexa_media::{
 };
 use nexa_net::vsock::bind_media_socket;
 use nexa_session::{
-    clip::{ClipPlatform, PromiseResolver},
+    clip::ClipPlatform,
     handshake::{Timeouts, ViewerAccepted, ViewerAuth, ViewerConfig, viewer_handshake},
     input::InputSink,
     proto::{AudioControl, ControlBody, StreamRequest},
@@ -101,8 +101,8 @@ impl Platform for Rig {
     fn input_sink(&self) -> Result<Box<dyn InputSink>, String> {
         self.base.input_sink()
     }
-    fn clipboard(&self, r: PromiseResolver) -> Result<Box<dyn ClipPlatform>, String> {
-        self.base.clipboard(r)
+    fn clipboard(&self) -> Result<Box<dyn ClipPlatform>, String> {
+        self.base.clipboard()
     }
     fn cursor_source(&self) -> Option<Box<dyn CursorSource>> {
         Some(Box::new(Scripted(self.probe.clone())))

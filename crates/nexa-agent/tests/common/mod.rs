@@ -22,7 +22,7 @@ use nexa_media::{
     NativeImage, PresentMode, PresentStat, Presenter, Recovery,
 };
 use nexa_session::{
-    clip::{ClipPlatform, PromiseResolver},
+    clip::ClipPlatform,
     handshake::{Consent, ConsentAnswer, ConsentRequest, Timeouts},
     input::InputSink,
 };
@@ -195,7 +195,6 @@ pub struct FakeClip {
     pub written_at: Arc<Mutex<Option<Instant>>>,
     /// Formats that were still promises when written.
     pub promised_on_write: Arc<Mutex<Vec<ClipKind>>>,
-    pub resolver: Arc<Mutex<Option<PromiseResolver>>>,
 }
 
 impl FakeClip {
@@ -296,9 +295,8 @@ impl Platform for FakePlatform {
         self.state.inject_sinks_created.fetch_add(1, SeqCst);
         Ok(Box::new(FakeSink(self.injected.clone())))
     }
-    fn clipboard(&self, resolver: PromiseResolver) -> Result<Box<dyn ClipPlatform>, String> {
+    fn clipboard(&self) -> Result<Box<dyn ClipPlatform>, String> {
         self.state.clipboards_created.fetch_add(1, SeqCst);
-        *lock(&self.clip.resolver) = Some(resolver);
         Ok(Box::new(self.clip.clone()))
     }
 }

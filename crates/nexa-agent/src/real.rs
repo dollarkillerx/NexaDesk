@@ -15,10 +15,7 @@ use nexa_media::{
     AudioCapture, AudioEncoder, CaptureConfig, Capturer, CursorSource, Encoder, EncoderConfig,
     macos::{OpusEncoder, ScreenCapturer, SystemAudioCapture, SystemCursorSource, VtEncoder},
 };
-use nexa_session::{
-    clip::{ClipPlatform, PromiseResolver},
-    input::InputSink,
-};
+use nexa_session::{clip::ClipPlatform, input::InputSink};
 use objc2_core_graphics::{
     CGDirectDisplayID, CGDisplayBounds, CGDisplayCopyDisplayMode, CGDisplayIsBuiltin,
     CGDisplayMode, CGGetActiveDisplayList, CGMainDisplayID,
@@ -173,7 +170,11 @@ impl Platform for RealPlatform {
         Ok(Box::new(InjectorSink(injector)))
     }
 
-    fn clipboard(&self, resolver: PromiseResolver) -> Result<Box<dyn ClipPlatform>, String> {
+    fn clipboard(&self) -> Result<Box<dyn ClipPlatform>, String> {
+        // Content is fetched before it is written (nexa_session::clip), so no promise is
+        // ever on the pasteboard for AppKit to ask about.
+        let resolver: nexa_clip::platform::macos::PromiseResolver =
+            std::sync::Arc::new(|_, _| None);
         Ok(Box::new(GeneralClipboard(MacClipboardBackend::general(
             resolver,
         ))))

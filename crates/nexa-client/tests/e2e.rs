@@ -764,9 +764,11 @@ async fn a_host_image_is_fetched_before_the_viewer_pasteboard_is_written() {
     unsafe { abi::nexa_session_close(session) };
 }
 
-/// The host stays lazy, so that a paste gate is not held up by a large transfer.
+/// The host fetches a viewer's image before writing it, too: a promise there is answered
+/// on the agent's main thread, which would wait out the whole download (and 0.1.3 crashed
+/// when the clipboard changed meanwhile). The viewer's paste gate waits for the download.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_viewer_image_is_promised_on_the_host_and_fetched_on_demand() {
+async fn a_viewer_image_is_fetched_before_the_host_pasteboard_is_written() {
     let h = make_host(perms(true, false, true)).await;
     let (viewer, session) = connected(&h, 1).await;
     until("host clipboard up", WAIT, || {
@@ -775,20 +777,15 @@ async fn a_viewer_image_is_promised_on_the_host_and_fetched_on_demand() {
     .await;
     let image = big_image();
     viewer.probe.clip.user_copy(&[(ClipKind::Png, &image)]);
-    until("host promise", WAIT, || {
-        lock(&h.platform.clip.backend).owner().is_some()
+    until("image on the host pasteboard", WAIT, || {
+        h.platform.clip.content(ClipKind::Png).as_deref() == Some(&image[..])
     })
     .await;
     assert_eq!(
         *lock(&h.platform.clip.promised_on_write),
-        vec![ClipKind::Png]
+        Vec::<ClipKind>::new(),
+        "a promise on the host would block the agent's main thread on a slow fetch"
     );
-    let generation = lock(&h.platform.clip.backend).owner().unwrap();
-    let resolver = lock(&h.platform.clip.resolver).clone().unwrap();
-    let fetched = tokio::task::spawn_blocking(move || resolver(generation, ClipKind::Png))
-        .await
-        .unwrap();
-    assert_eq!(fetched, Some(image));
     // SAFETY: handles are registry ids.
     unsafe { abi::nexa_session_close(session) };
 }

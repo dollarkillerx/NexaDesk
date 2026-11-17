@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use dispatch2::{DispatchQueue, DispatchQueueAttr, DispatchQoS, DispatchRetained};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2::{AnyThread, DefinedClass, define_class, msg_send};
+use objc2::{AnyThread, DefinedClass, Message, define_class, msg_send};
 use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::CGMainDisplayID;
 use objc2_core_media::{CMBlockBuffer, CMFormatDescription, CMSampleBuffer, CMTime};
@@ -24,7 +24,7 @@ use objc2_screen_capture_kit::{
     SCContentFilter, SCDisplay, SCStream, SCStreamConfiguration, SCStreamDelegate, SCStreamOutput, SCStreamOutputType,
 };
 
-use super::capture::{apple_error, shareable_content, start_stream, stop_stream};
+use super::capture::{apple_error, shareable_content, shut_down_stream, start_stream};
 use crate::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioCapture, AudioChunk, MediaError, Result};
 
 /// About 320 ms of 10–20 ms buffers; older audio is dropped, never queued without bound.
@@ -96,8 +96,10 @@ define_class!(
     unsafe impl SCStreamOutput for AudioOutput {
         #[unsafe(method(stream:didOutputSampleBuffer:ofType:))]
         unsafe fn on_sample(&self, _stream: &SCStream, sample: &CMSampleBuffer, kind: SCStreamOutputType) {
+            // The stream holds its outputs weakly: keep this one for the call.
+            let this = self.retain();
             if kind == SCStreamOutputType::Audio {
-                on_audio(self.ivars(), sample);
+                on_audio(this.ivars(), sample);
             }
         }
     }
@@ -105,7 +107,8 @@ define_class!(
     unsafe impl SCStreamDelegate for AudioOutput {
         #[unsafe(method(stream:didStopWithError:))]
         unsafe fn on_stop(&self, _stream: &SCStream, _error: &NSError) {
-            self.ivars().stopped.store(true, Relaxed);
+            let this = self.retain();
+            this.ivars().stopped.store(true, Relaxed);
         }
     }
 );
@@ -270,7 +273,11 @@ impl SystemAudioCapture {
                 .map_err(|e| apple_error("SCStream addStreamOutput (audio)", &e))?;
             stream
         };
-        start_stream(&stream)?;
+        if let Err(e) = start_stream(&stream) {
+            // A start that timed out may still succeed later, with nobody left to stop it.
+            shut_down_stream(&stream, ProtocolObject::from_ref(&*output), SCStreamOutputType::Audio, &queue);
+            return Err(e);
+        }
         Ok(Self { stream, _output: output, _queue: queue, shared, rx })
     }
 
@@ -300,6 +307,11 @@ impl AudioCapture for SystemAudioCapture {
 
 impl Drop for SystemAudioCapture {
     fn drop(&mut self) {
-        stop_stream(&self.stream);
+        shut_down_stream(
+            &self.stream,
+            ProtocolObject::from_ref(&*self._output),
+            SCStreamOutputType::Audio,
+            &self._queue,
+        );
     }
 }

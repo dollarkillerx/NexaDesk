@@ -61,6 +61,8 @@ pub enum InputCmd {
     Wheel(i32, i32),
     Text(String),
     GateRelease(Gen),
+    /// The host is still downloading this clipboard generation (`InputGate::on_progress`).
+    GateProgress(Gen),
     Stop,
 }
 
@@ -511,6 +513,7 @@ impl InputState {
                 self.gate.on_applied(generation, now, &mut released);
                 self.flush(&mut released);
             }
+            InputCmd::GateProgress(generation) => self.gate.on_progress(generation, now),
             // Input arriving while inactive is ignored.
             InputCmd::Key(_)
             | InputCmd::Move(..)

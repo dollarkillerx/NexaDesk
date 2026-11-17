@@ -31,11 +31,7 @@ use nexa_media::{
         has_screen_capture_permission, probe_caps,
     },
 };
-use nexa_session::{
-    clip::{ClipPlatform, PromiseResolver},
-    handshake::Timeouts,
-    input::InputSink,
-};
+use nexa_session::{clip::ClipPlatform, handshake::Timeouts, input::InputSink};
 use nexa_wire::control::{Caps, Codec, Mode, Os};
 use objc2_core_graphics::{CGDisplayCopyDisplayMode, CGDisplayMode, CGMainDisplayID};
 use prost::Message;
@@ -74,7 +70,7 @@ impl Platform for RealScreen {
     fn input_sink(&self) -> Result<Box<dyn InputSink>, String> {
         panic!("a view-only run must never create an injector");
     }
-    fn clipboard(&self, _: PromiseResolver) -> Result<Box<dyn ClipPlatform>, String> {
+    fn clipboard(&self) -> Result<Box<dyn ClipPlatform>, String> {
         panic!("a view-only run must never open the pasteboard");
     }
 }

@@ -38,11 +38,7 @@ use nexa_media::{
     AudioCapture, AudioChunk, AudioDecoder, AudioEncoder, CaptureConfig, Capturer, CursorImage,
     CursorSample, CursorSource, Decoder, Encoder, EncoderConfig, PresentMode, Presenter,
 };
-use nexa_session::{
-    clip::{ClipPlatform, PromiseResolver},
-    handshake::Timeouts,
-    input::InputSink,
-};
+use nexa_session::{clip::ClipPlatform, handshake::Timeouts, input::InputSink};
 use nexa_wire::control::{Caps, Codec, Mode, Os, Permissions};
 use prost::Message;
 
@@ -157,8 +153,8 @@ impl Platform for Features {
     fn input_sink(&self) -> Result<Box<dyn InputSink>, String> {
         Ok(Box::new(RecordingSink(self.probe.clone())))
     }
-    fn clipboard(&self, r: PromiseResolver) -> Result<Box<dyn ClipPlatform>, String> {
-        self.base.clipboard(r)
+    fn clipboard(&self) -> Result<Box<dyn ClipPlatform>, String> {
+        self.base.clipboard()
     }
     fn cursor_source(&self) -> Option<Box<dyn CursorSource>> {
         self.probe.cursor_sources.fetch_add(1, SeqCst);
@@ -250,6 +246,8 @@ enum Shown {
     Hidden,
     Default,
     Warp(f64, f64),
+    /// The display was dropped: the view and its tracking area are let go.
+    Released,
 }
 
 #[derive(Default)]
@@ -265,6 +263,8 @@ struct ViewerProbe {
     outputs_running: Arc<AtomicU32>,
     /// Samples rendered with sound in them.
     heard: Arc<AtomicU64>,
+    /// How long starting the output device takes (a Bluetooth or AirPlay output).
+    output_start_ms: AtomicU64,
 }
 
 struct FakeKeys;
@@ -289,6 +289,12 @@ impl CursorDisplay for FakeCursorDisplay {
     }
     fn warp(&mut self, x: f64, y: f64) {
         lock(&self.0).push(Shown::Warp(x, y));
+    }
+}
+
+impl Drop for FakeCursorDisplay {
+    fn drop(&mut self) {
+        lock(&self.0).push(Shown::Released);
     }
 }
 
@@ -380,6 +386,9 @@ impl Deps for FeatureDeps {
         Ok(Box::new(FakeAudioDecoder))
     }
     fn audio_output(&self, mut render: AudioRender) -> Result<Box<dyn AudioOutput>, String> {
+        thread::sleep(Duration::from_millis(
+            self.probe.output_start_ms.load(SeqCst),
+        ));
         self.probe.outputs_started.fetch_add(1, SeqCst);
         self.probe.outputs_running.fetch_add(1, SeqCst);
         let stop = Arc::new(AtomicBool::new(false));
@@ -632,7 +641,12 @@ async fn the_host_cursor_becomes_the_local_one_and_leaves_the_video() {
         v.cursor_calls().last() == Some(&Shown::Hidden)
     })
     .await;
+    // The UI closes the session before the view goes; the view is let go right away.
     v.close();
+    until("cursor display released", WAIT, || {
+        v.cursor_calls().contains(&Shown::Released)
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -855,9 +869,14 @@ async fn game_mode_locks_the_pointer_sends_totals_and_every_exit_releases_it() {
         v.probe.locks_held.load(SeqCst) == 0
     })
     .await;
-    until("default cursor after the session", WAIT, || {
-        v.cursor_calls().last() == Some(&Shown::Default)
-    })
+    until(
+        "default cursor after the session, then let go",
+        WAIT,
+        || {
+            v.cursor_calls()
+                .ends_with(&[Shown::Default, Shown::Released])
+        },
+    )
     .await;
     assert!(v.probe.locks_taken.load(SeqCst) >= 4);
 }
@@ -956,6 +975,56 @@ async fn audio_plays_with_the_permission_and_mute_stops_it_at_the_host() {
         v.probe.outputs_running.load(SeqCst) == 0
     })
     .await;
+}
+
+/// Mute and unmute come from the UI thread: a slow output device (Bluetooth, AirPlay)
+/// must not hold it, and quick toggles end in the state last asked for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unmuting_a_slow_output_does_not_wait_and_the_last_toggle_wins() {
+    let h = host(Permissions {
+        audio: true,
+        ..perms(true, false, false)
+    })
+    .await;
+    let v = Viewer::connect(&h, Mode::Balanced).await;
+    v.wait_event("connected", |b| matches!(b, EventBody::Connected(_)))
+        .await;
+    until("playing", WAIT, || {
+        v.probe.outputs_running.load(SeqCst) == 1
+    })
+    .await;
+    v.command(Command::Audio(SetAudio { enabled: false }));
+    until("muted", WAIT, || v.probe.outputs_running.load(SeqCst) == 0).await;
+
+    v.probe.output_start_ms.store(1500, SeqCst);
+    let asked = Instant::now();
+    v.command(Command::Audio(SetAudio { enabled: true }));
+    assert!(
+        asked.elapsed() < Duration::from_millis(500),
+        "{:?}",
+        asked.elapsed()
+    );
+    until("unmuted on the slow output", WAIT, || {
+        v.probe.outputs_started.load(SeqCst) == 2 && v.probe.outputs_running.load(SeqCst) == 1
+    })
+    .await;
+
+    let asked = Instant::now();
+    v.command(Command::Audio(SetAudio { enabled: false }));
+    v.command(Command::Audio(SetAudio { enabled: true }));
+    v.command(Command::Audio(SetAudio { enabled: false }));
+    assert!(
+        asked.elapsed() < Duration::from_millis(500),
+        "{:?}",
+        asked.elapsed()
+    );
+    until("muted, as last asked", WAIT, || {
+        v.probe.outputs_running.load(SeqCst) == 0 && !h.probe.audio_running.load(SeqCst)
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(2_000)).await;
+    assert_eq!(v.probe.outputs_running.load(SeqCst), 0, "stays muted");
+    v.close();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

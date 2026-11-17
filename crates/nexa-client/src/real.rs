@@ -187,8 +187,8 @@ impl Deps for RealDeps {
     }
 
     fn clipboard(&self) -> Result<Box<dyn ClipPlatform>, String> {
-        // The viewer prefetches (§8.6), so no promise ever reaches this resolver.
-        let resolver: nexa_session::clip::PromiseResolver = Arc::new(|_, _| None);
+        // Content is fetched before it is written (§8.6), so no promise ever reaches this.
+        let resolver: nexa_clip::platform::macos::PromiseResolver = Arc::new(|_, _| None);
         Ok(Box::new(GeneralClipboard(MacClipboardBackend::general(
             resolver,
         ))))
