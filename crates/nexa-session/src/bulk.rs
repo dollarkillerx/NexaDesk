@@ -25,8 +25,10 @@ use nexa_net::rate::RateController;
 
 /// Never less than this, whatever the allocation says.
 pub const BULK_FLOOR_BPS: u64 = 1_000_000;
-/// The viewer's uplink scavenger never goes above this (the old fixed cap).
-pub const UPLINK_CEILING_BPS: u64 = 100_000_000;
+/// The viewer's uplink scavenger never goes above this. It was 100 Mbit/s, which made
+/// a large picture copied on the viewer take seconds on a gigabit LAN while a paste of it
+/// held the keys; the delay rule, not this, is what keeps input moving.
+pub const UPLINK_CEILING_BPS: u64 = 400_000_000;
 /// How much may go out at once after an idle spell.
 const BURST: Duration = Duration::from_millis(20);
 const MAX_SLEEP: Duration = Duration::from_millis(50);
@@ -89,12 +91,14 @@ impl Default for DelayScavenger {
 }
 
 impl DelayScavenger {
-    pub const START_BPS: u64 = 4_000_000;
+    pub const START_BPS: u64 = 8_000_000;
     /// Queueing delay the scavenger tolerates before it backs off.
     pub const TARGET_QUEUE: Duration = Duration::from_millis(20);
     const STEP: Duration = Duration::from_millis(100);
-    /// Growth per step while the queue is short: about 2.6× per second.
-    const GROWTH: f64 = 1.1;
+    /// Growth per step while the queue is short: about 9× per second, so a copy on a
+    /// fast link is at 100 Mbit/s within about a second (at 1.1, about 2.6× per
+    /// second, it took more than three).
+    const GROWTH: f64 = 1.25;
     const BACKOFF: f64 = 0.7;
     /// The lowest round trip is kept per bucket for [`Self::BUCKETS`] buckets, so a
     /// queue that lasts less than a minute is never mistaken for the path's delay,

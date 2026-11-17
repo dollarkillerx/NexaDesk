@@ -110,19 +110,36 @@ fn read_global(_open: &Open, format: u32) -> Option<Vec<u8>> {
     }
 }
 
-/// The clipboard's picture as PNG, with the clipboard open: a PNG someone put there, or
-/// one made from their bitmap.
-fn read_png(open: &Open, png_format: u32) -> Option<Vec<u8>> {
-    if png_format != 0
-        && available(png_format)
-        && let Some(png) = read_global(open, png_format).filter(|d| is_png(d))
-    {
-        return Some(png);
+/// The clipboard's picture as it is there, copied with the clipboard open.
+enum Picture {
+    Png(Vec<u8>),
+    /// A bitmap (CF_DIBV5 or CF_DIB), made into a PNG once the clipboard is closed.
+    Dib(Vec<u8>),
+}
+
+impl Picture {
+    fn read(open: &Open, png_format: u32) -> Option<Self> {
+        if png_format != 0
+            && available(png_format)
+            && let Some(png) = read_global(open, png_format).filter(|d| is_png(d))
+        {
+            return Some(Self::Png(png));
+        }
+        [CF_DIBV5, CF_DIB]
+            .into_iter()
+            .filter(|&f| available(f))
+            .find_map(|f| read_global(open, f))
+            .map(Self::Dib)
     }
-    [CF_DIBV5, CF_DIB]
-        .into_iter()
-        .filter(|&f| available(f))
-        .find_map(|f| read_global(open, f).and_then(|dib| png_of_dib(&dib)))
+
+    /// The PNG. Converting a large bitmap takes a while: never with the clipboard open,
+    /// which every other program on this PC would wait for.
+    fn into_png(self) -> Option<Vec<u8>> {
+        match self {
+            Self::Png(png) => Some(png),
+            Self::Dib(dib) => png_of_dib(&dib),
+        }
+    }
 }
 
 fn has_picture(png_format: u32) -> bool {
@@ -173,11 +190,16 @@ impl WindowsClipboard {
         let picture = has_picture(self.png_format);
         if !sensitive && (text || picture) {
             let open = Open::new()?;
-            if let Some(text) = text.then(|| read_text(&open)).flatten() {
+            let text = text.then(|| read_text(&open)).flatten();
+            let picture = picture
+                .then(|| Picture::read(&open, self.png_format))
+                .flatten();
+            drop(open);
+            if let Some(text) = text {
                 formats.push(FormatInfo::of(ClipKind::Text, &text));
                 data.push((ClipKind::Text, Bytes::from(text)));
             }
-            if let Some(png) = picture.then(|| read_png(&open, self.png_format)).flatten() {
+            if let Some(png) = picture.and_then(Picture::into_png) {
                 formats.push(FormatInfo::of(ClipKind::Png, &png));
                 data.push((ClipKind::Png, Bytes::from(png)));
             }
@@ -221,7 +243,11 @@ impl ClipboardBackend for WindowsClipboard {
             }
             ClipKind::Png if has_picture(self.png_format) => {
                 let open = Open::new()?;
-                read_png(&open, self.png_format).ok_or(ClipError::NotAvailable(kind))
+                let picture = Picture::read(&open, self.png_format);
+                drop(open);
+                picture
+                    .and_then(Picture::into_png)
+                    .ok_or(ClipError::NotAvailable(kind))
             }
             _ => Err(ClipError::NotAvailable(kind)),
         }

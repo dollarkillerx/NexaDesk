@@ -37,9 +37,8 @@ use crate::{
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const QUEUE: usize = 256;
-const OUTBOUND_QUEUE: usize = 32;
-/// Frames this large are bulk (§4.9) and wait for the session's [`BulkLimiter`];
-/// announcements and acknowledgements below it go straight out.
+/// Data chunks this large are bulk (§4.9) and wait for the session's [`BulkLimiter`].
+/// Announcements, acknowledgements and fetches never do.
 const BULK_MIN_FRAME: usize = 4096;
 
 /// A pasteboard the driver can poll.
@@ -80,9 +79,13 @@ impl ClipChannel {
         bulk: Arc<BulkLimiter>,
     ) -> ClipSession {
         let (send, recv) = streams;
-        let (out_tx, out_rx) = async_mpsc::channel(OUTBOUND_QUEUE);
+        // Unbounded, but not without limit: the peer asks for one fetch window (1 MiB) at
+        // a time. A bounded queue made the driver wait while a window drained at the bulk
+        // rate, seconds at the floor, answering no paste query meanwhile.
+        let (control_tx, control_rx) = async_mpsc::unbounded_channel();
+        let (data_tx, data_rx) = async_mpsc::unbounded_channel();
         let ClipChannel { tx, rx } = self;
-        let writer = tokio::spawn(write_loop(send, out_rx, bulk));
+        let writer = tokio::spawn(write_loop(send, control_rx, data_rx, bulk));
         let reader = tokio::spawn(read_loop(recv, tx.clone()));
         let config = ClipConfig {
             // §8.6: a restart must not start below values the peer already saw.
@@ -94,9 +97,13 @@ impl ClipChannel {
         let driver = Driver {
             backend,
             sync: ClipSync::new(device, config),
-            out: out_tx,
+            out: Outbound {
+                control: control_tx,
+                data: data_tx,
+            },
             callbacks,
             prefetch: None,
+            polled: Vec::new(),
         };
         let thread = thread::Builder::new()
             .name("clipboard".into())
@@ -189,14 +196,49 @@ async fn read_loop(mut recv: FramedRecv, tx: SyncSender<DriverMsg>) {
     let _ = tx.try_send(DriverMsg::StreamEnded);
 }
 
+/// Where the driver's messages go: data chunks in one queue, everything else in another
+/// that the writer always empties first. A newer copy's announcement, an
+/// acknowledgement or a fetch then never waits behind a megabyte of an older picture.
+/// Chunks stay in order among themselves, and the receiver drops chunks of a generation
+/// it is not fetching, so nothing depends on the order between the two.
+struct Outbound {
+    control: async_mpsc::UnboundedSender<ClipMessage>,
+    data: async_mpsc::UnboundedSender<ClipMessage>,
+}
+
+impl Outbound {
+    fn send(&self, message: ClipMessage) -> Result<(), ()> {
+        let queue = match message {
+            ClipMessage::Data(_) => &self.data,
+            _ => &self.control,
+        };
+        queue.send(message).map_err(|_| ())
+    }
+}
+
+/// The next message to write, small ones before chunks; whether it is a chunk. `None`
+/// once both queues are closed and empty: a closed one only drops out.
+async fn next_message(
+    control: &mut async_mpsc::UnboundedReceiver<ClipMessage>,
+    data: &mut async_mpsc::UnboundedReceiver<ClipMessage>,
+) -> Option<(ClipMessage, bool)> {
+    tokio::select! {
+        biased;
+        Some(m) = control.recv() => Some((m, false)),
+        Some(m) = data.recv() => Some((m, true)),
+        else => None,
+    }
+}
+
 async fn write_loop(
     mut send: FramedSend,
-    mut out: async_mpsc::Receiver<ClipMessage>,
+    mut control: async_mpsc::UnboundedReceiver<ClipMessage>,
+    mut data: async_mpsc::UnboundedReceiver<ClipMessage>,
     bulk: Arc<BulkLimiter>,
 ) {
-    while let Some(message) = out.recv().await {
+    while let Some((message, is_data)) = next_message(&mut control, &mut data).await {
         let body = message.encode();
-        if body.len() >= BULK_MIN_FRAME {
+        if is_data && body.len() >= BULK_MIN_FRAME {
             bulk.acquire(body.len()).await;
         }
         if send.send_body(&body).await.is_err() {
@@ -215,9 +257,13 @@ struct Prefetch {
 struct Driver {
     backend: Box<dyn ClipPlatform>,
     sync: ClipSync<Instant>,
-    out: async_mpsc::Sender<ClipMessage>,
+    out: Outbound,
     callbacks: ClipCallbacks,
     prefetch: Option<Prefetch>,
+    /// The content of the last change polled. The peer fetches a new copy at once, and
+    /// reading it again converted a large picture a second time (TIFF to PNG on a Mac, a
+    /// bitmap to PNG on Windows); the engine checks it against what was announced.
+    polled: Vec<(ClipKind, Bytes)>,
 }
 
 impl Driver {
@@ -255,7 +301,16 @@ impl Driver {
 
     fn poll_backend(&mut self) {
         if let Ok(Some(snapshot)) = self.backend.poll() {
+            self.polled = snapshot.data.clone();
             self.feed(ClipEvent::LocalChanged(snapshot));
+        }
+    }
+
+    /// `kind` as last polled, or read now if the poll did not hold it.
+    fn read_local(&mut self, kind: ClipKind) -> nexa_clip::Result<Bytes> {
+        match self.polled.iter().find(|(k, _)| *k == kind) {
+            Some((_, bytes)) => Ok(bytes.clone()),
+            None => self.backend.read(kind).map(Bytes::from),
         }
     }
 
@@ -269,7 +324,7 @@ impl Driver {
         while let Some(command) = queue.pop_front() {
             let more = match command {
                 ClipCommand::Send(m) => {
-                    if self.out.blocking_send(m).is_err() {
+                    if self.out.send(m).is_err() {
                         self.sync.handle(ClipEvent::Disconnected, Instant::now())
                     } else {
                         Vec::new()
@@ -281,7 +336,7 @@ impl Driver {
                     inline,
                 } => self.on_write(generation, formats, inline),
                 ClipCommand::ReadLocal { generation, kind } => {
-                    let result = self.backend.read(kind).map(Bytes::from);
+                    let result = self.read_local(kind);
                     self.sync.handle(
                         ClipEvent::LocalReadDone {
                             generation,
@@ -395,7 +450,120 @@ impl Driver {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+
+    use nexa_clip::{ClipAnnounce, ClipData, ClipStatus};
+
     use super::*;
+
+    const ME: DeviceId = DeviceId(*b"clip-driver-test");
+
+    fn chunk(offset: u64) -> ClipMessage {
+        ClipMessage::Data(ClipData {
+            generation: (1, ME),
+            kind: ClipKind::Png,
+            offset,
+            bytes: Bytes::from_static(&[0; 16]),
+            eof: false,
+            status: ClipStatus::Ok,
+        })
+    }
+
+    #[tokio::test]
+    async fn a_new_copy_is_announced_before_the_chunks_of_an_old_one() {
+        let (control_tx, mut control) = async_mpsc::unbounded_channel();
+        let (data_tx, mut data) = async_mpsc::unbounded_channel();
+        let out = Outbound {
+            control: control_tx,
+            data: data_tx,
+        };
+        for offset in [0, 16, 32] {
+            out.send(chunk(offset)).unwrap();
+        }
+        out.send(ClipMessage::Announce(ClipAnnounce {
+            generation: (2, ME),
+            origin: ME,
+            formats: Vec::new(),
+            inline: Vec::new(),
+        }))
+        .unwrap();
+        let mut order = Vec::new();
+        drop(out);
+        while let Some((m, is_data)) = next_message(&mut control, &mut data).await {
+            order.push(match m {
+                ClipMessage::Data(d) => {
+                    assert!(is_data);
+                    format!("chunk {}", d.offset)
+                }
+                _ => "announce".into(),
+            });
+        }
+        assert_eq!(order, ["announce", "chunk 0", "chunk 16", "chunk 32"]);
+    }
+
+    /// A clipboard whose reads are counted: a picture on it costs a conversion each.
+    struct Counting {
+        reads: Arc<AtomicU32>,
+        next: Option<LocalSnapshot>,
+    }
+
+    impl ClipboardBackend for Counting {
+        fn read_formats(&mut self) -> nexa_clip::Result<Vec<FormatInfo>> {
+            Ok(Vec::new())
+        }
+        fn read(&mut self, kind: ClipKind) -> nexa_clip::Result<Vec<u8>> {
+            self.reads.fetch_add(1, Relaxed);
+            Err(nexa_clip::ClipError::NotAvailable(kind))
+        }
+        fn write_promise(
+            &mut self,
+            _: Gen,
+            _: &[FormatInfo],
+            _: &[(ClipKind, Bytes)],
+        ) -> nexa_clip::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl ClipPlatform for Counting {
+        fn poll(&mut self) -> nexa_clip::Result<Option<LocalSnapshot>> {
+            Ok(self.next.take())
+        }
+    }
+
+    #[test]
+    fn a_copy_just_polled_is_served_without_reading_it_again() {
+        let picture = Bytes::from_static(b"\x89PNG a large picture");
+        let reads = Arc::new(AtomicU32::new(0));
+        let (control, _control_rx) = async_mpsc::unbounded_channel();
+        let (data, _data_rx) = async_mpsc::unbounded_channel();
+        let mut driver = Driver {
+            backend: Box::new(Counting {
+                reads: reads.clone(),
+                next: Some(LocalSnapshot {
+                    formats: vec![FormatInfo::of(ClipKind::Png, &picture)],
+                    data: vec![(ClipKind::Png, picture.clone())],
+                    owner_marker: false,
+                    sensitive: false,
+                }),
+            }),
+            sync: ClipSync::new(ME, ClipConfig::default()),
+            out: Outbound { control, data },
+            callbacks: ClipCallbacks {
+                on_gate_release: Box::new(|_| {}),
+                on_gate_progress: Box::new(|_| {}),
+                on_notice: Box::new(|_| {}),
+            },
+            prefetch: None,
+            polled: Vec::new(),
+        };
+        driver.poll_backend();
+        assert_eq!(driver.read_local(ClipKind::Png).unwrap(), picture);
+        assert_eq!(reads.load(Relaxed), 0, "not read a second time");
+        // What the poll did not hold is read as before.
+        assert!(driver.read_local(ClipKind::Html).is_err());
+        assert_eq!(reads.load(Relaxed), 1);
+    }
 
     #[test]
     fn a_paste_query_does_not_wait_on_a_full_queue() {
