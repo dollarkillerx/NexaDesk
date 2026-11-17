@@ -11,7 +11,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nexa_media::{CaptureConfig, CaptureEvent, EncodeOpts, EncoderConfig, MediaError};
+use nexa_media::{
+    CaptureConfig, CaptureEvent, Capturer, EncodeOpts, Encoder, EncoderConfig, MediaError,
+};
 use nexa_wire::control::{Chroma, Codec, Mode};
 use tokio::sync::mpsc;
 
@@ -263,6 +265,20 @@ fn configs(
     )
 }
 
+/// The capture and encode stages for one stream setting. To replace running stages, let
+/// go of the old ones first: DXGI desktop duplication allows one per display per
+/// process, so a capture made while the old one is alive fails (`DuplicateOutput`,
+/// E_INVALIDARG) and ends the session.
+fn stages(
+    host: &dyn WebHost,
+    capture: CaptureConfig,
+    encode: EncoderConfig,
+) -> Result<(Box<dyn Capturer>, Box<dyn Encoder>), String> {
+    let capturer = host.capturer(capture).map_err(|e| e.to_string())?;
+    let encoder = host.encoder(encode).map_err(|e| e.to_string())?;
+    Ok((capturer, encoder))
+}
+
 impl Drop for MediaThread {
     fn drop(&mut self) {
         self.control.stop.store(true, Relaxed);
@@ -284,8 +300,7 @@ fn run(
     let mut current = take_preset().ok_or("no stream settings")?;
     let mut bitrate = start_bps;
     let (mut capture, mut encode) = configs(&screen, current, bitrate, show_cursor);
-    let mut capturer = host.capturer(capture).map_err(|e| e.to_string())?;
-    let mut encoder = host.encoder(encode).map_err(|e| e.to_string())?;
+    let (mut capturer, mut encoder) = stages(&*host, capture, encode)?;
     *ctl.sending.lock().unwrap_or_else(|e| e.into_inner()) =
         (capture.width, capture.height, capture.fps);
     let start = Instant::now();
@@ -299,8 +314,9 @@ fn run(
         {
             current = next;
             (capture, encode) = configs(&screen, current, bitrate, show_cursor);
-            capturer = host.capturer(capture).map_err(|e| e.to_string())?;
-            encoder = host.encoder(encode).map_err(|e| e.to_string())?;
+            // The old stages go first (see `stages`).
+            drop((capturer, encoder));
+            (capturer, encoder) = stages(&*host, capture, encode)?;
             *ctl.sending.lock().unwrap_or_else(|e| e.into_inner()) =
                 (capture.width, capture.height, capture.fps);
             first = true;
@@ -310,8 +326,8 @@ fn run(
             Ok(CaptureEvent::Idle) => continue,
             Ok(CaptureEvent::ModeChanged(_) | CaptureEvent::AccessLost) => {
                 // Start over at the same size: the browser scales whatever arrives.
-                capturer = host.capturer(capture).map_err(|e| e.to_string())?;
-                encoder = host.encoder(encode).map_err(|e| e.to_string())?;
+                drop((capturer, encoder));
+                (capturer, encoder) = stages(&*host, capture, encode)?;
                 first = true;
                 continue;
             }
@@ -421,5 +437,115 @@ mod tests {
         let (w, h) = stream_size((1921, 1081), (1920, 1200));
         assert!(w <= 1920 && h <= 1080 && w % 2 == 0 && h % 2 == 0 && w >= 1916);
         assert_eq!(stream_size((0, 0), (1920, 1200)), (2, 2));
+    }
+
+    /// Stands in for DXGI desktop duplication: while one capture of the display is
+    /// alive, another fails.
+    struct OneCaptureHost {
+        alive: Arc<AtomicU32>,
+        made: AtomicU32,
+    }
+
+    struct Capture(Arc<AtomicU32>);
+
+    impl Drop for Capture {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Relaxed);
+        }
+    }
+
+    impl Capturer for Capture {
+        fn next(&mut self, timeout: Duration) -> nexa_media::Result<CaptureEvent> {
+            thread::sleep(timeout.min(Duration::from_millis(5)));
+            Ok(CaptureEvent::Idle)
+        }
+    }
+
+    struct NoEncode;
+
+    impl Encoder for NoEncode {
+        fn caps(&self) -> nexa_media::EncoderCaps {
+            nexa_media::EncoderCaps::default()
+        }
+        fn encode(
+            &mut self,
+            _: &nexa_media::CapturedFrame,
+            _: nexa_media::FrameId,
+            _: EncodeOpts,
+            _: &mut Vec<u8>,
+        ) -> nexa_media::Result<nexa_media::EncodedMeta> {
+            Err(MediaError::FrameDropped)
+        }
+        fn set_bitrate(&mut self, _: u32) -> nexa_media::Result<()> {
+            Ok(())
+        }
+        fn invalidate_from(
+            &mut self,
+            _: nexa_media::FrameId,
+        ) -> nexa_media::Result<nexa_media::Recovery> {
+            Err(MediaError::Other("test".into()))
+        }
+        fn on_frame_acked(&mut self, _: nexa_media::FrameId) {}
+        fn force_idr(&mut self) {}
+    }
+
+    impl WebHost for OneCaptureHost {
+        fn screen(&self) -> Result<WebScreen, String> {
+            Err("unused".into())
+        }
+        fn capturer(&self, _: CaptureConfig) -> nexa_media::Result<Box<dyn Capturer>> {
+            if self.alive.fetch_add(1, Relaxed) > 0 {
+                self.alive.fetch_sub(1, Relaxed);
+                return Err(MediaError::Other("already duplicating this display".into()));
+            }
+            self.made.fetch_add(1, Relaxed);
+            Ok(Box::new(Capture(self.alive.clone())))
+        }
+        fn encoder(&self, _: EncoderConfig) -> nexa_media::Result<Box<dyn Encoder>> {
+            Ok(Box::new(NoEncode))
+        }
+        fn input_available(&self) -> bool {
+            false
+        }
+        fn input_sink(&self) -> Result<Box<dyn nexa_session::input::InputSink>, String> {
+            Err("unused".into())
+        }
+        fn ask(&self, _: &crate::BrowserRequest, _: Duration) -> crate::BrowserAnswer {
+            crate::BrowserAnswer::DENY
+        }
+        fn event(&self, _: crate::WebEvent) {}
+    }
+
+    /// The page reports its window as soon as it opens, which changes the stream: on
+    /// Windows the session ended right there, the new capture made beside the old one.
+    #[test]
+    fn a_new_stream_setting_lets_go_of_the_old_capture_first() {
+        let c = WebConfig::default();
+        let host = Arc::new(OneCaptureHost {
+            alive: Arc::default(),
+            made: AtomicU32::new(0),
+        });
+        let screen = WebScreen {
+            display: 0,
+            origin_points: (0.0, 0.0),
+            size_points: (1920.0, 1080.0),
+            size_pixels: (1920, 1080),
+        };
+        let (tx, _rx) = mpsc::channel(4);
+        let media = MediaThread::spawn(host.clone(), screen, &c, false, tx);
+        let wait_for = |n: u32| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while host.made.load(Relaxed) < n && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(5));
+            }
+        };
+        // The first setting has been taken once the first capture exists.
+        wait_for(1);
+        *media.control.preset.lock().unwrap() = Some(preset(Quality::Weak, false, &c));
+        wait_for(2);
+        assert_eq!(*media.control.failed.lock().unwrap(), None);
+        assert_eq!(host.made.load(Relaxed), 2);
+        drop(media);
+        assert_eq!(host.alive.load(Relaxed), 0);
     }
 }
