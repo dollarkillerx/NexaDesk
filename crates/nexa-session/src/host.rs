@@ -722,6 +722,7 @@ fn run_tx(
 ) {
     let mut packetizer = Packetizer::default();
     let mut throttle = EncoderThrottle::new();
+    let mut last_capture_us: Option<u32> = None;
 
     while !stop.load(Relaxed) {
         let f = match frames.recv_timeout(Duration::from_millis(50)) {
@@ -764,10 +765,15 @@ fn run_tx(
             continue;
         };
         let bytes: u64 = packets.iter().map(|x| x.len() as u64).sum();
-        let window = rate
-            .lock()
-            .unwrap()
-            .pacing_window(bytes, interval, Instant::now());
+        // The time this frame covers: since the one before it, by capture time. The
+        // session's first frame follows nothing, like one after a still screen.
+        let covers = last_capture_us.map_or(Duration::MAX, |last| {
+            // A repeated frame (an idle refresh) has its original's time: no time.
+            let since = f.capture_ts_us.wrapping_sub(last) as i32;
+            Duration::from_micros(since.max(0) as u64)
+        });
+        last_capture_us = Some(f.capture_ts_us);
+        let window = rate.lock().unwrap().pacing_window(bytes, interval, covers);
         let start = Instant::now();
         let n = packets.len();
         for (i, pkt) in packets.into_iter().enumerate() {

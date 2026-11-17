@@ -44,14 +44,16 @@ pub const ENCODER_MIN_CHANGE: f64 = 0.05;
 pub const PACE_TARGET_FACTOR: f64 = 1.5;
 pub const PACE_CAPACITY_FACTOR: f64 = 0.8;
 pub const PACE_MAX_FRAME_FRACTION: f64 = 0.5;
-/// A frame larger than its budget (a key frame) is spread at the rate the link is
-/// known to take, for at most this long. See [`pacing_window`].
+/// A frame larger than its budget (a key frame) is spread out, over at most this
+/// long. See [`pacing_window`].
 pub const PACE_MAX_WINDOW: Duration = Duration::from_millis(250);
-/// That rate is what is being sent, not the target, which runs ahead of it while the
-/// picture needs less (up to twice, below the wanted rate): a path is known to take
-/// only what it has carried. But at least this share of the target, so that a key
-/// frame after a still screen is not held back.
-const PACE_PROVEN_FLOOR: f64 = 0.5;
+/// What such a frame has beyond one frame interval's worth leaves at this share of
+/// the rate the link is known to take: with the half interval the first part gets, a
+/// key frame of four budgets then goes out at nine tenths of that rate.
+pub const PACE_RUN_SHARE: f64 = 0.75;
+/// A frame's budget is the target over the time it covers, the time since the frame
+/// before it, up to this many frame intervals. See [`pacing_window_over`].
+pub const PACE_COVERS_MAX: f64 = 4.0;
 
 // The values below are not given by §4.9; they follow draft-ietf-rmcat-gcc
 // where it has an equivalent and were otherwise set against the simulator.
@@ -237,53 +239,75 @@ pub fn pace_rate_bps(target_bps: u64, capacity_bps: Option<u64>) -> u64 {
 }
 
 /// §4.9 Time over which to spread one frame: `frame_bytes × 8 ÷ pace_rate`, at most
-/// half a frame interval.
-///
-/// Except for a frame larger than its budget, a key frame: that one takes as long as
-/// a run of ordinary frames of its size would (less the half interval the last of
-/// them leaves free), at the rate the link is known to take: the target (the
-/// controller passes what it is really sending, see [`PACE_PROVEN_FLOOR`]), or the
-/// capacity's side of the pace rate on a link measured faster. Squeezed into half an
-/// interval, a key frame of four budgets left at eight to sixteen times the target,
-/// some 140 packets in 8 ms. On a path that reorders (a far one, 40 ms of jitter)
-/// QUIC discards as a duplicate any packet that arrives more than 128 packet numbers
-/// late: a fifth of that burst, more than FEC repairs. Every key frame sent to repair
-/// a loss was itself lost, and the picture froze for seconds. On a slow link the
-/// burst only filled the bottleneck's queue. Never over more than
-/// [`PACE_MAX_WINDOW`]: a target that is wrongly low must not hold a key frame back.
+/// half a frame interval. For a frame that covers one frame interval; see
+/// [`pacing_window_over`].
 pub fn pacing_window(
     frame_bytes: u64,
     target_bps: u64,
     capacity_bps: Option<u64>,
     frame_interval: Duration,
 ) -> Duration {
-    pacing_window_at(
+    pacing_window_over(
         frame_bytes,
+        frame_interval,
         target_bps,
-        target_bps as f64,
         capacity_bps,
         frame_interval,
     )
 }
 
-/// [`pacing_window`], with the rate this path has carried given apart from the target.
-fn pacing_window_at(
+/// [`pacing_window`] for a frame that covers `covers` of time: the time since the
+/// frame before it, which is more than a frame interval after skipped frames or a
+/// still screen.
+///
+/// A frame larger than its budget (a key frame) is not squeezed into half a frame
+/// interval. Its budget is what the link is known to take (the target, or the
+/// capacity's side of the pace rate on a link measured faster) over the time the
+/// frame covers, at most [`PACE_COVERS_MAX`] frame intervals; what it has beyond that
+/// follows at [`PACE_RUN_SHARE`] of that rate, for at most [`PACE_MAX_WINDOW`] in all
+/// (a target that is wrongly low must not hold a key frame back). Squeezed in, a key
+/// frame of four budgets left at eight to sixteen times the target, some 140 packets
+/// in 8 ms. On a path that reorders (a far one, 40 ms of jitter) QUIC discards as a
+/// duplicate any packet that arrives more than 128 packet numbers late: a fifth of
+/// that burst, more than FEC repairs. Every key frame sent to repair a loss was
+/// itself lost, and the picture froze for seconds. On a slow link the burst only
+/// filled the bottleneck's queue.
+///
+/// The budget counts the time covered, and nothing that was sent before: a frame
+/// that is large because frames before it were skipped is within it, and goes out in
+/// half an interval like any other. 0.1.15 measured every frame against one frame
+/// interval at the rate sent of late (half the target after a still screen). A frame
+/// then took longer than a frame interval, the next capture found no room and was
+/// skipped, the encoder made the frame after it as much larger, and it stayed that
+/// way: 25 frames a second at half the target for as long as the screen moved.
+pub fn pacing_window_over(
     frame_bytes: u64,
+    covers: Duration,
     target_bps: u64,
-    proven_bps: f64,
     capacity_bps: Option<u64>,
     frame_interval: Duration,
 ) -> Duration {
-    let ceiling = frame_interval.mul_f64(PACE_MAX_FRAME_FRACTION);
+    let ceiling = frame_interval
+        .mul_f64(PACE_MAX_FRAME_FRACTION)
+        .as_secs_f64();
     let rate = pace_rate_bps(target_bps, capacity_bps);
     if rate == 0 {
-        return ceiling;
+        return Duration::from_secs_f64(ceiling);
     }
     let bits = frame_bytes as f64 * 8.0;
-    let ceiling = ceiling.as_secs_f64();
-    let known = proven_bps.max(pace_by_capacity(target_bps, capacity_bps));
-    let as_a_run = (bits / known - ceiling).min(PACE_MAX_WINDOW.as_secs_f64());
-    Duration::from_secs_f64((bits / rate as f64).min(ceiling).max(as_a_run))
+    let known = (target_bps as f64).max(pace_by_capacity(target_bps, capacity_bps));
+    let interval = frame_interval.as_secs_f64();
+    let covers = covers
+        .as_secs_f64()
+        .clamp(interval, PACE_COVERS_MAX * interval);
+    let beyond = bits - known * covers;
+    let window = if beyond > 0.0 {
+        (ceiling + beyond / (PACE_RUN_SHARE * known))
+            .min(PACE_MAX_WINDOW.as_secs_f64().max(ceiling))
+    } else {
+        (bits / rate as f64).min(ceiling)
+    };
+    Duration::from_secs_f64(window)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -959,22 +983,18 @@ impl RateController {
         }
     }
 
-    /// §4.9 pacer window for a frame of `frame_bytes`, repair packets included.
+    /// §4.9 pacer window for a frame of `frame_bytes`, repair packets included, that
+    /// covers `covers` of time (see [`pacing_window_over`]).
     pub fn pacing_window(
-        &mut self,
+        &self,
         frame_bytes: u64,
         frame_interval: Duration,
-        now: Instant,
+        covers: Duration,
     ) -> Duration {
-        let at = self.micros(now);
-        // No reading yet (the first half second): the target is all there is.
-        let proven = self.send_meter.rate_bps(at).map_or(self.target, |sent| {
-            sent.clamp(PACE_PROVEN_FLOOR * self.target, self.target)
-        });
-        pacing_window_at(
+        pacing_window_over(
             frame_bytes,
+            covers,
             self.target_bps(),
-            proven,
             self.link_capacity_bps(),
             frame_interval,
         )
@@ -1693,9 +1713,8 @@ mod tests {
                 padding_bytes += padding;
                 let wire = per_frame * (1.0 + alloc.fec_ratio) + padding;
                 let packets = (wire / f64::from(PACKET_BYTES)).ceil().max(1.0) as u64;
-                let window = ctl
-                    .pacing_window(wire as u64, Duration::from_micros(frame_interval_us), wall)
-                    .as_micros() as u64;
+                let covers = Duration::from_micros(frame_interval_us);
+                let window = ctl.pacing_window(wire as u64, covers, covers).as_micros() as u64;
                 for i in 0..packets {
                     tx.push_back((now + window * i / packets, PACKET_BYTES, Some(frame)));
                 }
@@ -3032,16 +3051,19 @@ mod tests {
         // A frame of exactly its budget still goes out in half a frame interval.
         let w = pacing_window(frame_bytes, 100_000_000, Some(120_000_000), FRAME);
         assert!((w.as_secs_f64() * 1e3 - 4.1667).abs() < 0.01, "{w:?}");
-        // A key frame of four times the budget is not squeezed into it: it takes as
-        // long as four frames would, three and a half intervals...
+        // A key frame of four times the budget is not squeezed into it: half an
+        // interval, then three budgets at three quarters of the target, 4.5 in all.
         let w = pacing_window(4 * frame_bytes, 100_000_000, None, FRAME);
-        assert!((w.as_secs_f64() * 1e3 - 29.167).abs() < 0.01, "{w:?}");
-        // ...but not on a link known to take four times the target: half an
-        // interval as before, and two intervals for ten times the budget.
+        assert!((w.as_secs_f64() * 1e3 - 37.5).abs() < 0.01, "{w:?}");
+        // A frame a third over its budget still fits in one frame interval.
+        let w = pacing_window(frame_bytes * 4 / 3, 100_000_000, None, FRAME);
+        assert!(w < FRAME, "{w:?}");
+        // Not on a link known to take four times the target: half an interval as
+        // before, and two and a half intervals for ten times the budget.
         let w = pacing_window(4 * frame_bytes, 100_000_000, Some(1_000_000_000), FRAME);
         assert!((w.as_secs_f64() * 1e3 - 4.1667).abs() < 0.01, "{w:?}");
         let w = pacing_window(10 * frame_bytes, 100_000_000, Some(1_000_000_000), FRAME);
-        assert!((w.as_secs_f64() * 1e3 - 16.667).abs() < 0.01, "{w:?}");
+        assert!((w.as_secs_f64() * 1e3 - 20.833).abs() < 0.01, "{w:?}");
         // Never over more than a quarter of a second, whatever the target says.
         assert_eq!(
             pacing_window(10_000_000, 1_000_000, Some(2_000_000), FRAME),
@@ -3049,6 +3071,135 @@ mod tests {
         );
         // Zero rate must not divide by zero.
         assert_eq!(pacing_window(1000, 0, None, FRAME), FRAME.mul_f64(0.5));
+    }
+
+    /// The host's two threads with an encoder that spends its bitrate over time, as
+    /// hardware encoders do (a frame after skipped ones is as much larger). Capture
+    /// and encode: every frame interval, if fewer than two frames are with the sender,
+    /// a frame is encoded (14 ms, as agent.log shows for 3072x1920) and handed over;
+    /// otherwise the capture is skipped. Send: frames are paced one after another.
+    /// Returns (frames sent, captures skipped, bit/s sent) over the last second.
+    fn send_loop(fill: f64, target: u64, still_s: f64, moving_s: f64) -> (u32, u32, f64) {
+        const FPS: f64 = 60.0;
+        const ENCODE_S: f64 = 0.014;
+        const STEP_S: f64 = 0.0005;
+        let t0 = Instant::now();
+        let mut c = controller(t0, target);
+        let interval = Duration::from_secs_f64(1.0 / FPS);
+        let at = |s: f64| t0 + Duration::from_secs_f64(s);
+        let (mut seq, mut id) = (0u32, 0u32);
+        // Frames handed over and not yet out (the host's `depth`), those of them still
+        // waiting, when the one being sent is out, and the frame being encoded.
+        let mut depth = 0usize;
+        let mut waiting: VecDeque<(f64, f64)> = VecDeque::new();
+        let mut busy_until: Option<f64> = None;
+        let mut encoding: Option<(f64, f64, f64)> = None;
+        let (mut next_capture, mut last_encoded) = (0.0, 0.0);
+        let (mut frames, mut skipped, mut bits) = (0u32, 0u32, 0.0);
+        let end = still_s + moving_s;
+        let mut t = 0.0;
+        while t < end {
+            let counted = t >= end - 1.0;
+            if busy_until.is_some_and(|b| b <= t) {
+                busy_until = None;
+                depth -= 1;
+            }
+            if let Some((_, bytes, covers)) = encoding.filter(|e| e.0 <= t) {
+                encoding = None;
+                waiting.push_back((bytes, covers));
+                depth += 1;
+            }
+            if busy_until.is_none()
+                && let Some((bytes, covers)) = waiting.pop_front()
+            {
+                let covers = Duration::from_secs_f64(covers);
+                let window = c
+                    .pacing_window(bytes as u64, interval, covers)
+                    .as_secs_f64();
+                let packets = (bytes / 1200.0).ceil().max(1.0) as u32;
+                for i in 0..packets {
+                    c.on_packet_sent(
+                        SentPacket {
+                            tx_seq: seq,
+                            frame_id: Some(id),
+                            bytes: (bytes / f64::from(packets)) as u32,
+                        },
+                        at(t + window * f64::from(i) / f64::from(packets)),
+                    );
+                    seq += 1;
+                }
+                id += 1;
+                busy_until = Some(t + window);
+                if counted {
+                    frames += 1;
+                    bits += bytes * 8.0;
+                }
+            }
+            if t >= next_capture {
+                next_capture += 1.0 / FPS;
+                let moving = t >= still_s;
+                let due = moving || ((t * FPS).round() as u64).is_multiple_of(9);
+                if due && encoding.is_none() {
+                    if depth >= 2 {
+                        skipped += u32::from(counted);
+                    } else {
+                        let covers = t - last_encoded;
+                        let budget = target as f64 / 8.0 * covers.min(4.0 / FPS);
+                        let bytes = if moving { fill * budget } else { 2_000.0 };
+                        last_encoded = t;
+                        encoding = Some((t + ENCODE_S, bytes, covers));
+                    }
+                }
+            }
+            t += STEP_S;
+        }
+        (frames, skipped, bits)
+    }
+
+    /// A still screen, then motion: 0.1.15 paced a frame at the rate that had been
+    /// sent of late (at least half the target), so right after a still screen a frame
+    /// of its budget took a frame interval and a half. Every other frame found no
+    /// room and was skipped, the encoder made the next one as much larger, and it
+    /// stayed that way: 25 frames a second at half the target on a hotspot
+    /// (agent.log: 32 skipped a second, 2.5 Mbit/s sent at a target of 5.2).
+    #[test]
+    fn frames_keep_flowing_when_the_screen_starts_to_move() {
+        // A hotspot's target, and Wi-Fi's.
+        for target in [6_000_000u64, 35_000_000] {
+            for fill in [0.2, 0.6, 0.9, 1.0, 1.2] {
+                let (frames, skipped, bits) = send_loop(fill, target, 2.0, 3.0);
+                println!(
+                    "[still 2 s, then motion; encoder fills {fill} of {} Mbit/s] last second: {frames} frames, {skipped} skipped, {:.2} Mbit/s",
+                    target / 1_000_000,
+                    bits / 1e6
+                );
+                assert!(frames >= 58, "{frames} frames a second at fill {fill}");
+                assert!(
+                    bits >= 0.95 * fill * target as f64,
+                    "{bits} bit/s at fill {fill}"
+                );
+            }
+        }
+    }
+
+    /// A frame that covers more than one frame interval has as much more budget, up
+    /// to four intervals; a key frame beyond its budget is spread whatever it covers.
+    #[test]
+    fn a_frame_s_budget_is_the_time_it_covers() {
+        const FRAME: Duration = Duration::from_nanos(16_666_667);
+        let budget = 6_000_000 / 8 / 60;
+        let half = FRAME.mul_f64(0.5);
+        let over = |bytes: u64, intervals: f64| {
+            pacing_window_over(bytes, FRAME.mul_f64(intervals), 6_000_000, None, FRAME)
+        };
+        // After a skipped frame: twice the budget, in half an interval all the same.
+        assert_eq!(over(2 * budget, 2.0), half);
+        assert!(over(2 * budget, 1.0) > FRAME);
+        // After a still screen the budget is four intervals' worth, no more.
+        assert_eq!(over(4 * budget, 60.0), half);
+        assert!(over(8 * budget, 60.0) > FRAME * 4);
+        // An idle refresh carries the time of the frame it repeats: one interval.
+        assert_eq!(over(budget / 2, 0.0), FRAME.mul_f64(1.0 / 3.0));
     }
 
     #[test]
@@ -3091,7 +3242,7 @@ mod tests {
         assert_eq!(estimate, 32_000_000);
         let frame = Duration::from_millis(16);
         assert_eq!(
-            c.pacing_window(1_000_000, frame, t),
+            c.pacing_window(1_000_000, frame, frame),
             pacing_window(1_000_000, c.target_bps(), Some(estimate), frame)
         );
     }
