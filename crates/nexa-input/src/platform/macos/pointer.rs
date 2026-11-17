@@ -148,8 +148,18 @@ static DISSOCIATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 #[cfg(not(test))]
 impl MouseAssociation for SystemAssociation {
     fn set_associated(&self, associated: bool) {
-        DISSOCIATED.store(!associated, std::sync::atomic::Ordering::SeqCst);
+        let was_detached = DISSOCIATED.swap(!associated, std::sync::atomic::Ordering::SeqCst);
         let _ = objc2_core_graphics::CGAssociateMouseAndMouseCursorPosition(associated);
+        // A detached cursor does not move, so it is hidden for as long: the view's
+        // own empty cursor only holds while AppKit thinks the pointer is inside it,
+        // and a dead arrow beside the host's cursor read as a second mouse. Hide and
+        // show are counted by the system, so each is called once per change.
+        let display = objc2_core_graphics::CGMainDisplayID();
+        if !associated && !was_detached {
+            let _ = objc2_core_graphics::CGDisplayHideCursor(display);
+        } else if associated && was_detached {
+            let _ = objc2_core_graphics::CGDisplayShowCursor(display);
+        }
     }
 }
 
@@ -161,8 +171,11 @@ fn install_panic_restore() {
     ONCE.call_once(|| {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            if DISSOCIATED.load(std::sync::atomic::Ordering::SeqCst) {
+            if DISSOCIATED.swap(false, std::sync::atomic::Ordering::SeqCst) {
                 let _ = objc2_core_graphics::CGAssociateMouseAndMouseCursorPosition(true);
+                let _ = objc2_core_graphics::CGDisplayShowCursor(
+                    objc2_core_graphics::CGMainDisplayID(),
+                );
             }
             previous(info);
         }));

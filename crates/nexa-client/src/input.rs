@@ -211,12 +211,19 @@ struct InputState {
 }
 
 /// Game mode's pointer lock (§7.4). Held only while in game mode with input
-/// captured; the host key releases it until capture is switched on again.
+/// captured and the pointer in the picture; the host key releases it until capture
+/// is switched on again.
 #[derive(Default)]
 struct GameLock {
     game: bool,
     /// The host key released the lock; it stays off until capture restarts.
     suspended: bool,
+    /// The pointer has been in the picture since game mode began or capture came
+    /// back. The lock waits for that: taken at once, it froze the pointer wherever it
+    /// was, which after a click on the toolbar's "Game" was on the toolbar, outside
+    /// the view that hides it. A second, dead cursor stayed there, and the toolbar
+    /// could not be reached with the one that moved.
+    armed: bool,
     lock: Option<Box<dyn PointerLock>>,
     /// Running totals sent to the host, and the lock's own totals last seen.
     total: (i32, i32),
@@ -397,7 +404,9 @@ impl InputState {
             self.emit(outputs, now);
         } else {
             // Switching capture on again is how the person resumes after the host key.
+            // The lock itself waits for the pointer to be in the picture again.
             self.game.suspended = false;
+            self.game.armed = false;
             self.update_lock(now);
         }
         self.next_sync = now + SYNC_INTERVAL;
@@ -406,7 +415,11 @@ impl InputState {
     /// Takes or releases the pointer lock so that it is held exactly when game
     /// mode, capture and no host-key suspension all say so.
     fn update_lock(&mut self, now: Instant) {
-        let want = self.game.game && self.active && !self.game.suspended && !self.game.failed;
+        let want = self.game.game
+            && self.active
+            && self.game.armed
+            && !self.game.suspended
+            && !self.game.failed;
         match (want, self.game.lock.is_some()) {
             (true, false) => match (self.cfg.pointer_lock)() {
                 Ok(l) => {
@@ -465,6 +478,7 @@ impl InputState {
                 if game != self.game.game {
                     self.game.game = game;
                     self.game.failed = false;
+                    self.game.armed = false;
                     self.update_lock(now);
                 }
             }
@@ -517,9 +531,15 @@ impl InputState {
                     self.pointer.current.x = sx;
                     self.pointer.current.y = sy;
                     self.pointer.changed(now);
+                    // In the picture: game mode may take the pointer from here.
+                    self.arm_lock(now);
                 }
             }
             InputCmd::Button(button, down) if self.active => {
+                if down {
+                    // Buttons only come from the picture.
+                    self.arm_lock(now);
+                }
                 let outputs = self.cfg.rewriter.on_button(PhysButton { button, down });
                 self.emit(outputs, now);
             }
@@ -554,6 +574,14 @@ impl InputState {
             | InputCmd::Text(_) => {}
         }
         true
+    }
+
+    /// The pointer is in the picture: game mode takes the lock if it was waiting.
+    fn arm_lock(&mut self, now: Instant) {
+        if self.game.game && !self.game.armed {
+            self.game.armed = true;
+            self.update_lock(now);
+        }
     }
 
     fn suspend_lock(&mut self, now: Instant) {

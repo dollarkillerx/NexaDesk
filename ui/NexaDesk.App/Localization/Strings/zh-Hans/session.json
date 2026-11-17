@@ -12,6 +12,7 @@
   "Session.Unmute": "取消静音",
   "Session.CaptureReconnecting": "已释放键盘：重新连上后自动恢复",
   "Session.CaptureSuspended": "已释放键盘：点击画面或“继续控制”恢复",
+  "Session.CaptureGame": "游戏模式：鼠标锁定在画面内，按 {0} 释放鼠标并显示工具条",
   "Session.WaitingForVideo": "等待画面…",
   "Session.Display": "显示器 {0}",
   "Toolbar.Title": "NexaDesk 工具条",

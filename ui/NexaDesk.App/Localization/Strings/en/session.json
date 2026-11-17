@@ -12,6 +12,7 @@
   "Session.Unmute": "Unmute",
   "Session.CaptureReconnecting": "Keyboard released: resumes automatically after reconnecting",
   "Session.CaptureSuspended": "Keyboard released: click the screen or “Resume control” to take it back",
+  "Session.CaptureGame": "Game mode: the pointer is locked in the picture. Press {0} to release it and show the toolbar",
   "Session.WaitingForVideo": "Waiting for video…",
   "Session.Display": "Display {0}",
   "Toolbar.Title": "NexaDesk toolbar",

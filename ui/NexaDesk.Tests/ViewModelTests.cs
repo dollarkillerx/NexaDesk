@@ -213,6 +213,27 @@ public class SessionViewModelTests
         Assert.Contains("仅查看", vm.CaptureText);
     }
 
+    /// <summary>Game mode locks the pointer in the picture: the toolbar cannot be reached with it, so the
+    /// status line says which keys give it back.</summary>
+    [Fact]
+    public void Game_mode_says_how_to_get_the_pointer_back()
+    {
+        var (vm, _) = Make();
+        vm.OnWindowActivated();
+        Assert.DoesNotContain("游戏模式", vm.CaptureText);
+        vm.OnEvent(new StreamChangedEvent(4, 2, StreamMode.Game, 2560, 1440, 120));
+        Assert.Equal($"游戏模式：鼠标锁定在画面内，按 {SessionViewModel.ShowToolbarKeys} 释放鼠标并显示工具条", vm.CaptureText);
+
+        // Released by the host key: the ordinary "released" line, and back when resumed.
+        vm.OnEvent(new HostKeyEvent(4));
+        Assert.Contains("已释放键盘", vm.CaptureText);
+        vm.ResumeCommand.Execute(null);
+        Assert.Contains("游戏模式", vm.CaptureText);
+
+        vm.OnEvent(new StreamChangedEvent(4, 2, StreamMode.Office, 2560, 1440, 60));
+        Assert.DoesNotContain("游戏模式", vm.CaptureText);
+    }
+
     [Fact]
     public void The_host_key_releases_capture_and_shows_the_toolbar_until_resumed()
     {

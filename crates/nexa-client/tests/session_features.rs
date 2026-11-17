@@ -785,8 +785,9 @@ async fn game_mode_locks_the_pointer_sends_totals_and_every_exit_releases_it() {
         "no lock outside game mode"
     );
 
-    // The toolbar's mode switch: the host rebuilds with the cursor in the video,
-    // and the viewer takes the lock when the host confirms game mode.
+    // The toolbar's mode switch: the host rebuilds with the cursor in the video. The
+    // pointer is still on the toolbar, so nothing is locked yet (locking there left
+    // a dead second cursor on the toolbar, which could then not be reached).
     assert_eq!(
         v.command(Command::Mode(SetMode {
             mode: Mode::Game as i32,
@@ -801,6 +802,14 @@ async fn game_mode_locks_the_pointer_sends_totals_and_every_exit_releases_it() {
             .is_some_and(|c| c.show_cursor)
     })
     .await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        v.probe.locks_held.load(SeqCst),
+        0,
+        "locked before the pointer was in the picture"
+    );
+    // Back in the picture, the lock is taken.
+    v.command(Command::Move(PointerMove { x: 5.0, y: 5.0 }));
     until("locked", WAIT, || v.probe.locks_held.load(SeqCst) == 1).await;
     until("local cursor hidden", WAIT, || {
         v.cursor_calls().last() == Some(&Shown::Hidden)
@@ -851,6 +860,13 @@ async fn game_mode_locks_the_pointer_sends_totals_and_every_exit_releases_it() {
     assert_eq!(v.probe.locks_held.load(SeqCst), 0);
     v.set_active(false);
     v.set_active(true);
+    // Resuming is a click in the picture.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(v.probe.locks_held.load(SeqCst), 0);
+    v.command(Command::Button(PointerButton {
+        button: 0,
+        down: true,
+    }));
     until("locked again", WAIT, || {
         v.probe.locks_held.load(SeqCst) == 1
     })
@@ -870,6 +886,7 @@ async fn game_mode_locks_the_pointer_sends_totals_and_every_exit_releases_it() {
     })
     .await;
     v.set_active(true);
+    v.command(Command::Move(PointerMove { x: 6.0, y: 6.0 }));
     until("locked once more", WAIT, || {
         v.probe.locks_held.load(SeqCst) == 1
     })
@@ -902,7 +919,9 @@ async fn game_mode_locks_the_pointer_sends_totals_and_every_exit_releases_it() {
         mode: Mode::Game as i32,
         fps: 0,
     }));
+    // The pointer keeps moving in the picture while the host confirms the mode.
     until("locked for the last time", WAIT, || {
+        v.command(Command::Move(PointerMove { x: 7.0, y: 7.0 }));
         v.probe.locks_held.load(SeqCst) == 1
     })
     .await;

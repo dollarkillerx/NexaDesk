@@ -67,7 +67,7 @@ public sealed partial class SessionViewModel : ObservableObject
     public event Action? ActivateRequested;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsOffice), nameof(IsBalanced), nameof(IsGame), nameof(ModeText))]
+    [NotifyPropertyChangedFor(nameof(IsOffice), nameof(IsBalanced), nameof(IsGame), nameof(ModeText), nameof(CaptureText))]
     private StreamMode _mode = StreamMode.Balanced;
 
     [ObservableProperty]
@@ -225,7 +225,10 @@ public sealed partial class SessionViewModel : ObservableObject
         ? L.Get("Session.CaptureReconnecting")
         : IsSuspended && Perms.Input
             ? L.Get("Session.CaptureSuspended")
-            : Texts.Capture(Capture, Perms.Input);
+            : IsGame && InputActive
+                // The pointer is locked in the picture: say how to get it back.
+                ? L.Format("Session.CaptureGame", ShowToolbarKeys)
+                : Texts.Capture(Capture, Perms.Input);
 
     public bool CaptureNeedsPermission => Perms.Input && Capture is CaptureState.Degraded or CaptureState.Unavailable;
 
@@ -290,6 +293,8 @@ public sealed partial class SessionViewModel : ObservableObject
             _inputSent = false;
             Capture = CaptureState.Unavailable;
         }
+        // Game mode's line depends on whether input is captured.
+        OnPropertyChanged(nameof(CaptureText));
     }
 
     // ----- pointer, in view pixels ----------------------------------------------------

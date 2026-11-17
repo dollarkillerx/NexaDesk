@@ -12,6 +12,7 @@
   "Session.Unmute": "ミュート解除",
   "Session.CaptureReconnecting": "キーボードを解放しました：再接続すると自動で再開します",
   "Session.CaptureSuspended": "キーボードを解放しました：画面をクリックするか「操作を再開」で再開します",
+  "Session.CaptureGame": "ゲームモード：マウスは画面内に固定されています。{0} を押すと解放してツールバーを表示します",
   "Session.WaitingForVideo": "画面を待っています…",
   "Session.Display": "ディスプレイ {0}",
   "Toolbar.Title": "NexaDesk ツールバー",
