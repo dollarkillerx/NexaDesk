@@ -119,7 +119,7 @@ pub struct HostOptions {
 /// Repeats the last frame after the screen goes quiet (§6.8). Besides sharpening
 /// the picture this guarantees the viewer can notice a lost final frame, which it
 /// otherwise never could: nothing follows it.
-const IDLE_REFRESH_AFTER: [Duration; 4] = [
+pub const IDLE_REFRESH_AFTER: [Duration; 4] = [
     Duration::from_millis(100),
     Duration::from_millis(300),
     Duration::from_millis(600),

@@ -12,8 +12,10 @@ use std::{
 };
 
 use nexa_media::{
-    CaptureConfig, CaptureEvent, Capturer, EncodeOpts, Encoder, EncoderConfig, MediaError,
+    CaptureConfig, CaptureEvent, CapturedFrame, Capturer, EncodeOpts, Encoder, EncoderConfig,
+    MediaError, NativeImage,
 };
+use nexa_session::host::IDLE_REFRESH_AFTER;
 use nexa_wire::control::{Chroma, Codec, Mode};
 use tokio::sync::mpsc;
 
@@ -268,6 +270,21 @@ fn configs(
 /// A stream's capture and encode stages.
 type Stages = (Box<dyn Capturer>, Box<dyn Encoder>);
 
+/// The least step between two frames' times: one RTP tick is 1/90 000 s, so frames
+/// closer than that would share a timestamp.
+const MIN_FRAME_STEP: Duration = Duration::from_millis(1);
+
+/// Encoder failures in a row before the session gives up. One is not enough: the
+/// Windows encoder answers a hardware failure by going on in software from the next
+/// frame.
+const MAX_ENCODE_FAILURES: u32 = 30;
+
+/// How long to wait for a new picture: long enough for one at `fps`, short enough that
+/// an idle refresh goes out on time.
+fn frame_wait(fps: u32) -> Duration {
+    Duration::from_secs_f64(2.0 / f64::from(fps.max(1)))
+}
+
 /// The capture and encode stages for one stream setting. To replace running stages, let
 /// go of the old ones first: DXGI desktop duplication allows one per display per
 /// process, so a capture made while the old one is alive fails (`DuplicateOutput`,
@@ -310,6 +327,15 @@ fn run(
     let mut frame_id: u32 = 0;
     let mut first = true;
     let mut buf = Vec::new();
+    // The last picture, repeated on the app's schedule once the screen goes quiet
+    // (`IDLE_REFRESH_AFTER`). The Windows hardware encoder can hold a frame back until the
+    // next one goes in, and a still screen sends nothing more: without this the browser
+    // kept showing the change before last until something else moved.
+    let mut last: Option<NativeImage> = None;
+    let mut last_content = Instant::now();
+    let mut refresh_step = IDLE_REFRESH_AFTER.len();
+    let mut failures = 0;
+    let mut sent_at: Option<Duration> = None;
     while !ctl.stop.load(Relaxed) {
         // A new quality: a new size or frame rate needs a new capture and encoder.
         if let Some(next) = take_preset()
@@ -317,18 +343,39 @@ fn run(
         {
             current = next;
             (capture, encode) = configs(&screen, current, bitrate, show_cursor);
-            // The old stages go first (see `stages`).
+            // The old stages go first (see `stages`), the old picture with them.
+            last = None;
             drop((capturer, encoder));
             (capturer, encoder) = stages(&*host, capture, encode)?;
             *ctl.sending.lock().unwrap_or_else(|e| e.into_inner()) =
                 (capture.width, capture.height, capture.fps);
             first = true;
         }
-        let frame = match capturer.next(Duration::from_millis(100)) {
-            Ok(CaptureEvent::Frame(f)) => f,
-            Ok(CaptureEvent::Idle) => continue,
+        let frame = match capturer.next(frame_wait(capture.fps)) {
+            Ok(CaptureEvent::Frame(f)) => {
+                last = Some(f.image.clone());
+                last_content = Instant::now();
+                refresh_step = 0;
+                f
+            }
+            Ok(CaptureEvent::Idle) => {
+                let due = refresh_step < IDLE_REFRESH_AFTER.len()
+                    && last_content.elapsed() >= IDLE_REFRESH_AFTER[refresh_step];
+                let Some(image) = last.clone().filter(|_| due) else {
+                    continue;
+                };
+                refresh_step += 1;
+                // Now, not when it was captured: the browser takes a frame with the
+                // previous one's timestamp for the same frame.
+                CapturedFrame {
+                    image,
+                    captured_at: Instant::now(),
+                    dirty: Vec::new(),
+                }
+            }
             Ok(CaptureEvent::ModeChanged(_) | CaptureEvent::AccessLost) => {
                 // Start over at the same size: the browser scales whatever arrives.
+                last = None;
                 drop((capturer, encoder));
                 (capturer, encoder) = stages(&*host, capture, encode)?;
                 first = true;
@@ -354,8 +401,15 @@ fn run(
         match encoder.encode(&frame, frame_id, opts, &mut buf) {
             Ok(_) => {
                 first = false;
+                failures = 0;
                 frame_id = frame_id.wrapping_add(1);
-                let at = frame.captured_at.saturating_duration_since(start);
+                // Always later than the last frame sent: a refresh is stamped when it is made, and a
+                // picture captured just before that can arrive after it.
+                let at = frame
+                    .captured_at
+                    .saturating_duration_since(start)
+                    .max(sent_at.map_or(Duration::ZERO, |t| t + MIN_FRAME_STEP));
+                sent_at = Some(at);
                 if out
                     .try_send(Frame {
                         data: buf.clone(),
@@ -371,9 +425,19 @@ fn run(
             }
             // The encoder skipped this frame on purpose (it was behind, as on a large
             // screen at 60 fps): nothing was produced and the next frame goes on as
-            // usual. Only a real failure ends the session.
+            // usual.
             Err(MediaError::FrameDropped) => {}
-            Err(e) => return Err(e.to_string()),
+            // A frame that failed, as the app's sessions treat it: the next one is a key
+            // frame, and the Windows encoder goes on in software. The session ends only
+            // if failures keep coming ("the hardware encoder stopped asking for
+            // frames" ended browser sessions at once).
+            Err(e) => {
+                failures += 1;
+                if failures >= MAX_ENCODE_FAILURES {
+                    return Err(e.to_string());
+                }
+                ctl.force_key.store(true, Relaxed);
+            }
         }
     }
     Ok(())
@@ -550,5 +614,183 @@ mod tests {
         assert_eq!(host.made.load(Relaxed), 2);
         drop(media);
         assert_eq!(host.alive.load(Relaxed), 0);
+    }
+
+    /// A screen that changes once and then stays still (or keeps changing), and an
+    /// encoder that writes one byte a frame unless told to fail.
+    struct ScriptHost {
+        moving: bool,
+        calls: Arc<AtomicU32>,
+        /// Which encode calls fail, counted from 1.
+        fail: fn(u32) -> bool,
+    }
+
+    struct Screen {
+        moving: bool,
+        shown: bool,
+    }
+
+    impl Capturer for Screen {
+        fn next(&mut self, timeout: Duration) -> nexa_media::Result<CaptureEvent> {
+            if self.moving || !std::mem::replace(&mut self.shown, true) {
+                thread::sleep(Duration::from_millis(1));
+                return Ok(CaptureEvent::Frame(CapturedFrame {
+                    image: NativeImage::Cpu(Arc::new(nexa_media::CpuFrame {
+                        width: 2,
+                        height: 2,
+                        y: vec![0; 4],
+                        uv: vec![0; 2],
+                    })),
+                    captured_at: Instant::now(),
+                    dirty: Vec::new(),
+                }));
+            }
+            thread::sleep(timeout);
+            Ok(CaptureEvent::Idle)
+        }
+    }
+
+    struct ScriptEncoder {
+        calls: Arc<AtomicU32>,
+        fail: fn(u32) -> bool,
+    }
+
+    impl Encoder for ScriptEncoder {
+        fn caps(&self) -> nexa_media::EncoderCaps {
+            nexa_media::EncoderCaps::default()
+        }
+        fn encode(
+            &mut self,
+            _: &CapturedFrame,
+            frame_id: nexa_media::FrameId,
+            _: EncodeOpts,
+            out: &mut Vec<u8>,
+        ) -> nexa_media::Result<nexa_media::EncodedMeta> {
+            let n = self.calls.fetch_add(1, Relaxed) + 1;
+            if (self.fail)(n) {
+                return Err(MediaError::Other(
+                    "the hardware encoder stopped asking for frames".into(),
+                ));
+            }
+            out.push(1);
+            Ok(nexa_media::EncodedMeta {
+                frame_id,
+                key: true,
+                recovery_point: false,
+            })
+        }
+        fn set_bitrate(&mut self, _: u32) -> nexa_media::Result<()> {
+            Ok(())
+        }
+        fn invalidate_from(
+            &mut self,
+            _: nexa_media::FrameId,
+        ) -> nexa_media::Result<nexa_media::Recovery> {
+            Err(MediaError::Other("test".into()))
+        }
+        fn on_frame_acked(&mut self, _: nexa_media::FrameId) {}
+        fn force_idr(&mut self) {}
+    }
+
+    impl WebHost for ScriptHost {
+        fn screen(&self) -> Result<WebScreen, String> {
+            Err("unused".into())
+        }
+        fn capturer(&self, _: CaptureConfig) -> nexa_media::Result<Box<dyn Capturer>> {
+            Ok(Box::new(Screen {
+                moving: self.moving,
+                shown: false,
+            }))
+        }
+        fn encoder(&self, _: EncoderConfig) -> nexa_media::Result<Box<dyn Encoder>> {
+            Ok(Box::new(ScriptEncoder {
+                calls: self.calls.clone(),
+                fail: self.fail,
+            }))
+        }
+        fn input_available(&self) -> bool {
+            false
+        }
+        fn input_sink(&self) -> Result<Box<dyn nexa_session::input::InputSink>, String> {
+            Err("unused".into())
+        }
+        fn ask(&self, _: &crate::BrowserRequest, _: Duration) -> crate::BrowserAnswer {
+            crate::BrowserAnswer::DENY
+        }
+        fn event(&self, _: crate::WebEvent) {}
+    }
+
+    fn script(
+        moving: bool,
+        fail: fn(u32) -> bool,
+    ) -> (MediaThread, mpsc::Receiver<Frame>, Arc<AtomicU32>) {
+        let calls = Arc::new(AtomicU32::new(0));
+        let host = Arc::new(ScriptHost {
+            moving,
+            calls: calls.clone(),
+            fail,
+        });
+        let screen = WebScreen {
+            display: 0,
+            origin_points: (0.0, 0.0),
+            size_points: (1920.0, 1080.0),
+            size_pixels: (1920, 1080),
+        };
+        let (tx, rx) = mpsc::channel(8);
+        let media = MediaThread::spawn(host, screen, &WebConfig::default(), false, tx);
+        (media, rx, calls)
+    }
+
+    /// Frames sent within `within`, up to `n` of them.
+    fn frames(rx: &mut mpsc::Receiver<Frame>, n: usize, within: Duration) -> Vec<Duration> {
+        let deadline = Instant::now() + within;
+        let mut at = Vec::new();
+        while at.len() < n && Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(f) => at.push(f.at),
+                Err(_) => thread::sleep(Duration::from_millis(5)),
+            }
+        }
+        at
+    }
+
+    /// The Windows hardware encoder can hold a frame back until the next goes in: on a
+    /// still screen the browser showed the change before last until something moved.
+    #[test]
+    fn a_still_screen_is_sent_again_after_it_goes_quiet() {
+        let (media, mut rx, calls) = script(false, |_| false);
+        // The picture, then once each at 100, 300, 600 and 1000 ms of quiet.
+        let at = frames(&mut rx, 6, Duration::from_secs(3));
+        assert_eq!(at.len(), 5, "{at:?}");
+        assert!(
+            at.windows(2).all(|w| w[0] < w[1]),
+            "each a new frame: {at:?}"
+        );
+        assert!(at[4] >= Duration::from_millis(1000), "{at:?}");
+        assert_eq!(calls.load(Relaxed), 5);
+        assert_eq!(*media.control.failed.lock().unwrap(), None);
+    }
+
+    #[test]
+    fn one_encoder_failure_does_not_end_the_stream() {
+        // The first frame fails, as a hardware encoder does just before software takes over.
+        let (media, mut rx, _) = script(false, |n| n == 1);
+        assert!(!frames(&mut rx, 1, Duration::from_secs(2)).is_empty());
+        assert_eq!(*media.control.failed.lock().unwrap(), None);
+    }
+
+    #[test]
+    fn an_encoder_that_keeps_failing_ends_the_stream() {
+        let (media, mut rx, calls) = script(true, |_| true);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while media.control.failed.lock().unwrap().is_none() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            media.control.failed.lock().unwrap().as_deref(),
+            Some("the hardware encoder stopped asking for frames")
+        );
+        assert_eq!(calls.load(Relaxed), MAX_ENCODE_FAILURES);
+        assert!(rx.try_recv().is_err());
     }
 }
