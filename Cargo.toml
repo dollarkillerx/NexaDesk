@@ -12,6 +12,13 @@ publish = false
 bytes = "1"
 thiserror = "2"
 
+# libopus (crates/nexa-opus) is built by CMake. At opt-level 0 the `cmake` crate asks for
+# a Debug build, which with the Visual Studio generator links the debug C runtime
+# (MSVCRTD, _CrtDbgReportW) while Rust links the release one: debug builds and tests on
+# Windows then fail to link. Optimised, CMake builds RelWithDebInfo instead.
+[profile.dev.package.audiopus_sys]
+opt-level = 3
+
 # See third_party/README.md: DTLS without aws-lc, so Linux builds cross-compile.
 [patch.crates-io]
 dimpl = { path = "third_party/dimpl" }
