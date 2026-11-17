@@ -88,16 +88,28 @@ const LOSS_EWMA_ALPHA: f64 = 0.3;
 /// what the receiver measured.
 const PROBE_ACCEPT_FACTOR: f64 = 0.85;
 
-/// A cut to below this share of the target marks the old target for recovery: a
-/// short hiccup, or one met while little was being sent (a still screen, where the
-/// receive rate says nothing about the link), would otherwise leave the rate low
-/// for minutes at 8% a second.
-const RECOVERY_CUT_BELOW: f64 = 0.5;
+/// A target that falls below this share of its highest in the last
+/// [`RECOVERY_DROP_WINDOW`] marks that rate for recovery (libwebrtc's large-drop
+/// probe: 66% within 5 s). A short hiccup, or one met while little was being sent (a
+/// still screen, where the receive rate says nothing about the link), would otherwise
+/// leave the rate low for minutes: a still screen does not grow it at all. Cuts come
+/// in steps (the queue cut halves at most, every 500 ms), so one step alone says
+/// little; the drop over a few seconds is what counts.
+const RECOVERY_CUT_BELOW: f64 = 0.66;
+const RECOVERY_DROP_WINDOW: Duration = Duration::from_secs(5);
 /// Below this target, sending under it does not count as app-limited: an encoder
 /// given a tiny budget for a large picture (VideoToolbox, 0.16 Mbit/s for 3072×1920)
 /// drops frames and sends less than it was given, which otherwise read as "nothing to
 /// send" and held the rate at the floor for good.
 const APP_LIMITED_ABOVE_BPS: f64 = 2_000_000.0;
+/// Below the rate the picture wants (the session's initial rate), sending this share
+/// of the target is enough to grow it, not [`APP_LIMITED_RATIO`]: a hardware encoder
+/// on desktop content fills 55 to 65% of what it is given (agent.log, 57 frames a
+/// second), which read as "nothing more to send" and left a target that had been cut
+/// at 3 Mbit/s for an hour on a link ten times as fast. libwebrtc lets its estimate
+/// grow to 1.5 times what is sent. Not above the wanted rate: there the target would
+/// run ahead of a link it has never filled.
+const APP_LIMITED_RATIO_BELOW_WANTED: f64 = 0.5;
 /// A packet that arrives this long after the one before it, and later than its send
 /// time explains by [`STALL_EXCESS_US`] or three packet-times at the target,
 /// was held by the radio (Wi-Fi off-channel for AirDrop/Continuity, power save),
@@ -135,6 +147,12 @@ const QUEUE_PROBE_LIMIT_US: i64 = 50_000;
 const QUEUE_FRESH: Duration = Duration::from_millis(300);
 /// A cut for a lasting queue keeps at least this share of the target.
 const QUEUE_CUT_FLOOR: f64 = 0.5;
+/// Sending under this share of the target, a lasting queue is not ours: a still
+/// screen's few frames held by the radio through a bad patch of Wi-Fi (agent.log: 0.2
+/// Mbit/s sent at a 17.5 Mbit/s target, 15 radio stalls in 5 s, an 81 ms queue).
+/// Not the app-limited share: when the screen starts to move on a hotspot, the send
+/// rate takes a few hundred ms to show it, and the queue must be cut meanwhile.
+const QUEUE_OURS_ABOVE: f64 = 0.1;
 /// The link estimate is the median of the frame trains of this window: a train
 /// delivered in one batch (a cellular link) reads as a link many times faster than
 /// it is, and one such reading used to stay the estimate for good.
@@ -609,6 +627,8 @@ pub struct RateController {
     last_probe_end: Option<Instant>,
     /// The target before a sharp cut, which recovery probes may climb back to.
     recover_to: Option<f64>,
+    /// The highest target of the last [`RECOVERY_DROP_WINDOW`] and when it was set.
+    recent_high: Option<(Instant, f64)>,
     /// Send time and arrival (µs) of the last packet reported received.
     last_rx: Option<(Instant, i64)>,
     /// Radio stalls seen (see [`STALL_GAP_US`]).
@@ -654,6 +674,7 @@ impl RateController {
             probe_cap: None,
             last_probe_end: None,
             recover_to: None,
+            recent_high: None,
             last_rx: None,
             stalls: 0,
             last_update: None,
@@ -800,6 +821,7 @@ impl RateController {
         self.probe_ends = None;
         self.probe_cap = None;
         self.recover_to = None;
+        self.recent_high = None;
         self.last_decrease = None;
         self.last_update = Some(now);
     }
@@ -955,8 +977,15 @@ impl RateController {
         self.last_update = Some(now);
         let at = self.micros(now);
         let recv = self.recv_meter.rate_bps(self.newest_arrival);
-        let app_limited = self.target >= APP_LIMITED_ABOVE_BPS
-            && self.send_meter.rate_bps(at).unwrap_or(0.0) < APP_LIMITED_RATIO * self.target;
+        let sent = self.send_meter.rate_bps(at).unwrap_or(0.0);
+        let wanted = self.cfg.initial_bps.min(self.cfg.max_bps) as f64;
+        let ratio = if self.target < wanted {
+            APP_LIMITED_RATIO_BELOW_WANTED
+        } else {
+            APP_LIMITED_RATIO
+        };
+        let app_limited = self.target >= APP_LIMITED_ABOVE_BPS && sent < ratio * self.target;
+        let idle = sent < QUEUE_OURS_ABOVE * self.target;
         let grown = if app_limited {
             self.target
         } else {
@@ -966,24 +995,43 @@ impl RateController {
         if self.probe_ends.is_some() && self.queue.current >= QUEUE_PROBE_LIMIT_US {
             self.probe_congested = true;
         }
-        let before = self.target;
-        let delay_based = self.delay_based(recv, grown, app_limited, now);
+        let delay_based = self.delay_based(recv, grown, app_limited, idle, now);
         let loss_based = self.loss_based(grown, now);
         self.target = delay_based
             .min(loss_based)
             .clamp(self.cfg.min_bps as f64, self.cfg.max_bps as f64);
-        if self.target < RECOVERY_CUT_BELOW * before {
-            self.recover_to = Some(self.recover_to.map_or(before, |r| r.max(before)));
-        }
+        self.note_drop(now);
         self.finish_probe(recv, now);
-        self.maybe_probe_for_recovery(app_limited, now);
+        self.maybe_probe_for_recovery(now);
     }
 
-    /// After a sharp cut, short probes find out at once whether the link carries the
-    /// old rate again, instead of growing back to it at 8% a second. Only while the
-    /// encoder wants more than the target (a still screen has nothing to gain), and
-    /// never again once a probe runs into congestion: then the link really is worse.
-    fn maybe_probe_for_recovery(&mut self, app_limited: bool, now: Instant) {
+    /// Marks the recent high for recovery once the target has fallen well below it.
+    fn note_drop(&mut self, now: Instant) {
+        let high = match self.recent_high {
+            Some((at, high))
+                if high > self.target
+                    && now.saturating_duration_since(at) < RECOVERY_DROP_WINDOW =>
+            {
+                high
+            }
+            _ => {
+                self.recent_high = Some((now, self.target));
+                return;
+            }
+        };
+        if self.target < RECOVERY_CUT_BELOW * high {
+            self.recover_to = Some(self.recover_to.map_or(high, |r| r.max(high)));
+            self.recent_high = Some((now, self.target));
+        }
+    }
+
+    /// After a sharp drop, short probes find out at once whether the link carries the
+    /// old rate again, instead of growing back to it at 8% a second. Also while the
+    /// screen is still, as libwebrtc probes after a large drop in its
+    /// application-limited region: a still screen does not grow the target at all, so
+    /// without a probe the first motion after a hiccup came out blurry for minutes.
+    /// Never again once a probe runs into congestion: then the link really is worse.
+    fn maybe_probe_for_recovery(&mut self, now: Instant) {
         let Some(goal) = self.recover_to else { return };
         if self.target >= goal * 0.95 {
             self.recover_to = None;
@@ -993,7 +1041,6 @@ impl RateController {
             t.is_none_or(|t| now.saturating_duration_since(t) >= RECOVERY_PROBE_GAP)
         };
         if self.probe_ends.is_none()
-            && !app_limited
             && self.detector.state == DelayState::Normal
             && quiet(self.last_decrease)
             && quiet(self.last_probe_end)
@@ -1009,15 +1056,18 @@ impl RateController {
         recv: Option<f64>,
         grown: f64,
         app_limited: bool,
+        idle: bool,
         now: Instant,
     ) -> f64 {
-        // A queue that stays deep is congestion, whatever the trend says and however
-        // little is sent: on a hotspot the trend never builds (it stalls all the time),
-        // and a target that a still screen left high floods the link when it moves.
+        // A queue that stays deep is congestion, whatever the trend says: on a hotspot
+        // the trend never builds (it stalls all the time), and a target that a still
+        // screen left high floods the link when it moves. Unless next to nothing is
+        // being sent (see [`QUEUE_OURS_ABOVE`]): cutting for that queue took a 17
+        // Mbit/s target to 2 in two seconds.
         let fresh = self
             .queue_read_at
             .is_some_and(|t| now.saturating_duration_since(t) < QUEUE_FRESH);
-        if fresh && self.queue.lasting(self.newest_arrival) {
+        if fresh && !idle && self.queue.lasting(self.newest_arrival) {
             return self.cut(recv, now, QUEUE_CUT_FLOOR);
         }
         match self.detector.state {
@@ -1153,6 +1203,8 @@ mod tests {
         /// The radio away (another channel, as AWDL does) for `.1` µs every `.0` µs:
         /// what arrives meanwhile waits for it to come back.
         stalls: Option<(u64, u64)>,
+        /// Only between these times (µs), when set.
+        stalls_between: Option<(u64, u64)>,
         /// A cellular link hands packets over in batches, every this many µs.
         batch_us: u64,
         /// Jitter per packet, independently: a later packet may overtake an earlier
@@ -1176,7 +1228,10 @@ mod tests {
             let mut arrival =
                 (self.busy_until_us + self.one_way_us + extra).max(self.last_arrival_us);
             let reordered = (self.rng.unit() * self.reorder_jitter_us as f64) as u64;
-            if let Some((every, away)) = self.stalls {
+            let stalling = self
+                .stalls_between
+                .is_none_or(|(from, to)| (from..to).contains(&arrival));
+            if let Some((every, away)) = self.stalls.filter(|_| stalling) {
                 let into = arrival % every;
                 if into < away {
                     arrival += away - into;
@@ -1208,9 +1263,18 @@ mod tests {
         jitter_ms: f64,
         /// See [`Bottleneck::stalls`], in ms.
         stalls_ms: Option<(f64, f64)>,
+        /// Those stalls only between these times (s); all along when `None`.
+        stalls_between: Option<(f64, f64)>,
         /// The share of its budget the encoder fills at budgets below 1 Mbit/s (a
         /// hardware encoder dropping frames it cannot fit).
         low_budget_fill: f64,
+        /// The share of its budget the encoder fills at any budget: VideoToolbox on
+        /// desktop content sent 0.55 to 0.65 of the target at 57 frames a second.
+        fill: f64,
+        mode: Mode,
+        /// Frames a second at time t (s) when it is not `fps` throughout: a still
+        /// screen sends a frame only when something changes.
+        fps_at: Option<fn(f64) -> f64>,
         one_way_ms: f64,
         /// How much the bottleneck queues before it drops.
         max_queue_ms: f64,
@@ -1233,7 +1297,11 @@ mod tests {
                 keyframes: None,
                 jitter_ms: 0.0,
                 stalls_ms: None,
+                stalls_between: None,
                 low_budget_fill: 1.0,
+                fill: 1.0,
+                mode: Mode::Office,
+                fps_at: None,
                 one_way_ms: 15.0,
                 max_queue_ms: 300.0,
                 batch_ms: 0.0,
@@ -1338,7 +1406,7 @@ mod tests {
             min_bps: 300_000,
             max_bps: 1_000_000_000,
         };
-        let mut ctl = RateController::new(cfg, Mode::Office, t0);
+        let mut ctl = RateController::new(cfg, s.mode, t0);
         let mut link = Bottleneck {
             busy_until_us: 0,
             one_way_us: (s.one_way_ms * 1e3) as u64,
@@ -1352,6 +1420,9 @@ mod tests {
             stalls: s
                 .stalls_ms
                 .map(|(every, away)| ((every * 1e3) as u64, (away * 1e3) as u64)),
+            stalls_between: s
+                .stalls_between
+                .map(|(from, to)| ((from * 1e6) as u64, (to * 1e6) as u64)),
         };
         let mut frame_noise = Rng(0xFEED_FACE_1234_5678);
         let mut trace = Trace::default();
@@ -1360,7 +1431,7 @@ mod tests {
         let mut rx: VecDeque<(u32, Option<u64>)> = VecDeque::new();
         let mut reports: VecDeque<(u64, TransportFeedback)> = VecDeque::new();
         let (mut seq, mut frame, mut fb_seq) = (0xFFFF_F000u32, 0u32, 0u16);
-        let frame_interval_us = (1e6 / s.fps) as u64;
+        let mut frame_interval_us;
         let (mut next_frame, mut next_audio, mut next_report, mut next_sample) =
             (0u64, 0u64, FEEDBACK_INTERVAL_US, 0u64);
         let end_us = (s.secs * 1e6) as u64;
@@ -1369,26 +1440,29 @@ mod tests {
         while now < end_us {
             let wall = at(now);
             if now >= next_frame {
+                let fps = s.fps_at.map_or(s.fps, |f| f(now as f64 / 1e6));
+                frame_interval_us = (1e6 / fps) as u64;
                 next_frame += frame_interval_us;
                 let alloc = ctl.allocation(wall);
                 let mut video = alloc.video_bps as f64;
                 if let Some(cap) = s.app_cap_bps {
                     video = video.min(cap);
                 }
+                video *= s.fill;
                 if video < 1.0 * MBPS {
                     video *= s.low_budget_fill;
                 }
                 if let Some(demand) = s.app_demand {
                     video = video.min(demand(now as f64 / 1e6));
                 }
-                let mut per_frame = video / 8.0 / s.fps * (0.8 + 0.4 * frame_noise.unit());
+                let mut per_frame = video / 8.0 / fps * (0.8 + 0.4 * frame_noise.unit());
                 if let Some((every, bytes)) = s.keyframes {
-                    let every_frames = (every * s.fps).round().max(1.0) as u32;
+                    let every_frames = (every * fps).round().max(1.0) as u32;
                     if frame % every_frames == 0 {
                         per_frame = per_frame.max(bytes);
                     }
                 }
-                let padding = ctl.probe_padding_bps(wall) as f64 / 8.0 / s.fps;
+                let padding = ctl.probe_padding_bps(wall) as f64 / 8.0 / fps;
                 let wire = per_frame * (1.0 + alloc.fec_ratio) + padding;
                 let packets = (wire / f64::from(PACKET_BYTES)).ceil().max(1.0) as u64;
                 let window = ctl
@@ -1775,6 +1849,181 @@ mod tests {
         assert!(worst_p95 < 150.0, "queue p95 {worst_p95:.0} ms in motion");
         assert!(trace.mean_target(20.0, 60.0) <= 1.2 * capacity);
         assert!(estimate < 10.0 * capacity, "link estimate {estimate}");
+    }
+
+    /// A still screen while the Wi-Fi goes through a bad patch: for a few seconds the
+    /// radio is away most of the time, then the screen moves. agent.log showed 15
+    /// radio stalls in 5 s, an 81 ms queue and a 0.4 Mbit/s receive rate while 0.2
+    /// Mbit/s was sent. That little cannot have built a queue, yet the lasting-queue
+    /// cut took a 17 Mbit/s target to 2 in two seconds, and the still screen kept it
+    /// there for an hour (a blurry picture on a fast link).
+    #[test]
+    fn a_burst_of_wifi_stalls_on_a_still_screen_does_not_cut_the_rate() {
+        let capacity = 100.0 * MBPS;
+        let trace = simulate(Scenario {
+            secs: 25.0,
+            // A still screen sends a frame only when something changes: agent.log
+            // showed 7 a second.
+            fps: 7.0,
+            initial_bps: 20.0 * MBPS,
+            capacity: |_| 100.0 * MBPS,
+            app_demand: Some(|t| if t < 10.0 { 0.2 * MBPS } else { f64::INFINITY }),
+            jitter_ms: 5.0,
+            stalls_ms: Some((300.0, 270.0)),
+            stalls_between: Some((4.0, 7.0)),
+            ..Default::default()
+        });
+        let still = trace.target_at(9.9);
+        let video = trace.first_at_or_above(10.0, 20.0 * MBPS);
+        println!(
+            "[still, Wi-Fi away 270 ms of every 300 for 3 s, video from 10 s, C=100M] target at 9.9 s {:.2} Mbps; 20 Mbps after {:?} s of video",
+            still / MBPS,
+            video.map(|t| t - 10.0)
+        );
+        report("wifi-bad-patch", &trace, 10.0, 25.0, capacity);
+        assert!(
+            still >= 10.0 * MBPS,
+            "the stalls cut a still screen to {still}"
+        );
+        assert!(
+            video.is_some_and(|t| t - 10.0 <= 5.0),
+            "video waited {video:?} s for 20 Mbps"
+        );
+    }
+
+    /// A video (an encoder that fills 65% of its budget) through fifteen seconds of a
+    /// slow link, then the fast one again. Sending 59% of the target read as "nothing
+    /// more to send", so the target stayed where the slow link had left it: agent.log
+    /// showed 2.3 to 2.9 Mbit/s over 45 minutes on a link of tens.
+    #[test]
+    fn a_video_climbs_back_after_a_slow_spell() {
+        let trace = simulate(Scenario {
+            secs: 60.0,
+            initial_bps: 20.0 * MBPS,
+            capacity: |t| {
+                if (5.0..20.0).contains(&t) {
+                    3.0 * MBPS
+                } else {
+                    100.0 * MBPS
+                }
+            },
+            fill: 0.65,
+            mode: Mode::Balanced,
+            ..Default::default()
+        });
+        let low = trace.target_at(19.9);
+        let back = trace.first_at_or_above(20.0, 15.0 * MBPS);
+        println!(
+            "[video filling 65%, 3 Mbit/s from 5 to 20 s, C=100M] target at 19.9 s {:.2} Mbps; 15 Mbps after {:?} s; at 60 s {:.2} Mbps",
+            low / MBPS,
+            back.map(|t| t - 20.0),
+            trace.target_at(59.9) / MBPS
+        );
+        assert!(low <= 4.5 * MBPS, "stayed above the slow link: {low}");
+        assert!(
+            back.is_some_and(|t| t - 20.0 <= 45.0),
+            "the video waited {back:?} s for 15 Mbps"
+        );
+    }
+
+    /// Office work, a video and a game on four kinds of network: a table to compare
+    /// rate-control changes by (`cargo test workloads -- --ignored --nocapture`).
+    #[test]
+    #[ignore = "prints a comparison table"]
+    fn workloads_on_networks() {
+        let workloads: [(&str, Scenario); 3] = [
+            (
+                "office",
+                Scenario {
+                    mode: Mode::Office,
+                    fill: 0.7,
+                    // Still, with two seconds of scrolling every ten.
+                    app_demand: Some(|t| match (t as u64) % 10 {
+                        6 | 7 => f64::INFINITY,
+                        _ => 0.2 * MBPS,
+                    }),
+                    fps_at: Some(|t| match (t as u64) % 10 {
+                        6 | 7 => 60.0,
+                        _ => 7.0,
+                    }),
+                    ..Default::default()
+                },
+            ),
+            (
+                "video",
+                Scenario {
+                    mode: Mode::Balanced,
+                    fill: 0.65,
+                    ..Default::default()
+                },
+            ),
+            (
+                "game",
+                Scenario {
+                    mode: Mode::Game,
+                    ..Default::default()
+                },
+            ),
+        ];
+        type Net = (&'static str, f64, fn(Scenario) -> Scenario);
+        let networks: [Net; 4] = [
+            ("Wi-Fi, light stalls", 100.0, |s| Scenario {
+                initial_bps: 20.0 * MBPS,
+                capacity: |_| 100.0 * MBPS,
+                jitter_ms: 8.0,
+                stalls_ms: Some((1_000.0, 60.0)),
+                ..s
+            }),
+            ("Wi-Fi, bad 3 s at 20 s", 100.0, |s| Scenario {
+                initial_bps: 20.0 * MBPS,
+                capacity: |_| 100.0 * MBPS,
+                jitter_ms: 5.0,
+                stalls_ms: Some((300.0, 270.0)),
+                stalls_between: Some((20.0, 23.0)),
+                ..s
+            }),
+            ("hotspot 5M, 180 ms", 5.0, |s| Scenario {
+                initial_bps: 14.0 * MBPS,
+                capacity: |_| 5.0 * MBPS,
+                jitter_ms: 5.0,
+                one_way_ms: 90.0,
+                max_queue_ms: 1_000.0,
+                batch_ms: 40.0,
+                ..s
+            }),
+            ("far 300 ms, jitter, 1%", 20.0, |s| Scenario {
+                initial_bps: 20.0 * MBPS,
+                capacity: |_| 20.0 * MBPS,
+                random_loss: 0.01,
+                reorder_jitter_ms: 40.0,
+                one_way_ms: 150.0,
+                ..s
+            }),
+        ];
+        println!(
+            "network | workload | target mean, lowest, at 70 s | delivered (Mbit/s) | queue p95, max (ms)"
+        );
+        for (net, capacity, with) in networks {
+            for (work, base) in workloads {
+                let trace = simulate(with(Scenario { secs: 70.0, ..base }));
+                let lowest = trace
+                    .targets
+                    .iter()
+                    .filter(|s| s.0 >= 10.0)
+                    .map(|s| s.1)
+                    .fold(f64::INFINITY, f64::min);
+                let (_, p95, max) = trace.queue_stats(30.0, 70.0);
+                println!(
+                    "{net} | {work} | {:.1}, {:.1}, {:.1} | {:.1} | {:.0}, {:.0}",
+                    trace.mean_target(30.0, 70.0) / MBPS,
+                    lowest / MBPS,
+                    trace.target_at(69.9) / MBPS,
+                    trace.utilization(30.0, 70.0, capacity * MBPS) * capacity,
+                    p95,
+                    max
+                );
+            }
+        }
     }
 
     /// A far path with jitter: 300 ms round trip, each packet up to 40 ms late on its
