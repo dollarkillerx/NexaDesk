@@ -164,6 +164,9 @@ struct Slot {
 
 /// Number of frames tracked at once. §6.2.
 const SLOTS: usize = 16;
+/// With nothing newer arriving, a frame is given up this many deadlines after its
+/// latest shard. See [`Assembler::poll`].
+const SILENT_DEADLINES: u32 = 8;
 
 /// Reassembles one stream. Events are in `frame_id` order: a frame is only
 /// released once everything older is complete or declared lost, because the
@@ -176,6 +179,8 @@ pub struct Assembler {
     /// Oldest frame not yet emitted.
     next: Option<u32>,
     newest_complete_at: Option<(u32, Instant)>,
+    /// When the latest shard of a frame newer than `next` arrived.
+    newer_rx: Option<Instant>,
 }
 
 /// `a` is newer than `b`, with wraparound.
@@ -192,6 +197,7 @@ impl Assembler {
             done: (0..SLOTS).map(|_| None).collect(),
             next: None,
             newest_complete_at: None,
+            newer_rx: None,
         }
     }
 
@@ -210,6 +216,9 @@ impl Assembler {
         let next = *self.next.get_or_insert(h.frame_id);
         if newer(next, h.frame_id) {
             return; // Already emitted or declared lost.
+        }
+        if h.frame_id != next {
+            self.newer_rx = Some(now);
         }
         // A frame too far ahead forces the oldest ones out.
         while h.frame_id.wrapping_sub(self.next.unwrap()) as usize >= SLOTS {
@@ -348,12 +357,25 @@ impl Assembler {
     /// arrive whenever it is paced over several frame intervals or crosses a slow
     /// link (300 kB at 5 Mbit/s: half a second), and counted from its first shard it
     /// could then never be received at all.
+    ///
+    /// And it is a newer frame's shard arriving that late which says so, not the
+    /// clock alone: while nothing arrives, nothing has been shown to be missing. A
+    /// link that hands packets over in batches (a phone's hotspot: every 40 ms) is
+    /// silent between them for longer than game mode's deadline of a frame interval
+    /// and a half, and a frame split over two batches was declared lost with every
+    /// one of its shards on the way: the picture froze for as long as the screen
+    /// moved. With nothing newer at all (the stream stopped), the frame is given up
+    /// after [`SILENT_DEADLINES`] deadlines.
     pub fn poll(&mut self, now: Instant, out: &mut Vec<AssemblerEvent>) {
         while let Some(next) = self.next {
             let i = Self::idx(next);
-            let timed_out = self.slots[i]
-                .as_ref()
-                .is_some_and(|s| s.h.frame_id == next && now >= s.last_rx + self.deadline);
+            let timed_out = self.slots[i].as_ref().is_some_and(|s| {
+                s.h.frame_id == next
+                    && (self
+                        .newer_rx
+                        .is_some_and(|newer| newer >= s.last_rx + self.deadline)
+                        || now >= s.last_rx + self.deadline * SILENT_DEADLINES)
+            });
             let overtaken = self
                 .newest_complete_at
                 .is_some_and(|(id, at)| newer(id, next) && now >= at + self.reorder_grace);
@@ -536,16 +558,89 @@ mod tests {
 
     #[test]
     fn loss_is_declared_by_deadline() {
+        let mut p = Packetizer::default();
+        let f1 = p.packetize(&frame(5000, 2), info(1), 0.0, MAX_DG).unwrap();
+        let f2 = p.packetize(&frame(5000, 3), info(2), 0.0, MAX_DG).unwrap();
+        let ms = Duration::from_millis;
+        let (mut a, t0, mut out) = (asm(), Instant::now(), Vec::new());
+        feed(&mut a, &f1[0], t0, &mut out);
+        // A newer frame's shard inside the deadline says nothing yet...
+        feed(&mut a, &f2[0], t0 + ms(11), &mut out);
+        a.poll(t0 + ms(30), &mut out);
+        assert!(out.is_empty(), "{out:?}");
+        // ...one a deadline after the frame's latest shard does.
+        feed(&mut a, &f2[1], t0 + ms(12), &mut out);
+        a.poll(t0 + ms(12), &mut out);
+        assert_eq!(out, [AssemblerEvent::Lost { frame_id: 1 }]);
+    }
+
+    /// With nothing newer arriving, time alone gives a frame up, but late: the
+    /// stream may only have paused.
+    #[test]
+    fn a_frame_alone_is_given_up_after_a_long_silence() {
         let f = frame(5000, 2);
         let pkts = Packetizer::default()
             .packetize(&f, info(1), 0.0, MAX_DG)
             .unwrap();
+        let ms = Duration::from_millis;
         let (mut a, t0, mut out) = (asm(), Instant::now(), Vec::new());
         feed(&mut a, &pkts[0], t0, &mut out);
-        a.poll(t0 + Duration::from_millis(11), &mut out);
-        assert!(out.is_empty());
-        a.poll(t0 + Duration::from_millis(12), &mut out);
+        a.poll(t0 + ms(95), &mut out);
+        assert!(out.is_empty(), "{out:?}");
+        a.poll(t0 + ms(96), &mut out);
         assert_eq!(out, [AssemblerEvent::Lost { frame_id: 1 }]);
+    }
+
+    /// A phone's hotspot hands packets over every 40 ms; game mode's deadline is 25.
+    /// A frame split over two batches is whole once the second arrives, also when
+    /// the first batch already held shards of the frame after it.
+    #[test]
+    fn a_frame_split_over_two_batches_is_not_lost() {
+        let mut p = Packetizer::default();
+        let frames: Vec<_> = (1..=3u32)
+            .map(|id| {
+                p.packetize(&frame(9000, id as u8), info(id), 0.0, MAX_DG)
+                    .unwrap()
+            })
+            .collect();
+        let ms = Duration::from_millis;
+        let mut a = Assembler::new(ms(25), ms(2));
+        let (t0, mut out) = (Instant::now(), Vec::new());
+        // First batch: frame 1, half of frame 2, and one shard of frame 3 that the
+        // jitter put ahead.
+        let half = frames[1].len() / 2;
+        for pk in frames[0]
+            .iter()
+            .chain(&frames[1][..half])
+            .chain(&frames[2][..1])
+        {
+            feed(&mut a, pk, t0, &mut out);
+        }
+        // The silence between batches, polled every 2 ms as the viewer does.
+        for t in (2..40).step_by(2) {
+            a.poll(t0 + ms(t), &mut out);
+        }
+        assert_eq!(out.len(), 1, "{out:?}");
+        // Second batch: the rest, in the order sent.
+        for pk in frames[1][half..].iter().chain(&frames[2][1..]) {
+            feed(&mut a, pk, t0 + ms(40), &mut out);
+            a.poll(t0 + ms(40), &mut out);
+        }
+        let ids: Vec<u32> = out.iter().map(|e| complete(e).frame_id).collect();
+        assert_eq!(ids, [1, 2, 3]);
+
+        // The same with the rest of frame 2 really lost: the second batch's first
+        // shard of frame 3 says so at once.
+        let mut a = Assembler::new(ms(25), ms(2));
+        let mut out = Vec::new();
+        for pk in frames[0].iter().chain(&frames[1][..half]) {
+            feed(&mut a, pk, t0, &mut out);
+        }
+        a.poll(t0 + ms(39), &mut out);
+        assert_eq!(out.len(), 1, "{out:?}");
+        feed(&mut a, &frames[2][0], t0 + ms(40), &mut out);
+        a.poll(t0 + ms(40), &mut out);
+        assert_eq!(out[1], AssemblerEvent::Lost { frame_id: 2 });
     }
 
     /// A key frame whose shards take longer than the deadline to arrive (paced over
@@ -577,10 +672,26 @@ mod tests {
             feed(&mut a, pk, last, &mut out);
             a.poll(last, &mut out);
         }
+        // Lost once a newer frame's shard arrives a deadline after its last one.
+        let newer = Packetizer::default()
+            .packetize(&frame(500, 4), info(2), 0.0, MAX_DG)
+            .unwrap();
+        feed(
+            &mut a,
+            &newer[0],
+            last + Duration::from_millis(11),
+            &mut out,
+        );
         a.poll(last + Duration::from_millis(11), &mut out);
         assert!(out.is_empty(), "{out:?}");
+        feed(
+            &mut a,
+            &newer[0],
+            last + Duration::from_millis(12),
+            &mut out,
+        );
         a.poll(last + Duration::from_millis(12), &mut out);
-        assert_eq!(out, [AssemblerEvent::Lost { frame_id: 1 }]);
+        assert_eq!(out[0], AssemblerEvent::Lost { frame_id: 1 });
     }
 
     #[test]
@@ -622,10 +733,12 @@ mod tests {
         let f1 = p.packetize(&frame(3000, 1), info(1), 0.0, MAX_DG).unwrap();
         let (mut a, t0, mut out) = (asm(), Instant::now(), Vec::new());
         feed(&mut a, &f1[0], t0, &mut out);
-        a.poll(t0 + Duration::from_millis(12), &mut out);
+        // Given up after the long silence; what comes after that is too late.
+        a.poll(t0 + Duration::from_millis(96), &mut out);
+        assert_eq!(out, [AssemblerEvent::Lost { frame_id: 1 }]);
         out.clear();
         for pk in &f1[1..] {
-            feed(&mut a, pk, t0 + Duration::from_millis(13), &mut out);
+            feed(&mut a, pk, t0 + Duration::from_millis(97), &mut out);
         }
         assert!(out.is_empty());
     }

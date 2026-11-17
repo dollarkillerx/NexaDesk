@@ -643,6 +643,10 @@ impl Viewer {
     }
 
     async fn connect_with(link: &Link, auth: ConnectAuth) -> (Self, Duration) {
+        Self::connect_in(link, auth, mode_under_test()).await
+    }
+
+    async fn connect_in(link: &Link, auth: ConnectAuth, mode: Mode) -> (Self, Duration) {
         let started = Instant::now();
         let dir = tempfile::tempdir().unwrap();
         let probe = Arc::new(ViewerProbe::default());
@@ -673,7 +677,7 @@ impl Viewer {
         let request = ConnectRequest {
             address: link.addr.to_string(),
             tag: 1,
-            mode: Mode::Balanced as i32,
+            mode: mode as i32,
             fps: 0,
             auth: Some(auth),
             signal_server: String::new(),
@@ -849,6 +853,16 @@ async fn scenario(
     let m = measure(&v, &h, secs).await;
     report(name, connect, &m, &link);
     (h, link, v, m)
+}
+
+/// The mode the scenarios run in: Balanced, or `NEXA_E2E_MODE=office|game` to run
+/// the whole suite in another (its limits were set for Balanced).
+fn mode_under_test() -> Mode {
+    match std::env::var("NEXA_E2E_MODE").as_deref() {
+        Ok("office") => Mode::Office,
+        Ok("game") => Mode::Game,
+        _ => Mode::Balanced,
+    }
 }
 
 fn both(imp: Impairment) -> (Impairment, Impairment) {
@@ -1056,6 +1070,47 @@ async fn a_long_outage_reconnects_by_itself() {
     );
     assert!(!v.saw(|b| matches!(b, EventBody::Disconnected(_))));
     assert!(back < Duration::from_secs(10), "{back:?}");
+}
+
+/// Game mode gives a frame a frame interval and a half (25 ms) to arrive, and a
+/// phone's hotspot hands packets over every 40 ms: a frame split over two batches
+/// was declared lost with all of its shards on the way, the key frame sent to repair
+/// it likewise, and the picture stood still for as long as the screen moved (four
+/// seconds and more, in 0.1.14 too).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn game_mode_on_a_phone_hotspot_keeps_its_frames() {
+    // 5 Mbit/s down, 180 ms round trip, a deep buffer, 40 ms batches; the screen is
+    // still for six seconds of every ten and moves for four.
+    let down = Impairment {
+        rate_bps: Some(5_000_000),
+        queue: Duration::from_millis(1000),
+        delay: Duration::from_millis(90),
+        jitter: Duration::from_millis(5),
+        batch: Duration::from_millis(40),
+        ..Impairment::CLEAN
+    };
+    let up = Impairment {
+        delay: Duration::from_millis(90),
+        batch: Duration::from_millis(40),
+        ..Impairment::CLEAN
+    };
+    let h = host().await;
+    *lock(&h.probe.still) = Some(|t| t.as_secs() % 10 < 6);
+    *lock(&h.probe.started) = Some(Instant::now());
+    let link = Link::start(h.addr, up, down).await;
+    let auth = ConnectAuth::Code(h.agent.current_code().to_string());
+    let (v, connect) = Viewer::connect_in(&link, auth, Mode::Game).await;
+    tokio::time::sleep(Duration::from_secs(18)).await;
+    let m = measure(&v, &h, 20).await;
+    report("hotspot 5 Mbit/s, game mode", connect, &m, &link);
+    let queue = link.queue_p95(4000);
+    eprintln!(
+        "    bottleneck queue p95 over the measured part: {} ms",
+        queue.as_millis()
+    );
+    assert!(m.freeze < Duration::from_secs(1), "{m:?}");
+    assert!(m.fps >= 40.0, "{m:?}");
+    assert!(queue < Duration::from_millis(200), "queue {queue:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
