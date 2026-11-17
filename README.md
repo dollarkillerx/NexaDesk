@@ -16,7 +16,7 @@
   <strong>English</strong> | <a href="./README.zh-CN.md">简体中文</a> | <a href="./README.ja-JP.md">日本語</a>
 </p>
 
-> **Status**: the **macOS app is the stable release**, tested in everyday use between two Macs. The browser viewer (screen, control and command line, phones included, across networks through your own server) is tested end to end in Chrome and over a public server. The **Windows app is still a preview with many known problems**: it is not recommended yet.
+> **Status**: the **macOS app is stable**, tested in everyday use between two Macs. The browser viewer (screen, control and command line, phones included, across networks through your own server) is tested end to end in Chrome and over a public server. The **Windows app is stable too**, tested on a real PC both ways: controlled from a Mac or a browser, and controlling a Mac.
 
 ## Features
 
@@ -92,7 +92,7 @@ While controlling, the toolbar sits above the picture (mode, sound, files, HUD, 
 From [GitHub Releases](https://github.com/dollarkillerx/NexaDesk/releases/latest) or the [website](https://nexadesk-bq9.pages.dev/en/):
 
 - **macOS** (Apple silicon, macOS 14+): [NexaDesk-macOS.dmg](https://github.com/dollarkillerx/NexaDesk/releases/latest/download/NexaDesk-macOS.dmg). Signed with a Developer ID and notarized by Apple.
-- **Windows** (x64, Windows 10 / 11, preview with many known problems, not recommended yet): [NexaDesk-win-Setup.exe](https://github.com/dollarkillerx/NexaDesk/releases/latest/download/NexaDesk-win-Setup.exe). Installs per user, no administrator rights needed. Not code-signed yet: if SmartScreen appears, choose **More info → Run anyway**.
+- **Windows** (x64, Windows 10 / 11): [NexaDesk-win-Setup.exe](https://github.com/dollarkillerx/NexaDesk/releases/latest/download/NexaDesk-win-Setup.exe). Installs per user, no administrator rights needed. Not code-signed yet: if SmartScreen appears, choose **More info → Run anyway**.
 
 Both update themselves ([Velopack](https://velopack.io)): they check GitHub Releases at start and then daily, download a new version in the background and show "Restart to update" at the bottom of the main window. They never restart by themselves, since a restart drops remote sessions.
 

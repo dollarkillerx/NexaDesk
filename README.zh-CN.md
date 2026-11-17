@@ -16,7 +16,7 @@
   <a href="./README.md">English</a> | <strong>简体中文</strong> | <a href="./README.ja-JP.md">日本語</a>
 </p>
 
-> **状态**：**macOS 版是正式版**，已在两台 Mac 之间日常使用并验证。浏览器端（查看、控制、命令行，含手机，可经自建服务器跨网络）已在 Chrome 中做过自动化端到端测试，并经公网服务器实测。**Windows 版仍是预览版，已知问题较多**，暂不建议使用。
+> **状态**：**macOS 版是正式版**，已在两台 Mac 之间日常使用并验证。浏览器端（查看、控制、命令行，含手机，可经自建服务器跨网络）已在 Chrome 中做过自动化端到端测试，并经公网服务器实测。**Windows 版也是正式版**，已在实机上验证两个方向：被 Mac 或浏览器控制，以及控制 Mac。
 
 ## 功能特性
 
@@ -92,7 +92,7 @@
 从 [GitHub Releases](https://github.com/dollarkillerx/NexaDesk/releases/latest) 或[官网](https://nexadesk-bq9.pages.dev/)下载：
 
 - **macOS**（Apple 芯片，macOS 14+）：[NexaDesk-macOS.dmg](https://github.com/dollarkillerx/NexaDesk/releases/latest/download/NexaDesk-macOS.dmg)，Developer ID 签名并经 Apple 公证。
-- **Windows**（x64，Windows 10 / 11，预览版，已知问题较多，暂不建议使用）：[NexaDesk-win-Setup.exe](https://github.com/dollarkillerx/NexaDesk/releases/latest/download/NexaDesk-win-Setup.exe)，按用户安装，不需要管理员权限；还没有代码签名，SmartScreen 提示时点**更多信息 → 仍要运行**。
+- **Windows**（x64，Windows 10 / 11）：[NexaDesk-win-Setup.exe](https://github.com/dollarkillerx/NexaDesk/releases/latest/download/NexaDesk-win-Setup.exe)，按用户安装，不需要管理员权限；还没有代码签名，SmartScreen 提示时点**更多信息 → 仍要运行**。
 
 两个版本都会自动更新（[Velopack](https://velopack.io)）：启动后和之后每天检查一次 GitHub Releases，有新版本就在后台下载，主窗口底部显示"重启以更新"。不会自动重启，因为重启会断开远程连接。
 
