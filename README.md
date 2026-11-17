@@ -16,8 +16,6 @@
   <strong>English</strong> | <a href="./README.zh-CN.md">简体中文</a> | <a href="./README.ja-JP.md">日本語</a>
 </p>
 
-> **Status**: the **macOS app is stable**, tested in everyday use between two Macs. The browser viewer (screen, control and command line, phones included, across networks through your own server) is tested end to end in Chrome and over a public server. The **Windows app is stable too**, tested on a real PC both ways: controlled from a Mac or a browser, and controlling a Mac.
-
 ## Features
 
 - **Low-latency picture** - ScreenCaptureKit capture, VideoToolbox hardware HEVC / H.264 with low-latency rate control and long-term reference frames: after a loss only the frames that depend on it are re-referenced, no waiting for a keyframe. Wi-Fi radio stalls are told apart from congestion. A watched display does not sleep; a sleeping one is woken, as with Apple Screen Sharing.
