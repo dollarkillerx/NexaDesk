@@ -44,6 +44,14 @@ pub const ENCODER_MIN_CHANGE: f64 = 0.05;
 pub const PACE_TARGET_FACTOR: f64 = 1.5;
 pub const PACE_CAPACITY_FACTOR: f64 = 0.8;
 pub const PACE_MAX_FRAME_FRACTION: f64 = 0.5;
+/// A frame larger than its budget (a key frame) is spread at the rate the link is
+/// known to take, for at most this long. See [`pacing_window`].
+pub const PACE_MAX_WINDOW: Duration = Duration::from_millis(250);
+/// That rate is what is being sent, not the target, which runs ahead of it while the
+/// picture needs less (up to twice, below the wanted rate): a path is known to take
+/// only what it has carried. But at least this share of the target, so that a key
+/// frame after a still screen is not held back.
+const PACE_PROVEN_FLOOR: f64 = 0.5;
 
 // The values below are not given by §4.9; they follow draft-ietf-rmcat-gcc
 // where it has an equivalent and were otherwise set against the simulator.
@@ -95,6 +103,14 @@ const PROBE_ACCEPT_FACTOR: f64 = 0.85;
 /// leave the rate low for minutes: a still screen does not grow it at all. Cuts come
 /// in steps (the queue cut halves at most, every 500 ms), so one step alone says
 /// little; the drop over a few seconds is what counts.
+///
+/// Only when the link itself fell that far: the receive rate the cut went by is under
+/// the same share of the highest of that window. A sender whose target ran ahead of
+/// what it sends (an encoder that fills 60% of its budget) meets the link's limit at a
+/// receive rate as high as ever, and its cut to 85% of that is well under 66% of the
+/// target: there is no old rate to go back to then, and the probe for it sent half as
+/// much again as the link had ever carried (a 60 to 130 ms queue and a second cut
+/// after every real one).
 const RECOVERY_CUT_BELOW: f64 = 0.66;
 const RECOVERY_DROP_WINDOW: Duration = Duration::from_secs(5);
 /// Below this target, sending under it does not count as app-limited: an encoder
@@ -123,6 +139,10 @@ const RECOVERY_PROBE_MULTIPLIER: f64 = 3.0;
 const RECOVERY_PROBE_DURATION: Duration = Duration::from_millis(300);
 /// Quiet time after a cut or a probe before the next recovery probe.
 const RECOVERY_PROBE_GAP: Duration = Duration::from_millis(500);
+/// A recovery probe starts only while at least this many frames went out in the last
+/// [`SEND_WINDOW_US`] (30 a second): its padding rides on frames, and a still screen
+/// has too few to carry it. The recovery waits for the picture to move.
+const RECOVERY_PROBE_MIN_FRAMES: usize = 15;
 
 /// Queueing delay is how much later than its fastest recent frame a frame's fastest
 /// packet arrived: the least one-way delay of each frame, less the least of those
@@ -147,12 +167,29 @@ const QUEUE_PROBE_LIMIT_US: i64 = 50_000;
 const QUEUE_FRESH: Duration = Duration::from_millis(300);
 /// A cut for a lasting queue keeps at least this share of the target.
 const QUEUE_CUT_FLOOR: f64 = 0.5;
+/// A lasting queue is being fed, not just draining, while at least this share of
+/// what arrives is sent: the link then takes no more than is sent, and the cut goes
+/// by that when it is the lesser. The receive rate alone reads high on a link that
+/// delivers in batches (seven of them in a window six apart: 5.6 for 5 Mbit/s), and
+/// 85% of that was no cut at all for a target just under the link, whose queue then
+/// stood for seconds. Not when less is sent (a key frame's burst on a still screen,
+/// draining): the send rate says nothing about the link then.
+const QUEUE_FED_SHARE: f64 = 0.8;
 /// Sending under this share of the target, a lasting queue is not ours: a still
 /// screen's few frames held by the radio through a bad patch of Wi-Fi (agent.log: 0.2
 /// Mbit/s sent at a 17.5 Mbit/s target, 15 radio stalls in 5 s, an 81 ms queue).
 /// Not the app-limited share: when the screen starts to move on a hotspot, the send
 /// rate takes a few hundred ms to show it, and the queue must be cut meanwhile.
 const QUEUE_OURS_ABOVE: f64 = 0.1;
+/// ...and with less than this many seconds of that rate still on the way (sent, not
+/// yet reported). A queue we built holds our packets: a keyframe or a probe that
+/// filled a slow link is in flight long after the send rate has gone quiet again,
+/// while a still screen held by the radio has next to nothing out there.
+const QUEUE_OURS_FLIGHT_S: f64 = 0.5;
+/// A queue under this is no sign of congestion (where a lasting queue stops
+/// counting, half of [`QUEUE_HIGH_US`]). At or over it, nothing is done that needs
+/// the link to have room: no growth on a half-used target, no new recovery probe.
+const QUEUE_CLEAR_US: i64 = QUEUE_HIGH_US / 2;
 /// The link estimate is the median of the frame trains of this window: a train
 /// delivered in one batch (a cellular link) reads as a link many times faster than
 /// it is, and one such reading used to stay the estimate for good.
@@ -184,21 +221,56 @@ pub fn fec_ratio(loss_ewma: f64, mode: Mode) -> f64 {
     (FEC_LOSS_GAIN * loss_ewma + fec_margin(mode)).clamp(0.0, FEC_MAX)
 }
 
+/// The capacity's side of the pace rate: `0.8 × capacity`, at most four times the
+/// target; zero while the capacity is unknown.
+fn pace_by_capacity(target_bps: u64, capacity_bps: Option<u64>) -> f64 {
+    capacity_bps.map_or(0.0, |c| {
+        (c as f64 * PACE_CAPACITY_FACTOR).min(target_bps as f64 * PACE_CAPACITY_MAX_OF_TARGET)
+    })
+}
+
 /// §4.9 `pace_rate = max(1.5 × target, 0.8 × capacity)`, or `1.5 × target`
 /// when the capacity is unknown.
 pub fn pace_rate_bps(target_bps: u64, capacity_bps: Option<u64>) -> u64 {
     let by_target = target_bps as f64 * PACE_TARGET_FACTOR;
-    let by_capacity = capacity_bps.map_or(0.0, |c| {
-        (c as f64 * PACE_CAPACITY_FACTOR).min(target_bps as f64 * PACE_CAPACITY_MAX_OF_TARGET)
-    });
-    by_target.max(by_capacity) as u64
+    by_target.max(pace_by_capacity(target_bps, capacity_bps)) as u64
 }
 
-/// §4.9 Time over which to spread one frame: `frame_bytes × 8 ÷ pace_rate`,
-/// never more than half a frame interval.
+/// §4.9 Time over which to spread one frame: `frame_bytes × 8 ÷ pace_rate`, at most
+/// half a frame interval.
+///
+/// Except for a frame larger than its budget, a key frame: that one takes as long as
+/// a run of ordinary frames of its size would (less the half interval the last of
+/// them leaves free), at the rate the link is known to take: the target (the
+/// controller passes what it is really sending, see [`PACE_PROVEN_FLOOR`]), or the
+/// capacity's side of the pace rate on a link measured faster. Squeezed into half an
+/// interval, a key frame of four budgets left at eight to sixteen times the target,
+/// some 140 packets in 8 ms. On a path that reorders (a far one, 40 ms of jitter)
+/// QUIC discards as a duplicate any packet that arrives more than 128 packet numbers
+/// late: a fifth of that burst, more than FEC repairs. Every key frame sent to repair
+/// a loss was itself lost, and the picture froze for seconds. On a slow link the
+/// burst only filled the bottleneck's queue. Never over more than
+/// [`PACE_MAX_WINDOW`]: a target that is wrongly low must not hold a key frame back.
 pub fn pacing_window(
     frame_bytes: u64,
     target_bps: u64,
+    capacity_bps: Option<u64>,
+    frame_interval: Duration,
+) -> Duration {
+    pacing_window_at(
+        frame_bytes,
+        target_bps,
+        target_bps as f64,
+        capacity_bps,
+        frame_interval,
+    )
+}
+
+/// [`pacing_window`], with the rate this path has carried given apart from the target.
+fn pacing_window_at(
+    frame_bytes: u64,
+    target_bps: u64,
+    proven_bps: f64,
     capacity_bps: Option<u64>,
     frame_interval: Duration,
 ) -> Duration {
@@ -207,7 +279,11 @@ pub fn pacing_window(
     if rate == 0 {
         return ceiling;
     }
-    Duration::from_secs_f64((frame_bytes as f64 * 8.0 / rate as f64).min(ceiling.as_secs_f64()))
+    let bits = frame_bytes as f64 * 8.0;
+    let ceiling = ceiling.as_secs_f64();
+    let known = proven_bps.max(pace_by_capacity(target_bps, capacity_bps));
+    let as_a_run = (bits / known - ceiling).min(PACE_MAX_WINDOW.as_secs_f64());
+    Duration::from_secs_f64((bits / rate as f64).min(ceiling).max(as_a_run))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -629,6 +705,15 @@ pub struct RateController {
     recover_to: Option<f64>,
     /// The highest target of the last [`RECOVERY_DROP_WINDOW`] and when it was set.
     recent_high: Option<(Instant, f64)>,
+    /// The highest receive rate of the last [`RECOVERY_DROP_WINDOW`]: what the link
+    /// carried.
+    carried_high: Option<(Instant, f64)>,
+    /// The target when the running recovery probe began.
+    probe_from: f64,
+    /// When each of the last frames began to go out (µs), for
+    /// [`RECOVERY_PROBE_MIN_FRAMES`].
+    frame_starts: VecDeque<i64>,
+    last_frame_sent: Option<u32>,
     /// Send time and arrival (µs) of the last packet reported received.
     last_rx: Option<(Instant, i64)>,
     /// Radio stalls seen (see [`STALL_GAP_US`]).
@@ -637,6 +722,8 @@ pub struct RateController {
     last_decrease: Option<Instant>,
     /// Receive rate at the last Overuse, which estimates the bottleneck.
     congestion_point: Option<f64>,
+    /// Frames are waiting to be sent (see [`RateController::set_send_backlog`]).
+    send_backlog: bool,
 }
 
 impl RateController {
@@ -675,11 +762,16 @@ impl RateController {
             last_probe_end: None,
             recover_to: None,
             recent_high: None,
+            carried_high: None,
+            probe_from: 0.0,
+            frame_starts: VecDeque::new(),
+            last_frame_sent: None,
             last_rx: None,
             stalls: 0,
             last_update: None,
             last_decrease: None,
             congestion_point: None,
+            send_backlog: false,
         }
     }
 
@@ -725,6 +817,12 @@ impl RateController {
         self.cfg.max_bps
     }
 
+    /// Whether encoded frames are waiting behind the one being sent. A sender that
+    /// is behind is not idle, however little it got out in the last half second.
+    pub fn set_send_backlog(&mut self, waiting: bool) {
+        self.send_backlog = waiting;
+    }
+
     /// Extra FEC padding to send right now for the startup probe.
     pub fn probe_padding_bps(&self, now: Instant) -> u64 {
         match self.probe_ends {
@@ -763,6 +861,17 @@ impl RateController {
         self.send_meter.add(at, u64::from(p.bytes));
         if p.frame_id.is_some() {
             self.video_meter.add(at, u64::from(p.bytes));
+            if self.last_frame_sent != p.frame_id {
+                self.last_frame_sent = p.frame_id;
+                self.frame_starts.push_back(at);
+            }
+        }
+        while self
+            .frame_starts
+            .front()
+            .is_some_and(|&t| at - t >= SEND_WINDOW_US)
+        {
+            self.frame_starts.pop_front();
         }
     }
 
@@ -822,6 +931,7 @@ impl RateController {
         self.probe_cap = None;
         self.recover_to = None;
         self.recent_high = None;
+        self.carried_high = None;
         self.last_decrease = None;
         self.last_update = Some(now);
     }
@@ -850,10 +960,21 @@ impl RateController {
     }
 
     /// §4.9 pacer window for a frame of `frame_bytes`, repair packets included.
-    pub fn pacing_window(&self, frame_bytes: u64, frame_interval: Duration) -> Duration {
-        pacing_window(
+    pub fn pacing_window(
+        &mut self,
+        frame_bytes: u64,
+        frame_interval: Duration,
+        now: Instant,
+    ) -> Duration {
+        let at = self.micros(now);
+        // No reading yet (the first half second): the target is all there is.
+        let proven = self.send_meter.rate_bps(at).map_or(self.target, |sent| {
+            sent.clamp(PACE_PROVEN_FLOOR * self.target, self.target)
+        });
+        pacing_window_at(
             frame_bytes,
             self.target_bps(),
+            proven,
             self.link_capacity_bps(),
             frame_interval,
         )
@@ -977,15 +1098,25 @@ impl RateController {
         self.last_update = Some(now);
         let at = self.micros(now);
         let recv = self.recv_meter.rate_bps(self.newest_arrival);
-        let sent = self.send_meter.rate_bps(at).unwrap_or(0.0);
+        // No reading yet (the first half second) is not "nothing sent".
+        let measured = self.send_meter.rate_bps(at);
+        let sent = measured.unwrap_or(0.0);
         let wanted = self.cfg.initial_bps.min(self.cfg.max_bps) as f64;
-        let ratio = if self.target < wanted {
+        // Growing on half the target is for a link with room: any queue, or no
+        // fresh reading of it, and the full share is asked for again.
+        let queue_clear = self.queue.current < QUEUE_CLEAR_US
+            && self
+                .queue_read_at
+                .is_some_and(|t| now.saturating_duration_since(t) < QUEUE_FRESH);
+        let ratio = if self.target < wanted && queue_clear {
             APP_LIMITED_RATIO_BELOW_WANTED
         } else {
             APP_LIMITED_RATIO
         };
         let app_limited = self.target >= APP_LIMITED_ABOVE_BPS && sent < ratio * self.target;
-        let idle = sent < QUEUE_OURS_ABOVE * self.target;
+        let idle = measured.is_some_and(|s| s < QUEUE_OURS_ABOVE * self.target)
+            && !self.send_backlog
+            && self.in_flight_bits() < QUEUE_OURS_ABOVE * self.target * QUEUE_OURS_FLIGHT_S;
         let grown = if app_limited {
             self.target
         } else {
@@ -995,7 +1126,18 @@ impl RateController {
         if self.probe_ends.is_some() && self.queue.current >= QUEUE_PROBE_LIMIT_US {
             self.probe_congested = true;
         }
-        let delay_based = self.delay_based(recv, grown, app_limited, idle, now);
+        if let Some(recv) = recv {
+            let stale =
+                |(at, _): (Instant, f64)| now.saturating_duration_since(at) >= RECOVERY_DROP_WINDOW;
+            if self.carried_high.is_none_or(|c| recv >= c.1 || stale(c)) {
+                self.carried_high = Some((now, recv));
+            }
+        }
+        let carrying = match (recv, measured) {
+            (Some(recv), Some(sent)) if sent >= QUEUE_FED_SHARE * recv => Some(recv.min(sent)),
+            _ => recv,
+        };
+        let delay_based = self.delay_based(recv, carrying, grown, app_limited, idle, now);
         let loss_based = self.loss_based(grown, now);
         self.target = delay_based
             .min(loss_based)
@@ -1003,6 +1145,17 @@ impl RateController {
         self.note_drop(now);
         self.finish_probe(recv, now);
         self.maybe_probe_for_recovery(now);
+    }
+
+    /// Bits sent and not yet reported received or lost.
+    fn in_flight_bits(&self) -> f64 {
+        self.history
+            .records
+            .iter()
+            .flatten()
+            .filter(|r| !r.reported_lost)
+            .map(|r| f64::from(r.bytes) * 8.0)
+            .sum()
     }
 
     /// Marks the recent high for recovery once the target has fallen well below it.
@@ -1020,7 +1173,18 @@ impl RateController {
             }
         };
         if self.target < RECOVERY_CUT_BELOW * high {
-            self.recover_to = Some(self.recover_to.map_or(high, |r| r.max(high)));
+            // The receive rate the cut went by, when a cut it was (not loss alone).
+            let cut_at = self
+                .last_decrease
+                .filter(|&t| now.saturating_duration_since(t) < RECOVERY_DROP_WINDOW)
+                .and(self.congestion_point);
+            let link_fell = match (cut_at, self.carried_high) {
+                (Some(at_cut), Some((_, carried))) => at_cut < RECOVERY_CUT_BELOW * carried,
+                _ => true,
+            };
+            if link_fell {
+                self.recover_to = Some(self.recover_to.map_or(high, |r| r.max(high)));
+            }
             self.recent_high = Some((now, self.target));
         }
     }
@@ -1041,12 +1205,15 @@ impl RateController {
             t.is_none_or(|t| now.saturating_duration_since(t) >= RECOVERY_PROBE_GAP)
         };
         if self.probe_ends.is_none()
+            && self.queue.current < QUEUE_CLEAR_US
             && self.detector.state == DelayState::Normal
+            && self.frame_starts.len() >= RECOVERY_PROBE_MIN_FRAMES
             && quiet(self.last_decrease)
             && quiet(self.last_probe_end)
         {
             self.probe_ends = Some(now + RECOVERY_PROBE_DURATION);
             self.probe_congested = false;
+            self.probe_from = self.target;
             self.probe_cap = Some((self.target * RECOVERY_PROBE_MULTIPLIER).min(goal));
         }
     }
@@ -1054,6 +1221,7 @@ impl RateController {
     fn delay_based(
         &mut self,
         recv: Option<f64>,
+        carrying: Option<f64>,
         grown: f64,
         app_limited: bool,
         idle: bool,
@@ -1067,8 +1235,9 @@ impl RateController {
         let fresh = self
             .queue_read_at
             .is_some_and(|t| now.saturating_duration_since(t) < QUEUE_FRESH);
+        // By what the link carries (see [`QUEUE_FED_SHARE`]).
         if fresh && !idle && self.queue.lasting(self.newest_arrival) {
-            return self.cut(recv, now, QUEUE_CUT_FLOOR);
+            return self.cut(carrying, now, QUEUE_CUT_FLOOR);
         }
         match self.detector.state {
             DelayState::Normal => grown,
@@ -1152,7 +1321,7 @@ impl RateController {
             return;
         }
         self.probe_ends = None;
-        self.probe_cap = None;
+        let recovering = self.probe_cap.take().is_some();
         self.last_probe_end = Some(now);
         if let Some(recv) = recv {
             self.capacity = Some(self.capacity.map_or(recv, |c| c.max(recv)));
@@ -1160,6 +1329,13 @@ impl RateController {
                 .target
                 .max(PROBE_ACCEPT_FACTOR * recv)
                 .min(self.cfg.max_bps as f64);
+        }
+        // A recovery probe that lifted nothing has shown all it can (little rode on
+        // it, or the target is within reach of the old one already): the same probe
+        // again would show the same. It used to be sent again every 0.8 s for as long
+        // as the screen stayed still, 300 ms of padding at tens of Mbit/s each time.
+        if recovering && self.target <= self.probe_from {
+            self.recover_to = None;
         }
     }
 }
@@ -1259,6 +1435,8 @@ mod tests {
         /// A keyframe of this many bytes every this many seconds, paced like any
         /// frame (at most half a frame interval): the burst a still screen sends.
         keyframes: Option<(f64, f64)>,
+        /// No keyframes from this time (s) on.
+        keyframes_until: f64,
         /// See [`Bottleneck::jitter_us`].
         jitter_ms: f64,
         /// See [`Bottleneck::stalls`], in ms.
@@ -1295,6 +1473,7 @@ mod tests {
                 app_cap_bps: None,
                 app_demand: None,
                 keyframes: None,
+                keyframes_until: f64::INFINITY,
                 jitter_ms: 0.0,
                 stalls_ms: None,
                 stalls_between: None,
@@ -1318,6 +1497,27 @@ mod tests {
         queue: Vec<(f64, f64)>,
         /// (arrival seconds, bytes) per delivered packet.
         delivered: Vec<(f64, u32)>,
+        /// (seconds, bytes) per packet sent, delivered or not.
+        sent: Vec<(f64, u32)>,
+        /// Every 100 ms, what the controller saw and what the link held.
+        samples: Vec<Sample>,
+    }
+
+    /// One line of [`Trace::dump`].
+    #[derive(Clone, Copy)]
+    struct Sample {
+        t: f64,
+        target: f64,
+        /// Sent over the last 100 ms, bit/s, and how much of it was probe padding.
+        sent: f64,
+        padding: f64,
+        /// The bottleneck's queue, ms, and the controller's reading of it.
+        link_queue_ms: f64,
+        seen_queue_ms: f64,
+        state: DelayState,
+        probing: bool,
+        /// Packets the pacer still holds.
+        pacer: usize,
     }
 
     impl Trace {
@@ -1379,6 +1579,29 @@ mod tests {
                 .map(|q| q.0)
         }
 
+        /// The timeline of `from..to` (s), one line per 100 ms: send rate, target,
+        /// queue, detector state, receive rate and probe state side by side.
+        #[allow(dead_code)]
+        fn dump(&self, from: f64, to: f64) {
+            println!("   t    target   sent  (pad)   recv  link-q seen-q state    probe pacer");
+            for s in self.samples.iter().filter(|s| s.t >= from && s.t < to) {
+                let recv = self.utilization(s.t - 0.1, s.t, MBPS);
+                println!(
+                    "{:6.1} {:7.2} {:6.2} {:6.2} {:6.2} {:6.0} {:6.0} {:8} {:5} {:5}",
+                    s.t,
+                    s.target / MBPS,
+                    s.sent / MBPS,
+                    s.padding / MBPS,
+                    recv,
+                    s.link_queue_ms,
+                    s.seen_queue_ms,
+                    format!("{:?}", s.state),
+                    if s.probing { "probe" } else { "-" },
+                    s.pacer
+                );
+            }
+        }
+
         fn queue_stats(&self, from: f64, to: f64) -> (f64, f64, f64) {
             let mut v: Vec<f64> = self
                 .queue
@@ -1435,6 +1658,7 @@ mod tests {
         let (mut next_frame, mut next_audio, mut next_report, mut next_sample) =
             (0u64, 0u64, FEEDBACK_INTERVAL_US, 0u64);
         let end_us = (s.secs * 1e6) as u64;
+        let (mut sent_bytes, mut padding_bytes) = (0u64, 0.0f64);
 
         let mut now = 0u64;
         while now < end_us {
@@ -1456,17 +1680,21 @@ mod tests {
                     video = video.min(demand(now as f64 / 1e6));
                 }
                 let mut per_frame = video / 8.0 / fps * (0.8 + 0.4 * frame_noise.unit());
-                if let Some((every, bytes)) = s.keyframes {
+                let keyframes = s
+                    .keyframes
+                    .filter(|_| (now as f64) < s.keyframes_until * 1e6);
+                if let Some((every, bytes)) = keyframes {
                     let every_frames = (every * fps).round().max(1.0) as u32;
                     if frame % every_frames == 0 {
                         per_frame = per_frame.max(bytes);
                     }
                 }
                 let padding = ctl.probe_padding_bps(wall) as f64 / 8.0 / fps;
+                padding_bytes += padding;
                 let wire = per_frame * (1.0 + alloc.fec_ratio) + padding;
                 let packets = (wire / f64::from(PACKET_BYTES)).ceil().max(1.0) as u64;
                 let window = ctl
-                    .pacing_window(wire as u64, Duration::from_micros(frame_interval_us))
+                    .pacing_window(wire as u64, Duration::from_micros(frame_interval_us), wall)
                     .as_micros() as u64;
                 for i in 0..packets {
                     tx.push_back((now + window * i / packets, PACKET_BYTES, Some(frame)));
@@ -1483,6 +1711,8 @@ mod tests {
                 let (when, bytes, group) = tx[i];
                 if when <= now {
                     tx.remove(i);
+                    sent_bytes += u64::from(bytes);
+                    trace.sent.push((now as f64 / 1e6, bytes));
                     ctl.on_packet_sent(
                         SentPacket {
                             tx_seq: seq,
@@ -1518,6 +1748,18 @@ mod tests {
             }
             if now >= next_sample {
                 next_sample += 100_000;
+                trace.samples.push(Sample {
+                    t: now as f64 / 1e6,
+                    target: ctl.target_bps() as f64,
+                    sent: sent_bytes as f64 * 80.0,
+                    padding: padding_bytes * 80.0,
+                    link_queue_ms: link.busy_until_us.saturating_sub(now) as f64 / 1e3,
+                    seen_queue_ms: ctl.queue_delay_ms(),
+                    state: ctl.delay_state(),
+                    probing: ctl.probe_padding_bps(wall) > 0,
+                    pacer: tx.len(),
+                });
+                (sent_bytes, padding_bytes) = (0, 0.0);
                 trace.targets.push((
                     now as f64 / 1e6,
                     ctl.target_bps() as f64,
@@ -1926,6 +2168,194 @@ mod tests {
         );
     }
 
+    /// A still screen on a 5 Mbit/s hotspot with a target left at 14 from Wi-Fi: only
+    /// a keyframe now and then, each of which fills the link for half a second. By the
+    /// time that queue counts as lasting, the burst is out of the send-rate window, so
+    /// the near-idle gate took it for a queue that is not ours and kept the 14: the
+    /// first motion then flooded the hotspot. The burst is still in flight, though.
+    #[test]
+    fn a_still_screen_s_keyframes_still_teach_a_slow_link() {
+        let capacity = 5.0 * MBPS;
+        let trace = simulate(Scenario {
+            secs: 40.0,
+            initial_bps: 14.0 * MBPS,
+            capacity: |_| 5.0 * MBPS,
+            app_demand: Some(|t| if t < 30.0 { 0.2 * MBPS } else { f64::INFINITY }),
+            fps_at: Some(|t| if t < 30.0 { 7.0 } else { 60.0 }),
+            keyframes: Some((5.0, 300_000.0)),
+            keyframes_until: 30.0,
+            jitter_ms: 5.0,
+            one_way_ms: 90.0,
+            max_queue_ms: 1_000.0,
+            batch_ms: 40.0,
+            ..Default::default()
+        });
+        let before = trace.target_at(29.9);
+        let (_, p95, max) = trace.queue_stats(30.0, 40.0);
+        println!(
+            "[still + keyframes on a 5M hotspot from 14, motion at 30 s] target at 29.9 s {:.2} Mbps; queue in motion p95 {p95:.0} ms max {max:.0} ms",
+            before / MBPS
+        );
+        assert!(before <= 1.6 * capacity, "the still screen kept {before}");
+        assert!(p95 < 150.0, "queue p95 {p95:.0} ms when the screen moved");
+    }
+
+    /// A video whose encoder fills 60% of its budget, on a 5 Mbit/s link, from a low
+    /// target: growing on half the target must stop when the link is full (a queue
+    /// shows), not go on because the picture wants more.
+    #[test]
+    fn growth_on_half_the_target_stops_at_the_link() {
+        let capacity = 5.0 * MBPS;
+        let trace = simulate(Scenario {
+            secs: 90.0,
+            initial_bps: 14.0 * MBPS,
+            capacity: |_| 5.0 * MBPS,
+            fill: 0.6,
+            mode: Mode::Balanced,
+            jitter_ms: 5.0,
+            one_way_ms: 30.0,
+            max_queue_ms: 1_000.0,
+            ..Default::default()
+        });
+        let (mean, p95, max) = trace.queue_stats(30.0, 90.0);
+        let highest = trace.max_target(30.0, 90.0);
+        println!(
+            "[video filling 60% on 5M, wanted 14] target mean 30-90 s {:.2}, highest {:.2} Mbps; delivered {:.2} Mbps; queue mean {mean:.0} p95 {p95:.0} max {max:.0} ms",
+            trace.mean_target(30.0, 90.0) / MBPS,
+            highest / MBPS,
+            trace.utilization(30.0, 90.0, capacity) * capacity / MBPS
+        );
+        assert!(p95 < 80.0, "queue p95 {p95:.0} ms");
+        // Each cut is to 85% of the link, of which this encoder fills 60%: half the
+        // link, from where the target climbs back. Two thirds on average.
+        assert!(
+            trace.utilization(30.0, 90.0, capacity) > 0.6,
+            "the link is left unused"
+        );
+        assert!(max < 80.0, "queue up to {max:.0} ms");
+    }
+
+    /// A key frame in the middle of motion on a 5 Mbit/s hotspot, with the target
+    /// just under the link: the queue it leaves must be drained, not stand. The
+    /// batches the hotspot delivers in made the receive rate read 5.6, 85% of which
+    /// is no cut for a 4.8 Mbit/s target, so half a second of queue stood for eight.
+    #[test]
+    fn a_queue_left_standing_is_drained() {
+        let trace = simulate(Scenario {
+            secs: 45.0,
+            initial_bps: 4.6 * MBPS,
+            capacity: |_| 5.0 * MBPS,
+            keyframes: Some((30.0, 300_000.0)),
+            jitter_ms: 5.0,
+            one_way_ms: 90.0,
+            max_queue_ms: 1_000.0,
+            batch_ms: 40.0,
+            ..Default::default()
+        });
+        let (_, _, deepest) = trace.queue_stats(30.0, 32.0);
+        let drained = trace
+            .queue
+            .iter()
+            .rev()
+            .find(|q| q.0 < 45.0 && q.1 >= 80.0)
+            .map_or(0.0, |q| q.0 - 30.0);
+        println!(
+            "[key frame in motion on a 5M hotspot] target before {:.2} Mbps; queue up to {deepest:.0} ms, under 80 ms after {drained:.1} s; target at 45 s {:.2} Mbps",
+            trace.target_at(29.9) / MBPS,
+            trace.target_at(44.9) / MBPS
+        );
+        assert!(deepest > 150.0, "no queue to drain: {deepest:.0} ms");
+        // About a second to see it (a queue of half a second delays its own
+        // reading by as much, and must then last half a second), then two to drain.
+        assert!(drained < 4.0, "the queue stood for {drained:.1} s");
+        assert!(trace.target_at(44.9) > 3.0 * MBPS);
+    }
+
+    /// A video, a hiccup on the link that cuts the target, then a still screen that
+    /// still sends its 60 small frames a second. The recovery probes climb back half
+    /// way on padding alone; from there one more shows nothing new, and it used to be
+    /// sent again every 0.8 s for as long as the screen stayed still: 300 ms of
+    /// padding at tens of Mbit/s each time.
+    #[test]
+    fn a_recovery_probe_that_lifts_nothing_is_not_sent_again() {
+        let trace = simulate(Scenario {
+            secs: 30.0,
+            initial_bps: 35.0 * MBPS,
+            capacity: |t| {
+                if (7.0..7.6).contains(&t) {
+                    3.0 * MBPS
+                } else {
+                    100.0 * MBPS
+                }
+            },
+            app_demand: Some(|t| if t < 7.8 { f64::INFINITY } else { 0.3 * MBPS }),
+            ..Default::default()
+        });
+        let probes = |from: f64, to: f64| {
+            let during = trace.samples.iter().filter(|s| s.t >= from && s.t < to);
+            during.filter(|s| s.probing).count()
+        };
+        println!(
+            "[video, hiccup at 7 s, still from 7.8 s, C=100M] target before {:.1}, after the hiccup {:.1}, at 15 s {:.1} Mbps; 100 ms steps with a probe on: {} from 8 to 15 s, {} from 15 to 30 s",
+            trace.target_at(6.9) / MBPS,
+            trace.target_at(8.2) / MBPS,
+            trace.target_at(15.0) / MBPS,
+            probes(8.0, 15.0),
+            probes(15.0, 30.0)
+        );
+        // The probes still run on the still screen, and bring a good part back...
+        assert!(trace.target_at(15.0) >= 0.4 * trace.target_at(6.9));
+        // ...and then stop.
+        assert_eq!(probes(15.0, 30.0), 0);
+    }
+
+    /// The same hiccup, then a screen that is really still: seven frames a second
+    /// cannot carry a probe's padding. None is spent on it, and the recovery waits
+    /// for the picture to move.
+    #[test]
+    fn a_recovery_waits_for_frames_to_carry_its_probes() {
+        let trace = simulate(Scenario {
+            secs: 30.0,
+            initial_bps: 35.0 * MBPS,
+            capacity: |t| {
+                if (7.0..7.6).contains(&t) {
+                    3.0 * MBPS
+                } else {
+                    100.0 * MBPS
+                }
+            },
+            app_demand: Some(|t| {
+                if (7.8..20.0).contains(&t) {
+                    0.2 * MBPS
+                } else {
+                    f64::INFINITY
+                }
+            }),
+            fps_at: Some(|t| if (7.8..20.0).contains(&t) { 7.0 } else { 60.0 }),
+            ..Default::default()
+        });
+        let padded: f64 = trace
+            .samples
+            .iter()
+            .filter(|s| s.t >= 9.0 && s.t < 20.0)
+            .map(|s| s.padding)
+            .sum();
+        let before = trace.target_at(6.9);
+        let back = trace.first_at_or_above(20.0, 0.8 * before);
+        println!(
+            "[video, hiccup at 7 s, 7 frames a second from 7.8 to 20 s, C=100M] target before {:.1}, at 19.9 s {:.1} Mbps; padding while still {:.2} Mbit; back at 80% {:?} s after the picture moves",
+            before / MBPS,
+            trace.target_at(19.9) / MBPS,
+            padded / 10.0 / MBPS,
+            back.map(|t| t - 20.0)
+        );
+        assert_eq!(padded, 0.0, "padding on a still screen");
+        assert!(
+            back.is_some_and(|t| t - 20.0 <= 5.0),
+            "the video waited {back:?} for its old rate"
+        );
+    }
+
     /// Office work, a video and a game on four kinds of network: a table to compare
     /// rate-control changes by (`cargo test workloads -- --ignored --nocapture`).
     #[test]
@@ -2001,7 +2431,7 @@ mod tests {
             }),
         ];
         println!(
-            "network | workload | target mean, lowest, at 70 s | delivered (Mbit/s) | queue p95, max (ms)"
+            "network | workload | target mean, lowest, at 70 s | sent, delivered (Mbit/s) | lost % | queue p95, p99, max (ms) | pacer max (packets) | target back after the bad patch (s)"
         );
         for (net, capacity, with) in networks {
             for (work, base) in workloads {
@@ -2013,13 +2443,52 @@ mod tests {
                     .map(|s| s.1)
                     .fold(f64::INFINITY, f64::min);
                 let (_, p95, max) = trace.queue_stats(30.0, 70.0);
+                let mut queue: Vec<f64> = trace
+                    .queue
+                    .iter()
+                    .filter(|q| q.0 >= 30.0 && q.0 < 70.0)
+                    .map(|q| q.1)
+                    .collect();
+                queue.sort_by(f64::total_cmp);
+                let p99 = queue.get(queue.len() * 99 / 100).copied().unwrap_or(0.0);
+                let bytes = |v: &[(f64, u32)]| -> f64 {
+                    v.iter()
+                        .filter(|p| p.0 >= 30.0 && p.0 < 70.0)
+                        .map(|p| f64::from(p.1))
+                        .sum()
+                };
+                let (sent, delivered) = (bytes(&trace.sent), bytes(&trace.delivered));
+                let pacer = trace
+                    .samples
+                    .iter()
+                    .filter(|s| s.t >= 10.0)
+                    .map(|s| s.pacer)
+                    .max()
+                    .unwrap_or(0);
+                // After the bad patch of the second network (20 to 23 s): when the
+                // target is back at 90% of what it was before.
+                let back = if net.contains("bad 3 s") {
+                    let before = trace.target_at(19.9);
+                    match trace.first_at_or_above(23.0, 0.9 * before) {
+                        Some(t) if trace.target_at(23.0) < 0.9 * before => {
+                            format!("{:.1}", t - 23.0)
+                        }
+                        Some(_) => "0 (no drop)".into(),
+                        None => "never".into(),
+                    }
+                } else {
+                    "-".into()
+                };
                 println!(
-                    "{net} | {work} | {:.1}, {:.1}, {:.1} | {:.1} | {:.0}, {:.0}",
+                    "{net} | {work} | {:.1}, {:.1}, {:.1} | {:.1}, {:.1} | {:.1} | {:.0}, {:.0}, {:.0} | {pacer} | {back}",
                     trace.mean_target(30.0, 70.0) / MBPS,
                     lowest / MBPS,
                     trace.target_at(69.9) / MBPS,
+                    sent * 8.0 / 40.0 / MBPS,
                     trace.utilization(30.0, 70.0, capacity * MBPS) * capacity,
+                    (1.0 - delivered / sent.max(1.0)).max(0.0) * 100.0,
                     p95,
+                    p99,
                     max
                 );
             }
@@ -2560,10 +3029,23 @@ mod tests {
         // A small frame is proportionally shorter.
         let w = pacing_window(10_000, 100_000_000, None, FRAME);
         assert!((w.as_secs_f64() * 1e3 - 0.5333).abs() < 0.01, "{w:?}");
-        // An oversized frame never exceeds half a frame interval.
+        // A frame of exactly its budget still goes out in half a frame interval.
+        let w = pacing_window(frame_bytes, 100_000_000, Some(120_000_000), FRAME);
+        assert!((w.as_secs_f64() * 1e3 - 4.1667).abs() < 0.01, "{w:?}");
+        // A key frame of four times the budget is not squeezed into it: it takes as
+        // long as four frames would, three and a half intervals...
+        let w = pacing_window(4 * frame_bytes, 100_000_000, None, FRAME);
+        assert!((w.as_secs_f64() * 1e3 - 29.167).abs() < 0.01, "{w:?}");
+        // ...but not on a link known to take four times the target: half an
+        // interval as before, and two intervals for ten times the budget.
+        let w = pacing_window(4 * frame_bytes, 100_000_000, Some(1_000_000_000), FRAME);
+        assert!((w.as_secs_f64() * 1e3 - 4.1667).abs() < 0.01, "{w:?}");
+        let w = pacing_window(10 * frame_bytes, 100_000_000, Some(1_000_000_000), FRAME);
+        assert!((w.as_secs_f64() * 1e3 - 16.667).abs() < 0.01, "{w:?}");
+        // Never over more than a quarter of a second, whatever the target says.
         assert_eq!(
             pacing_window(10_000_000, 1_000_000, Some(2_000_000), FRAME),
-            FRAME.mul_f64(0.5)
+            PACE_MAX_WINDOW
         );
         // Zero rate must not divide by zero.
         assert_eq!(pacing_window(1000, 0, None, FRAME), FRAME.mul_f64(0.5));
@@ -2609,7 +3091,7 @@ mod tests {
         assert_eq!(estimate, 32_000_000);
         let frame = Duration::from_millis(16);
         assert_eq!(
-            c.pacing_window(1_000_000, frame),
+            c.pacing_window(1_000_000, frame, t),
             pacing_window(1_000_000, c.target_bps(), Some(estimate), frame)
         );
     }

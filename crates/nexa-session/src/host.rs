@@ -726,11 +726,19 @@ fn run_tx(
     while !stop.load(Relaxed) {
         let f = match frames.recv_timeout(Duration::from_millis(50)) {
             Ok(f) => f,
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                rate.lock().unwrap().set_send_backlog(false);
+                continue;
+            }
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
         };
         let now = Instant::now();
-        let alloc = rate.lock().unwrap().allocation(now);
+        // `depth` counts this frame too: more than one means frames are waiting.
+        let alloc = {
+            let mut rate = rate.lock().unwrap();
+            rate.set_send_backlog(depth.load(Relaxed) > 1);
+            rate.allocation(now)
+        };
         if let Some(bps) = throttle.update(alloc.video_bps, now) {
             stats.encoder_bps.store(bps, Relaxed);
             let _ = cmds.send(Cmd::SetBitrate(bps.min(u64::from(u32::MAX)) as u32));
@@ -756,7 +764,10 @@ fn run_tx(
             continue;
         };
         let bytes: u64 = packets.iter().map(|x| x.len() as u64).sum();
-        let window = rate.lock().unwrap().pacing_window(bytes, interval);
+        let window = rate
+            .lock()
+            .unwrap()
+            .pacing_window(bytes, interval, Instant::now());
         let start = Instant::now();
         let n = packets.len();
         for (i, pkt) in packets.into_iter().enumerate() {
@@ -765,9 +776,14 @@ fn run_tx(
                 wait_until(due);
             }
             // send_datagram silently drops the oldest queued datagram when full.
+            let mut blocked = false;
             while conn.datagram_send_buffer_space() < pkt.len() {
                 if stop.load(Relaxed) || conn.close_reason().is_some() {
                     return;
+                }
+                if !std::mem::replace(&mut blocked, true) {
+                    // QUIC is not taking what the pacer hands it: behind, not idle.
+                    rate.lock().unwrap().set_send_backlog(true);
                 }
                 thread::sleep(Duration::from_micros(100));
             }

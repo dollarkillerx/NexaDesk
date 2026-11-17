@@ -100,6 +100,8 @@ struct LinkState {
     rng: u64,
     /// Everything is lost, both ways.
     cut: bool,
+    /// Until then, everything from the host is lost (see [`Link::lose`]).
+    lose_down_until: Option<Instant>,
 }
 
 impl LinkState {
@@ -115,6 +117,10 @@ impl LinkState {
     fn admit(&mut self, upward: bool, bytes: usize, now: Instant) -> Option<Instant> {
         let (cut, started) = (self.cut, self.started);
         let (r1, r2) = (self.random(), self.random());
+        if !upward && self.lose_down_until.is_some_and(|t| now < t) {
+            self.down.stats.lost += 1;
+            return None;
+        }
         let dir = if upward { &mut self.up } else { &mut self.down };
         let imp = dir.imp;
         let in_burst = imp.bursts.is_some_and(|(every, length)| {
@@ -225,6 +231,7 @@ impl Link {
             started: now,
             rng: 0x9E37_79B9_7F4A_7C15,
             cut: false,
+            lose_down_until: None,
         }));
         // One delivery task per direction, sending in order of arrival time, so a
         // batch goes out in the order it was sent (as a radio hands it over); only
@@ -255,6 +262,11 @@ impl Link {
 
     fn cut(&self, cut: bool) {
         lock(&self.state).cut = cut;
+    }
+
+    /// Loses everything the host sends for the next `time`.
+    fn lose(&self, time: Duration) {
+        lock(&self.state).lose_down_until = Some(Instant::now() + time);
     }
 
     /// The 95th percentile of how long the host's packets waited at the bottleneck,
@@ -302,6 +314,8 @@ type StillScreen = fn(Duration) -> bool;
 struct SizedEncoder {
     fps: u32,
     bps: Arc<AtomicU32>,
+    /// The picture needs no more than this, when not zero.
+    needs_bps: Arc<AtomicU32>,
     key_next: bool,
     still: Option<StillScreen>,
     started: Instant,
@@ -324,7 +338,10 @@ impl Encoder for SizedEncoder {
     ) -> nexa_media::Result<EncodedMeta> {
         let key = o.force_key || self.key_next || id == 0;
         self.key_next = false;
-        let mut size = (self.bps.load(SeqCst) / 8 / self.fps.max(1)) as usize;
+        let needs = self.needs_bps.load(SeqCst);
+        let bps = self.bps.load(SeqCst);
+        let mut size =
+            (if needs > 0 { bps.min(needs) } else { bps } / 8 / self.fps.max(1)) as usize;
         if self
             .still
             .is_some_and(|still| still(self.started.elapsed()))
@@ -358,6 +375,8 @@ impl Encoder for SizedEncoder {
 struct HostProbe {
     moves: Mutex<Vec<(f64, Instant)>>,
     bps: Arc<AtomicU32>,
+    /// See [`SizedEncoder::needs_bps`]; set before connecting.
+    needs_bps: Arc<AtomicU32>,
     /// When the screen is still (see [`SizedEncoder::still`]); set before connecting.
     still: Mutex<Option<StillScreen>>,
     started: Mutex<Option<Instant>>,
@@ -440,6 +459,7 @@ impl Platform for WeakHost {
         Ok(Box::new(SizedEncoder {
             fps: c.fps,
             bps: self.probe.bps.clone(),
+            needs_bps: self.probe.needs_bps.clone(),
             key_next: true,
             still: *lock(&self.probe.still),
             started: lock(&self.probe.started).unwrap_or_else(Instant::now),
@@ -890,6 +910,49 @@ async fn a_far_jittery_link_stays_responsive() {
     assert!(m.fps >= 30.0, "{m:?}");
     assert!(m.freeze < Duration::from_secs(1), "{m:?}");
     assert!(m.input_p95 < Duration::from_millis(450), "{m:?}");
+}
+
+/// A frame lost on a path that reorders is repaired by the next key frame, one round
+/// trip later. That key frame used to leave in half a frame interval: at 20 Mbit/s
+/// some 140 packets in 8 ms, of which QUIC discarded as duplicates the fifth that 40 ms
+/// of jitter delivered more than 128 packet numbers late, so the key frame was lost
+/// too, and the next one, for one to four seconds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_key_frame_survives_a_path_that_reorders() {
+    let (up, down) = both(Impairment {
+        delay: Duration::from_millis(150),
+        jitter: Duration::from_millis(40),
+        ..Impairment::CLEAN
+    });
+    let h = host().await;
+    // A picture that takes 20 Mbit/s: its key frames, four frames each, are 145
+    // packets. (The path itself carries no more than some 30: at 3.2 packets a
+    // millisecond, 40 ms of jitter is 128 packet numbers.)
+    h.probe.needs_bps.store(20_000_000, SeqCst);
+    let link = Link::start(h.addr, up, down).await;
+    let (v, _) = Viewer::connect(&h, &link).await;
+    until("20 Mbit/s", Duration::from_secs(40), || {
+        h.probe.bps.load(SeqCst) >= 20_000_000
+    })
+    .await;
+    let mut worst = Duration::ZERO;
+    for _ in 0..4 {
+        let lost = Instant::now();
+        // Most of a frame, whichever one is on its way: more than FEC repairs.
+        link.lose(Duration::from_millis(12));
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        // The longest time without a new picture, up to now if none came back.
+        let mut shown = v.shown_since(lost);
+        shown.push(Instant::now());
+        let freeze = shown.windows(2).map(|w| w[1] - w[0]).max().unwrap();
+        eprintln!(
+            "a frame lost at 20 Mbit/s, 300 ms RTT, 40 ms jitter: no picture for {} ms",
+            freeze.as_millis()
+        );
+        worst = worst.max(freeze);
+    }
+    // One round: the loss noticed, the report up, the key frame down.
+    assert!(worst < Duration::from_millis(800), "{worst:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
