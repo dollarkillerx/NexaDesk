@@ -359,6 +359,10 @@ public sealed partial class SessionViewModel : ObservableObject
                     ? L.Format("Session.PasteTimedOut", g.WaitedMs)
                     : L.Format("Session.PasteWaited", g.WaitedMs);
                 break;
+            case ClipboardNoticeEvent { Code: ClipboardCode.Idle }:
+                // The copy that was on its way is not any more: the ordinary line again.
+                ClipboardText = L.Get("Session.ClipboardSync");
+                break;
             case ClipboardNoticeEvent n:
                 ClipboardText = L.Format("Session.ClipboardNotice", Messages.Clipboard(n));
                 break;

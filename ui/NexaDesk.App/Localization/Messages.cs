@@ -29,8 +29,16 @@ public static class Messages
         ClipboardCode.WriteFailed => L.Get("Messages.ClipWriteFailed"),
         ClipboardCode.FetchFailed => L.Format("Messages.ClipFetchFailed", ClipKind(n.Kind)),
         ClipboardCode.Unavailable => L.Format("Messages.ClipUnavailable", n.Detail),
+        ClipboardCode.Receiving => L.Format("Messages.ClipReceiving", ClipKind(n.Kind), Percent(n), n.Size / 1048576.0),
+        ClipboardCode.Sending => L.Format("Messages.ClipSending", ClipKind(n.Kind), Percent(n), n.Size / 1048576.0),
+        ClipboardCode.Received => L.Format("Messages.ClipReceived", ClipKind(n.Kind)),
+        ClipboardCode.Sent => L.Format("Messages.ClipSent", ClipKind(n.Kind)),
         _ => n.Text,
     };
+
+    /// <summary>How far a large copy is, never 100 before it is across.</summary>
+    static int Percent(ClipboardNoticeEvent n) =>
+        n.Size == 0 ? 0 : (int)Math.Min(99, n.Done * 100 / n.Size);
 
     static string ClipKind(string kind) => kind switch
     {

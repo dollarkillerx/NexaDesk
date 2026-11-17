@@ -28,7 +28,9 @@ use nexa_net::{
 use nexa_session::{
     SessionError,
     bulk::{BulkLimiter, UplinkScavenger},
-    clip::{ClipCallbacks, ClipChannel, ClipHandle, ClipSession},
+    clip::{
+        ClipCallbacks, ClipChannel, ClipDirection, ClipHandle, ClipProgress, ClipSession, ClipStage,
+    },
     framed::{FramedSend, accept_bi, open_bi, open_uni},
     handshake::{
         ControlChannel, FLUSH_TIMEOUT, Timeouts, ViewerAccepted, ViewerAuth, ViewerConfig,
@@ -1223,6 +1225,7 @@ fn start_input(
             key_source: core.deps.key_source(tx.clone()),
             fallback: session.fallback.clone(),
             clip: session.clip.clone(),
+            commands: tx.clone(),
             view: session.view.clone(),
             events: core.events.clone(),
             tag: session.tag,
@@ -1571,6 +1574,7 @@ async fn stream_session(
                 let release_to = session.input_tx.clone();
                 let progress_to = session.input_tx.clone();
                 let events = core.events.clone();
+                let progress_events = core.events.clone();
                 let started = channel.spawn(
                     backend,
                     device_id,
@@ -1584,6 +1588,10 @@ async fn stream_session(
                         }),
                         on_notice: Box::new(move |notice| {
                             events.send(tag, EventBody::Clipboard(clipboard_notice(notice)));
+                        }),
+                        on_progress: Box::new(move |progress| {
+                            progress_events
+                                .send(tag, EventBody::Clipboard(clipboard_progress(progress)));
                         }),
                     },
                     bulk.clone(),
@@ -1850,15 +1858,56 @@ async fn accept_host_streams(conn: Connection, transfers: Option<Transfers>) {
     }
 }
 
-/// A clipboard status for the toolbar: a code the UI words, and an English fallback.
-fn clipboard_notice(n: nexa_clip::ClipNotice) -> ClipboardNotice {
-    use nexa_clip::{ClipKind, ClipNotice as N};
-    let kind_name = |k: ClipKind| match k {
+fn clip_kind_name(kind: nexa_clip::ClipKind) -> &'static str {
+    use nexa_clip::ClipKind;
+    match kind {
         ClipKind::Text => "text",
         ClipKind::Html => "html",
         ClipKind::Rtf => "rtf",
         ClipKind::Png => "png",
+    }
+}
+
+/// A large copy on its way, for the toolbar's clipboard line.
+fn clipboard_progress(p: ClipProgress) -> ClipboardNotice {
+    let code = match (p.stage, p.direction) {
+        (ClipStage::Moving, ClipDirection::Receiving) => ClipboardCode::Receiving,
+        (ClipStage::Moving, ClipDirection::Sending) => ClipboardCode::Sending,
+        (ClipStage::Done, ClipDirection::Receiving) => ClipboardCode::Received,
+        (ClipStage::Done, ClipDirection::Sending) => ClipboardCode::Sent,
+        (ClipStage::Dropped, _) => ClipboardCode::Idle,
     };
+    let kind = clip_kind_name(p.kind);
+    let mb = |bytes: u64| bytes as f64 / 1_048_576.0;
+    let text = match code {
+        ClipboardCode::Receiving => format!(
+            "receiving {kind} from the host: {:.1} of {:.1} MB",
+            mb(p.done),
+            mb(p.size)
+        ),
+        ClipboardCode::Sending => format!(
+            "sending {kind} to the host: {:.1} of {:.1} MB",
+            mb(p.done),
+            mb(p.size)
+        ),
+        ClipboardCode::Received => format!("{kind} from the host is ready to paste"),
+        ClipboardCode::Sent => format!("the host has the {kind}"),
+        _ => "synced both ways".to_owned(),
+    };
+    ClipboardNotice {
+        text,
+        code: code as i32,
+        kind: kind.to_owned(),
+        size: p.size,
+        done: p.done,
+        ..Default::default()
+    }
+}
+
+/// A clipboard status for the toolbar: a code the UI words, and an English fallback.
+fn clipboard_notice(n: nexa_clip::ClipNotice) -> ClipboardNotice {
+    use nexa_clip::ClipNotice as N;
+    let kind_name = clip_kind_name;
     let (code, kind, size) = match n {
         N::SensitiveKeptLocal => (ClipboardCode::SensitiveKeptLocal, "", 0),
         N::TooLarge { kind, size } => (ClipboardCode::TooLarge, kind_name(kind), size),
@@ -1872,6 +1921,7 @@ fn clipboard_notice(n: nexa_clip::ClipNotice) -> ClipboardNotice {
         kind: kind.into(),
         size,
         detail: String::new(),
+        done: 0,
     }
 }
 

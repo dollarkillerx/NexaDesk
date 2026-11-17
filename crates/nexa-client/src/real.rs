@@ -140,6 +140,9 @@ impl ClipPlatform for GeneralClipboard {
     fn poll(&mut self) -> nexa_clip::Result<Option<LocalSnapshot>> {
         self.0.poll()
     }
+    fn current(&mut self) -> nexa_clip::Result<Option<LocalSnapshot>> {
+        Ok(Some(self.0.snapshot()))
+    }
 }
 
 fn qos_user_interactive() {

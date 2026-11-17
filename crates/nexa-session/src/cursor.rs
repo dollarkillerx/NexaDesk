@@ -153,9 +153,9 @@ pub struct CursorStats {
 pub struct CursorTracker {
     /// Shape ids the viewer has, oldest first.
     sent: VecDeque<u64>,
-    /// What the viewer was last told: `Some(id)` showing, `None` hidden. Outer `None`:
-    /// nothing yet.
-    told: Option<Option<u64>>,
+    /// What the viewer was last told: the shape in use (0 for none) and whether it is
+    /// hidden. `None`: nothing yet.
+    told: Option<(u64, bool)>,
     current: Option<WireShape>,
     /// The image `current` was made from, so an unchanged image is not hashed again.
     last_image: Option<Arc<CursorImage>>,
@@ -232,17 +232,21 @@ impl CursorTracker {
             }
         }
 
-        let showing = match (&self.current, sample.visible) {
-            (Some(shape), true) => Some(shape.id),
-            _ => None,
+        // The shape goes along while the cursor is hidden too. A Mac hides it on a key
+        // press and goes on reporting it hidden while injected moves come in, so the
+        // viewer shows it again as soon as its own pointer moves, and must know which
+        // shape that is by then (an arrow now, an I-beam when it was hidden).
+        let state = match &self.current {
+            Some(shape) => (shape.id, !sample.visible),
+            None => (0, true),
         };
-        if self.told != Some(showing) {
+        if self.told != Some(state) {
             out.push(ControlBody::CursorSet(CursorSet {
-                id: showing.unwrap_or(0),
-                hidden: showing.is_none(),
+                id: state.0,
+                hidden: state.1,
             }));
             self.stats.sets_sent += 1;
-            self.told = Some(showing);
+            self.told = Some(state);
         }
 
         let Some((x, y)) = sample.position else {
@@ -682,6 +686,55 @@ pub(crate) mod tests {
             ["set"],
             "resync repeats the state, not the shape"
         );
+    }
+
+    /// A Mac reports its cursor hidden from a key press on, for as long as only injected
+    /// moves come in. The viewer shows it again when its own pointer moves, so it has to
+    /// hear which shape the cursor has meanwhile.
+    #[test]
+    fn a_hidden_cursor_still_says_which_shape_it_has() {
+        let (arrow_shape, beam) = (arrow(1.0, 1), arrow(1.0, 2));
+        let mut t = CursorTracker::new();
+        let inj = InjectHistory::default();
+        let mut out = Vec::new();
+        let now = Instant::now();
+        t.update(&sample(&beam, true, None), &Geo, &inj, now, &mut out);
+        let Some(ControlBody::CursorSet(shown)) = out.last().cloned() else {
+            panic!("{out:?}")
+        };
+        out.clear();
+        // Typing hides it: the same shape, hidden.
+        t.update(&sample(&beam, false, None), &Geo, &inj, now, &mut out);
+        let [ControlBody::CursorSet(hidden)] = out.as_slice() else {
+            panic!("{out:?}")
+        };
+        assert!(hidden.hidden);
+        assert_eq!(hidden.id, shown.id);
+        out.clear();
+        // The pointer leaves the text while the Mac still says hidden: the new shape is
+        // sent, and named.
+        t.update(
+            &sample(&arrow_shape, false, None),
+            &Geo,
+            &inj,
+            now,
+            &mut out,
+        );
+        let [ControlBody::CursorShape(shape), ControlBody::CursorSet(set)] = out.as_slice() else {
+            panic!("{out:?}")
+        };
+        assert!(set.hidden);
+        assert_eq!(set.id, shape.id);
+        assert_ne!(set.id, shown.id);
+        out.clear();
+        t.update(
+            &sample(&arrow_shape, false, None),
+            &Geo,
+            &inj,
+            now,
+            &mut out,
+        );
+        assert!(out.is_empty(), "said once");
     }
 
     #[test]
