@@ -12,6 +12,7 @@
 //! fallback.
 
 use std::{
+    collections::VecDeque,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::{Arc, Once, atomic::Ordering::Relaxed},
     time::{Duration, Instant},
@@ -85,6 +86,109 @@ struct Tuning {
     reduced: bool,
     poor_since: Option<Instant>,
     good_since: Option<Instant>,
+}
+
+/// The stream's rate on a LAN, where str0m's estimate is not used (see [`prepare`]). A
+/// mostly still screen sends so little that one burst of jitter, a Wi-Fi radio waking
+/// up, cut that estimate to a fraction of almost nothing, and str0m then paced every
+/// frame at it: on a LAN at 3 ms with no loss the picture was 1280×720 at 0.3 Mbit/s,
+/// and late. Here the rate grows every second the browser reports neither loss nor a
+/// queue, and backs off when either lasts beyond one report.
+pub(crate) struct LanRate {
+    bps: f64,
+    min_bps: f64,
+    max_bps: f64,
+    /// Round trips of the last minute, for the lowest.
+    rtts: VecDeque<(Instant, Duration)>,
+    /// Reports in a row that showed congestion.
+    bad: u32,
+}
+
+impl LanRate {
+    /// How often the browser's reports are read.
+    pub(crate) const EVERY: Duration = Duration::from_secs(1);
+    /// Per clean report: from the 8 Mbit/s start to 25 Mbit/s in three seconds.
+    const GROWTH: f64 = 1.5;
+    const BACKOFF: f64 = 0.7;
+    /// Loss from this on is congestion, not noise.
+    const LOSSY: f32 = 0.02;
+    /// A round trip this much over the lowest of the last minute is a queue.
+    const QUEUE: Duration = Duration::from_millis(60);
+    const HISTORY: Duration = Duration::from_secs(60);
+
+    pub(crate) fn new(config: &WebConfig) -> Self {
+        Self {
+            bps: f64::from(config.start_bitrate_bps),
+            min_bps: f64::from(config.min_bitrate_bps),
+            max_bps: f64::from(config.max_bitrate_bps),
+            rtts: VecDeque::new(),
+            bad: 0,
+        }
+    }
+
+    /// One report: the loss toward the browser and the round trip, if it said. Returns
+    /// the rate to send at.
+    pub(crate) fn update(&mut self, loss: Option<f32>, rtt: Option<Duration>, now: Instant) -> u64 {
+        if let Some(rtt) = rtt {
+            self.rtts.push_back((now, rtt));
+        }
+        while self
+            .rtts
+            .front()
+            .is_some_and(|(t, _)| now.saturating_duration_since(*t) > Self::HISTORY)
+        {
+            self.rtts.pop_front();
+        }
+        let lowest = self.rtts.iter().map(|(_, r)| *r).min();
+        let queued = rtt
+            .zip(lowest)
+            .is_some_and(|(r, low)| r > low + Self::QUEUE);
+        let lossy = loss.is_some_and(|l| l >= Self::LOSSY);
+        self.bad = if queued || lossy { self.bad + 1 } else { 0 };
+        // One bad report on Wi-Fi is a hiccup; two in a row is the link.
+        if self.bad >= 2 {
+            self.bps *= Self::BACKOFF;
+        } else if self.bad == 0 {
+            self.bps *= Self::GROWTH;
+        }
+        self.bps = self.bps.clamp(self.min_bps, self.max_bps);
+        self.bps as u64
+    }
+}
+
+/// Whether the browser reached this host on a private address: a LAN, where bandwidth is
+/// seldom what limits the stream. A Tailscale address (100.64/10) may cross the internet.
+pub(crate) fn is_lan(ip: IpAddr) -> bool {
+    match ip.to_canonical() {
+        IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
+        IpAddr::V6(v6) => {
+            let first = v6.segments()[0];
+            // Unique local (fc00::/7) and link-local (fe80::/10).
+            first & 0xfe00 == 0xfc00 || first & 0xffc0 == 0xfe80
+        }
+    }
+}
+
+/// A new rate for the stream, from str0m's estimate or [`LanRate`]: Auto may step down
+/// or back up, and the media thread takes it within the quality's range.
+fn rate_changed(
+    bps: u64,
+    tuning: &mut Tuning,
+    control: Option<&Arc<Control>>,
+    rtc: &mut Rtc,
+    channel: Option<str0m::channel::ChannelId>,
+    config: &WebConfig,
+) {
+    if tuning.observe(bps, Instant::now()) {
+        tuning.apply(control, rtc, channel, config);
+    }
+    if let Some(c) = control {
+        let bps = bps.clamp(
+            u64::from(config.min_bitrate_bps.min(300_000)),
+            u64::from(config.max_bitrate_bps),
+        );
+        c.bitrate.store(bps as u32, Relaxed);
+    }
 }
 
 impl Tuning {
@@ -216,6 +320,8 @@ pub(crate) struct Prepared {
     pub net: Net,
     pub answer: SdpAnswer,
     pub host_fingerprint: [u8; 32],
+    /// The browser is on a LAN: the stream runs on [`LanRate`], not str0m's estimate.
+    pub lan: bool,
 }
 
 /// How long the TURN server has to give us an allocation.
@@ -228,6 +334,7 @@ pub(crate) async fn prepare(
     config: &WebConfig,
 ) -> Result<Prepared, String> {
     let offer = SdpOffer::from_sdp_string(offer).map_err(|e| format!("offer: {e}"))?;
+    let lan = matches!(path, Path::Direct(ip) if is_lan(ip));
     let (net, candidate) = match path {
         Path::Direct(ip) => {
             let ip = ip.to_canonical();
@@ -270,12 +377,18 @@ pub(crate) async fn prepare(
             (net, candidate)
         }
     };
-    let mut rtc = RtcConfig::new()
+    let rtc_config = RtcConfig::new()
         .set_ice_lite(true)
         .clear_codecs()
-        .enable_h264(true)
-        .enable_bwe(Some(Bitrate::bps(u64::from(config.start_bitrate_bps))))
-        .build(Instant::now());
+        .enable_h264(true);
+    // On a LAN no estimate, and so no pacing at it: the browser's reports drive the rate
+    // (`LanRate`). Elsewhere str0m's estimate, which a slow or shared path needs.
+    let rtc_config = if lan {
+        rtc_config.set_stats_interval(Some(LanRate::EVERY))
+    } else {
+        rtc_config.enable_bwe(Some(Bitrate::bps(u64::from(config.start_bitrate_bps))))
+    };
+    let mut rtc = rtc_config.build(Instant::now());
     rtc.add_local_candidate(candidate);
     let answer = rtc
         .sdp_api()
@@ -294,6 +407,7 @@ pub(crate) async fn prepare(
         net,
         answer,
         host_fingerprint,
+        lan,
     })
 }
 
@@ -400,10 +514,12 @@ fn pick_h264(params: &[PayloadParams]) -> Option<&PayloadParams> {
 pub(crate) async fn drive(
     rtc: Rtc,
     mut net: Net,
+    lan: bool,
     cmds: mpsc::Receiver<Cmd>,
     config: WebConfig,
 ) -> Ended {
-    let ended = run(rtc, &mut net, cmds, config).await;
+    let lan = lan.then(|| LanRate::new(&config));
+    let ended = run(rtc, &mut net, lan, cmds, config).await;
     // Give the relay back rather than leave it to expire.
     if let Net::Turn { client, .. } = &mut net {
         client.close(Instant::now());
@@ -415,6 +531,7 @@ pub(crate) async fn drive(
 async fn run(
     mut rtc: Rtc,
     net: &mut Net,
+    mut lan: Option<LanRate>,
     mut cmds: mpsc::Receiver<Cmd>,
     config: WebConfig,
 ) -> Ended {
@@ -589,16 +706,27 @@ async fn run(
                     }
                     Event::EgressBitrateEstimate(BweKind::Twcc { estimate, .. }) => {
                         let bps = (estimate.as_u64() as f64 * 0.85) as u64;
-                        if tuning.observe(bps, Instant::now()) {
-                            tuning.apply(control.as_ref(), &mut rtc, input_channel, &config);
-                        }
-                        if let Some(c) = &control {
-                            // The media thread keeps it within the quality's range.
-                            let bps = bps.clamp(
-                                u64::from(config.min_bitrate_bps.min(300_000)),
-                                u64::from(config.max_bitrate_bps),
+                        rate_changed(
+                            bps,
+                            &mut tuning,
+                            control.as_ref(),
+                            &mut rtc,
+                            input_channel,
+                            &config,
+                        );
+                    }
+                    Event::PeerStats(stats) => {
+                        if let Some(lan) = lan.as_mut() {
+                            let bps =
+                                lan.update(stats.egress_loss_fraction, stats.rtt, Instant::now());
+                            rate_changed(
+                                bps,
+                                &mut tuning,
+                                control.as_ref(),
+                                &mut rtc,
+                                input_channel,
+                                &config,
                             );
-                            c.bitrate.store(bps as u32, Relaxed);
                         }
                     }
                     _ => {}
@@ -909,6 +1037,65 @@ mod tests {
         );
         assert_eq!(resolution_request(br#"{"t":"s","m":"16k"}"#), None);
         assert_eq!(resolution_request(br#"{"t":"q","m":"weak"}"#), None);
+    }
+
+    #[test]
+    fn private_addresses_are_a_lan_and_tailscale_is_not() {
+        for lan in [
+            "192.168.0.86",
+            "10.1.2.3",
+            "172.20.0.1",
+            "169.254.1.1",
+            "fe80::1",
+            "fd7a::1",
+        ] {
+            assert!(is_lan(lan.parse().unwrap()), "{lan}");
+        }
+        for far in [
+            "100.101.102.103",
+            "8.8.8.8",
+            "2001:db8::1",
+            "::ffff:8.8.8.8",
+        ] {
+            assert!(!is_lan(far.parse().unwrap()), "{far}");
+        }
+        assert!(is_lan("::ffff:192.168.1.2".parse().unwrap()));
+    }
+
+    #[test]
+    fn a_lan_stream_grows_while_clean_and_shrugs_off_one_hiccup() {
+        let config = WebConfig::default();
+        let mut lan = LanRate::new(&config);
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        let ms = Duration::from_millis;
+        // Clean reports: from the start to the ceiling within a few seconds.
+        let mut bps = 0;
+        for s in 0..4 {
+            bps = lan.update(Some(0.0), Some(ms(3)), at(s));
+        }
+        assert_eq!(bps, u64::from(config.max_bitrate_bps));
+        // One Wi-Fi spike: held, not cut.
+        assert_eq!(lan.update(Some(0.0), Some(ms(180)), at(4)), bps);
+        assert_eq!(lan.update(Some(0.0), Some(ms(4)), at(5)), bps);
+        // Loss that lasts: cut, and cut again.
+        let first = lan.update(Some(0.05), Some(ms(3)), at(6));
+        assert_eq!(first, bps);
+        let cut = lan.update(Some(0.05), Some(ms(3)), at(7));
+        assert!(cut < bps, "{cut} < {bps}");
+        assert!(lan.update(Some(0.05), Some(ms(3)), at(8)) < cut);
+        // A queue that lasts is congestion too.
+        let mut queued = LanRate::new(&config);
+        for s in 0..4 {
+            queued.update(Some(0.0), Some(ms(3)), at(s));
+        }
+        queued.update(None, Some(ms(120)), at(4));
+        assert!(queued.update(None, Some(ms(120)), at(5)) < u64::from(config.max_bitrate_bps));
+        // Never under the floor.
+        for s in 10..60 {
+            bps = lan.update(Some(0.5), None, at(s));
+        }
+        assert_eq!(bps, u64::from(config.min_bitrate_bps));
     }
 
     #[test]

@@ -101,8 +101,10 @@ const REFERENCE_PIXELS: u64 = 1920 * 1200;
 const MOST_BPS: u32 = 50_000_000;
 
 /// `p` with its picture size set by `resolution`. `window` is the browser window in device
-/// pixels, for Auto. A preset made small for a weak network stays at least that small;
-/// a larger picture gets a proportionally higher bitrate ceiling.
+/// pixels, for Auto. Left on Auto, a preset made small for a weak network stays at least
+/// that small; a size the person chose is the size they get (picking 1080p while Auto had
+/// stepped down did nothing before). A larger picture gets a proportionally higher
+/// bitrate ceiling.
 pub(crate) fn sized(p: Preset, resolution: Resolution, window: Option<(u32, u32)>) -> Preset {
     let wanted = match resolution {
         Resolution::Auto => match window {
@@ -113,7 +115,8 @@ pub(crate) fn sized(p: Preset, resolution: Resolution, window: Option<(u32, u32)
         // The width follows the screen's shape.
         Resolution::Lines(lines) => (LARGEST.0, lines),
     };
-    let small = u64::from(p.max_size.0) * u64::from(p.max_size.1) < REFERENCE_PIXELS;
+    let small = resolution == Resolution::Auto
+        && u64::from(p.max_size.0) * u64::from(p.max_size.1) < REFERENCE_PIXELS;
     let max_size = if small {
         (wanted.0.min(p.max_size.0), wanted.1.min(p.max_size.1))
     } else {
@@ -525,11 +528,20 @@ mod tests {
         let lines = sized(full, Resolution::Lines(720), None);
         assert_eq!(stream_size((2560, 1600), lines.max_size), (1152, 720));
         assert_eq!(lines.max_bps, full.max_bps);
-        // A weak network keeps its small picture.
+        // A weak network keeps its small picture, unless a size is chosen.
         let weak = preset(Quality::Weak, false, &c);
         assert_eq!(
-            sized(weak, Resolution::Native, None).max_size,
+            sized(weak, Resolution::Auto, Some(retina)).max_size,
             weak.max_size
+        );
+        assert_eq!(sized(weak, Resolution::Native, None).max_size, LARGEST);
+        let reduced = preset(Quality::Auto, true, &c);
+        assert_eq!(
+            stream_size(
+                (2560, 1440),
+                sized(reduced, Resolution::Lines(1080), None).max_size
+            ),
+            (1920, 1080)
         );
         for r in ["auto", "native", "1080", "720"] {
             assert_eq!(Resolution::parse(r).unwrap().name(), r);

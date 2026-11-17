@@ -277,6 +277,7 @@ pub(crate) async fn run(mut ws: Pipe, peer: SocketAddr, path: rtc::Path, shared:
     let mut driver = tokio::spawn(rtc::drive(
         prepared.rtc,
         prepared.net,
+        prepared.lan,
         cmd_rx,
         shared.config.clone(),
     ));
