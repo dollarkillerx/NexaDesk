@@ -16,7 +16,7 @@
   <strong>English</strong> | <a href="./README.zh-CN.md">简体中文</a> | <a href="./README.ja-JP.md">日本語</a>
 </p>
 
-> **Status**: preview. macOS ↔ macOS is in everyday use; the browser viewer (screen, control and command line, phones included, across networks through your own server) is tested end to end in Chrome and over a public server. The Windows app can be controlled and, since 0.1.5, can control a Mac, but neither has been tried on real hardware yet. Not recommended for anything critical yet.
+> **Status**: the **macOS app is the stable release**, tested in everyday use between two Macs. The browser viewer (screen, control and command line, phones included, across networks through your own server) is tested end to end in Chrome and over a public server. The **Windows app is still a preview with many known problems**: it is not recommended yet.
 
 ## Features
 
@@ -92,7 +92,7 @@ While controlling, the toolbar sits above the picture (mode, sound, files, HUD, 
 From [GitHub Releases](https://github.com/dollarkillerx/NexaDesk/releases/latest) or the [website](https://nexadesk-bq9.pages.dev/en/):
 
 - **macOS** (Apple silicon, macOS 14+): [NexaDesk-macOS.dmg](https://github.com/dollarkillerx/NexaDesk/releases/latest/download/NexaDesk-macOS.dmg). Signed with a Developer ID and notarized by Apple.
-- **Windows** (x64, Windows 10 / 11, preview): [NexaDesk-win-Setup.exe](https://github.com/dollarkillerx/NexaDesk/releases/latest/download/NexaDesk-win-Setup.exe). Installs per user, no administrator rights needed. Not code-signed yet: if SmartScreen appears, choose **More info → Run anyway**.
+- **Windows** (x64, Windows 10 / 11, preview with many known problems, not recommended yet): [NexaDesk-win-Setup.exe](https://github.com/dollarkillerx/NexaDesk/releases/latest/download/NexaDesk-win-Setup.exe). Installs per user, no administrator rights needed. Not code-signed yet: if SmartScreen appears, choose **More info → Run anyway**.
 
 Both update themselves ([Velopack](https://velopack.io)): they check GitHub Releases at start and then daily, download a new version in the background and show "Restart to update" at the bottom of the main window. They never restart by themselves, since a restart drops remote sessions.
 
@@ -214,7 +214,7 @@ The design documents are in Chinese.
 
 - **Validation**: hole punching on real NATs (relaying through your own server is tested over the public internet, see docs/DEPLOY.md §6).
 - **macOS**: remote access at the login window and lock screen.
-- **Windows**: trying the host and the viewer on real hardware; the host's pointer shape on the viewer, HEVC, sound, running as a service (login screen and UAC), see [docs/WINDOWS.md](docs/WINDOWS.md).
+- **Windows**: the many problems found on real hardware, in both the host and the viewer; the host's pointer shape on the viewer, HEVC, sound, running as a service (login screen and UAC), see [docs/WINDOWS.md](docs/WINDOWS.md).
 - **Browser**: testing on iPhone / Safari and Firefox (Chrome on Android is in use); TURN over TCP/TLS for networks that block UDP; sound and file transfer.
 - **Command-line host**: running the Windows build on real hardware; running as a Windows service.
 - **Product decisions**: how an unattended machine is first paired; what someone who only knows the ID may do; whether file permission is split by direction.

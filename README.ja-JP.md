@@ -16,7 +16,7 @@
   <a href="./README.md">English</a> | <a href="./README.zh-CN.md">简体中文</a> | <strong>日本語</strong>
 </p>
 
-> **状態**：プレビュー版です。macOS ↔ macOS は日常的に使われています。ブラウザ版（画面の表示・操作・コマンドライン、スマートフォン対応、自前のサーバー経由でネットワークをまたいだ接続）は Chrome でのエンドツーエンドの自動テストと、公開サーバー経由での実測を済ませています。Windows 版は操作される側として動き、0.1.5 からは Mac を操作することもできますが、どちらも実機ではまだ確認していません。重要な用途にはまだおすすめしません。
+> **状態**：**macOS 版は正式版**で、2 台の Mac の間で日常的に使って確認しています。ブラウザ版（画面の表示・操作・コマンドライン、スマートフォン対応、自前のサーバー経由でネットワークをまたいだ接続）は Chrome でのエンドツーエンドの自動テストと、公開サーバー経由での実測を済ませています。**Windows 版はまだプレビューで、既知の問題が多く**、現時点ではおすすめしません。
 
 ## 機能
 
@@ -92,7 +92,7 @@
 [GitHub Releases](https://github.com/dollarkillerx/NexaDesk/releases/latest) または[公式サイト](https://nexadesk-bq9.pages.dev/ja/)から：
 
 - **macOS**（Apple シリコン、macOS 14 以降）：[NexaDesk-macOS.dmg](https://github.com/dollarkillerx/NexaDesk/releases/latest/download/NexaDesk-macOS.dmg)。Developer ID で署名し、Apple の公証済みです。
-- **Windows**（x64、Windows 10 / 11、プレビュー版）：[NexaDesk-win-Setup.exe](https://github.com/dollarkillerx/NexaDesk/releases/latest/download/NexaDesk-win-Setup.exe)。ユーザーごとにインストールし、管理者権限は不要です。まだコード署名していないため、SmartScreen が出たら **詳細情報 → 実行** を選んでください。
+- **Windows**（x64、Windows 10 / 11、プレビュー版。既知の問題が多く、現時点では非推奨）：[NexaDesk-win-Setup.exe](https://github.com/dollarkillerx/NexaDesk/releases/latest/download/NexaDesk-win-Setup.exe)。ユーザーごとにインストールし、管理者権限は不要です。まだコード署名していないため、SmartScreen が出たら **詳細情報 → 実行** を選んでください。
 
 どちらも自動で更新します（[Velopack](https://velopack.io)）。起動時とその後 1 日 1 回 GitHub Releases を確認し、新しいバージョンをバックグラウンドでダウンロードして、メインウィンドウ下部に「再起動してアップデート」を表示します。再起動するとリモート接続が切れるため、自動では再起動しません。
 
@@ -214,7 +214,7 @@ cargo run -p nexa-web --example demo
 
 - **検証**：実際の NAT 環境でのホールパンチング（自前のサーバー経由の中継はインターネット上で実測済み。docs/DEPLOY.md §6 を参照）。
 - **macOS**：ログイン画面とロック画面でのリモートアクセス。
-- **Windows**：操作される側と操作する側の実機での確認、操作する側での相手のポインター形状の表示、HEVC、音声、サービスとしての実行（ログイン画面と UAC）。[docs/WINDOWS.md](docs/WINDOWS.md) を参照してください。
+- **Windows**：実機で見つかった多くの問題（操作される側・操作する側とも）、操作する側での相手のポインター形状の表示、HEVC、音声、サービスとしての実行（ログイン画面と UAC）。[docs/WINDOWS.md](docs/WINDOWS.md) を参照してください。
 - **ブラウザ**：iPhone / Safari、Firefox での実測（Android の Chrome は使用中）、UDP が遮断されたネットワーク向けの TURN over TCP/TLS、音声とファイル転送。
 - **コマンドライン版ホスト**：Windows 版の実機での動作、Windows サービスとしての実行。
 - **製品としての判断**：無人のマシンを最初にどうペアリングするか、ID だけを知っている人に既定で何を許すか、ファイルの権限を方向ごとに分けるか。
