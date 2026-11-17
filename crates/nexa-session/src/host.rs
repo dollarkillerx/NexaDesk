@@ -467,6 +467,43 @@ impl FrameSink for QuicSink {
     }
 }
 
+/// Holds the place of the capture and encode stages while they are rebuilt: the old
+/// ones are let go first, since some platforms allow only one at a time (DXGI desktop
+/// duplication: one per display per process). Never used to capture or encode.
+struct Released;
+
+impl Capturer for Released {
+    fn next(&mut self, _: Duration) -> nexa_media::Result<CaptureEvent> {
+        Ok(CaptureEvent::Idle)
+    }
+}
+
+impl Encoder for Released {
+    fn caps(&self) -> nexa_media::EncoderCaps {
+        nexa_media::EncoderCaps::default()
+    }
+    fn encode(
+        &mut self,
+        _: &CapturedFrame,
+        _: nexa_media::FrameId,
+        _: EncodeOpts,
+        _: &mut Vec<u8>,
+    ) -> nexa_media::Result<nexa_media::EncodedMeta> {
+        Err(MediaError::Other("no encoder while rebuilding".into()))
+    }
+    fn set_bitrate(&mut self, _: u32) -> nexa_media::Result<()> {
+        Ok(())
+    }
+    fn invalidate_from(
+        &mut self,
+        _: nexa_media::FrameId,
+    ) -> nexa_media::Result<nexa_media::Recovery> {
+        Err(MediaError::Other("no encoder while rebuilding".into()))
+    }
+    fn on_frame_acked(&mut self, _: nexa_media::FrameId) {}
+    fn force_idr(&mut self) {}
+}
+
 fn frame_interval(fps: u32) -> Duration {
     Duration::from_secs_f64(1.0 / f64::from(fps.max(1)))
 }
@@ -542,7 +579,13 @@ fn run_encoder(
         }
 
         if let Some(reason) = pending_rebuild.take() {
-            let Some(Ok(new)) = rebuilder.as_mut().map(|r| r.rebuild(reason)) else {
+            let Some(rebuilder) = rebuilder.as_mut() else {
+                return;
+            };
+            // The old stages go first: the new capture may need the display to itself.
+            drop(std::mem::replace(&mut capturer, Box::new(Released)));
+            drop(std::mem::replace(&mut encoder, Box::new(Released)));
+            let Ok(new) = rebuilder.rebuild(reason) else {
                 return;
             };
             capturer = new.capturer;

@@ -19,4 +19,6 @@ mod real;
 mod real;
 #[cfg(target_os = "macos")]
 mod real_cursor;
+#[cfg(windows)]
+mod real_windows_cursor;
 pub mod terminal;

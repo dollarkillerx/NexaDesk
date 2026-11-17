@@ -10,8 +10,8 @@ use nexa_clip::{
 };
 use nexa_input::{Hid, platform::windows::Injector};
 use nexa_media::{
-    CaptureConfig, Capturer, CursorSource, Encoder, EncoderConfig,
-    windows::{Display, DxgiCapturer, MfEncoder, WinCursorSource, displays},
+    AudioCapture, AudioEncoder, CaptureConfig, Capturer, CursorSource, Encoder, EncoderConfig,
+    windows::{Display, DxgiCapturer, OpusEncoder, WasapiLoopback, WinCursorSource, displays},
 };
 use nexa_session::{clip::ClipPlatform, input::InputSink};
 
@@ -112,12 +112,25 @@ impl Platform for RealPlatform {
         Some(Box::new(WinCursorSource::new()))
     }
 
+    /// What the default output device plays, whichever display is shown.
+    fn audio_capture(&self, _display_id: u32) -> Result<Box<dyn AudioCapture>, String> {
+        WasapiLoopback::start()
+            .map(|c| Box::new(c) as Box<dyn AudioCapture>)
+            .map_err(|e| e.to_string())
+    }
+
+    fn audio_encoder(&self) -> Result<Box<dyn AudioEncoder>, String> {
+        OpusEncoder::new(nexa_session::audio::OPUS_BITRATE)
+            .map(|e| Box::new(e) as Box<dyn AudioEncoder>)
+            .map_err(|e| e.to_string())
+    }
+
     fn capturer(&self, config: CaptureConfig) -> nexa_media::Result<Box<dyn Capturer>> {
         Ok(Box::new(DxgiCapturer::new(config)?))
     }
 
     fn encoder(&self, config: EncoderConfig) -> nexa_media::Result<Box<dyn Encoder>> {
-        Ok(Box::new(MfEncoder::new(config)?))
+        nexa_media::windows::encoder(config)
     }
 
     fn input_available(&self) -> bool {

@@ -292,6 +292,10 @@ public sealed partial class TerminalView : Control
     /// <summary>Unparsed output kept before the oldest chunks are dropped (default 256 MB): the backend has no back-pressure.</summary>
     public long MaxPendingBytes { get; set; } = 256L * 1024 * 1024;
 
+    /// <summary>Output received from the backend and not parsed yet. A backend can hold its source
+    /// back while this is large (NexaDesk's terminal stream does past a megabyte).</summary>
+    public long PendingBytes => Interlocked.Read(ref _pendingBytes);
+
     /// <summary>Output dropped because <see cref="MaxPendingBytes"/> was exceeded.</summary>
     public long DroppedBytes => Interlocked.Read(ref _droppedBytes);
 

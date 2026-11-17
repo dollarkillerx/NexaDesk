@@ -67,7 +67,17 @@ pub fn check_permissions() -> Result<(), String> {
 }
 
 pub fn caps() -> Caps {
-    nexa_media::windows::caps()
+    let caps = nexa_media::windows::caps();
+    // Which encoder this PC got, for picture problems (docs/WINDOWS.md stage 2).
+    eprintln!(
+        "nexa-agent: video encoder: {}",
+        if nexa_media::windows::hardware_h264() {
+            "GPU H.264, up to 4096x2304 at 120 fps"
+        } else {
+            "software H.264 (no working GPU encoder), up to 1920x1080 at 60 fps"
+        }
+    );
+    caps
 }
 
 pub fn platform() -> Arc<dyn Platform> {

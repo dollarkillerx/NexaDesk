@@ -348,7 +348,11 @@ impl Presenter for D3dPresenter {
     }
 
     fn present(&mut self, frame: &DecodedFrame) -> Result<PresentStat> {
-        let NativeImage::Cpu(f) = &frame.image;
+        let NativeImage::Cpu(f) = &frame.image else {
+            return Err(MediaError::Unsupported(
+                "the presenter shows decoded frames in memory",
+            ));
+        };
         let (w, h) = (f.width & !1, f.height & !1);
         if w == 0 || h == 0 || f.y.len() < (w * h) as usize || f.uv.len() < (w * h / 2) as usize {
             return Err(MediaError::Other("empty or short frame".into()));

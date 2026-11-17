@@ -1,9 +1,8 @@
 //! H.264 through Media Foundation's encoder MFT, set for low latency: no B-frames,
 //! constant bitrate, one output per input. NV12 in, Annex-B out.
 //!
-//! This is Microsoft's software encoder, synchronous and the same on every PC.
-//! Hardware encoders (NVENC, Quick Sync, AMF) also come as MFTs, but asynchronous;
-//! they replace this once it is proven on real machines (docs/WINDOWS.md).
+//! This is Microsoft's software encoder, synchronous and the same on every PC, used up
+//! to 1080p. The GPU's own encoder (`hwenc`) takes over where there is one.
 
 use std::mem::ManuallyDrop;
 
@@ -38,7 +37,7 @@ use crate::{
     MediaError, NativeImage, Recovery, Result,
 };
 
-fn os(what: &'static str) -> impl FnOnce(windows::core::Error) -> MediaError {
+pub(super) fn os(what: &'static str) -> impl FnOnce(windows::core::Error) -> MediaError {
     move |e| MediaError::Os {
         what,
         status: e.code().0,
@@ -46,7 +45,7 @@ fn os(what: &'static str) -> impl FnOnce(windows::core::Error) -> MediaError {
 }
 
 /// 100-nanosecond units per second: Media Foundation's clock.
-const TICKS: i64 = 10_000_000;
+pub(super) const TICKS: i64 = 10_000_000;
 
 pub struct MfEncoder {
     transform: IMFTransform,
@@ -66,7 +65,7 @@ pub struct MfEncoder {
 // COM for the multithreaded apartment; the MFT is free-threaded within it.
 unsafe impl Send for MfEncoder {}
 
-fn video_type(subtype: &GUID, config: &EncoderConfig) -> Result<IMFMediaType> {
+pub(super) fn video_type(subtype: &GUID, config: &EncoderConfig) -> Result<IMFMediaType> {
     // SAFETY: setting documented attributes on a fresh media type.
     unsafe {
         let t = MFCreateMediaType().map_err(os("MFCreateMediaType"))?;
@@ -191,8 +190,15 @@ impl MfEncoder {
     }
 
     fn input_sample(&self, frame: &CapturedFrame) -> Result<IMFSample> {
-        // The only kind of image on Windows.
-        let NativeImage::Cpu(f) = &frame.image;
+        let read;
+        let f = match &frame.image {
+            NativeImage::Cpu(f) => &**f,
+            // A frame on the GPU, when the hardware encoder could not take it.
+            NativeImage::Texture(t) => {
+                read = t.read()?;
+                &read
+            }
+        };
         if f.width != self.width || f.height != self.height {
             return Err(MediaError::Other(format!(
                 "frame is {}x{}, the encoder {}x{}",
@@ -288,7 +294,7 @@ impl MfEncoder {
 }
 
 /// Whether an Annex-B stream carries a sequence parameter set (NAL type 7).
-fn has_sps(annex_b: &[u8]) -> bool {
+pub(super) fn has_sps(annex_b: &[u8]) -> bool {
     annex_b
         .windows(4)
         .any(|w| w[..3] == [0, 0, 1] && w[3] & 0x1f == 7)

@@ -1,0 +1,4 @@
+[env]
+# libopus 1.3.1 (built by audiopus_sys for Windows, crates/nexa-opus) declares an old
+# CMake minimum that CMake 4 refuses without this.
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"

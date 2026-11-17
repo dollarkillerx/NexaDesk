@@ -1260,11 +1260,32 @@ async fn a_dropped_session_of_a_device_that_needs_consent_asks_again() {
     );
 }
 
-/// What a terminal callback receives, for the test below.
+/// What a terminal callback receives, for the tests below. `shown` is how much of the
+/// output the pretend control has shown: the rest is reported as its backlog.
 #[derive(Default)]
 struct TermSeen {
     data: std::sync::Mutex<Vec<u8>>,
     exit: std::sync::Mutex<Option<String>>,
+    /// `usize::MAX`: everything is shown at once.
+    shown: std::sync::atomic::AtomicUsize,
+}
+
+/// Closes a terminal when dropped, so a failing assertion cannot free the callback's
+/// `TermSeen` while the terminal is still open. Declare it after the `TermSeen`.
+struct CloseTerminal(u64);
+
+impl Drop for CloseTerminal {
+    fn drop(&mut self) {
+        abi::nexa_terminal_close(self.0);
+    }
+}
+
+impl TermSeen {
+    fn showing_everything() -> Self {
+        let s = Self::default();
+        s.shown.store(usize::MAX, SeqCst);
+        s
+    }
 }
 
 unsafe extern "C" fn on_terminal(
@@ -1272,19 +1293,25 @@ unsafe extern "C" fn on_terminal(
     kind: u32,
     data: *const u8,
     len: usize,
-) {
-    // SAFETY: `user` is the test's TermSeen, alive until close; `data` valid for `len`.
-    let (seen, bytes) = unsafe {
-        (
-            &*(user as *const TermSeen),
-            std::slice::from_raw_parts(data, len),
-        )
-    };
-    if kind == abi::NEXA_TERMINAL_DATA {
-        lock(&seen.data).extend_from_slice(bytes);
+) -> usize {
+    // SAFETY: `user` is the test's TermSeen, alive until close.
+    let seen = unsafe { &*(user as *const TermSeen) };
+    let bytes: &[u8] = if len == 0 {
+        &[]
     } else {
-        *lock(&seen.exit) = Some(String::from_utf8_lossy(bytes).into_owned());
+        // SAFETY: `data` is valid for `len` during the call.
+        unsafe { std::slice::from_raw_parts(data, len) }
+    };
+    match kind {
+        abi::NEXA_TERMINAL_DATA => lock(&seen.data).extend_from_slice(bytes),
+        abi::NEXA_TERMINAL_EXIT => {
+            *lock(&seen.exit) = Some(String::from_utf8_lossy(bytes).into_owned())
+        }
+        _ => {}
     }
+    lock(&seen.data)
+        .len()
+        .saturating_sub(seen.shown.load(SeqCst))
 }
 
 /// The ABI the app's terminal control (MySSH's TerminalView) uses, end to end: the
@@ -1297,12 +1324,13 @@ async fn a_terminal_opened_through_the_abi_runs_the_host_shell() {
     };
     let h = make_host(granted).await;
     let (_viewer, session) = connected(&h, 1).await;
-    let seen = Box::new(TermSeen::default());
+    let seen = Box::new(TermSeen::showing_everything());
     let user = &*seen as *const TermSeen as *mut std::ffi::c_void;
     let mut id = 0u64;
     // SAFETY: a live session; `seen` outlives the terminal (closed below).
     let rc = unsafe { abi::nexa_terminal_start(session, 80, 24, Some(on_terminal), user, &mut id) };
     assert_eq!(rc, abi::NEXA_OK);
+    let _close = CloseTerminal(id);
     // The answer is computed, so it cannot be the echo of what was typed.
     let typed = b"echo $((6*7))nexa\r";
     // SAFETY: a buffer of its own length.
@@ -1322,5 +1350,50 @@ async fn a_terminal_opened_through_the_abi_runs_the_host_shell() {
         abi::NEXA_E_BAD_HANDLE,
         "closed"
     );
+    drop(seen);
+}
+
+/// A flood (`yes`) while the control is behind is held back at the host: what arrives
+/// stops near a megabyte. Ctrl+C typed meanwhile still reaches the shell, and once the
+/// control has caught up, the shell answers again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_flood_waits_for_the_control_and_ctrl_c_still_gets_through() {
+    let granted = nexa_wire::control::Permissions {
+        terminal: true,
+        ..perms(true, true, false)
+    };
+    let h = make_host(granted).await;
+    let (_viewer, session) = connected(&h, 1).await;
+    let seen = Box::new(TermSeen::default()); // shows nothing: everything is backlog
+    let user = &*seen as *const TermSeen as *mut std::ffi::c_void;
+    let mut id = 0u64;
+    // SAFETY: a live session; `seen` outlives the terminal (closed below).
+    let rc = unsafe { abi::nexa_terminal_start(session, 80, 24, Some(on_terminal), user, &mut id) };
+    assert_eq!(rc, abi::NEXA_OK);
+    let _close = CloseTerminal(id);
+    let write = |bytes: &[u8]| {
+        // SAFETY: a buffer of its own length.
+        let rc = unsafe { abi::nexa_terminal_write(id, bytes.as_ptr(), bytes.len()) };
+        assert_eq!(rc, abi::NEXA_OK);
+    };
+    write(b"yes\r");
+    until("the flood reaches the limit", WAIT, || {
+        lock(&seen.data).len() > 1 << 20
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let held = lock(&seen.data).len();
+    assert!(held < 3 << 20, "the host was not held back: {held} bytes");
+
+    // Ctrl+C while held back, then the control catches up.
+    write(&[0x03]);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    seen.shown.store(usize::MAX, SeqCst);
+    write(b"echo done$((1+1))\r");
+    until("the shell answers after the flood", WAIT, || {
+        String::from_utf8_lossy(&lock(&seen.data)).contains("done2")
+    })
+    .await;
+    assert_eq!(abi::nexa_terminal_close(id), abi::NEXA_OK);
     drop(seen);
 }

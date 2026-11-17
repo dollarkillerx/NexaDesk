@@ -25,6 +25,7 @@ namespace NexaDesk.Native
         public const uint NEXA_VIEW_HWND = 2;
         public const uint NEXA_TERMINAL_DATA = 0;
         public const uint NEXA_TERMINAL_EXIT = 1;
+        public const uint NEXA_TERMINAL_BACKLOG = 2;
 
 
 
@@ -148,7 +149,7 @@ namespace NexaDesk.Native
         ///  thread, until `nexa_terminal_close(id)` returns.
         /// </summary>
         [DllImport(__DllName, EntryPoint = "nexa_terminal_start", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-        public static extern int nexa_terminal_start(NexaSession* s, uint cols, uint rows, delegate* unmanaged[Cdecl]<void*, uint, byte*, nuint, void> cb, void* user, ulong* id);
+        public static extern int nexa_terminal_start(NexaSession* s, uint cols, uint rows, delegate* unmanaged[Cdecl]<void*, uint, byte*, nuint, nuint> cb, void* user, ulong* id);
 
         /// <summary>
         ///  Sends keys (or pasted text) to a terminal.

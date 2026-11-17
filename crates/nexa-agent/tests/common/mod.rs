@@ -70,7 +70,15 @@ pub fn image() -> NativeImage {
 }
 
 /// One frame every 5 ms, forever, plus a display change when the test asks for one.
+/// With `exclusive_capture`, only one may exist at a time, as with DXGI desktop
+/// duplication on Windows.
 struct FakeCapturer(Arc<FakePlatformState>);
+
+impl Drop for FakeCapturer {
+    fn drop(&mut self) {
+        self.0.capturers_live.fetch_sub(1, SeqCst);
+    }
+}
 
 impl Capturer for FakeCapturer {
     fn next(&mut self, _: Duration) -> nexa_media::Result<CaptureEvent> {
@@ -245,6 +253,8 @@ pub struct FakePlatformState {
     pub inject_sinks_created: AtomicU32,
     pub clipboards_created: AtomicU32,
     pub encoders_created: AtomicU32,
+    pub capturers_live: AtomicU32,
+    pub exclusive_capture: AtomicBool,
     pub input_unavailable: AtomicBool,
     pub fire_mode_change: AtomicBool,
     pub pixels: Mutex<(u32, u32)>,
@@ -256,6 +266,8 @@ impl Default for FakePlatformState {
             inject_sinks_created: AtomicU32::new(0),
             clipboards_created: AtomicU32::new(0),
             encoders_created: AtomicU32::new(0),
+            capturers_live: AtomicU32::new(0),
+            exclusive_capture: AtomicBool::new(false),
             input_unavailable: AtomicBool::new(false),
             fire_mode_change: AtomicBool::new(false),
             pixels: Mutex::new((1920, 1080)),
@@ -282,6 +294,14 @@ impl Platform for FakePlatform {
         })
     }
     fn capturer(&self, _: CaptureConfig) -> nexa_media::Result<Box<dyn Capturer>> {
+        if self.state.capturers_live.fetch_add(1, SeqCst) > 0
+            && self.state.exclusive_capture.load(SeqCst)
+        {
+            self.state.capturers_live.fetch_sub(1, SeqCst);
+            return Err(nexa_media::MediaError::Other(
+                "the display is already being captured".into(),
+            ));
+        }
         Ok(Box::new(FakeCapturer(self.state.clone())))
     }
     fn encoder(&self, _: EncoderConfig) -> nexa_media::Result<Box<dyn Encoder>> {

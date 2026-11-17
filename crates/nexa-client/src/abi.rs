@@ -589,14 +589,18 @@ pub unsafe extern "C" fn nexa_keymap_save(req: *const u8, len: usize) -> i32 {
 }
 
 /// Output of a terminal: `kind` 0 is bytes from the host's shell, 1 its end (a UTF-8
-/// reason; nothing follows). Called on the session's threads; `data` is valid only for
-/// the call.
+/// reason; nothing follows), 2 only a question (no data). Every call returns the bytes
+/// the terminal has received but not shown yet: past a megabyte the host's output is
+/// held back until it catches up. Called on the session's threads; `data` is valid
+/// only for the call.
 #[allow(non_camel_case_types)]
-pub type nexa_terminal_cb =
-    Option<unsafe extern "C" fn(user: *mut c_void, kind: u32, data: *const u8, len: usize)>;
+pub type nexa_terminal_cb = Option<
+    unsafe extern "C" fn(user: *mut c_void, kind: u32, data: *const u8, len: usize) -> usize,
+>;
 
 pub const NEXA_TERMINAL_DATA: u32 = 0;
 pub const NEXA_TERMINAL_EXIT: u32 = 1;
+pub const NEXA_TERMINAL_BACKLOG: u32 = 2;
 
 /// `user` crosses to the session's threads with the callback, as the caller promises.
 struct UserPtr(*mut c_void);
@@ -630,13 +634,14 @@ pub unsafe extern "C" fn nexa_terminal_start(
         };
         let user = UserPtr(user);
         let out = Box::new(move |o: crate::terminal::TermOut<'_>| {
-            let (kind, bytes) = match o {
+            let (kind, bytes): (u32, &[u8]) = match o {
                 crate::terminal::TermOut::Data(d) => (NEXA_TERMINAL_DATA, d),
                 crate::terminal::TermOut::Exit(why) => (NEXA_TERMINAL_EXIT, why.as_bytes()),
+                crate::terminal::TermOut::Backlog => (NEXA_TERMINAL_BACKLOG, &[]),
             };
             let u = &user;
             // SAFETY: per the contract, valid until close, which waits for this call.
-            unsafe { f(u.0, kind, bytes.as_ptr(), bytes.len()) };
+            unsafe { f(u.0, kind, bytes.as_ptr(), bytes.len()) }
         });
         let (opened, link) = crate::terminal::start(crate::terminal::size(cols, rows), out);
         session.open_terminal(link);

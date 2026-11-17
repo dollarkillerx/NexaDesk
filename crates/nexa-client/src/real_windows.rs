@@ -20,19 +20,26 @@ use nexa_clip::{
 };
 use nexa_input::platform::windows::{CaptureEvent, KeyCapture, Motion, PointerCapture};
 use nexa_media::{
-    Decoder, PresentMode, Presenter,
-    windows::{D3dPresenter, MfDecoder},
+    AudioDecoder, Decoder, PresentMode, Presenter,
+    windows::{D3dPresenter, MfDecoder, OpusDecoder, WasapiOutput},
 };
 use nexa_session::clip::ClipPlatform;
 use nexa_wire::control::{Caps, Codec, Os};
 
 use crate::{
     abi::NEXA_VIEW_HWND,
-    deps::{Deps, KeySource, KeySourceError, PointerLock},
+    deps::{
+        AudioOutput, AudioRender, CursorDisplay, Deps, KeySource, KeySourceError, NoCursor,
+        PointerLock,
+    },
     input::InputCmd,
 };
 
 pub struct RealDeps;
+
+struct Speaker(#[allow(dead_code)] WasapiOutput);
+
+impl AudioOutput for Speaker {}
 
 fn forward(events: Receiver<CaptureEvent>, tx: Sender<InputCmd>) {
     let _ = thread::Builder::new()
@@ -156,6 +163,17 @@ impl Deps for RealDeps {
         Ok(Box::new(presenter))
     }
 
+    unsafe fn cursor_display(&self, handle: *mut c_void, kind: u32) -> Box<dyn CursorDisplay> {
+        if kind != NEXA_VIEW_HWND {
+            return Box::new(NoCursor);
+        }
+        // SAFETY: forwarded from the caller (UI thread, the view's live HWND).
+        match unsafe { crate::real_windows_cursor::WinCursorDisplay::attach(handle) } {
+            Some(d) => Box::new(d),
+            None => Box::new(NoCursor),
+        }
+    }
+
     fn pointer_lock(&self, tx: Sender<InputCmd>) -> Result<Box<dyn PointerLock>, String> {
         let (capture, motion) = PointerCapture::start()?;
         thread::Builder::new()
@@ -170,6 +188,18 @@ impl Deps for RealDeps {
             })
             .map_err(|e| e.to_string())?;
         Ok(Box::new(GameLock(capture)))
+    }
+
+    fn audio_decoder(&self) -> Result<Box<dyn AudioDecoder>, String> {
+        OpusDecoder::new()
+            .map(|d| Box::new(d) as Box<dyn AudioDecoder>)
+            .map_err(|e| e.to_string())
+    }
+
+    fn audio_output(&self, render: AudioRender) -> Result<Box<dyn AudioOutput>, String> {
+        WasapiOutput::start(render)
+            .map(|o| Box::new(Speaker(o)) as Box<dyn AudioOutput>)
+            .map_err(|e| e.to_string())
     }
 
     fn link_options(&self) -> nexa_session::rendezvous::link::LinkOptions {

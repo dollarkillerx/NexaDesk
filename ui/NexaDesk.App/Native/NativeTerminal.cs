@@ -21,6 +21,10 @@ public sealed unsafe class NativeTerminal : ITerminalBackend
     public event Action<ReadOnlyMemory<byte>>? DataReceived;
     public event Action<TerminalExit>? Exited;
 
+    /// <summary>How much output the view has not shown yet: past a megabyte the host's output is
+    /// held back until it catches up. Set by the window that shows this terminal.</summary>
+    public Func<long>? Backlog { get; set; }
+
     NativeTerminal(ulong id) => _id = id;
 
     /// <summary>Opens a terminal of <paramref name="cols"/> × <paramref name="rows"/> cells on the session.</summary>
@@ -42,19 +46,22 @@ public sealed unsafe class NativeTerminal : ITerminalBackend
         return (terminal, NEXA_OK);
     }
 
+    /// <summary>Output from Rust, on the session's threads. Returns the view's backlog.</summary>
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
-    static void OnOutput(void* user, uint kind, byte* data, nuint len)
+    static nuint OnOutput(void* user, uint kind, byte* data, nuint len)
     {
         try
         {
-            if (GCHandle.FromIntPtr((nint)user).Target is not StrongBox<NativeTerminal?> { Value: { } t }) return;
-            var bytes = new ReadOnlySpan<byte>(data, (int)len);
+            if (GCHandle.FromIntPtr((nint)user).Target is not StrongBox<NativeTerminal?> { Value: { } t }) return 0;
+            var bytes = len == 0 ? ReadOnlySpan<byte>.Empty : new ReadOnlySpan<byte>(data, (int)len);
             if (kind == NEXA_TERMINAL_DATA) t.DataReceived?.Invoke(bytes.ToArray());
-            else t.Exited?.Invoke(new TerminalExit(null, false, Encoding.UTF8.GetString(bytes)));
+            else if (kind == NEXA_TERMINAL_EXIT) t.Exited?.Invoke(new TerminalExit(null, false, Encoding.UTF8.GetString(bytes)));
+            return (nuint)Math.Max(0, t.Backlog?.Invoke() ?? 0);
         }
         catch (Exception)
         {
             // Never let an exception cross into Rust.
+            return 0;
         }
     }
 

@@ -38,7 +38,7 @@
 | 部分 | Windows 上用 | 理由 |
 |---|---|---|
 | 截屏 | DXGI Desktop Duplication；Windows.Graphics.Capture 作备选 | 延迟最低、直接给 D3D11 纹理，所有 Windows 10/11 都有；WGC 用于 DXGI 失败的情况（部分多显卡笔记本） |
-| 编码 | Media Foundation 硬件编码器（NVENC / Quick Sync / AMF 都通过它），零拷贝 D3D11 纹理 | 不用分别对接三家显卡 SDK；没有硬件编码器时退回 MF 软件 H.264 |
+| 编码 | Media Foundation 硬件编码器（NVENC / Quick Sync / AMF 都通过它），零拷贝 D3D11 纹理（已做：`windows/hwenc.rs`、`windows/gpu.rs`） | 不用分别对接三家显卡 SDK；没有硬件编码器时退回 MF 软件 H.264 |
 | 解码 | Media Foundation（DXVA），输出 D3D11 纹理 | 同上 |
 | 显示 | D3D11 交换链，挂在界面给的 HWND 子窗口上 | 对应 Metal 的 CAMetalLayer 做法，渲染线程不经过界面 |
 | 输入注入 | SendInput：按键用扫描码（HID → Set 1），文字用 KEYEVENTF_UNICODE，鼠标用虚拟桌面绝对坐标 | 和 macOS 一样按物理键传 |
@@ -75,9 +75,15 @@
 每个阶段结束都能单独验收。
 
 1. **能在 Windows 上编译**（完成）：整个项目能按 `x86_64-pc-windows-gnu` 编译；被控端和应用的本地通信在 Windows 上改用只允许本人打开的命名管道，名字由数据目录算出（`\\.\pipe\nexadesk-<路径的 FNV-1a>`）。
-2. **被控端（从 Mac 控制 Windows）**（已写完，等真机验收）：DXGI 截屏转 NV12、Media Foundation 软件 H.264（先到 1080p）、SendInput（扫描码和 Unicode 文字）、剪贴板文字、主机指针、显示器唤醒、按显示器的 DPI 感知；界面通过命名管道连被控端，“登录时启动”、通知区域图标、只运行一份。验收：用 Mac 版或浏览器连上 Windows 电脑，能看、能操作、能复制粘贴、能开 PowerShell 终端。这一阶段 Windows 版还不能去连别的电脑，界面上会说明。
-3. **控制端（从 Windows 控制 Mac）**（画面和操作已写完，等真机验收）：Media Foundation 解码 H.264（低延迟模式，NV12 回到内存）、D3D11 交换链显示（着色器把 BT.709 转成 RGB，按比例留黑边），画面放在一个 STATIC 子窗口里（鼠标穿透给会话窗口）；低级键盘钩子捕获按键（Win、Alt+Tab 也能捕获，主机键是 Ctrl+Alt+Win+G）；游戏模式用 Raw Input 加 ClipCursor。终端用 MySSH 的原生终端控件（两个平台共用，见上表）。还没做：本地显示对方的指针形状（现在显示的是本机箭头）、HEVC 解码。验收：Windows 上的 NexaDesk 能连 Mac，组合键按“Windows 控制 Mac”的规则改写，延迟和 Mac 版相当。
-4. **声音**：WASAPI 采集和播放、libopus。
+2. **被控端（从 Mac 控制 Windows）**（已写完，等真机验收）：
+
+   **显卡硬件编码**：被控端启动时用一帧 4K 画面真的试一次显卡的 H.264 编码器（Media Foundation 列出的硬件 MFT 逐个试，NVENC / Quick Sync / AMF 都走这条路）。成功就声明最高 4096×2304、120 fps，截屏留在显存里：复制出的 BGRA 纹理由 D3D11 视频处理器转成 NV12 并缩放（BT.709 有限范围，关掉驱动的锐化降噪），编码器通过 DXGI 设备管理器直接读这块纹理。游戏模式要画进画面的指针，只回读指针那一小块，混合后写回。编码器是异步的：等 NeedInput 再送帧，40 ms 内没出来的帧算"跳过"，跟着下一帧出来。会话中硬件编码失败，就换成软件编码继续；显卡转换失败，就重建截屏，之后都走 CPU。
+
+   **没有硬件编码器时**（最高 1080p、60 fps）：DXGI 截屏转 NV12（缩小时按面积平均，多线程，4K 到 1080p 约 6 ms；最初是取最近像素，细线和文字会断）、Media Foundation 软件 H.264（先到 1080p）、SendInput（扫描码和 Unicode 文字）、剪贴板文字、主机指针、显示器唤醒、按显示器的 DPI 感知；界面通过命名管道连被控端，“登录时启动”、通知区域图标、只运行一份。验收：用 Mac 版或浏览器连上 Windows 电脑，能看、能操作、能复制粘贴、能开 PowerShell 终端。这一阶段 Windows 版还不能去连别的电脑，界面上会说明。
+3. **控制端（从 Windows 控制 Mac）**（画面和操作已写完，等真机验收）：Media Foundation 解码 H.264（低延迟模式，NV12 回到内存）、D3D11 交换链显示（着色器把 BT.709 转成 RGB，按比例留黑边），画面放在一个 STATIC 子窗口里（鼠标穿透给会话窗口）；低级键盘钩子捕获按键（Win、Alt+Tab 也能捕获，主机键是 Ctrl+Alt+Win+G）；游戏模式用 Raw Input 加 ClipCursor。终端用 MySSH 的原生终端控件（两个平台共用，见上表）。对方的指针形状：主机发来的 PNG 用 WIC 解码成 `HCURSOR`，会话窗口子类化后在画面上方响应 `WM_SETCURSOR`（`nexa-client/src/real_windows_cursor.rs`）。还没做：HEVC 解码。验收：Windows 上的 NexaDesk 能连 Mac，组合键按“Windows 控制 Mac”的规则改写，延迟和 Mac 版相当。
+4. **声音**（已写完，等真机验收）：被控端用 WASAPI loopback 录默认输出设备（让 Windows 转成 48 kHz 立体声浮点；老系统不支持时按设备格式录、自己转换），什么都没在播放时补静音；控制端用 WASAPI 事件驱动播放。换了默认设备（插拔耳机）会自动重新打开。Opus 用 libopus 1.3.1（`crates/nexa-opus`，`audiopus_sys` 从源码静态编译，`.cargo/config.toml` 为 CMake 4 设了 `CMAKE_POLICY_VERSION_MINIMUM`），不多带 DLL。
+
+   切换模式、换屏幕、分辨率变化、UAC 或锁屏之后，流水线都要重建：DXGI 每个进程对每块屏幕只能有一个复制，所以要先释放旧的截屏和编码器，再建新的（`nexa-session/src/host.rs` 的 `Released`）。以前顺序反了，Windows 被控端一切到游戏模式就断开。浏览器会话在所有平台上都没有声音。
 5. **安装包**（完成，见第 3 节）：Velopack 安装包和免安装 zip；以后加自动更新和（可选）签名。
 6. **以后再做**：作为 Windows 服务运行，才能在登录界面、锁屏和 UAC 弹窗时也能控制（普通用户进程看不到安全桌面）；ARM64 版。
 

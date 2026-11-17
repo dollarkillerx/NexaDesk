@@ -31,6 +31,7 @@ libc = "0.2"
 tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
+nexa-opus = { path = "../nexa-opus" }
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Direct3D",
@@ -39,10 +40,14 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Gdi",
+    "Win32_Media_Audio",
     "Win32_Media_MediaFoundation",
+    "Win32_Security",
     "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
     "Win32_System_Ole",
     "Win32_System_Power",
+    "Win32_System_Threading",
     "Win32_System_Variant",
     "Win32_UI_WindowsAndMessaging",
 ] }

@@ -16,6 +16,8 @@ pub mod convert;
 pub mod layout;
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(any(windows, test))]
+mod resample;
 #[cfg(windows)]
 pub mod windows;
 
@@ -42,6 +44,9 @@ pub type FrameId = u32;
 pub enum NativeImage {
     #[cfg(target_os = "macos")]
     PixelBuffer(macos::PixelBuffer),
+    /// NV12 in video memory, for a hardware encoder on the same device.
+    #[cfg(windows)]
+    Texture(windows::GpuFrame),
     Cpu(std::sync::Arc<CpuFrame>),
 }
 
@@ -142,7 +147,13 @@ pub enum Recovery {
 pub trait Encoder: Send {
     fn caps(&self) -> EncoderCaps;
     /// Synchronous: on return `out` holds the frame as Annex-B.
-    fn encode(&mut self, frame: &CapturedFrame, frame_id: FrameId, opts: EncodeOpts, out: &mut Vec<u8>) -> Result<EncodedMeta>;
+    fn encode(
+        &mut self,
+        frame: &CapturedFrame,
+        frame_id: FrameId,
+        opts: EncodeOpts,
+        out: &mut Vec<u8>,
+    ) -> Result<EncodedMeta>;
     fn set_bitrate(&mut self, bps: u32) -> Result<()>;
     fn invalidate_from(&mut self, first_lost: FrameId) -> Result<Recovery>;
     /// The viewer confirmed this frame arrived complete. LTR backends use it; others ignore it.

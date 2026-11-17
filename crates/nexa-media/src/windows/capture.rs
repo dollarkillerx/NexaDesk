@@ -1,11 +1,16 @@
 //! Screen capture with DXGI desktop duplication: the display's latest frame as a
-//! D3D11 texture, copied to memory and converted to NV12 at the stream's size.
+//! D3D11 texture. With a hardware encoder it stays on the GPU and becomes NV12 there
+//! ([`GpuConverter`]); otherwise it is copied to memory and converted to NV12 at the
+//! stream's size on the CPU.
 //!
 //! Duplication leaves the cursor out; when the stream must carry it (`show_cursor`),
 //! it is drawn in from [`WinCursorSource`].
 
 use std::{
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering::Relaxed},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -16,10 +21,10 @@ use windows::{
         Graphics::{
             Direct3D::D3D_DRIVER_TYPE_UNKNOWN,
             Direct3D11::{
-                D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ,
-                D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
-                D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
-                ID3D11Texture2D,
+                D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
+                D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING, D3D11CreateDevice,
+                ID3D11Device, ID3D11DeviceContext, ID3D11Multithread, ID3D11Texture2D,
             },
             Dxgi::Common::DXGI_SAMPLE_DESC,
             Dxgi::{
@@ -32,7 +37,7 @@ use windows::{
     core::Interface,
 };
 
-use super::{Display, WinCursorSource, power::DisplayAwake};
+use super::{Display, WinCursorSource, gpu::GpuConverter, power::DisplayAwake};
 use crate::{
     CaptureConfig, CaptureEvent, CapturedFrame, Capturer, CursorSource, DisplayMode, MediaError,
     NativeImage, Result, convert::bgra_to_nv12,
@@ -44,6 +49,9 @@ fn os(what: &'static str) -> impl FnOnce(windows::core::Error) -> MediaError {
         status: e.code().0,
     }
 }
+
+/// Set once the GPU path failed in this process: later captures use the CPU path.
+static GPU_FAILED: AtomicBool = AtomicBool::new(false);
 
 pub struct DxgiCapturer {
     device: ID3D11Device,
@@ -59,6 +67,10 @@ pub struct DxgiCapturer {
     next_at: Instant,
     show_cursor: bool,
     cursor: WinCursorSource,
+    /// The GPU path, when a hardware encoder will take its frames.
+    gpu: Option<GpuConverter>,
+    /// Whether a desktop has been received since the capture began.
+    got_desktop: bool,
     /// The last frame's pixels, tight BGRA rows: re-sent with the cursor when only it moved.
     pixels: Vec<u8>,
     have_frame: bool,
@@ -94,22 +106,33 @@ impl DxgiCapturer {
                 .EnumOutputs(index & 0xff)
                 .map_err(os("EnumOutputs"))?;
             let output: IDXGIOutput1 = output.cast().map_err(os("IDXGIOutput1"))?;
-            let mut device = None;
-            let mut context = None;
-            D3D11CreateDevice(
-                &adapter,
-                D3D_DRIVER_TYPE_UNKNOWN,
-                HMODULE::default(),
-                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                None,
-                D3D11_SDK_VERSION,
-                Some(&mut device),
-                None,
-                Some(&mut context),
-            )
-            .map_err(os("D3D11CreateDevice"))?;
+            let (mut device, mut context) = (None, None);
+            // Video support for the GPU path; a device without it still duplicates.
+            let mut flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
+            for attempt in 0..2 {
+                let made = D3D11CreateDevice(
+                    &adapter,
+                    D3D_DRIVER_TYPE_UNKNOWN,
+                    HMODULE::default(),
+                    flags,
+                    None,
+                    D3D11_SDK_VERSION,
+                    Some(&mut device),
+                    None,
+                    Some(&mut context),
+                );
+                match made {
+                    Ok(()) => break,
+                    Err(_) if attempt == 0 => flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                    Err(e) => return Err(os("D3D11CreateDevice")(e)),
+                }
+            }
             let device: ID3D11Device = device.ok_or(MediaError::Other("no D3D11 device".into()))?;
             let context = context.ok_or(MediaError::Other("no D3D11 context".into()))?;
+            // The hardware encoder's own threads use this device too.
+            if let Ok(m) = device.cast::<ID3D11Multithread>() {
+                let _ = m.SetMultithreadProtected(true);
+            }
             let dup = output
                 .DuplicateOutput(&device)
                 .map_err(os("DuplicateOutput"))?;
@@ -123,6 +146,9 @@ impl DxgiCapturer {
         } else {
             (config.width, config.height)
         };
+        let gpu = (super::hardware_h264() && !GPU_FAILED.load(Relaxed))
+            .then(|| GpuConverter::new(&device, &context, source, out, config.fps).ok())
+            .flatten();
         Ok(Self {
             device,
             context,
@@ -135,6 +161,8 @@ impl DxgiCapturer {
             next_at: Instant::now(),
             show_cursor: config.show_cursor,
             cursor: WinCursorSource::new(),
+            gpu,
+            got_desktop: false,
             pixels: Vec::new(),
             have_frame: false,
             _awake: DisplayAwake::hold(),
@@ -176,6 +204,24 @@ impl DxgiCapturer {
         Ok(texture)
     }
 
+    /// Keeps the acquired frame on the GPU, or notes a new size.
+    fn take(&mut self, resource: IDXGIResource) -> Result<()> {
+        let Some(gpu) = self.gpu.as_mut() else {
+            return self.read(resource);
+        };
+        let texture: ID3D11Texture2D = resource.cast().map_err(os("ID3D11Texture2D"))?;
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        // SAFETY: a valid texture.
+        unsafe { texture.GetDesc(&mut desc) };
+        if (desc.Width, desc.Height) == gpu.source() {
+            gpu.take(&texture);
+            self.got_desktop = true;
+        }
+        // A different size is a mode change: `next` reports it.
+        self.source = (desc.Width, desc.Height);
+        Ok(())
+    }
+
     /// Copies the acquired frame's pixels into `self.pixels`.
     fn read(&mut self, resource: IDXGIResource) -> Result<()> {
         let texture: ID3D11Texture2D = resource.cast().map_err(os("ID3D11Texture2D"))?;
@@ -202,11 +248,27 @@ impl DxgiCapturer {
             self.context.Unmap(&staging, 0);
         }
         self.source = (desc.Width, desc.Height);
+        self.got_desktop = true;
         Ok(())
     }
 
     /// The last pixels, with the cursor if asked, as the stream's frame.
     fn frame(&mut self) -> CaptureEvent {
+        let sample = (self.show_cursor && self.gpu.is_some()).then(|| self.cursor.sample());
+        if let Some(gpu) = self.gpu.as_mut() {
+            return match gpu.convert(sample.as_ref(), self.origin) {
+                Ok(f) => CaptureEvent::Frame(CapturedFrame {
+                    image: NativeImage::Texture(f),
+                    captured_at: Instant::now(),
+                    dirty: Vec::new(),
+                }),
+                // The capture is rebuilt, on the CPU path from then on.
+                Err(_) => {
+                    GPU_FAILED.store(true, Relaxed);
+                    CaptureEvent::AccessLost
+                }
+            };
+        }
         let (w, h) = self.source;
         let mut composed;
         let pixels: &[u8] = if self.show_cursor {
@@ -293,13 +355,13 @@ impl Capturer for DxgiCapturer {
         let read = match resource {
             // Only the pointer moved: the picture is the last one.
             Some(_) if info.LastPresentTime == 0 && self.have_frame => Ok(()),
-            Some(r) => self.read(r),
+            Some(r) => self.take(r),
             None => Ok(()),
         };
         // SAFETY: the frame acquired above.
         let _ = unsafe { self.dup.ReleaseFrame() };
         read?;
-        if !self.have_frame && self.pixels.is_empty() {
+        if !self.have_frame && !self.got_desktop {
             return Ok(CaptureEvent::Idle);
         }
         self.have_frame = true;

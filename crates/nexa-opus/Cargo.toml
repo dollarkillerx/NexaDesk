@@ -1,0 +1,10 @@
+[package]
+name = "nexa-opus"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "libopus, built from source: the Opus codec where the system has none (Windows)"
+
+[dependencies]
+# Bundles libopus and builds it with CMake (static), so nothing extra ships.
+audiopus_sys = { version = "0.2.2", features = ["static"] }

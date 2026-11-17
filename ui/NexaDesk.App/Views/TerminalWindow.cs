@@ -37,6 +37,7 @@ public sealed class TerminalWindow : Window
         var (backend, status) = session.Session.IsClosed ? (null, -2) : session.Session.StartTerminal(80, 24);
         OpenResult = status;
         _backend = backend;
+        if (backend is NexaDesk.Native.NativeTerminal native) native.Backlog = () => View.PendingBytes;
         if (backend != null) View.Attach(backend);
         View.SessionEnded += (_, exit) =>
             Title = string.IsNullOrWhiteSpace(exit.Reason) ? title : $"{title} — {exit.Reason}";

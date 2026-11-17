@@ -797,6 +797,11 @@ async fn without_clipboard_permission_the_pasteboard_is_never_opened() {
 async fn a_requested_mode_change_rebuilds_and_announces() {
     let ui = FakeUi::allowing(perms(true, false, false), false);
     let h = host_with(ui.clone()).await;
+    // As on Windows: the old capture must be gone before the new one starts.
+    h.platform
+        .state
+        .exclusive_capture
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     let me = DeviceIdentity::generate();
     let (_ep, conn, result) = connect_with_code(&h, &me).await;
     let mut accepted = result.unwrap();
@@ -838,6 +843,11 @@ async fn a_requested_mode_change_rebuilds_and_announces() {
 async fn a_display_change_rebuilds_and_clicks_follow_the_new_geometry() {
     let ui = FakeUi::allowing(perms(true, true, false), false);
     let h = host_with(ui.clone()).await;
+    // As on Windows: the old capture must be gone before the new one starts.
+    h.platform
+        .state
+        .exclusive_capture
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     let me = DeviceIdentity::generate();
     let (_ep, conn, result) = connect_with_code(&h, &me).await;
     let mut accepted = result.unwrap();

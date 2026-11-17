@@ -6,6 +6,11 @@
 //! The stream runs on the session's runtime. Output goes to the callback from that
 //! runtime's threads; [`close`] waits for a callback in progress and allows no more,
 //! so the UI can free what the callback uses as soon as it returns.
+//!
+//! A flood of output (`yes`, `cat` of a large file) is held back at the host: past
+//! [`MAX_PENDING`] bytes waiting in the control, the stream is not read until it has
+//! caught up, so the host slows down instead of memory filling here. Keys still go out
+//! meanwhile, so Ctrl+C reaches the shell.
 
 use std::{
     collections::HashMap,
@@ -13,10 +18,11 @@ use std::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicU64, Ordering::Relaxed},
     },
+    time::Duration,
 };
 
 use nexa_session::{
-    framed::open_bi,
+    framed::{FramedSend, open_bi},
     handshake::FLUSH_TIMEOUT,
     terminal::{CHUNK, TermBody, TermMsg, TermSize},
 };
@@ -35,10 +41,18 @@ pub enum TermOut<'a> {
     Data(&'a [u8]),
     /// The shell ended or the stream closed; nothing follows.
     Exit(&'a str),
+    /// Nothing to show: only asks how much output the control has not shown yet.
+    Backlog,
 }
 
+/// Output waiting in the control past which the stream is not read (as since 0.1.4).
+pub const MAX_PENDING: usize = 1 << 20;
+
+/// What the control does with output: returns the bytes it has not shown yet.
+pub type Output = Box<dyn FnMut(TermOut<'_>) -> usize + Send>;
+
 /// Where output goes. `None` once the terminal was closed here.
-type Sink = Arc<Mutex<Option<Box<dyn FnMut(TermOut<'_>) + Send>>>>;
+type Sink = Arc<Mutex<Option<Output>>>;
 
 /// A terminal the control is ready for: the session opens its stream.
 pub struct TermLink {
@@ -69,7 +83,7 @@ pub fn size(cols: u32, rows: u32) -> TermSize {
 
 /// Registers a terminal: `out` receives its output until [`close`]. Returns its id and
 /// the link the session's stream task takes.
-pub fn start(size: TermSize, out: Box<dyn FnMut(TermOut<'_>) + Send>) -> (u64, TermLink) {
+pub fn start(size: TermSize, out: Output) -> (u64, TermLink) {
     let id = NEXT_ID.fetch_add(1, Relaxed);
     let (tx, rx) = mpsc::unbounded_channel();
     let sink: Sink = Arc::new(Mutex::new(Some(out)));
@@ -126,9 +140,35 @@ pub fn close(id: u64) {
     }
 }
 
-fn emit(sink: &Sink, out: TermOut<'_>) {
-    if let Some(f) = sink.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-        f(out);
+/// Hands `out` to the control; the bytes it has not shown yet (0 once closed).
+fn emit(sink: &Sink, out: TermOut<'_>) -> usize {
+    sink.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_mut()
+        .map_or(0, |f| f(out))
+}
+
+/// Sends what the control asked for. False when the terminal was closed here.
+async fn command(send: &mut FramedSend, cmd: Option<TermCmd>) -> bool {
+    match cmd {
+        Some(TermCmd::Data(d)) => {
+            for piece in d.chunks(CHUNK) {
+                if send
+                    .send(&TermMsg::from(TermBody::Data(piece.to_vec())))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            true
+        }
+        Some(TermCmd::Resize(s)) => {
+            let _ = send.send(&TermMsg::from(TermBody::Resize(s))).await;
+            true
+        }
+        // The terminal was closed here.
+        None => false,
     }
 }
 
@@ -141,29 +181,39 @@ pub(crate) async fn run(conn: Connection, link: TermLink) {
     } = link;
     let (mut send, mut recv) = match open_bi(&conn, StreamType::Terminal).await {
         Ok(s) => s,
-        Err(e) => return emit(&sink, TermOut::Exit(&e.to_string())),
+        Err(e) => {
+            emit(&sink, TermOut::Exit(&e.to_string()));
+            return;
+        }
     };
     if let Err(e) = send.send(&TermMsg::from(TermBody::Open(size))).await {
-        return emit(&sink, TermOut::Exit(&e.to_string()));
+        emit(&sink, TermOut::Exit(&e.to_string()));
+        return;
     }
-    loop {
+    'stream: loop {
         tokio::select! {
-            cmd = cmds.recv() => match cmd {
-                Some(TermCmd::Data(d)) => {
-                    for piece in d.chunks(CHUNK) {
-                        if send.send(&TermMsg::from(TermBody::Data(piece.to_vec()))).await.is_err() {
-                            break;
+            cmd = cmds.recv() => {
+                if !command(&mut send, cmd).await {
+                    break;
+                }
+            }
+            msg = recv.next::<TermMsg>() => match msg {
+                Ok(Some(TermMsg { body: Some(TermBody::Data(d)) })) => {
+                    if emit(&sink, TermOut::Data(&d)) > MAX_PENDING {
+                        // The control is behind: let it catch up before reading on,
+                        // still sending what is typed (Ctrl+C included).
+                        while emit(&sink, TermOut::Backlog) > MAX_PENDING / 2 {
+                            tokio::select! {
+                                cmd = cmds.recv() => {
+                                    if !command(&mut send, cmd).await {
+                                        break 'stream;
+                                    }
+                                }
+                                _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+                            }
                         }
                     }
                 }
-                Some(TermCmd::Resize(s)) => {
-                    let _ = send.send(&TermMsg::from(TermBody::Resize(s))).await;
-                }
-                // The terminal was closed here.
-                None => break,
-            },
-            msg = recv.next::<TermMsg>() => match msg {
-                Ok(Some(TermMsg { body: Some(TermBody::Data(d)) })) => emit(&sink, TermOut::Data(&d)),
                 Ok(Some(TermMsg { body: Some(TermBody::Exit(why)) })) => {
                     emit(&sink, TermOut::Exit(&why));
                     break;
@@ -194,10 +244,15 @@ mod tests {
         let (id, link) = start(
             size(80, 24),
             Box::new(move |o| {
-                s2.lock().unwrap().push(match o {
-                    TermOut::Data(d) => String::from_utf8_lossy(d).into_owned(),
-                    TermOut::Exit(why) => format!("exit: {why}"),
-                })
+                match o {
+                    TermOut::Data(d) => s2
+                        .lock()
+                        .unwrap()
+                        .push(String::from_utf8_lossy(d).into_owned()),
+                    TermOut::Exit(why) => s2.lock().unwrap().push(format!("exit: {why}")),
+                    TermOut::Backlog => {}
+                }
+                0
             }),
         );
         assert!(write(id, b"ls\r"));
