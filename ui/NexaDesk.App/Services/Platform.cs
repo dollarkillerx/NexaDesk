@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Avalonia.Threading;
@@ -63,21 +64,36 @@ public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
 
     public Task<string?> ResetDeviceId() => RunSubcommand("reset-device-id", null);
 
-    /// <summary>Runs one of the agent's subcommands; null on success, else its error.</summary>
-    async Task<string?> RunSubcommand(string command, string? stdin)
+    /// <summary>
+    /// How the agent is run: without a console window, and with its pipes in UTF-8, which
+    /// is what it reads and writes. Windows would otherwise use the console code page (GBK
+    /// on Chinese Windows): agent.log came out garbled, and a password with letters outside
+    /// ASCII reached the agent as bytes that are not UTF-8. No byte order mark on stdin.
+    /// </summary>
+    internal static ProcessStartInfo StartInfo(string path)
     {
-        var path = Locate();
-        if (path == null) return L.Get("Platform.AgentMissing");
-        var info = new ProcessStartInfo(path)
+        var utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+        return new ProcessStartInfo(path)
         {
             UseShellExecute = false,
             RedirectStandardError = true,
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
+            StandardErrorEncoding = utf8,
+            StandardInputEncoding = utf8,
+            StandardOutputEncoding = utf8,
+            // A console program: without this Windows opens a console window for it.
+            CreateNoWindow = true,
         };
+    }
+
+    /// <summary>Runs one of the agent's subcommands; null on success, else its error.</summary>
+    async Task<string?> RunSubcommand(string command, string? stdin)
+    {
+        var path = Locate();
+        if (path == null) return L.Get("Platform.AgentMissing");
+        var info = StartInfo(path);
         info.ArgumentList.Add(command);
-        // A console program: without this Windows opens a console window for it.
-        info.CreateNoWindow = true;
         try
         {
             using var p = Process.Start(info);
@@ -102,14 +118,7 @@ public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
     {
         var path = Locate();
         if (path == null) return L.Get("Platform.AgentMissing");
-        var info = new ProcessStartInfo(path)
-        {
-            UseShellExecute = false,
-            RedirectStandardError = true,
-            RedirectStandardOutput = true,
-            RedirectStandardInput = true,
-        };
-        info.CreateNoWindow = true;
+        var info = StartInfo(path);
         info.ArgumentList.Add("--listen");
         info.ArgumentList.Add(listen);
         info.ArgumentList.Add("--name");
