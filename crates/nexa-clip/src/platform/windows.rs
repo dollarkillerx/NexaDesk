@@ -1,6 +1,7 @@
-//! The Windows clipboard (docs/WINDOWS.md), text for now: CF_UNICODETEXT read and
-//! written as canonical UTF-8 with LF newlines. Changes are noticed by the clipboard's
-//! sequence number; our own writes carry a private marker format.
+//! The Windows clipboard (docs/WINDOWS.md): text, as CF_UNICODETEXT read and written as
+//! canonical UTF-8 with LF newlines, and pictures as PNG ([`super::windows_image`]).
+//! Changes are noticed by the clipboard's sequence number; our own writes carry a
+//! private marker format.
 //!
 //! Formats offered only as promises (`write_promise` without inline content) are not
 //! put on the clipboard yet: Windows' delayed rendering needs a window of its own.
@@ -24,16 +25,22 @@ use windows::{
     core::w,
 };
 
+use super::windows_image::{decode, dibv5, is_png, png_of_dib};
 use crate::{ClipError, ClipKind, ClipboardBackend, FormatInfo, Gen, LocalSnapshot, Result};
 
 /// CF_UNICODETEXT.
 const CF_UNICODETEXT: u32 = 13;
+/// CF_DIB and CF_DIBV5: a bitmap's header and pixels.
+const CF_DIB: u32 = 8;
+const CF_DIBV5: u32 = 17;
 /// A clipboard opened by someone else: tries this many times, a little apart.
 const OPEN_TRIES: u32 = 10;
 
 /// Windows' clipboard, held open only for the length of one call.
 pub struct WindowsClipboard {
     owner_format: u32,
+    /// "PNG", as browsers and Office register it.
+    png_format: u32,
     /// Set by password managers and the like: such content is never sent.
     exclude_format: u32,
     last_sequence: u32,
@@ -86,6 +93,42 @@ fn read_text(_open: &Open) -> Option<Vec<u8>> {
     }
 }
 
+/// The bytes of one format, with the clipboard open.
+fn read_global(_open: &Open, format: u32) -> Option<Vec<u8>> {
+    // SAFETY: the clipboard is open; the handle is locked, read within its size, unlocked.
+    unsafe {
+        let handle = GetClipboardData(format).ok()?;
+        let global = HGLOBAL(handle.0);
+        let size = GlobalSize(global);
+        let ptr = GlobalLock(global) as *const u8;
+        if ptr.is_null() {
+            return None;
+        }
+        let bytes = std::slice::from_raw_parts(ptr, size).to_vec();
+        let _ = GlobalUnlock(global);
+        Some(bytes)
+    }
+}
+
+/// The clipboard's picture as PNG, with the clipboard open: a PNG someone put there, or
+/// one made from their bitmap.
+fn read_png(open: &Open, png_format: u32) -> Option<Vec<u8>> {
+    if png_format != 0
+        && available(png_format)
+        && let Some(png) = read_global(open, png_format).filter(|d| is_png(d))
+    {
+        return Some(png);
+    }
+    [CF_DIBV5, CF_DIB]
+        .into_iter()
+        .filter(|&f| available(f))
+        .find_map(|f| read_global(open, f).and_then(|dib| png_of_dib(&dib)))
+}
+
+fn has_picture(png_format: u32) -> bool {
+    (png_format != 0 && available(png_format)) || available(CF_DIBV5) || available(CF_DIB)
+}
+
 /// A global memory block holding `data`, for SetClipboardData.
 fn global_of(data: &[u8]) -> Result<HGLOBAL> {
     // SAFETY: a fresh moveable block of `data.len()` bytes, locked for the copy only.
@@ -104,14 +147,16 @@ fn global_of(data: &[u8]) -> Result<HGLOBAL> {
 impl WindowsClipboard {
     pub fn new() -> Self {
         // SAFETY: registering named formats; the names are static.
-        let (owner_format, exclude_format) = unsafe {
+        let (owner_format, exclude_format, png_format) = unsafe {
             (
                 RegisterClipboardFormatW(w!("NexaDesk.Owner")),
                 RegisterClipboardFormatW(w!("ExcludeClipboardContentFromMonitorProcessing")),
+                RegisterClipboardFormatW(w!("PNG")),
             )
         };
         Self {
             owner_format,
+            png_format,
             exclude_format,
             // SAFETY: a plain query.
             last_sequence: unsafe { GetClipboardSequenceNumber() },
@@ -124,11 +169,17 @@ impl WindowsClipboard {
         let sensitive = self.exclude_format != 0 && available(self.exclude_format);
         let mut formats = Vec::new();
         let mut data = Vec::new();
-        if !sensitive && available(CF_UNICODETEXT) {
+        let text = available(CF_UNICODETEXT);
+        let picture = has_picture(self.png_format);
+        if !sensitive && (text || picture) {
             let open = Open::new()?;
-            if let Some(text) = read_text(&open) {
+            if let Some(text) = text.then(|| read_text(&open)).flatten() {
                 formats.push(FormatInfo::of(ClipKind::Text, &text));
                 data.push((ClipKind::Text, Bytes::from(text)));
+            }
+            if let Some(png) = picture.then(|| read_png(&open, self.png_format)).flatten() {
+                formats.push(FormatInfo::of(ClipKind::Png, &png));
+                data.push((ClipKind::Png, Bytes::from(png)));
             }
         }
         Ok(LocalSnapshot {
@@ -163,11 +214,17 @@ impl ClipboardBackend for WindowsClipboard {
     }
 
     fn read(&mut self, kind: ClipKind) -> Result<Vec<u8>> {
-        if kind != ClipKind::Text || !available(CF_UNICODETEXT) {
-            return Err(ClipError::NotAvailable(kind));
+        match kind {
+            ClipKind::Text if available(CF_UNICODETEXT) => {
+                let open = Open::new()?;
+                read_text(&open).ok_or(ClipError::NotAvailable(kind))
+            }
+            ClipKind::Png if has_picture(self.png_format) => {
+                let open = Open::new()?;
+                read_png(&open, self.png_format).ok_or(ClipError::NotAvailable(kind))
+            }
+            _ => Err(ClipError::NotAvailable(kind)),
         }
-        let open = Open::new()?;
-        read_text(&open).ok_or(ClipError::NotAvailable(kind))
     }
 
     fn write_promise(
@@ -176,22 +233,42 @@ impl ClipboardBackend for WindowsClipboard {
         _formats: &[FormatInfo],
         inline: &[(ClipKind, Bytes)],
     ) -> Result<()> {
+        // A picture is taken apart before the clipboard is opened: nobody waits on it.
+        let bitmap = inline
+            .iter()
+            .find(|(kind, _)| *kind == ClipKind::Png)
+            .and_then(|(_, png)| decode(png))
+            .map(|(w, h, bgra)| dibv5(w, h, &bgra));
         let open = Open::new()?;
         // SAFETY: the clipboard is open; each block handed over belongs to it after.
         unsafe {
             EmptyClipboard().map_err(|_| ClipError::Busy)?;
             for (kind, content) in inline {
-                if *kind != ClipKind::Text {
-                    continue;
+                match kind {
+                    ClipKind::Text => {
+                        let text = String::from_utf8_lossy(content).replace('\n', "\r\n");
+                        let mut units: Vec<u16> = text.encode_utf16().collect();
+                        units.push(0);
+                        let bytes = std::slice::from_raw_parts(
+                            units.as_ptr().cast::<u8>(),
+                            units.len() * 2,
+                        );
+                        let global = global_of(bytes)?;
+                        SetClipboardData(CF_UNICODETEXT, Some(HANDLE(global.0)))
+                            .map_err(|_| ClipError::Busy)?;
+                    }
+                    ClipKind::Png if self.png_format != 0 => {
+                        let global = global_of(content)?;
+                        SetClipboardData(self.png_format, Some(HANDLE(global.0)))
+                            .map_err(|_| ClipError::Busy)?;
+                    }
+                    _ => {}
                 }
-                let text = String::from_utf8_lossy(content).replace('\n', "\r\n");
-                let mut units: Vec<u16> = text.encode_utf16().collect();
-                units.push(0);
-                let bytes =
-                    std::slice::from_raw_parts(units.as_ptr().cast::<u8>(), units.len() * 2);
-                let global = global_of(bytes)?;
-                SetClipboardData(CF_UNICODETEXT, Some(HANDLE(global.0)))
-                    .map_err(|_| ClipError::Busy)?;
+            }
+            // Windows makes CF_DIB and CF_BITMAP from this for anyone who asks.
+            if let Some(dib) = &bitmap {
+                let global = global_of(dib)?;
+                SetClipboardData(CF_DIBV5, Some(HANDLE(global.0))).map_err(|_| ClipError::Busy)?;
             }
             let marker = global_of(&generation.0.to_le_bytes())?;
             let _ = SetClipboardData(self.owner_format, Some(HANDLE(marker.0)));

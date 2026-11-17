@@ -4,3 +4,5 @@
 pub mod macos;
 #[cfg(windows)]
 pub mod windows;
+#[cfg(windows)]
+mod windows_image;
