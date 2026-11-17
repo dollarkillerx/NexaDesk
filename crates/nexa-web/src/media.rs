@@ -361,10 +361,16 @@ fn run(
             Ok(CaptureEvent::Idle) => {
                 let due = refresh_step < IDLE_REFRESH_AFTER.len()
                     && last_content.elapsed() >= IDLE_REFRESH_AFTER[refresh_step];
-                let Some(image) = last.clone().filter(|_| due) else {
+                // A picture that failed is tried again at once, still screen or not: the
+                // browser has not got it, and an encoder that never recovers must reach
+                // `MAX_ENCODE_FAILURES` and end the session.
+                let retry = failures > 0;
+                let Some(image) = last.clone().filter(|_| due || retry) else {
                     continue;
                 };
-                refresh_step += 1;
+                if due {
+                    refresh_step += 1;
+                }
                 // Now, not when it was captured: the browser takes a frame with the
                 // previous one's timestamp for the same frame.
                 CapturedFrame {
@@ -446,6 +452,7 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::FakeHost;
 
     #[test]
     fn presets_get_smaller_as_the_network_gets_worse() {
@@ -507,10 +514,18 @@ mod tests {
     }
 
     /// Stands in for DXGI desktop duplication: while one capture of the display is
-    /// alive, another fails.
-    struct OneCaptureHost {
-        alive: Arc<AtomicU32>,
-        made: AtomicU32,
+    /// alive, another fails. `made` counts the captures made.
+    fn one_capture_host(alive: Arc<AtomicU32>, made: Arc<AtomicU32>) -> FakeHost {
+        FakeHost::default()
+            .with_capturer(move || {
+                if alive.fetch_add(1, Relaxed) > 0 {
+                    alive.fetch_sub(1, Relaxed);
+                    return Err(MediaError::Other("already duplicating this display".into()));
+                }
+                made.fetch_add(1, Relaxed);
+                Ok(Box::new(Capture(alive.clone())))
+            })
+            .with_encoder(|| Ok(Box::new(NoEncode)))
     }
 
     struct Capture(Arc<AtomicU32>);
@@ -556,42 +571,13 @@ mod tests {
         fn force_idr(&mut self) {}
     }
 
-    impl WebHost for OneCaptureHost {
-        fn screen(&self) -> Result<WebScreen, String> {
-            Err("unused".into())
-        }
-        fn capturer(&self, _: CaptureConfig) -> nexa_media::Result<Box<dyn Capturer>> {
-            if self.alive.fetch_add(1, Relaxed) > 0 {
-                self.alive.fetch_sub(1, Relaxed);
-                return Err(MediaError::Other("already duplicating this display".into()));
-            }
-            self.made.fetch_add(1, Relaxed);
-            Ok(Box::new(Capture(self.alive.clone())))
-        }
-        fn encoder(&self, _: EncoderConfig) -> nexa_media::Result<Box<dyn Encoder>> {
-            Ok(Box::new(NoEncode))
-        }
-        fn input_available(&self) -> bool {
-            false
-        }
-        fn input_sink(&self) -> Result<Box<dyn nexa_session::input::InputSink>, String> {
-            Err("unused".into())
-        }
-        fn ask(&self, _: &crate::BrowserRequest, _: Duration) -> crate::BrowserAnswer {
-            crate::BrowserAnswer::DENY
-        }
-        fn event(&self, _: crate::WebEvent) {}
-    }
-
     /// The page reports its window as soon as it opens, which changes the stream: on
     /// Windows the session ended right there, the new capture made beside the old one.
     #[test]
     fn a_new_stream_setting_lets_go_of_the_old_capture_first() {
         let c = WebConfig::default();
-        let host = Arc::new(OneCaptureHost {
-            alive: Arc::default(),
-            made: AtomicU32::new(0),
-        });
+        let (alive, made) = (Arc::<AtomicU32>::default(), Arc::<AtomicU32>::default());
+        let host = Arc::new(one_capture_host(alive.clone(), made.clone()));
         let screen = WebScreen {
             display: 0,
             origin_points: (0.0, 0.0),
@@ -599,10 +585,10 @@ mod tests {
             size_pixels: (1920, 1080),
         };
         let (tx, _rx) = mpsc::channel(4);
-        let media = MediaThread::spawn(host.clone(), screen, &c, false, tx);
+        let media = MediaThread::spawn(host, screen, &c, false, tx);
         let wait_for = |n: u32| {
             let deadline = Instant::now() + Duration::from_secs(5);
-            while host.made.load(Relaxed) < n && Instant::now() < deadline {
+            while made.load(Relaxed) < n && Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(5));
             }
         };
@@ -611,20 +597,13 @@ mod tests {
         *media.control.preset.lock().unwrap() = Some(preset(Quality::Weak, false, &c));
         wait_for(2);
         assert_eq!(*media.control.failed.lock().unwrap(), None);
-        assert_eq!(host.made.load(Relaxed), 2);
+        assert_eq!(made.load(Relaxed), 2);
         drop(media);
-        assert_eq!(host.alive.load(Relaxed), 0);
+        assert_eq!(alive.load(Relaxed), 0);
     }
 
     /// A screen that changes once and then stays still (or keeps changing), and an
     /// encoder that writes one byte a frame unless told to fail.
-    struct ScriptHost {
-        moving: bool,
-        calls: Arc<AtomicU32>,
-        /// Which encode calls fail, counted from 1.
-        fail: fn(u32) -> bool,
-    }
-
     struct Screen {
         moving: bool,
         shown: bool,
@@ -692,44 +671,27 @@ mod tests {
         fn force_idr(&mut self) {}
     }
 
-    impl WebHost for ScriptHost {
-        fn screen(&self) -> Result<WebScreen, String> {
-            Err("unused".into())
-        }
-        fn capturer(&self, _: CaptureConfig) -> nexa_media::Result<Box<dyn Capturer>> {
-            Ok(Box::new(Screen {
-                moving: self.moving,
-                shown: false,
-            }))
-        }
-        fn encoder(&self, _: EncoderConfig) -> nexa_media::Result<Box<dyn Encoder>> {
-            Ok(Box::new(ScriptEncoder {
-                calls: self.calls.clone(),
-                fail: self.fail,
-            }))
-        }
-        fn input_available(&self) -> bool {
-            false
-        }
-        fn input_sink(&self) -> Result<Box<dyn nexa_session::input::InputSink>, String> {
-            Err("unused".into())
-        }
-        fn ask(&self, _: &crate::BrowserRequest, _: Duration) -> crate::BrowserAnswer {
-            crate::BrowserAnswer::DENY
-        }
-        fn event(&self, _: crate::WebEvent) {}
-    }
-
     fn script(
         moving: bool,
         fail: fn(u32) -> bool,
     ) -> (MediaThread, mpsc::Receiver<Frame>, Arc<AtomicU32>) {
         let calls = Arc::new(AtomicU32::new(0));
-        let host = Arc::new(ScriptHost {
-            moving,
-            calls: calls.clone(),
-            fail,
-        });
+        let counted = calls.clone();
+        let host = Arc::new(
+            FakeHost::default()
+                .with_capturer(move || {
+                    Ok(Box::new(Screen {
+                        moving,
+                        shown: false,
+                    }))
+                })
+                .with_encoder(move || {
+                    Ok(Box::new(ScriptEncoder {
+                        calls: counted.clone(),
+                        fail,
+                    }))
+                }),
+        );
         let screen = WebScreen {
             display: 0,
             origin_points: (0.0, 0.0),
@@ -781,16 +743,20 @@ mod tests {
 
     #[test]
     fn an_encoder_that_keeps_failing_ends_the_stream() {
-        let (media, mut rx, calls) = script(true, |_| true);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while media.control.failed.lock().unwrap().is_none() && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(5));
+        // A still screen too: the failed picture is tried again until the end.
+        for moving in [true, false] {
+            let (media, mut rx, calls) = script(moving, |_| true);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while media.control.failed.lock().unwrap().is_none() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(5));
+            }
+            assert_eq!(
+                media.control.failed.lock().unwrap().as_deref(),
+                Some("the hardware encoder stopped asking for frames"),
+                "moving: {moving}"
+            );
+            assert_eq!(calls.load(Relaxed), MAX_ENCODE_FAILURES);
+            assert!(rx.try_recv().is_err());
         }
-        assert_eq!(
-            media.control.failed.lock().unwrap().as_deref(),
-            Some("the hardware encoder stopped asking for frames")
-        );
-        assert_eq!(calls.load(Relaxed), MAX_ENCODE_FAILURES);
-        assert!(rx.try_recv().is_err());
     }
 }

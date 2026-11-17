@@ -29,6 +29,8 @@ mod input;
 mod media;
 mod rtc;
 mod session;
+#[cfg(test)]
+mod testing;
 mod tls;
 
 use std::{

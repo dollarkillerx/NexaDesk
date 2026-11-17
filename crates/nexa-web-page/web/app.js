@@ -1,7 +1,7 @@
 // NexaDesk in the browser: signaling and pairing over the host's WebSocket, then video
 // and input over WebRTC. The protocol is described in crates/nexa-web/src/session.rs.
 import { apply, lang, LANGS, setLang, t } from "./i18n.js";
-import { Keyboard } from "./keyboard.js";
+import { Keyboard, MAC_BROWSER } from "./keyboard.js";
 import { setupTouch } from "./touch.js";
 import { watch } from "./stats.js";
 import { RemoteTerminal } from "./term.js";
@@ -538,7 +538,9 @@ function showSession(s) {
   keyboard.hostMac = hostMac;
   const swapUseful = s.input && s.hostOs !== "" && hostMac !== MAC_BROWSER;
   keyboard.swap = swapUseful;
-  $("swap").hidden = !swapUseful;
+  heldButtons.clear();
+  // A phone or tablet seldom has a ⌘ key to swap: the swap is on, but no button for it.
+  $("swap").hidden = !swapUseful || (MAC_BROWSER && TOUCH);
   showSwap();
   $("keyboard").hidden = !(s.input && TOUCH);
   $("terminal").hidden = !s.terminal || !s.video;
@@ -741,13 +743,23 @@ function showSwap() {
 
 // ---- Input ----
 
-const MAC_BROWSER = /Mac OS X|Macintosh|iPhone|iPad/.test(navigator.userAgent);
 const TOUCH = matchMedia("(pointer: coarse)").matches;
+// The host lets go of keys and buttons nobody has vouched for in 3 s, as it does for the
+// app's viewers: while anything is held, the page says what, this often.
+const KEY_STATE_EVERY = 1000;
+/** Pointer buttons held on the host. */
+const heldButtons = new Set();
 
 function send(msg) {
   const s = session;
   if (!s?.started || !s.input || s.dc?.readyState !== "open") return;
   s.dc.send(JSON.stringify(msg));
+  if (msg.t === "b") {
+    if (msg.d) heldButtons.add(msg.b);
+    else heldButtons.delete(msg.b);
+  } else if (msg.t === "r") {
+    heldButtons.clear();
+  }
   if ((msg.t === "m" || msg.t === "b") && typeof msg.x === "number") cursor?.sent(msg.x, msg.y);
 }
 
@@ -990,6 +1002,12 @@ function setupInput() {
   });
 
   followVisualViewport();
+
+  setInterval(() => {
+    if (!inSession() || !session?.input) return;
+    const keys = keyboard.keyState();
+    if (keys.length || heldButtons.size) send({ t: "ks", c: keys });
+  }, KEY_STATE_EVERY);
 
   // Nothing stays held when the page loses the keyboard.
   const release = () => { if (session?.started) keyboard.release(); };

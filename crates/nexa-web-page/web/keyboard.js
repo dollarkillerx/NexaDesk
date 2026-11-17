@@ -15,6 +15,10 @@
 
 import { hidFor } from "./keys.js";
 
+/** A Mac's (or an iPhone's or iPad's) browser: ⌘ is its shortcut key, and it sends no
+ *  key-up for a key let go while ⌘ is held. */
+export const MAC_BROWSER = /Mac OS X|Macintosh|iPhone|iPad/.test(navigator.userAgent);
+
 const CTRL = 0xe0, SHIFT = 0xe1, ALT = 0xe2, META = 0xe3;
 const MODIFIERS = [
   { flag: "ctrlKey", hids: [CTRL, 0xe4] },
@@ -88,6 +92,8 @@ export class Keyboard {
     /** Whether the host's shortcuts use ⌘ (a Mac) rather than Ctrl. */
     this.hostMac = true;
     this.held = new Set();
+    /** Keys that went down while ⌘ was held, on a Mac: their key-ups never come. */
+    this.underMeta = new Set();
     /** Modifiers latched on the on-screen key bar, for the next key or character. */
     this.latched = new Set();
     this.onLatch = () => {};
@@ -182,6 +188,9 @@ export class Keyboard {
     if (e.key === "Unidentified") return;
     const c = this.hid(e);
     if (c === undefined) return;
+    if (MAC_BROWSER && isDown && e.metaKey && !IS_MODIFIER.has(c)) this.underMeta.add(c);
+    // ⌘ itself comes up: so do the keys pressed under it, before it.
+    if (MAC_BROWSER && !isDown && e.key === "Meta") this.releaseUnderMeta();
 
     if (!isDown && (this.swallowUp.delete(c) || this.typedUp.delete(c))) {
       e.preventDefault();
@@ -258,11 +267,27 @@ export class Keyboard {
     for (const piece of chunks(s)) this.send({ t: "s", s: piece });
   }
 
+  /** Lets go of the keys pressed under ⌘ on a Mac, whose key-ups the browser keeps. A
+   *  pasted V's key-up, swallowed otherwise, would be waited for until the next V. */
+  releaseUnderMeta() {
+    for (const c of this.underMeta) {
+      this.swallowUp.delete(c);
+      if (this.held.has(c)) this.up(c);
+    }
+    this.underMeta.clear();
+  }
+
+  /** The keys held on the host for this page, as HID usages. */
+  keyState() {
+    return [...this.held];
+  }
+
   /** Lets go of everything: the page lost the keyboard. */
   release() {
     clearTimeout(this.pendingPaste);
     this.pendingPaste = null;
     this.held.clear();
+    this.underMeta.clear();
     this.swallowUp.clear();
     this.typedUp.clear();
     this.clearLatch();

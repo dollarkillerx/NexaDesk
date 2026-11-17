@@ -30,6 +30,8 @@ const PAGE_KEYBOARD: u32 = 0x07;
 const HID_MIN: u32 = 0x04;
 const HID_MAX: u32 = 0xE7;
 const MAX_TEXT: usize = 256;
+/// More keys than anyone holds at once.
+const MAX_HELD: usize = 32;
 /// Clipboard text, UTF-8. Leaves room for JSON escaping under the DataChannel's 256 KiB.
 pub(crate) const MAX_CLIP: usize = 192 * 1024;
 /// Largest message the page is sent, encoded.
@@ -70,6 +72,11 @@ pub(crate) enum Msg {
     /// Let go of everything: the page lost focus.
     #[serde(rename = "r")]
     Release,
+    /// The keys the page holds (HID usages), sent every second while it holds keys or
+    /// buttons. As the app's key-state sync, it lets go of any other key and keeps what
+    /// is held from being let go after 3 s quiet, a long drag included.
+    #[serde(rename = "ks")]
+    KeyState { c: Vec<u32> },
     /// Text the browser has on its clipboard, put on the host's (only with permission).
     #[serde(rename = "c")]
     Clip { s: String },
@@ -89,6 +96,9 @@ impl Msg {
                 !s.is_empty() && s.len() <= MAX_TEXT && !s.chars().any(char::is_control)
             }
             Msg::Release => true,
+            Msg::KeyState { c } => {
+                c.len() <= MAX_HELD && c.iter().all(|c| (HID_MIN..=HID_MAX).contains(c))
+            }
             Msg::Clip { s } => s.len() <= MAX_CLIP && !s.contains('\0'),
         };
         ok.then_some(msg)
@@ -242,6 +252,10 @@ fn carry_out(sink: &mut dyn InputSink, screen: &WebScreen, msg: Msg) {
         Msg::Wheel { dx, dy } => sink.wheel(dx, dy),
         Msg::Text { s } => sink.text(&s),
         Msg::Release => sink.release_all(now),
+        Msg::KeyState { c } => {
+            let held: Vec<u32> = c.iter().map(|c| (PAGE_KEYBOARD << 16) | c).collect();
+            sink.apply_key_state(&held, now);
+        }
         Msg::Clip { .. } => {}
     }
 }
@@ -303,6 +317,22 @@ mod tests {
         assert_eq!(Msg::parse(br#"{"t":"s","s":"a\u0007"}"#), None);
         assert_eq!(Msg::parse(br#"{"t":"r"}"#), Some(Msg::Release));
         assert_eq!(
+            Msg::parse(br#"{"t":"ks","c":[224,6]}"#),
+            Some(Msg::KeyState {
+                c: vec![0xE0, 0x06]
+            })
+        );
+        assert_eq!(
+            Msg::parse(br#"{"t":"ks","c":[]}"#),
+            Some(Msg::KeyState { c: vec![] })
+        );
+        assert_eq!(Msg::parse(br#"{"t":"ks","c":[3]}"#), None);
+        let many = format!(
+            r#"{{"t":"ks","c":[{}]}}"#,
+            vec!["4"; MAX_HELD + 1].join(",")
+        );
+        assert_eq!(Msg::parse(many.as_bytes()), None);
+        assert_eq!(
             Msg::parse(br#"{"t":"c","s":"line 1\nline 2\t"}"#),
             Some(Msg::Clip {
                 s: "line 1\nline 2\t".into()
@@ -341,7 +371,7 @@ mod tests {
 
     use std::sync::{Mutex, MutexGuard};
 
-    use crate::WebClipboard;
+    use crate::{WebClipboard, testing::FakeHost};
 
     type Log = Arc<Mutex<Vec<String>>>;
 
@@ -360,11 +390,6 @@ mod tests {
         Panics,
     }
 
-    struct TestHost {
-        log: Log,
-        board: Board,
-    }
-
     struct Sink(Log);
 
     impl InputSink for Sink {
@@ -378,7 +403,9 @@ mod tests {
         fn button(&mut self, _: u32, _: bool, _: Option<(f64, f64)>, _: Instant) {}
         fn wheel(&mut self, _: i32, _: i32) {}
         fn text(&mut self, _: &str) {}
-        fn apply_key_state(&mut self, _: &[u32], _: Instant) {}
+        fn apply_key_state(&mut self, pressed: &[u32], _: Instant) {
+            lock(&self.0).push(format!("held {pressed:x?}"));
+        }
         fn poll_timeout(&mut self, _: Instant) {}
         fn release_all(&mut self, _: Instant) {}
     }
@@ -396,51 +423,22 @@ mod tests {
         }
     }
 
-    impl WebHost for TestHost {
-        fn screen(&self) -> Result<WebScreen, String> {
-            Err("unused".into())
-        }
-        fn capturer(
-            &self,
-            _: nexa_media::CaptureConfig,
-        ) -> nexa_media::Result<Box<dyn nexa_media::Capturer>> {
-            Err(nexa_media::MediaError::Unsupported("test"))
-        }
-        fn encoder(
-            &self,
-            _: nexa_media::EncoderConfig,
-        ) -> nexa_media::Result<Box<dyn nexa_media::Encoder>> {
-            Err(nexa_media::MediaError::Unsupported("test"))
-        }
-        fn input_available(&self) -> bool {
-            true
-        }
-        fn input_sink(&self) -> Result<Box<dyn InputSink>, String> {
-            Ok(Box::new(Sink(self.log.clone())))
-        }
-        fn clipboard(&self) -> Result<Box<dyn WebClipboard>, String> {
-            match self.board {
-                Board::Slow(d) => Ok(Box::new(Clip(self.log.clone(), d))),
-                Board::SlowToOpen(d) => {
-                    thread::sleep(d);
-                    Ok(Box::new(Clip(self.log.clone(), Duration::ZERO)))
-                }
-                Board::Panics => panic!("the pasteboard cannot be opened"),
-            }
-        }
-        fn ask(&self, _: &crate::BrowserRequest, _: Duration) -> crate::BrowserAnswer {
-            crate::BrowserAnswer::DENY
-        }
-        fn event(&self, _: crate::WebEvent) {}
-    }
-
     /// Input and clipboard granted, as a fixed password grants them.
     fn session(board: Board) -> (InputThread, Log) {
         let log = Log::default();
-        let host = Arc::new(TestHost {
-            log: log.clone(),
-            board,
-        });
+        let (sinks, boards) = (log.clone(), log.clone());
+        let host = Arc::new(
+            FakeHost::default()
+                .with_input_sink(move || Ok(Box::new(Sink(sinks.clone()))))
+                .with_clipboard(move || match board {
+                    Board::Slow(d) => Ok(Box::new(Clip(boards.clone(), d))),
+                    Board::SlowToOpen(d) => {
+                        thread::sleep(d);
+                        Ok(Box::new(Clip(boards.clone(), Duration::ZERO)))
+                    }
+                    Board::Panics => panic!("the pasteboard cannot be opened"),
+                }),
+        );
         let screen = WebScreen {
             display: 1,
             origin_points: (0.0, 0.0),
@@ -461,6 +459,18 @@ mod tests {
             thread::sleep(Duration::from_millis(2));
         }
         lock(log).clone()
+    }
+
+    #[test]
+    fn the_keys_the_page_holds_reach_the_host_as_its_key_state() {
+        let (input, log) = session(Board::Slow(Duration::ZERO));
+        input.send(Msg::KeyState {
+            c: vec![0xE0, 0x06],
+        });
+        assert_eq!(
+            wait_for(&log, 1, Duration::from_secs(1)),
+            ["held [700e0, 70006]"]
+        );
     }
 
     #[test]
