@@ -17,6 +17,7 @@ static class Program
         if (OperatingSystem.IsWindows()) velopack.OnBeforeUninstallFastCallback(_ => RunKeyLoginItem.Remove());
 #pragma warning restore CA1416
         velopack.Run();
+        CrashLog.Install();
         // Windows, unlike macOS, starts a second copy of an app: hand over to the running one.
         if (OperatingSystem.IsWindows() && !SingleInstance.TryBecomeFirst()) return 0;
         App.StartInBackground = OperatingSystem.IsWindows() && args.Contains(RunKeyLoginItem.BackgroundArg);
@@ -63,5 +64,32 @@ static class SingleInstance
         {
             while (handle.WaitOne()) show();
         }) { IsBackground = true, Name = "NexaDesk.Show" }.Start();
+    }
+}
+
+/// <summary>
+/// Writes unhandled exceptions to crash.log next to agent.log before the app goes, so a
+/// window that vanished on someone's PC leaves a trace.
+/// </summary>
+static class CrashLog
+{
+    public static void Install()
+    {
+        AppDomain.CurrentDomain.UnhandledException += (_, e) => Write("unhandled", e.ExceptionObject);
+        TaskScheduler.UnobservedTaskException += (_, e) => Write("unobserved task", e.Exception);
+    }
+
+    static void Write(string kind, object? error)
+    {
+        try
+        {
+            var path = Path.Combine(Path.GetDirectoryName(AgentLog.DefaultPath())!, "crash.log");
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.AppendAllText(path, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} {kind}: {error}{Environment.NewLine}");
+        }
+        catch
+        {
+            // Nothing more to do while the process goes down.
+        }
     }
 }

@@ -296,7 +296,7 @@ impl WebGateway {
         tls: Option<WebTls>,
     ) -> io::Result<Self> {
         rtc::install_crypto();
-        let listener = TcpListener::bind(addr).await?;
+        let listener = listen(addr)?;
         let local = listener.local_addr()?;
         let shared = Self::shared(host, code, config, tls);
         let accepting = shared.clone();
@@ -404,6 +404,25 @@ pub(crate) fn clean_label(s: &str) -> String {
     }
 }
 
+/// A listening socket on `addr`. All IPv6 interfaces (`[::]`) take IPv4 as well, as
+/// the native port does: Windows makes IPv6 sockets IPv6-only by default, which left a
+/// browser at `https://192.168.x.y:47801` refused there.
+fn listen(addr: SocketAddr) -> io::Result<TcpListener> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP))?;
+    if let SocketAddr::V6(v6) = addr {
+        socket.set_only_v6(!v6.ip().is_unspecified())?;
+    }
+    // As tokio's own bind: restart without waiting out old connections (Windows'
+    // SO_REUSEADDR means something else, sharing a port, so not there).
+    #[cfg(unix)]
+    socket.set_reuse_address(true)?;
+    socket.set_nonblocking(true)?;
+    socket.bind(&addr.into())?;
+    socket.listen(1024)?;
+    TcpListener::from_std(socket.into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -413,5 +432,22 @@ mod tests {
         assert_eq!(clean_label("  Chrome on macOS \n"), "Chrome on macOS");
         assert_eq!(clean_label("\u{7}\u{1b}"), "Browser");
         assert_eq!(clean_label(&"x".repeat(200)).len(), 60);
+    }
+
+    #[tokio::test]
+    async fn all_interfaces_take_ipv4_browsers_too() {
+        let any: SocketAddr = "[::]:0".parse().unwrap();
+        let listener = listen(any).unwrap();
+        // Explicitly, not by the platform default: Windows' default is IPv6 only.
+        assert!(!socket2::SockRef::from(&listener).only_v6().unwrap());
+        let port = listener.local_addr().unwrap().port();
+        let client = tokio::net::TcpStream::connect(("127.0.0.1", port));
+        let (accepted, connected) = tokio::join!(listener.accept(), client);
+        connected.unwrap();
+        let (_, peer) = accepted.unwrap();
+        assert_eq!(peer.ip().to_canonical(), IpAddr::from([127, 0, 0, 1]));
+
+        let v4 = listen("127.0.0.1:0".parse().unwrap()).unwrap();
+        assert!(v4.local_addr().unwrap().is_ipv4());
     }
 }

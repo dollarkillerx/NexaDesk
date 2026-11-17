@@ -40,7 +40,7 @@ use windows::{
             HiDpi::GetDpiForWindow,
             Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
             WindowsAndMessaging::{
-                CreateIconIndirect, DestroyCursor, GA_ROOT, GetAncestor, GetCursorPos,
+                CreateIconIndirect, DestroyCursor, GA_ROOT, GetAncestor, GetCursorPos, GetParent,
                 GetWindowRect, HCURSOR, HTCLIENT, ICONINFO, IDC_ARROW, IsWindowVisible,
                 LoadCursorW, PostMessageW, RegisterWindowMessageW, SetCursor, SetCursorPos,
                 WM_NCDESTROY, WM_SETCURSOR,
@@ -266,8 +266,8 @@ fn pixels(pt: f64, dpi: u32) -> u32 {
 
 pub struct WinCursorDisplay {
     shared: Arc<Shared>,
-    root: isize,
-    id: usize,
+    /// The subclassed windows and their subclass ids.
+    hooked: Vec<(isize, usize)>,
 }
 
 impl WinCursorDisplay {
@@ -276,41 +276,51 @@ impl WinCursorDisplay {
     pub unsafe fn attach(video: *mut c_void) -> Option<Self> {
         static NEXT: AtomicUsize = AtomicUsize::new(1);
         let video_hwnd = HWND(video);
-        // SAFETY: per the contract; the subclass holds one reference to `shared`.
+        // SAFETY: per the contract; each subclass holds one reference to `shared`.
         unsafe {
-            let root = GetAncestor(video_hwnd, GA_ROOT);
-            if root.is_invalid() {
-                return None;
-            }
             let shared = Arc::new(Shared {
                 video: video as isize,
                 look: Mutex::new(Look::Default),
                 cursors: Mutex::new(VecDeque::new()),
             });
-            let id = NEXT.fetch_add(1, Relaxed);
-            let data = Arc::into_raw(shared.clone()) as usize;
-            if !SetWindowSubclass(root, Some(subclass), id, data).as_bool() {
-                drop(Arc::from_raw(data as *const Shared));
-                return None;
+            // The video lets the mouse through to the window beneath, which is its
+            // holder (Avalonia moves that between windows) or the session window
+            // itself: both answer WM_SETCURSOR here.
+            let parent = GetParent(video_hwnd).unwrap_or_default();
+            let root = GetAncestor(video_hwnd, GA_ROOT);
+            let mut hooked = Vec::new();
+            for window in [parent, root] {
+                if window.is_invalid() || hooked.iter().any(|&(w, _)| w == window.0 as isize) {
+                    continue;
+                }
+                let id = NEXT.fetch_add(1, Relaxed);
+                let data = Arc::into_raw(shared.clone()) as usize;
+                if SetWindowSubclass(window, Some(subclass), id, data).as_bool() {
+                    hooked.push((window.0 as isize, id));
+                } else {
+                    drop(Arc::from_raw(data as *const Shared));
+                }
             }
-            Some(Self {
-                shared,
-                root: root.0 as isize,
-                id,
-            })
+            nexa_media::diag!(
+                "cursor: host shapes over the view ({} windows hooked)",
+                hooked.len()
+            );
+            (!hooked.is_empty()).then_some(Self { shared, hooked })
         }
     }
 
     fn post(&self, msg: u32) {
-        // SAFETY: posting to the session window; a window already gone just fails.
-        let _ = unsafe {
-            PostMessageW(
-                Some(HWND(self.root as *mut c_void)),
-                msg,
-                WPARAM(self.id),
-                LPARAM(0),
-            )
-        };
+        for &(window, id) in &self.hooked {
+            // SAFETY: posting to a hooked window; one already gone just fails.
+            let _ = unsafe {
+                PostMessageW(
+                    Some(HWND(window as *mut c_void)),
+                    msg,
+                    WPARAM(id),
+                    LPARAM(0),
+                )
+            };
+        }
     }
 
     fn set(&self, look: Look) {

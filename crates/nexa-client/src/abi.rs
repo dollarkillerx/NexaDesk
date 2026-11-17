@@ -217,6 +217,24 @@ pub(crate) fn default_data_dir() -> PathBuf {
     }
 }
 
+/// Where the viewer log goes: next to the host's agent.log (`%LOCALAPPDATA%\NexaDesk\Logs`
+/// on Windows, `~/Library/Logs/NexaDesk` on macOS).
+fn viewer_log() -> PathBuf {
+    #[cfg(windows)]
+    {
+        let local = std::env::var_os("LOCALAPPDATA").unwrap_or_default();
+        PathBuf::from(local)
+            .join("NexaDesk")
+            .join("Logs")
+            .join("viewer.log")
+    }
+    #[cfg(not(windows))]
+    {
+        let home = std::env::var_os("HOME").unwrap_or_default();
+        PathBuf::from(home).join("Library/Logs/NexaDesk/viewer.log")
+    }
+}
+
 /// `nexa_init` with the devices supplied by the caller. Not exported from the library:
 /// nothing outside Rust can reach this, so no client can opt out of the real devices.
 ///
@@ -302,6 +320,8 @@ pub unsafe extern "C" fn nexa_init(
 ) -> i32 {
     #[cfg(any(target_os = "macos", windows))]
     {
+        nexa_media::diag::set_file(&viewer_log());
+        nexa_media::diag!("viewer started");
         let mut defaulted_cfg = Vec::new();
         let defaulted = guarded(|| {
             // SAFETY: per the contract.

@@ -17,6 +17,9 @@ nexa-term = { path = "../nexa-term" }
 # WebRTC, sans-IO. Pure-Rust crypto: no OpenSSL to ship, same code on every platform.
 str0m = { version = "0.25", default-features = false, features = ["rust-crypto"] }
 tokio = { version = "1", features = ["rt", "net", "sync", "time", "macros", "io-util"] }
+# The page's port on every interface takes IPv4 too (Windows makes IPv6 sockets
+# IPv6-only unless told otherwise).
+socket2 = "0.6"
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 serde = { version = "1", features = ["derive"] }

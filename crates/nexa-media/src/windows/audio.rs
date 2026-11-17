@@ -286,6 +286,7 @@ fn loopback_thread(tx: Sender<AudioChunk>, ready: SyncSender<Result<()>>, stop: 
             Ok(s) => s,
             Err(e) => {
                 if let Some(r) = ready.take() {
+                    crate::diag!("system sound capture could not start: {e}");
                     let _ = r.send(Err(e));
                     return;
                 }
@@ -295,6 +296,7 @@ fn loopback_thread(tx: Sender<AudioChunk>, ready: SyncSender<Result<()>>, stop: 
         };
         if let Some(r) = ready.take() {
             let _ = r.send(Ok(()));
+            crate::diag!("system sound capture started (WASAPI)");
         }
         // Windows sends nothing while nothing plays; the viewer gets silence instead.
         let mut last = Instant::now();
@@ -491,6 +493,7 @@ fn playback_thread(mut render: Render, ready: SyncSender<Result<()>>, stop: Arc<
             Ok(s) => s,
             Err(e) => {
                 if let Some(r) = ready.take() {
+                    crate::diag!("sound playback could not start: {e}");
                     let _ = r.send(Err(e));
                     return;
                 }
@@ -500,6 +503,7 @@ fn playback_thread(mut render: Render, ready: SyncSender<Result<()>>, stop: Arc<
         };
         if let Some(r) = ready.take() {
             let _ = r.send(Ok(()));
+            crate::diag!("sound playback started (WASAPI)");
         }
         while !stop.load(Relaxed) {
             // SAFETY: waiting on the event this stream owns.

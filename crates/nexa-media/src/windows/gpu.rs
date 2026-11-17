@@ -5,21 +5,30 @@
 //!
 //! When the stream must carry the cursor, only the cursor's own rectangle is read back,
 //! blended on the CPU and written again: a few kilobytes, not a 4K frame.
+//!
+//! The viewer uses the same frame type the other way round: the decoder copies each
+//! picture into one of its NV12 textures on [`viewer_device`], which the presenter draws.
 
-use std::{mem::ManuallyDrop, sync::Arc};
+use std::{
+    mem::ManuallyDrop,
+    sync::{Arc, OnceLock},
+};
 
 use windows::{
     Win32::Graphics::{
+        Direct3D::D3D_DRIVER_TYPE_HARDWARE,
         Direct3D11::{
-            D3D11_BIND_RENDER_TARGET, D3D11_BIND_VIDEO_ENCODER, D3D11_BOX, D3D11_CPU_ACCESS_READ,
-            D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_TEX2D_VPIV, D3D11_TEX2D_VPOV,
-            D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING,
-            D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE, D3D11_VIDEO_PROCESSOR_COLOR_SPACE,
-            D3D11_VIDEO_PROCESSOR_CONTENT_DESC, D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC,
-            D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC,
-            D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0, D3D11_VIDEO_PROCESSOR_STREAM,
-            D3D11_VIDEO_USAGE_PLAYBACK_NORMAL, D3D11_VPIV_DIMENSION_TEXTURE2D,
-            D3D11_VPOV_DIMENSION_TEXTURE2D, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
+            D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_BIND_VIDEO_ENCODER,
+            D3D11_BOX, D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
+            D3D11_SDK_VERSION, D3D11_TEX2D_VPIV, D3D11_TEX2D_VPOV, D3D11_TEXTURE2D_DESC,
+            D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
+            D3D11_VIDEO_PROCESSOR_COLOR_SPACE, D3D11_VIDEO_PROCESSOR_CONTENT_DESC,
+            D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0,
+            D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0,
+            D3D11_VIDEO_PROCESSOR_STREAM, D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
+            D3D11_VPIV_DIMENSION_TEXTURE2D, D3D11_VPOV_DIMENSION_TEXTURE2D, D3D11CreateDevice,
+            ID3D11Device, ID3D11DeviceContext, ID3D11Multithread, ID3D11Texture2D,
             ID3D11VideoContext, ID3D11VideoContext1, ID3D11VideoDevice, ID3D11VideoProcessor,
             ID3D11VideoProcessorEnumerator, ID3D11VideoProcessorInputView,
             ID3D11VideoProcessorOutputView,
@@ -120,7 +129,50 @@ impl GpuFrame {
 pub(crate) enum Kind {
     /// A video processor's input or output, readable by the encoder.
     Target,
+    /// A decoded picture the presenter's shader reads.
+    Shader,
     Staging,
+}
+
+/// A device pointer kept in a static; D3D11 devices are free-threaded.
+struct SharedDevice(ID3D11Device);
+// SAFETY: see above; the immediate context is multithread-protected.
+unsafe impl Send for SharedDevice {}
+unsafe impl Sync for SharedDevice {}
+
+/// The viewer's D3D11 device, shared by the decoder and the presenter so a decoded
+/// picture never leaves the GPU. `None` without a hardware device with video support;
+/// then each makes its own and pictures go through memory.
+pub fn viewer_device() -> Option<ID3D11Device> {
+    static DEVICE: OnceLock<Option<SharedDevice>> = OnceLock::new();
+    DEVICE
+        .get_or_init(|| {
+            let mut device = None;
+            // SAFETY: a hardware device on the default adapter; the out pointer is a local.
+            let made = unsafe {
+                D3D11CreateDevice(
+                    None,
+                    D3D_DRIVER_TYPE_HARDWARE,
+                    Default::default(),
+                    D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+                    None,
+                    D3D11_SDK_VERSION,
+                    Some(&mut device),
+                    None,
+                    None,
+                )
+            };
+            let device: ID3D11Device = made.ok().and(device)?;
+            // The decoder's thread copies while the render thread draws.
+            let protected = device
+                .cast::<ID3D11Multithread>()
+                // SAFETY: a valid interface of this device.
+                .map(|m| unsafe { m.SetMultithreadProtected(true) })
+                .is_ok();
+            protected.then_some(SharedDevice(device))
+        })
+        .as_ref()
+        .map(|d| d.0.clone())
 }
 
 pub(crate) fn texture(
@@ -149,6 +201,8 @@ pub(crate) fn texture(
         desc.Usage = D3D11_USAGE_STAGING;
         desc.BindFlags = 0;
         desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+    } else if let Kind::Shader = kind {
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE.0 as u32;
     } else if format == DXGI_FORMAT_NV12 {
         // Some encoders want to bind it themselves; not every driver allows that.
         desc.BindFlags |= D3D11_BIND_VIDEO_ENCODER.0 as u32;

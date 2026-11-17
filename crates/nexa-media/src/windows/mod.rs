@@ -35,7 +35,7 @@ pub use capture::DxgiCapturer;
 pub use cursor::WinCursorSource;
 pub use decoder::MfDecoder;
 pub use encoder::MfEncoder;
-pub use gpu::GpuFrame;
+pub use gpu::{GpuFrame, viewer_device};
 pub use hwenc::{HwEncoder, WinEncoder, encoder, hardware_h264};
 pub use power::{DisplayAwake, wake_display};
 pub use present::D3dPresenter;
@@ -132,31 +132,42 @@ pub fn virtual_desktop() -> (i32, i32, i32, i32) {
     }
 }
 
-/// What this computer can send and show: H.264 4:2:0 through Media Foundation. With
-/// the GPU's encoder up to 4096×2304 at 120 fps; with the software one up to 1080p at
-/// 60. Decoded up to 4096×2304 (a Retina Mac's screen included).
+fn h264(max_w: u32, max_h: u32) -> CodecCap {
+    CodecCap {
+        codec: Codec::H264 as i32,
+        chroma: Chroma::Yuv420 as i32,
+        max_w,
+        max_h,
+    }
+}
+
+/// What this computer sends as a host: H.264 4:2:0 through Media Foundation. With the
+/// GPU's encoder (tried once, [`hardware_h264`]) up to 4096×2304 at 120 fps; with the
+/// software one up to 1080p at 60. Decoded up to 4096×2304.
 pub fn caps() -> Caps {
-    let hardware = hardware_h264();
-    let (max_w, max_h, max_fps) = if hardware {
+    let (max_w, max_h, max_fps) = if hardware_h264() {
         (4096, 2304, 120)
     } else {
         (1920, 1080, 60)
     };
     Caps {
-        encode: vec![CodecCap {
-            codec: Codec::H264 as i32,
-            chroma: Chroma::Yuv420 as i32,
-            max_w,
-            max_h,
-        }],
-        decode: vec![CodecCap {
-            codec: Codec::H264 as i32,
-            chroma: Chroma::Yuv420 as i32,
-            max_w: 4096,
-            max_h: 2304,
-        }],
+        encode: vec![h264(max_w, max_h)],
+        decode: vec![h264(4096, 2304)],
         rfi: false,
         ltr: false,
         max_fps,
+    }
+}
+
+/// What this computer shows as a viewer: H.264 up to 4096×2304 (a Retina Mac's screen
+/// included), at up to 120 fps when it decodes on the GPU. It never touches the
+/// encoder: a viewer has no use for one, and trying it costs time and risk.
+pub fn viewer_caps() -> Caps {
+    Caps {
+        encode: vec![h264(1920, 1080)],
+        decode: vec![h264(4096, 2304)],
+        rfi: false,
+        ltr: false,
+        max_fps: if viewer_device().is_some() { 120 } else { 60 },
     }
 }

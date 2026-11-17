@@ -1,29 +1,33 @@
-//! D3D11 presenter: NV12 in memory to a flip-model swap chain on the view's HWND.
+//! D3D11 presenter: NV12 to a flip-model swap chain on the view's HWND.
 //!
-//! The planes go to two dynamic textures (R8 and R8G8), and a pixel shader turns
-//! BT.709 video-range YUV into RGB, letterboxed with [`crate::layout::fit_viewport`].
+//! A picture the decoder left on the GPU (on the shared [`viewer_device`]) is drawn
+//! straight from its NV12 texture, through an R8 view of its luma plane and an R8G8
+//! view of its chroma plane. A picture in memory goes to two dynamic textures of those
+//! formats first. A pixel shader turns BT.709 video-range YUV into RGB, letterboxed
+//! with [`crate::layout::fit_viewport`].
 //! Created on the UI thread (`attach`), then used only from the render thread; the
 //! device is free-threaded and its immediate context is touched by one thread at a time
 //! (every method takes `&mut self`).
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use windows::{
     Win32::{
         Foundation::HWND,
         Graphics::{
             Direct3D::{
-                D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP,
+                D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP, D3D_SRV_DIMENSION_TEXTURE2D,
                 D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST, Fxc::D3DCompile, ID3DBlob,
             },
             Direct3D11::{
                 D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_WRITE,
                 D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_FILTER_MIN_MAG_MIP_LINEAR,
                 D3D11_MAP_WRITE_DISCARD, D3D11_MAPPED_SUBRESOURCE, D3D11_SAMPLER_DESC,
-                D3D11_SDK_VERSION, D3D11_TEXTURE_ADDRESS_CLAMP, D3D11_TEXTURE2D_DESC,
-                D3D11_USAGE_DYNAMIC, D3D11_VIEWPORT, D3D11CreateDevice, ID3D11Device,
-                ID3D11DeviceContext, ID3D11PixelShader, ID3D11RenderTargetView, ID3D11SamplerState,
-                ID3D11ShaderResourceView, ID3D11Texture2D, ID3D11VertexShader,
+                D3D11_SDK_VERSION, D3D11_SHADER_RESOURCE_VIEW_DESC,
+                D3D11_SHADER_RESOURCE_VIEW_DESC_0, D3D11_TEX2D_SRV, D3D11_TEXTURE_ADDRESS_CLAMP,
+                D3D11_TEXTURE2D_DESC, D3D11_USAGE_DYNAMIC, D3D11_VIEWPORT, D3D11CreateDevice,
+                ID3D11Device, ID3D11DeviceContext, ID3D11PixelShader, ID3D11RenderTargetView,
+                ID3D11SamplerState, ID3D11ShaderResourceView, ID3D11Texture2D, ID3D11VertexShader,
             },
             Dxgi::{
                 Common::{
@@ -41,10 +45,17 @@ use windows::{
     core::{Interface, PCSTR, s},
 };
 
+use super::gpu::{GpuFrame, viewer_device};
 use crate::{
-    DecodedFrame, MediaError, NativeImage, PresentMode, PresentStat, Presenter, Result,
+    DecodedFrame, MediaError, NativeImage, PresentMode, PresentStat, Presenter, Result, diag,
     layout::fit_viewport,
 };
+
+/// Views of the decoder's textures, kept while they take turns.
+const VIEWS_KEPT: usize = 8;
+
+/// The luma (R8) and chroma (R8G8) views a picture is drawn from.
+type PlaneViews = [Option<ID3D11ShaderResourceView>; 2];
 
 fn os(what: &'static str) -> impl FnOnce(windows::core::Error) -> MediaError {
     move |e| MediaError::Os {
@@ -89,8 +100,14 @@ pub struct D3dPresenter {
     ps: ID3D11PixelShader,
     sampler: ID3D11SamplerState,
     planes: Option<Planes>,
+    /// Luma and chroma views of decoded textures, by texture.
+    views: Vec<(usize, PlaneViews)>,
     size: (u32, u32),
     mode: PresentMode,
+    /// For the viewer log.
+    shown: u32,
+    errors: u32,
+    since: Instant,
 }
 
 // SAFETY: see the module comment: one thread at a time, through `&mut self`.
@@ -166,7 +183,22 @@ impl D3dPresenter {
     /// `hwnd` must be a live window that outlives the presenter.
     pub unsafe fn attach(hwnd: *mut std::ffi::c_void, width: u32, height: u32) -> Result<Self> {
         let hwnd = HWND(hwnd);
-        let (device, context) = device()?;
+        let shared = viewer_device().and_then(|d| {
+            // SAFETY: the immediate context of a valid device.
+            unsafe { d.GetImmediateContext() }.ok().map(|c| (d, c))
+        });
+        diag!(
+            "presenter: attached {width}x{height}, {}",
+            if shared.is_some() {
+                "shared device"
+            } else {
+                "own device"
+            }
+        );
+        let (device, context) = match shared {
+            Some(pair) => pair,
+            None => device()?,
+        };
         let size = (width.max(1), height.max(1));
         // SAFETY: the factory that made the device's adapter; a swap chain for a live
         // window; shaders compiled from the source above.
@@ -230,8 +262,12 @@ impl D3dPresenter {
                 ps: ps.ok_or_else(missing)?,
                 sampler: sampler.ok_or_else(missing)?,
                 planes: None,
+                views: Vec::new(),
                 size,
                 mode: PresentMode::Vsync,
+                shown: 0,
+                errors: 0,
+                since: Instant::now(),
             })
         }
     }
@@ -348,10 +384,89 @@ impl Presenter for D3dPresenter {
     }
 
     fn present(&mut self, frame: &DecodedFrame) -> Result<PresentStat> {
-        let NativeImage::Cpu(f) = &frame.image else {
-            return Err(MediaError::Unsupported(
-                "the presenter shows decoded frames in memory",
-            ));
+        let result = self.draw(frame);
+        match &result {
+            Ok(_) => {
+                self.shown += 1;
+                if self.shown == 1 {
+                    diag!("presenter: first picture on screen");
+                }
+            }
+            Err(e) => {
+                self.errors += 1;
+                if self.errors <= 5 {
+                    diag!("presenter error: {e}");
+                }
+            }
+        }
+        let elapsed = self.since.elapsed();
+        if elapsed >= Duration::from_secs(5) {
+            diag!(
+                "presenter: {:.1} pictures/s, view {}x{}, {} errors",
+                f64::from(self.shown) / elapsed.as_secs_f64(),
+                self.size.0,
+                self.size.1,
+                self.errors
+            );
+            self.shown = self.shown.min(1);
+            self.since = Instant::now();
+        }
+        result
+    }
+}
+
+impl D3dPresenter {
+    /// Luma and chroma views of a decoded texture on this device.
+    fn views_of(&mut self, f: &GpuFrame) -> Result<PlaneViews> {
+        let key = f.texture().as_raw() as usize;
+        if let Some((_, v)) = self.views.iter().find(|(k, _)| *k == key) {
+            return Ok(v.clone());
+        }
+        let view = |format| -> Result<ID3D11ShaderResourceView> {
+            let desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
+                Format: format,
+                ViewDimension: D3D_SRV_DIMENSION_TEXTURE2D,
+                Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
+                    Texture2D: D3D11_TEX2D_SRV {
+                        MostDetailedMip: 0,
+                        MipLevels: 1,
+                    },
+                },
+            };
+            let mut made = None;
+            // SAFETY: a plane view of an NV12 texture made with shader-resource binding.
+            unsafe {
+                self.device
+                    .CreateShaderResourceView(f.texture(), Some(&desc), Some(&mut made))
+            }
+            .map_err(os("CreateShaderResourceView (NV12)"))?;
+            made.ok_or(MediaError::Other("no view".into()))
+        };
+        let pair = [
+            Some(view(DXGI_FORMAT_R8_UNORM)?),
+            Some(view(DXGI_FORMAT_R8G8_UNORM)?),
+        ];
+        if self.views.len() >= VIEWS_KEPT {
+            self.views.remove(0);
+        }
+        self.views.push((key, pair.clone()));
+        Ok(pair)
+    }
+
+    /// The picture's size and the two plane views to draw it from.
+    fn source(&mut self, frame: &DecodedFrame) -> Result<((u32, u32), PlaneViews)> {
+        let read;
+        let f = match &frame.image {
+            NativeImage::Texture(t) if t.device().as_raw() == self.device.as_raw() => {
+                let views = self.views_of(t)?;
+                return Ok(((t.width(), t.height()), views));
+            }
+            // Decoded on another device: through memory.
+            NativeImage::Texture(t) => {
+                read = t.read()?;
+                &read
+            }
+            NativeImage::Cpu(f) => &**f,
         };
         let (w, h) = (f.width & !1, f.height & !1);
         if w == 0 || h == 0 || f.y.len() < (w * h) as usize || f.uv.len() < (w * h / 2) as usize {
@@ -361,6 +476,11 @@ impl Presenter for D3dPresenter {
         let planes = self.planes.as_ref().expect("made above");
         self.upload(&planes.luma, &f.y, f.width as usize, h as usize)?;
         self.upload(&planes.chroma, &f.uv, f.width as usize, h as usize / 2)?;
+        Ok(((w, h), planes.views.clone()))
+    }
+
+    fn draw(&mut self, frame: &DecodedFrame) -> Result<PresentStat> {
+        let ((w, h), views) = self.source(frame)?;
         let started = Instant::now();
         // SAFETY: the back buffer and a view of it for this frame only; the shaders,
         // sampler and plane views made by this presenter.
@@ -389,7 +509,7 @@ impl Presenter for D3dPresenter {
             self.context.IASetInputLayout(None);
             self.context.VSSetShader(&self.vs, None);
             self.context.PSSetShader(&self.ps, None);
-            self.context.PSSetShaderResources(0, Some(&planes.views));
+            self.context.PSSetShaderResources(0, Some(&views));
             self.context
                 .PSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
             self.context.Draw(3, 0);

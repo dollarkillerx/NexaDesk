@@ -518,8 +518,9 @@ impl Session {
         let presenter = unsafe {
             self.core
                 .deps
-                .attach_view(handle, kind, w, h, scale, self.presenter.current_mode())?
-        };
+                .attach_view(handle, kind, w, h, scale, self.presenter.current_mode())
+        }
+        .inspect_err(|e| nexa_media::diag!("view could not be attached: {e}"))?;
         self.presenter.attach(presenter);
         // SAFETY: forwarded from the caller, like the presenter's.
         let display = unsafe { self.core.deps.cursor_display(handle, kind) };
@@ -691,11 +692,13 @@ fn is_tls_failure(e: &ConnectionError) -> bool {
 }
 
 fn ended(tag: u64, core: &Core, reason: DisconnectReason, message: impl Into<String>) {
+    let message = message.into();
+    nexa_media::diag!("session {tag} ended: {reason:?}: {message}");
     core.events.send(
         tag,
         EventBody::Disconnected(Disconnected {
             reason: reason as i32,
-            message: message.into(),
+            message,
         }),
     );
 }
@@ -1652,7 +1655,15 @@ async fn stream_session(
             }
             msg = recv.next::<ControlMsg>() => match msg {
                 Ok(Some(ControlMsg { body: Some(ControlBody::Config(config)) })) => {
+                    nexa_media::diag!(
+                        "stream: codec {} {}x{} at {} fps",
+                        config.codec,
+                        config.w,
+                        config.h,
+                        config.fps
+                    );
                     if let Err(e) = apply_config(core, session, conn, &mut running, config) {
+                        nexa_media::diag!("stream could not start: {e}");
                         break (DisconnectReason::PipelineFailed, e);
                     }
                 }

@@ -1,26 +1,36 @@
 //! H.264 through Media Foundation's decoder MFT, in low-latency mode so every access
-//! unit comes back as a picture at once. Annex-B in, NV12 in memory out (cropped to the
-//! picture, without the coded size's padding), which the D3D11 presenter uploads.
+//! unit comes back as a picture at once. Annex-B in, NV12 out, cropped to the picture
+//! (without the coded size's padding).
 //!
-//! Microsoft's decoder uses the GPU (DXVA) by itself when it can; asked for system
-//! memory, as here, it copies the picture back. Decoding straight into D3D11 textures
-//! comes once this is proven on real machines (docs/WINDOWS.md).
+//! On the GPU when it can: the decoder gets the viewer's shared D3D11 device
+//! ([`viewer_device`]) and decodes with the GPU's video engine (DXVA); each picture is
+//! copied, still on the GPU, into one of a few NV12 textures that the presenter draws.
+//! Without that device, or if the decoder refuses it, it decodes on the CPU into memory.
 
-use std::{mem::ManuallyDrop, sync::Arc};
+use std::{
+    mem::ManuallyDrop,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use nexa_wire::control::Codec;
 use windows::{
     Win32::{
+        Graphics::{
+            Direct3D11::{D3D11_BOX, ID3D11Device, ID3D11Texture2D},
+            Dxgi::Common::DXGI_FORMAT_NV12,
+        },
         Media::MediaFoundation::{
             CLSID_MSH264DecoderMFT, CODECAPI_AVLowLatencyMode, ICodecAPI, IMF2DBuffer,
-            IMFMediaType, IMFSample, IMFTransform, MF_E_NOTACCEPTING,
-            MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE, MF_LOW_LATENCY,
-            MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE, MF_MT_MINIMUM_DISPLAY_APERTURE, MF_MT_SUBTYPE,
-            MF_VERSION, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video,
+            IMFDXGIBuffer, IMFDXGIDeviceManager, IMFMediaType, IMFSample, IMFTransform,
+            MF_E_NOTACCEPTING, MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE,
+            MF_LOW_LATENCY, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE, MF_MT_MINIMUM_DISPLAY_APERTURE,
+            MF_MT_SUBTYPE, MF_SA_D3D11_AWARE, MF_VERSION, MFCreateDXGIDeviceManager,
+            MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video,
             MFSTARTUP_LITE, MFStartup, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
-            MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_OUTPUT_DATA_BUFFER,
-            MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFVideoArea, MFVideoFormat_H264,
-            MFVideoFormat_NV12,
+            MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_MESSAGE_SET_D3D_MANAGER,
+            MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFVideoArea,
+            MFVideoFormat_H264, MFVideoFormat_NV12,
         },
         System::{
             Com::{CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx},
@@ -30,7 +40,8 @@ use windows::{
     core::Interface,
 };
 
-use crate::{CpuFrame, DecodedFrame, Decoder, FrameMeta, MediaError, NativeImage, Result};
+use super::gpu::{GpuFrame, GpuTexture, Kind, texture, viewer_device};
+use crate::{CpuFrame, DecodedFrame, Decoder, FrameMeta, MediaError, NativeImage, Result, diag};
 
 fn os(what: &'static str) -> impl FnOnce(windows::core::Error) -> MediaError {
     move |e| MediaError::Os {
@@ -39,8 +50,37 @@ fn os(what: &'static str) -> impl FnOnce(windows::core::Error) -> MediaError {
     }
 }
 
+/// Pictures handed to the presenter take turns in this many textures.
+const POOL: usize = 3;
+
+/// The GPU side of a decoder: the shared device, its manager, and the textures
+/// pictures are copied into.
+struct Gpu {
+    device: ID3D11Device,
+    _manager: IMFDXGIDeviceManager,
+    pool: Vec<Arc<GpuTexture>>,
+    next: usize,
+}
+
+/// One decoded picture, on the GPU or in memory.
+enum Picture {
+    Cpu(CpuFrame),
+    Gpu(GpuFrame),
+}
+
+/// Counts for the viewer log: a line every few seconds, and the first errors.
+struct Tally {
+    since: Instant,
+    pictures: u32,
+    busy: Duration,
+    errors: u32,
+    first: bool,
+}
+
 pub struct MfDecoder {
     transform: IMFTransform,
+    gpu: Option<Gpu>,
+    tally: Tally,
     /// The coded size of the current output (with padding, e.g. 1920×1088).
     coded: (u32, u32),
     /// The picture inside it (e.g. 1920×1080).
@@ -59,6 +99,23 @@ impl MfDecoder {
         if codec != Codec::H264 {
             return Err(MediaError::Unsupported("only H.264 is decoded on Windows"));
         }
+        if let Some(device) = viewer_device() {
+            match Self::open(Some(device)) {
+                Ok(d) => {
+                    diag!("decoder: H.264 on the GPU (D3D11)");
+                    return Ok(d);
+                }
+                Err(e) => diag!("decoder: the GPU path failed ({e}); decoding on the CPU"),
+            }
+        } else {
+            diag!("decoder: no shared D3D11 device; decoding on the CPU");
+        }
+        let d = Self::open(None)?;
+        diag!("decoder: H.264 on the CPU");
+        Ok(d)
+    }
+
+    fn open(device: Option<ID3D11Device>) -> Result<Self> {
         // SAFETY: COM and Media Foundation start-up for this thread (repeat calls are
         // harmless), then the decoder MFT and its types, all with documented arguments.
         unsafe {
@@ -74,6 +131,37 @@ impl MfDecoder {
             if let Ok(api) = transform.cast::<ICodecAPI>() {
                 let _ = api.SetValue(&CODECAPI_AVLowLatencyMode, &VARIANT::from(true));
             }
+            // The device before the types: the decoder picks its outputs by it.
+            let gpu = match device {
+                Some(device) => {
+                    let aware = transform
+                        .GetAttributes()
+                        .and_then(|a| a.GetUINT32(&MF_SA_D3D11_AWARE))
+                        .unwrap_or(0)
+                        != 0;
+                    if !aware {
+                        return Err(MediaError::Unsupported("the decoder is not D3D11-aware"));
+                    }
+                    let (mut token, mut manager) = (0u32, None);
+                    MFCreateDXGIDeviceManager(&mut token, &mut manager)
+                        .map_err(os("MFCreateDXGIDeviceManager"))?;
+                    let manager: IMFDXGIDeviceManager =
+                        manager.ok_or(MediaError::Other("no device manager".into()))?;
+                    manager
+                        .ResetDevice(&device, token)
+                        .map_err(os("ResetDevice"))?;
+                    transform
+                        .ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, manager.as_raw() as usize)
+                        .map_err(os("MFT_MESSAGE_SET_D3D_MANAGER"))?;
+                    Some(Gpu {
+                        device,
+                        _manager: manager,
+                        pool: Vec::new(),
+                        next: 0,
+                    })
+                }
+                None => None,
+            };
             let input = MFCreateMediaType().map_err(os("MFCreateMediaType"))?;
             input
                 .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
@@ -86,6 +174,14 @@ impl MfDecoder {
                 .map_err(os("SetInputType"))?;
             let mut this = Self {
                 transform,
+                gpu,
+                tally: Tally {
+                    since: Instant::now(),
+                    pictures: 0,
+                    busy: Duration::ZERO,
+                    errors: 0,
+                    first: true,
+                },
                 coded: (0, 0),
                 shown: (0, 0),
                 provides_samples: false,
@@ -157,8 +253,63 @@ impl MfDecoder {
         }
     }
 
+    /// The picture in a GPU sample, copied out of the decoder's own surfaces (which it
+    /// reuses) into the next pool texture.
+    fn copy_gpu(&mut self, sample: &IMFSample) -> Result<GpuFrame> {
+        let (w, h) = (self.shown.0 & !1, self.shown.1 & !1);
+        let gpu = self
+            .gpu
+            .as_mut()
+            .ok_or(MediaError::Other("no GPU".into()))?;
+        if gpu
+            .pool
+            .first()
+            .is_none_or(|t| (t.width, t.height) != (w, h))
+        {
+            gpu.pool.clear();
+            for _ in 0..POOL {
+                gpu.pool.push(Arc::new(GpuTexture {
+                    texture: texture(&gpu.device, w, h, DXGI_FORMAT_NV12, Kind::Shader)?,
+                    device: gpu.device.clone(),
+                    width: w,
+                    height: h,
+                }));
+            }
+            gpu.next = 0;
+        }
+        let target = gpu.pool[gpu.next].clone();
+        gpu.next = (gpu.next + 1) % gpu.pool.len();
+        // SAFETY: the sample's DXGI buffer names a texture (array slice) of the shared
+        // device; a box within the picture is copied into a texture of its size.
+        unsafe {
+            let buffer = sample.GetBufferByIndex(0).map_err(os("GetBufferByIndex"))?;
+            let dxgi: IMFDXGIBuffer = buffer.cast().map_err(os("IMFDXGIBuffer"))?;
+            let mut raw = std::ptr::null_mut();
+            dxgi.GetResource(&ID3D11Texture2D::IID, &mut raw)
+                .map_err(os("IMFDXGIBuffer::GetResource"))?;
+            let source = ID3D11Texture2D::from_raw(raw);
+            let slice = dxgi
+                .GetSubresourceIndex()
+                .map_err(os("GetSubresourceIndex"))?;
+            let context = gpu
+                .device
+                .GetImmediateContext()
+                .map_err(os("GetImmediateContext"))?;
+            let area = D3D11_BOX {
+                left: 0,
+                top: 0,
+                front: 0,
+                right: w,
+                bottom: h,
+                back: 1,
+            };
+            context.CopySubresourceRegion(&target.texture, 0, 0, 0, 0, &source, slice, Some(&area));
+        }
+        Ok(GpuFrame::from_texture(target))
+    }
+
     /// One decoded picture, if the decoder has one.
-    fn output(&mut self) -> Result<Option<CpuFrame>> {
+    fn output(&mut self) -> Result<Option<Picture>> {
         for _ in 0..3 {
             // SAFETY: an output sample the decoder fills (or one it provides), read and
             // released before returning; the sample is dropped through ManuallyDrop.
@@ -195,7 +346,13 @@ impl MfDecoder {
                 let Some(sample) = sample else {
                     return Ok(None);
                 };
-                return self.read(&sample).map(Some);
+                let on_gpu = sample
+                    .GetBufferByIndex(0)
+                    .is_ok_and(|b| b.cast::<IMFDXGIBuffer>().is_ok());
+                if self.gpu.is_some() && on_gpu {
+                    return self.copy_gpu(&sample).map(|f| Some(Picture::Gpu(f)));
+                }
+                return self.read(&sample).map(|f| Some(Picture::Cpu(f)));
             }
         }
         Ok(None)
@@ -287,8 +444,8 @@ fn aperture(t: &IMFMediaType) -> Option<(u32, u32)> {
         .then_some((area.Area.cx as u32, area.Area.cy as u32))
 }
 
-impl Decoder for MfDecoder {
-    fn decode(&mut self, au: &[u8], meta: FrameMeta) -> Result<DecodedFrame> {
+impl MfDecoder {
+    fn decode_one(&mut self, au: &[u8]) -> Result<Picture> {
         let sample = self.input_sample(au)?;
         // SAFETY: feeding the decoder its own input type's sample.
         let fed = unsafe { self.transform.ProcessInput(0, &sample, 0) };
@@ -307,13 +464,62 @@ impl Decoder for MfDecoder {
         if let Some(newer) = self.output()? {
             picture = Some(newer);
         }
-        match picture {
-            Some(f) => Ok(DecodedFrame {
-                image: NativeImage::Cpu(Arc::new(f)),
-                meta,
-            }),
-            // In low-latency mode this happens only before the first key frame.
-            None => Err(MediaError::FrameDropped),
+        // In low-latency mode nothing comes out only before the first key frame.
+        picture.ok_or(MediaError::FrameDropped)
+    }
+
+    /// The viewer log: the first picture, the first errors, and a line every 5 s.
+    fn note(&mut self, result: &Result<Picture>, took: Duration) {
+        let t = &mut self.tally;
+        match result {
+            Ok(_) => {
+                t.pictures += 1;
+                t.busy += took;
+                if t.first {
+                    t.first = false;
+                    let (w, h) = self.shown;
+                    diag!("decoder: first picture {w}x{h} ({} ms)", took.as_millis());
+                }
+            }
+            Err(MediaError::FrameDropped) => {}
+            Err(e) => {
+                t.errors += 1;
+                if t.errors <= 5 {
+                    diag!("decoder error: {e}");
+                }
+            }
         }
+        let elapsed = t.since.elapsed();
+        if elapsed >= Duration::from_secs(5) {
+            if t.pictures > 0 || t.errors > 0 {
+                diag!(
+                    "decoder: {:.1} pictures/s, {:.1} ms each, {} errors, on the {}",
+                    f64::from(t.pictures) / elapsed.as_secs_f64(),
+                    t.busy.as_secs_f64() * 1000.0 / f64::from(t.pictures.max(1)),
+                    t.errors,
+                    if self.gpu.is_some() { "GPU" } else { "CPU" }
+                );
+            }
+            *t = Tally {
+                since: Instant::now(),
+                pictures: 0,
+                busy: Duration::ZERO,
+                errors: t.errors,
+                first: false,
+            };
+        }
+    }
+}
+
+impl Decoder for MfDecoder {
+    fn decode(&mut self, au: &[u8], meta: FrameMeta) -> Result<DecodedFrame> {
+        let started = Instant::now();
+        let result = self.decode_one(au);
+        self.note(&result, started.elapsed());
+        let image = match result? {
+            Picture::Cpu(f) => NativeImage::Cpu(Arc::new(f)),
+            Picture::Gpu(f) => NativeImage::Texture(f),
+        };
+        Ok(DecodedFrame { image, meta })
     }
 }

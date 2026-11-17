@@ -123,7 +123,7 @@ impl Deps for RealDeps {
     }
 
     fn caps(&self) -> Caps {
-        nexa_media::windows::caps()
+        nexa_media::windows::viewer_caps()
     }
 
     fn decoder(&self, codec: Codec) -> Result<Box<dyn Decoder>, String> {
