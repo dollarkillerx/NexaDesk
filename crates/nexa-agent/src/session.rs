@@ -909,6 +909,8 @@ fn start_clipboard(
             on_gate_release: Box::new(|_| {}),
             on_gate_progress: Box::new(|_| {}),
             on_notice: Box::new(move |n| ui.event(AgentEvent::ClipboardNotice(n))),
+            // Nobody sits at the host to read a toolbar; the viewer shows both ways.
+            on_progress: Box::new(|_| {}),
         },
         bulk,
     ))

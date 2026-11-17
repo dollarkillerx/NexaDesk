@@ -809,6 +809,39 @@ fn fetch_tolerates_reordered_chunks() {
     assert_eq!(sim.b.os.content(ClipKind::Png).unwrap(), png);
 }
 
+/// The next window used to be asked for only when the last chunk of the one before had
+/// arrived: the sender then sat idle for a round trip per window, on a far path as long
+/// as the window itself took.
+#[test]
+fn the_next_window_is_asked_for_while_the_last_is_still_arriving() {
+    let mut sim = Sim::with_config(tiny_window());
+    let png = large_png(9000, 19);
+    sim.user_copy(Side::A, &[(ClipKind::Png, &png)]);
+    sim.drain();
+    sim.render_promises(Side::B);
+    sim.deliver(Side::A, 0); // the first fetch: four chunks of 512 come back
+    assert_eq!(sim.to_b.len(), 4);
+    sim.deliver(Side::B, 0);
+    assert!(sim.to_a.is_empty(), "a quarter of the window: not yet");
+    sim.deliver(Side::B, 0);
+    let [ClipMessage::Fetch(next)] = sim.to_a.as_slice() else {
+        panic!("half the window is in: {:?}", sim.to_a);
+    };
+    assert_eq!((next.offset, next.len), (2048, 2048), "from where it ends");
+    // Asked once per window, and everything still arrives in order.
+    sim.deliver(Side::B, 0);
+    assert_eq!(sim.to_a.len(), 1);
+    sim.drain();
+    assert_eq!(sim.b.os.content(ClipKind::Png).unwrap(), png);
+    let fetches = sim
+        .b
+        .sent
+        .iter()
+        .filter(|m| matches!(m, ClipMessage::Fetch(_)))
+        .count();
+    assert_eq!(fetches, 5, "9000 bytes in windows of 2048");
+}
+
 #[test]
 fn fetch_resumes_from_received_offset_after_reconnect() {
     let mut sim = Sim::with_config(tiny_window());

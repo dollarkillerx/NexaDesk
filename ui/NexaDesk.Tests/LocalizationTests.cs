@@ -279,6 +279,33 @@ public partial class LocalizationTests
     }
 
     [Fact]
+    public void A_large_copy_on_its_way_is_shown_until_it_is_across()
+    {
+        // Event{clipboard(7): {text "x", code RECEIVING, kind "png", size 5 MiB, done 2 MiB}}
+        var n = Assert.IsType<ClipboardNoticeEvent>(ClientCodec.DecodeEvent(Convert.FromHexString("3a140a017810071a03706e67208080c0023080808001")));
+        Assert.Equal((ClipboardCode.Receiving, "png", 5242880UL, 2097152UL), (n.Code, n.Kind, n.Size, n.Done));
+        Assert.Equal("正在接收对方的图片：40%（共 5.0 MB），到齐后才能粘贴", Messages.Clipboard(n));
+        using (L.Scoped(L.English))
+            Assert.Equal("receiving the image from the other side: 40% of 5.0 MB; paste once it is here", Messages.Clipboard(n));
+        // All of it written to the stream is not yet "across": that is Received or Sent.
+        Assert.Equal("正在把图片发给对方：99%（共 5.0 MB），粘贴会等它送达",
+            Messages.Clipboard(n with { Code = ClipboardCode.Sending, Done = n.Size }));
+
+        var vm = new SessionViewModel(new FakeSession(1), Samples.Connected(1), "Studio", () => Samples.T0);
+        var idle = vm.ClipboardText;
+        vm.OnEvent(n);
+        Assert.Equal("剪贴板：正在接收对方的图片：40%（共 5.0 MB），到齐后才能粘贴", vm.ClipboardText);
+        vm.OnEvent(n with { Code = ClipboardCode.Received });
+        Assert.Equal("剪贴板：对方的图片已到，可以粘贴了", vm.ClipboardText);
+        vm.OnEvent(n with { Code = ClipboardCode.Sent });
+        Assert.Equal("剪贴板：图片已送达对方", vm.ClipboardText);
+        // Replaced by a newer copy on its way: no stale percentage stays behind.
+        vm.OnEvent(n);
+        vm.OnEvent(n with { Code = ClipboardCode.Idle });
+        Assert.Equal(idle, vm.ClipboardText);
+    }
+
+    [Fact]
     public void A_session_shows_core_warnings_in_the_apps_language()
     {
         var vm = new SessionViewModel(new FakeSession(1), Samples.Connected(1), "Studio", () => Samples.T0);

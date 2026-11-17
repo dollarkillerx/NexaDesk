@@ -327,12 +327,15 @@ pub struct ClipboardNotice {
     /// The format concerned: "text", "html", "rtf" or "png"; empty if none.
     #[prost(string, tag = "3")]
     pub kind: String,
-    /// Bytes, for `TooLarge`.
+    /// Bytes: of the format for `TooLarge`, of the whole copy for the progress codes.
     #[prost(uint64, tag = "4")]
     pub size: u64,
     /// An error message, for `Unavailable`.
     #[prost(string, tag = "5")]
     pub detail: String,
+    /// Bytes across so far, for `Receiving` and `Sending`.
+    #[prost(uint64, tag = "6")]
+    pub done: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Enumeration)]
@@ -345,6 +348,18 @@ pub enum ClipboardCode {
     WriteFailed = 4,
     FetchFailed = 5,
     Unavailable = 6,
+    /// A large copy (a picture, a long text) is coming from the host: `done` of `size`
+    /// bytes. Until `Received`, a paste here still gets what was there before.
+    Receiving = 7,
+    /// A large copy is going to the host; a paste there waits for it.
+    Sending = 8,
+    /// The host's copy is on this clipboard now.
+    Received = 9,
+    /// The host has this side's copy on its clipboard.
+    Sent = 10,
+    /// The copy that was on its way is not any more (replaced, or it failed and
+    /// another notice says so): back to the ordinary status line.
+    Idle = 11,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -828,11 +843,32 @@ mod tests {
                 kind: "png".into(),
                 size: 3 << 20,
                 detail: String::new(),
+                done: 0,
             })),
         };
         assert_eq!(
             hex(&e.encode_to_vec()),
             "3a0f0a017810021a03706e67208080c001"
+        );
+    }
+
+    /// The same golden bytes as ui/NexaDesk.Tests/LocalizationTests.cs.
+    #[test]
+    fn clipboard_progress_bytes_match_the_ui_decoder() {
+        let e = Event {
+            tag: 0,
+            body: Some(EventBody::Clipboard(ClipboardNotice {
+                text: "x".into(),
+                code: ClipboardCode::Receiving as i32,
+                kind: "png".into(),
+                size: 5 << 20,
+                done: 2 << 20,
+                detail: String::new(),
+            })),
+        };
+        assert_eq!(
+            hex(&e.encode_to_vec()),
+            "3a140a017810071a03706e67208080c0023080808001"
         );
     }
 

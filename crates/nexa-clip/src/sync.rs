@@ -44,8 +44,9 @@ pub struct ClipConfig {
     pub fetch_timeout: Duration,
     /// Largest [`ClipData`] payload.
     pub chunk_size: u64,
-    /// Bytes requested per [`ClipFetch`]; the receiver asks for the next window
-    /// when one completes, which keeps a large transfer from queueing up.
+    /// Bytes requested per [`ClipFetch`], which keeps a large transfer from queueing
+    /// up. The receiver asks for the next window when half of the one before has
+    /// arrived, so the sender never runs dry for a round trip between windows.
     pub fetch_window: u64,
     /// Capacity of the echo-suppression LRU.
     pub hash_lru_capacity: usize,
@@ -401,6 +402,33 @@ impl<T: ClipInstant> ClipSync<T> {
     /// The current policy.
     pub fn policy(&self) -> ClipPolicy {
         self.config.policy
+    }
+
+    /// Bytes of `generation` that have arrived for the formats still being fetched.
+    pub fn fetch_received(&self, generation: Gen) -> u64 {
+        self.inflight
+            .iter()
+            .filter(|f| f.generation == generation)
+            .map(|f| f.received.len() as u64)
+            .sum()
+    }
+
+    /// What the peer has to fetch of the newest local copy, if anything: its
+    /// generation, the largest such format and the bytes of all of them together.
+    pub fn local_to_fetch(&self) -> Option<(Gen, ClipKind, u64)> {
+        let local = self.local.as_ref()?;
+        let fetched = || {
+            local
+                .formats
+                .iter()
+                .filter(|f| !local.inline.iter().any(|(kind, _)| *kind == f.kind))
+        };
+        let largest = fetched().max_by_key(|f| f.size)?;
+        Some((
+            local.generation,
+            largest.kind,
+            fetched().map(|f| f.size).sum(),
+        ))
     }
 
     fn send(&self, message: ClipMessage, out: &mut Vec<ClipCommand>) {
@@ -912,13 +940,19 @@ impl<T: ClipInstant> ClipSync<T> {
                 self.mark_promise_lost(fetch.generation);
                 push_fetch_failure(fetch.generation, fetch.kind, FetchFailure::Corrupt, out);
             }
-        } else if received >= fetch.requested_end {
-            fetch.requested_end = fetch.size.min(received + self.config.fetch_window);
+        } else if fetch.requested_end < fetch.size
+            && received + self.config.fetch_window / 2 >= fetch.requested_end
+        {
+            // Half the window is in: ask for the next one now. Waiting for all of it
+            // left the sender idle for a round trip per window, which on a far path
+            // (300 ms) was as long as the window itself took.
+            let offset = fetch.requested_end.max(received);
+            fetch.requested_end = fetch.size.min(offset + self.config.fetch_window);
             let request = ClipFetch {
                 generation: fetch.generation,
                 kind: fetch.kind,
-                offset: received,
-                len: fetch.requested_end - received,
+                offset,
+                len: fetch.requested_end - offset,
             };
             self.send(ClipMessage::Fetch(request), out);
         }

@@ -232,10 +232,16 @@ public sealed record ConnectedEvent(ulong Tag, string HostKey, string HostName, 
 public sealed record StreamChangedEvent(ulong Tag, uint Codec, StreamMode Mode, uint Width, uint Height, uint Fps, uint Display = 0) : ClientEvent(Tag);
 public sealed record InputCaptureEvent(ulong Tag, CaptureState State) : ClientEvent(Tag);
 public sealed record PasteGateEvent(ulong Tag, uint WaitedMs, bool TimedOut) : ClientEvent(Tag);
-/// <summary>Clipboard status. Text is English; Code lets the UI word it. Kind is "text", "html", "rtf" or "png".</summary>
-public enum ClipboardCode { Other = 0, SensitiveKeptLocal = 1, TooLarge = 2, PeerRejected = 3, WriteFailed = 4, FetchFailed = 5, Unavailable = 6 }
+/// <summary>Clipboard status. Text is English; Code lets the UI word it. Kind is "text", "html", "rtf" or "png".
+/// Receiving and Sending are a large copy on its way (Done of Size bytes), Received and Sent that it is across,
+/// Idle that it was given up: back to the ordinary line.</summary>
+public enum ClipboardCode
+{
+    Other = 0, SensitiveKeptLocal = 1, TooLarge = 2, PeerRejected = 3, WriteFailed = 4, FetchFailed = 5, Unavailable = 6,
+    Receiving = 7, Sending = 8, Received = 9, Sent = 10, Idle = 11,
+}
 public sealed record ClipboardNoticeEvent(ulong Tag, string Text, ClipboardCode Code = ClipboardCode.Other, string Kind = "",
-    ulong Size = 0, string Detail = "") : ClientEvent(Tag);
+    ulong Size = 0, string Detail = "", ulong Done = 0) : ClientEvent(Tag);
 public sealed record StatsEvent(ulong Tag, StreamStats Stats) : ClientEvent(Tag);
 public sealed record DisconnectedEvent(ulong Tag, DisconnectReason Reason, string Message) : ClientEvent(Tag);
 public sealed record HostKeyEvent(ulong Tag) : ClientEvent(Tag);
@@ -553,7 +559,7 @@ public static class ClientCodec
     {
         string text = "", kind = "", detail = "";
         var code = ClipboardCode.Other;
-        ulong size = 0;
+        ulong size = 0, done = 0;
         var r = new ProtoReader(data);
         while (r.Next(out var f))
         {
@@ -562,15 +568,16 @@ public static class ClientCodec
                 case 1: text = r.String(); break;
                 case 2:
                     var v = r.UInt64();
-                    code = v <= 6 ? (ClipboardCode)v : ClipboardCode.Other;
+                    code = v <= 11 ? (ClipboardCode)v : ClipboardCode.Other;
                     break;
                 case 3: kind = r.String(); break;
                 case 4: size = r.UInt64(); break;
                 case 5: detail = r.String(); break;
+                case 6: done = r.UInt64(); break;
                 default: r.Skip(); break;
             }
         }
-        return new ClipboardNoticeEvent(tag, text, code, kind, size, detail);
+        return new ClipboardNoticeEvent(tag, text, code, kind, size, detail, done);
     }
 
     static WarningEvent Warning(ulong tag, ReadOnlySpan<byte> data)

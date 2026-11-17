@@ -944,6 +944,67 @@ async fn a_viewer_image_is_fetched_before_the_host_pasteboard_is_written() {
     unsafe { abi::nexa_session_close(session) };
 }
 
+/// A picture takes a while to cross, and until it has, a paste on the receiving side
+/// gets what was there before: the toolbar says how far it is and when it is across, in
+/// both directions.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_picture_on_its_way_is_reported_until_it_is_across() {
+    use nexa_client::proto::ClipboardCode as Code;
+    let h = make_host(perms(true, false, true)).await;
+    let (viewer, session) = connected(&h, 1).await;
+    until("host clipboard up", WAIT, || {
+        h.platform.state.clipboards_created.load(SeqCst) == 1
+    })
+    .await;
+    let image = big_image();
+    let clip = |code: Code| move |b: &EventBody| matches!(b, EventBody::Clipboard(n) if n.code == code as i32);
+
+    // Viewer → host: across at once here, but the host is slow to write it, and until
+    // it has, it is not there to paste.
+    *lock(&h.platform.clip.write_delay) = Duration::from_millis(700);
+    viewer.probe.clip.user_copy(&[(ClipKind::Png, &image)]);
+    let EventBody::Clipboard(sending) = viewer.wait_event("sending", clip(Code::Sending)).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        (sending.kind.as_str(), sending.size),
+        ("png", image.len() as u64)
+    );
+    assert!(
+        h.platform.clip.content(ClipKind::Png).is_none(),
+        "said while the host does not have it yet"
+    );
+    viewer.wait_event("sent", clip(Code::Sent)).await;
+    assert_eq!(
+        h.platform.clip.content(ClipKind::Png).as_deref(),
+        Some(&image[..])
+    );
+
+    // Host → viewer: large enough to take a second or so at the stream's rate.
+    *lock(&h.platform.clip.write_delay) = Duration::ZERO;
+    let other: Vec<u8> = (0..3 * 1024 * 1024u32).map(|i| (i % 241) as u8).collect();
+    h.platform.clip.user_copy(&[(ClipKind::Png, &other)]);
+    let EventBody::Clipboard(receiving) =
+        viewer.wait_event("receiving", clip(Code::Receiving)).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(receiving.size, other.len() as u64);
+    assert_ne!(
+        viewer.probe.clip.content(ClipKind::Png).as_deref(),
+        Some(&other[..]),
+        "said while a paste here would still get the old content"
+    );
+    viewer.wait_event("received", clip(Code::Received)).await;
+    assert_eq!(
+        viewer.probe.clip.content(ClipKind::Png).as_deref(),
+        Some(&other[..])
+    );
+    // SAFETY: handles are registry ids.
+    unsafe { abi::nexa_session_close(session) };
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn garbage_and_stale_handles_return_errors() {
     let viewer = Viewer::new();
