@@ -531,8 +531,12 @@ function showSession(s) {
   tag.hidden = false;
   tag.textContent = t(s.input ? "control" : "viewOnly");
   tag.classList.toggle("control", s.input);
-  // A keyboard that is not a Mac's, on a Mac: Ctrl does what ⌘ does there.
-  const swapUseful = s.input && s.hostOs === "macos" && !MAC_BROWSER;
+  // A keyboard whose shortcut key is not the host's: a PC's on a Mac (Ctrl does what ⌘
+  // does there) or a Mac's on Windows or Linux (⌘ does what Ctrl does there; without it
+  // ⌘C and ⌘V arrive as Win+C and Win+V). A host that does not say keeps a Mac's ways.
+  const hostMac = s.hostOs !== "windows" && s.hostOs !== "linux";
+  keyboard.hostMac = hostMac;
+  const swapUseful = s.input && s.hostOs !== "" && hostMac !== MAC_BROWSER;
   keyboard.swap = swapUseful;
   $("swap").hidden = !swapUseful;
   showSwap();
@@ -728,9 +732,11 @@ function showNet(r) {
 
 function showSwap() {
   const b = $("swap");
-  b.textContent = t(keyboard.swap ? "swapOn" : "swapOff");
+  // A Mac's keyboard on another computer, or another keyboard on a Mac.
+  const key = MAC_BROWSER ? "swapCmd" : "swap";
+  b.textContent = t(key + (keyboard.swap ? "On" : "Off"));
   b.setAttribute("aria-pressed", String(keyboard.swap));
-  b.title = t("swapTip");
+  b.title = t(key + "Tip");
 }
 
 // ---- Input ----

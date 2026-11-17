@@ -82,8 +82,11 @@ export class Keyboard {
     this.send = send;
     this.sendClip = sendClip;
     this.active = active;
-    /** Ctrl and ⌘ trade places: for a non-Mac keyboard on a Mac host. */
+    /** Ctrl and ⌘ trade places: for a keyboard whose shortcut key is not the host's (a
+     *  PC's on a Mac, a Mac's on Windows or Linux). */
     this.swap = false;
+    /** Whether the host's shortcuts use ⌘ (a Mac) rather than Ctrl. */
+    this.hostMac = true;
     this.held = new Set();
     /** Modifiers latched on the on-screen key bar, for the next key or character. */
     this.latched = new Set();
@@ -166,8 +169,9 @@ export class Keyboard {
   }
 
   isPaste(e, c) {
-    // ⌘V on the host, however this keyboard spells it.
-    return c === KEY_V && this.flags(e).metaKey && !e.altKey && !e.repeat;
+    // The host's paste (⌘V on a Mac, Ctrl+V elsewhere), however this keyboard spells it.
+    const f = this.flags(e);
+    return c === KEY_V && (this.hostMac ? f.metaKey : f.ctrlKey) && !e.altKey && !e.repeat;
   }
 
   key(e, isDown) {
