@@ -51,11 +51,23 @@ pub fn local_size(
     ))
 }
 
+/// What the host last said of its cursor.
+#[derive(Clone, Copy)]
+struct HostCursor {
+    /// The shape in use; 0 when it has none.
+    shape: u64,
+    hidden: bool,
+}
+
 #[derive(Default)]
 pub struct CursorState {
     shapes: VecDeque<Shape>,
-    /// The host's last `CursorSet`: `Some(None)` hidden, `None` nothing yet.
-    host: Option<Option<u64>>,
+    /// The host's last `CursorSet`; `None`: nothing yet.
+    host: Option<HostCursor>,
+    /// The pointer moved here since the host hid its cursor, so it shows again: what a
+    /// Mac does itself, but it goes on reporting the cursor hidden while the moves it
+    /// gets are injected ones, and the pointer then stayed away after typing.
+    revealed: bool,
     game: bool,
     locked: bool,
     view: ViewGeometry,
@@ -112,8 +124,30 @@ impl CursorState {
     }
 
     pub fn on_set(&mut self, s: CursorSet) {
-        self.host = Some((!s.hidden).then_some(s.id));
+        let before = self.host;
+        // Only the host hiding its cursor hides it here: saying "hidden" again (with a
+        // new shape, or after a resync) does not take back a pointer already moved.
+        if !s.hidden || !before.is_some_and(|h| h.hidden) {
+            self.revealed = false;
+        }
+        // A host up to 0.1.14 names no shape while hidden: the one it had stays.
+        let shape = match before {
+            Some(h) if s.hidden && s.id == 0 => h.shape,
+            _ => s.id,
+        };
+        self.host = Some(HostCursor {
+            shape,
+            hidden: s.hidden,
+        });
         self.apply();
+    }
+
+    /// The person moved the pointer over the view: a cursor the host hid shows again.
+    pub fn on_local_move(&mut self) {
+        if !self.revealed && self.host.is_some_and(|h| h.hidden) {
+            self.revealed = true;
+            self.apply();
+        }
     }
 
     /// The host moved its cursor. Returns the new position in view pixels when the
@@ -140,8 +174,8 @@ impl CursorState {
         }
         match self.host {
             None => Look::Default,
-            Some(None) => Look::Hidden,
-            Some(Some(id)) => match self.shapes.iter().find(|s| s.id == id) {
+            Some(h) if h.hidden && !self.revealed => Look::Hidden,
+            Some(HostCursor { shape: id, .. }) => match self.shapes.iter().find(|s| s.id == id) {
                 Some(s) => match local_size(s.w, s.h, s.hot_x, s.hot_y, &self.view) {
                     Some((width_pt, height_pt, hot_x_pt, hot_y_pt)) => Look::Host(LocalCursor {
                         id,
@@ -309,6 +343,80 @@ mod tests {
                 Call::Show(Some((9, 8.0, 12.0, 0.5, 1.0))),
             ]
         );
+    }
+
+    fn set(id: u64, hidden: bool) -> CursorSet {
+        CursorSet { id, hidden }
+    }
+
+    /// Typing on a Mac host hides its cursor, and the Mac goes on saying "hidden" while
+    /// the only moves it gets are injected. The pointer here must come back with the
+    /// first move, as it does on the Mac itself, not stay away.
+    #[test]
+    fn a_cursor_the_host_hid_shows_again_when_the_pointer_moves() {
+        let (mut s, fake) = state();
+        let shown = Call::Show(Some((7, 8.0, 12.0, 0.5, 1.0)));
+        s.on_shape(shape(7));
+        s.on_set(set(7, false));
+        s.on_local_move();
+        s.on_set(set(7, true)); // a key was pressed
+        s.on_local_move();
+        s.on_local_move();
+        assert_eq!(
+            fake.0.lock().unwrap().clone(),
+            vec![shown.clone(), Call::Show(None), shown.clone()],
+            "hidden by the key, back with the first move, once"
+        );
+        fake.0.lock().unwrap().clear();
+
+        // Still "hidden" at the host, now over something with another shape: that shape.
+        s.on_shape(shape(8));
+        s.on_set(set(8, true));
+        assert_eq!(
+            fake.0.lock().unwrap().clone(),
+            vec![Call::Show(Some((8, 8.0, 12.0, 0.5, 1.0)))],
+            "saying hidden again does not hide a pointer that moved since"
+        );
+        fake.0.lock().unwrap().clear();
+
+        // Shown and hidden again by the host: hidden here again, until the next move.
+        s.on_set(set(8, false));
+        s.on_set(set(8, true));
+        assert_eq!(fake.0.lock().unwrap().clone(), vec![Call::Show(None)]);
+    }
+
+    /// A host up to 0.1.14 names no shape while its cursor is hidden.
+    #[test]
+    fn an_older_host_s_hidden_cursor_comes_back_with_the_shape_it_had() {
+        let (mut s, fake) = state();
+        s.on_shape(shape(7));
+        s.on_set(set(7, false));
+        s.on_set(set(0, true));
+        s.on_local_move();
+        assert_eq!(
+            fake.0.lock().unwrap().last(),
+            Some(&Call::Show(Some((7, 8.0, 12.0, 0.5, 1.0))))
+        );
+        // Hidden before any shape was named: the ordinary cursor.
+        let (mut s, fake) = state();
+        s.on_set(set(0, true));
+        s.on_local_move();
+        assert_eq!(
+            fake.0.lock().unwrap().clone(),
+            vec![Call::Show(None), Call::Reset]
+        );
+    }
+
+    /// Game mode's lock hides the pointer whatever moves.
+    #[test]
+    fn a_locked_pointer_stays_hidden() {
+        let (mut s, fake) = state();
+        s.on_shape(shape(7));
+        s.on_set(set(7, true));
+        s.set_game(true);
+        s.set_locked(true);
+        s.on_local_move();
+        assert_eq!(fake.0.lock().unwrap().last(), Some(&Call::Show(None)));
     }
 
     #[test]

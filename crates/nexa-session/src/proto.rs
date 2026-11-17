@@ -32,8 +32,11 @@
 //!   `hot_y` are in **stream pixels**: the size the cursor covers on the video, which
 //!   is what the viewer needs to draw it at the right size. `png` may have more
 //!   pixels than `w`×`h` (a Retina cursor); the viewer uses them for sharpness.
-//! - `CursorSet` names the current shape, or `hidden`. It always follows the
-//!   `CursorShape` for a new id.
+//! - `CursorSet` names the current shape and says whether it is `hidden`. It always
+//!   follows the `CursorShape` for a new id. A hidden cursor keeps its `id` (0 from a
+//!   host up to 0.1.14, or with no shape yet): the viewer shows the cursor again when
+//!   its own pointer moves, whatever the host goes on saying (a Mac says "hidden"
+//!   from a key press until a mouse at the Mac itself moves).
 //! - `CursorMoved` is in stream pixels of `display`. The host sends it only when its
 //!   cursor moved somewhere other than where the viewer last put it, i.e. when a
 //!   program (or the person at the host) moved it.

@@ -6,7 +6,8 @@ use std::{
     collections::BTreeSet,
     sync::{
         Arc, Mutex, MutexGuard,
-        mpsc::{Receiver, RecvTimeoutError},
+        atomic::{AtomicU64, Ordering::Relaxed},
+        mpsc::{Receiver, RecvTimeoutError, Sender},
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -18,7 +19,7 @@ use nexa_input::{
     FocusClass, Output, PhysButton, PhysKey, PhysWheel, RewriteMode, Rewriter, hid::Hid,
 };
 use nexa_session::{
-    clip::ClipHandle,
+    clip::{ClipHandle, PasteNeed},
     proto::{InputBody, InputMsg},
 };
 use nexa_wire::{
@@ -63,6 +64,9 @@ pub enum InputCmd {
     GateRelease(Gen),
     /// The host is still downloading this clipboard generation (`InputGate::on_progress`).
     GateProgress(Gen),
+    /// The clipboard thread's late answer for the paste with this ticket: what it has
+    /// to wait for (`InputGate::on_paste_answered`).
+    PasteAnswered(u64, Option<Gen>),
     Stop,
 }
 
@@ -177,6 +181,8 @@ pub struct InputThreadConfig {
     /// Used when the tap needs a permission that is missing.
     pub fallback: Arc<Mutex<Option<Box<dyn KeySource>>>>,
     pub clip: Arc<Mutex<Option<ClipHandle>>>,
+    /// This thread's own command queue, for answers that come after their question.
+    pub commands: Sender<InputCmd>,
     pub view: Arc<Mutex<ViewGeometry>>,
     pub events: EventTx,
     pub tag: u64,
@@ -249,9 +255,26 @@ impl InputState {
         *lock(&self.cfg.gate_stats) = self.gate.stats();
     }
 
-    fn paste_requirement(&self) -> Option<Gen> {
-        let clip = lock(&self.cfg.clip).clone()?;
-        clip.paste_requirement(PASTE_QUERY_LIMIT)
+    /// Records a paste with the gate: held for the copy it is meant for, if the host
+    /// does not have that yet. A clipboard thread too busy to say in time answers
+    /// later, and the paste is held until it has.
+    fn on_paste(&mut self, now: Instant, released: &mut Vec<InputMsg>) {
+        /// Unique in the process: an answer for a thread that has ended (a reconnect)
+        /// must not pass for one of its successor's.
+        static NEXT_TICKET: AtomicU64 = AtomicU64::new(1);
+        let Some(clip) = lock(&self.cfg.clip).clone() else {
+            self.gate.on_paste(None, now, released);
+            return;
+        };
+        let ticket = NEXT_TICKET.fetch_add(1, Relaxed);
+        let commands = self.cfg.commands.clone();
+        let need = clip.paste_requirement(PASTE_QUERY_LIMIT, move |required| {
+            let _ = commands.send(InputCmd::PasteAnswered(ticket, required));
+        });
+        match need {
+            PasteNeed::Known(required) => self.gate.on_paste(required, now, released),
+            PasteNeed::Later => self.gate.on_paste_unanswered(ticket, now, released),
+        }
     }
 
     fn ordered(&mut self, body: InputBody, now: Instant, out: &mut Vec<InputMsg>) {
@@ -263,10 +286,7 @@ impl InputState {
         let mut released = Vec::new();
         for output in outputs {
             match output {
-                Output::PasteMarker => {
-                    let required = self.paste_requirement();
-                    self.gate.on_paste(required, now, &mut released);
-                }
+                Output::PasteMarker => self.on_paste(now, &mut released),
                 Output::Key { hid, down, repeat } => {
                     self.ordered(
                         InputBody::Key(KeyEvent {
@@ -426,6 +446,10 @@ impl InputState {
     }
 
     fn on_cmd(&mut self, cmd: InputCmd, now: Instant) -> bool {
+        if matches!(cmd, InputCmd::Move(..)) {
+            // A cursor the host hid (typing on a Mac) shows again once the pointer moves.
+            lock(&self.cfg.cursor).on_local_move();
+        }
         match cmd {
             InputCmd::Stop => return false,
             InputCmd::SetActive(active) => self.apply_active(active, now),
@@ -514,6 +538,12 @@ impl InputState {
                 self.flush(&mut released);
             }
             InputCmd::GateProgress(generation) => self.gate.on_progress(generation, now),
+            InputCmd::PasteAnswered(ticket, required) => {
+                let mut released = Vec::new();
+                self.gate
+                    .on_paste_answered(ticket, required, now, &mut released);
+                self.flush(&mut released);
+            }
             // Input arriving while inactive is ignored.
             InputCmd::Key(_)
             | InputCmd::Move(..)

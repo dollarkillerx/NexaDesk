@@ -248,6 +248,8 @@ pub struct FakeClip {
     pub backend: Arc<Mutex<FakeBackend>>,
     last_seen: Arc<Mutex<u64>>,
     pub write_delay: Arc<Mutex<Duration>>,
+    /// How long reading a copy takes once it is noticed (a large picture is converted).
+    pub poll_delay: Arc<Mutex<Duration>>,
     pub written_at: Arc<Mutex<Option<Instant>>>,
     /// Formats that were still promises when written.
     pub promised_on_write: Arc<Mutex<Vec<ClipKind>>>,
@@ -256,6 +258,13 @@ pub struct FakeClip {
 impl FakeClip {
     pub fn user_copy(&self, items: &[(ClipKind, &[u8])]) {
         lock(&self.backend).user_copy(items);
+    }
+    /// A copy made before the session began: a real clipboard reports only what
+    /// changes after it was first looked at.
+    pub fn copied_before_session(&self, items: &[(ClipKind, &[u8])]) {
+        let mut backend = lock(&self.backend);
+        backend.user_copy(items);
+        *lock(&self.last_seen) = backend.change_count();
     }
     pub fn content(&self, kind: ClipKind) -> Option<Vec<u8>> {
         lock(&self.backend).content(kind).map(|b| b.to_vec())
@@ -287,13 +296,20 @@ impl ClipboardBackend for FakeClip {
 
 impl ClipPlatform for FakeClip {
     fn poll(&mut self) -> nexa_clip::Result<Option<LocalSnapshot>> {
+        let delay = {
+            let backend = lock(&self.backend);
+            if backend.change_count() == *lock(&self.last_seen) {
+                return Ok(None);
+            }
+            *lock(&self.poll_delay)
+        };
+        thread::sleep(delay);
         let backend = lock(&self.backend);
-        let mut seen = lock(&self.last_seen);
-        if backend.change_count() == *seen {
-            return Ok(None);
-        }
-        *seen = backend.change_count();
+        *lock(&self.last_seen) = backend.change_count();
         Ok(Some(backend.snapshot()))
+    }
+    fn current(&mut self) -> nexa_clip::Result<Option<LocalSnapshot>> {
+        Ok(Some(lock(&self.backend).snapshot()))
     }
 }
 

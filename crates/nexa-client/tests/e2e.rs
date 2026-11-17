@@ -727,6 +727,116 @@ async fn the_paste_key_waits_for_the_clipboard() {
     unsafe { abi::nexa_session_close(session) };
 }
 
+/// When the host's injector saw V go down.
+fn v_down_at(h: &Host) -> Instant {
+    h.platform
+        .injected
+        .all()
+        .into_iter()
+        .find_map(|i| match i {
+            Injected::Key {
+                hid,
+                down: true,
+                at,
+            } if hid == key::V.0 => Some(at),
+            _ => None,
+        })
+        .expect("V was injected")
+}
+
+fn press_paste(viewer: &Viewer) {
+    viewer.press(key::LGUI, true);
+    viewer.press(key::V, true);
+    viewer.press(key::V, false);
+    viewer.press(key::LGUI, false);
+}
+
+/// Copy, connect, paste: only copies made during a session were ever sent, so the first
+/// paste landed on whatever the host's clipboard held. Now that paste takes along what
+/// was copied before, and waits for it; until then nothing of it leaves the viewer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_first_paste_brings_what_was_copied_before_the_session() {
+    let h = make_host(perms(true, true, true)).await;
+    let (viewer, session) = connected(&h, 1).await;
+    until("host clipboard up", WAIT, || {
+        h.platform.state.clipboards_created.load(SeqCst) == 1
+    })
+    .await;
+    activate(&viewer, session).await;
+    viewer
+        .probe
+        .clip
+        .copied_before_session(&[(ClipKind::Text, b"copied before connecting")]);
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(
+        h.platform.clip.content(ClipKind::Text),
+        None,
+        "not sent before it is pasted"
+    );
+
+    press_paste(&viewer);
+    until("paste injected", WAIT, || {
+        h.platform.injected.keys().contains(&(key::V.0, true))
+    })
+    .await;
+    let written = lock(&h.platform.clip.written_at).expect("host clipboard written");
+    assert!(
+        v_down_at(&h) >= written,
+        "V reached the host before what was copied"
+    );
+    assert_eq!(
+        h.platform.clip.content(ClipKind::Text).as_deref(),
+        Some(&b"copied before connecting"[..])
+    );
+    // SAFETY: handles are registry ids.
+    unsafe { abi::nexa_session_close(session) };
+}
+
+/// A large copy keeps the clipboard thread busy for a while (a picture is converted).
+/// A paste pressed meanwhile got no answer in the 30 ms the input thread may wait,
+/// which counted as "nothing pending": V went ahead and pasted the host's old content.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_paste_pressed_while_a_copy_is_still_being_read_waits_for_it() {
+    let h = make_host(perms(true, true, true)).await;
+    let (viewer, session) = connected(&h, 1).await;
+    until("host clipboard up", WAIT, || {
+        h.platform.state.clipboards_created.load(SeqCst) == 1
+    })
+    .await;
+    activate(&viewer, session).await;
+    *lock(&viewer.probe.clip.poll_delay) = Duration::from_millis(400);
+
+    viewer
+        .probe
+        .clip
+        .user_copy(&[(ClipKind::Text, b"a large copy")]);
+    // By now the clipboard thread has noticed the copy and is reading it.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    press_paste(&viewer);
+
+    until("paste injected", WAIT, || {
+        h.platform.injected.keys().contains(&(key::V.0, true))
+    })
+    .await;
+    let written = lock(&h.platform.clip.written_at).expect("host clipboard written");
+    assert!(
+        v_down_at(&h) >= written,
+        "V reached the host before the copy it was meant for"
+    );
+    assert_eq!(
+        h.platform.clip.content(ClipKind::Text).as_deref(),
+        Some(&b"a large copy"[..])
+    );
+    viewer
+        .wait_event(
+            "gate report",
+            |b| matches!(b, EventBody::PasteGate(p) if !p.timed_out && p.waited_ms > 0),
+        )
+        .await;
+    // SAFETY: handles are registry ids.
+    unsafe { abi::nexa_session_close(session) };
+}
+
 /// If the host never confirms, the paste still happens after the deadline and says so.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_held_paste_gives_up_at_the_deadline() {

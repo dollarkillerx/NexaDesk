@@ -16,7 +16,7 @@
 use std::{
     collections::{BTreeSet, VecDeque},
     sync::{
-        Arc,
+        Arc, Condvar, Mutex,
         mpsc::{self, Receiver, RecvTimeoutError, SyncSender},
     },
     thread::{self, JoinHandle},
@@ -45,12 +45,82 @@ const BULK_MIN_FRAME: usize = 4096;
 pub trait ClipPlatform: ClipboardBackend {
     /// A description of the clipboard if it changed since the last call.
     fn poll(&mut self) -> nexa_clip::Result<Option<LocalSnapshot>>;
+    /// The clipboard as it is now, changed or not: what was copied before the session
+    /// began, for its first paste. `None` where that cannot be told.
+    fn current(&mut self) -> nexa_clip::Result<Option<LocalSnapshot>> {
+        Ok(None)
+    }
+}
+
+/// What [`ClipHandle::paste_requirement`] found out in the time it had.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PasteNeed {
+    /// What the paste must wait for, if anything.
+    Known(Option<Gen>),
+    /// The clipboard thread is busy; the answer goes to the `late` callback.
+    Later,
+}
+
+type LateAnswer = Box<dyn FnOnce(Option<Gen>) + Send>;
+
+enum Answer {
+    Waiting,
+    Given(Option<Gen>),
+    /// The asker stopped waiting and left this to call.
+    Late(LateAnswer),
+    Taken,
+}
+
+/// One paste query's answer, on its way from the clipboard thread to the input thread:
+/// in the time the input thread may wait, or to its callback after that.
+struct PasteReply {
+    answer: Mutex<Answer>,
+    given: Condvar,
+}
+
+impl PasteReply {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            answer: Mutex::new(Answer::Waiting),
+            given: Condvar::new(),
+        })
+    }
+
+    fn give(&self, required: Option<Gen>) {
+        let mut answer = self.answer.lock().unwrap_or_else(|e| e.into_inner());
+        match std::mem::replace(&mut *answer, Answer::Taken) {
+            Answer::Waiting => {
+                *answer = Answer::Given(required);
+                self.given.notify_all();
+            }
+            Answer::Late(late) => {
+                drop(answer);
+                late(required);
+            }
+            Answer::Given(_) | Answer::Taken => {}
+        }
+    }
+
+    fn wait(&self, limit: Duration, late: LateAnswer) -> PasteNeed {
+        let answer = self.answer.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut answer, _) = self
+            .given
+            .wait_timeout_while(answer, limit, |a| matches!(a, Answer::Waiting))
+            .unwrap_or_else(|e| e.into_inner());
+        match std::mem::replace(&mut *answer, Answer::Taken) {
+            Answer::Given(required) => PasteNeed::Known(required),
+            _ => {
+                *answer = Answer::Late(late);
+                PasteNeed::Later
+            }
+        }
+    }
 }
 
 enum DriverMsg {
     Received(ClipMessage),
     StreamEnded,
-    PasteQuery(SyncSender<Option<Gen>>),
+    PasteQuery(Arc<PasteReply>),
     Policy(ClipPolicy),
     Stop,
 }
@@ -104,6 +174,7 @@ impl ClipChannel {
             callbacks,
             prefetch: None,
             polled: Vec::new(),
+            offered: false,
         };
         let thread = thread::Builder::new()
             .name("clipboard".into())
@@ -139,15 +210,29 @@ pub struct ClipHandle {
 
 impl ClipHandle {
     /// What a paste must wait for. Polls the pasteboard first, so a copy made moments
-    /// ago is seen; `limit` bounds the wait if the clipboard thread is busy.
+    /// ago is seen, and on the session's first paste offers the peer what was copied
+    /// before the session began.
     ///
     /// Never blocks longer than `limit`: it runs on the input thread, where a wait stops
-    /// every key and click. A full queue (the driver busy with a large transfer) answers
-    /// `None`, which lets the paste go as if nothing were pending.
-    pub fn paste_requirement(&self, limit: Duration) -> Option<Gen> {
-        let (reply, answer) = mpsc::sync_channel(1);
-        self.tx.try_send(DriverMsg::PasteQuery(reply)).ok()?;
-        answer.recv_timeout(limit).ok().flatten()
+    /// every key and click. If the clipboard thread has not answered by then (it is
+    /// reading or writing a large copy), this returns [`PasteNeed::Later`] and `late` is
+    /// called with the answer once there is one, on the clipboard thread; a session that
+    /// ends first never calls it. A full queue answers `Known(None)`, which lets the
+    /// paste go as if nothing were pending.
+    pub fn paste_requirement(
+        &self,
+        limit: Duration,
+        late: impl FnOnce(Option<Gen>) + Send + 'static,
+    ) -> PasteNeed {
+        let reply = PasteReply::new();
+        if self
+            .tx
+            .try_send(DriverMsg::PasteQuery(reply.clone()))
+            .is_err()
+        {
+            return PasteNeed::Known(None);
+        }
+        reply.wait(limit, Box::new(late))
     }
 
     pub fn set_policy(&self, policy: ClipPolicy) {
@@ -264,6 +349,8 @@ struct Driver {
     /// reading it again converted a large picture a second time (TIFF to PNG on a Mac, a
     /// bitmap to PNG on Windows); the engine checks it against what was announced.
     polled: Vec<(ClipKind, Bytes)>,
+    /// The session's first paste has been seen, see [`Driver::offer_current`].
+    offered: bool,
 }
 
 impl Driver {
@@ -282,7 +369,8 @@ impl Driver {
                 Ok(DriverMsg::StreamEnded) => self.feed(ClipEvent::Disconnected),
                 Ok(DriverMsg::PasteQuery(reply)) => {
                     self.poll_backend();
-                    let _ = reply.try_send(self.sync.paste_requirement());
+                    self.offer_current();
+                    reply.give(self.sync.paste_requirement());
                 }
                 Ok(DriverMsg::Policy(policy)) => self.feed(ClipEvent::PolicyChanged(policy)),
                 Err(RecvTimeoutError::Timeout) => {}
@@ -301,6 +389,22 @@ impl Driver {
 
     fn poll_backend(&mut self) {
         if let Ok(Some(snapshot)) = self.backend.poll() {
+            self.polled = snapshot.data.clone();
+            self.feed(ClipEvent::LocalChanged(snapshot));
+        }
+    }
+
+    /// The session's first paste: if neither side has copied anything since it began,
+    /// what this side copied before is what the person means to paste, so the peer gets
+    /// it now, and the paste waits for it like for any other copy. Not sent when the
+    /// session starts: a clipboard is only the peer's business once it is pasted there.
+    /// What this app put on the clipboard itself (the peer's own copy from an earlier
+    /// session) carries the owner marker and is not offered back.
+    fn offer_current(&mut self) {
+        if std::mem::replace(&mut self.offered, true) || self.sync.latest().is_some() {
+            return;
+        }
+        if let Ok(Some(snapshot)) = self.backend.current() {
             self.polled = snapshot.data.clone();
             self.feed(ClipEvent::LocalChanged(snapshot));
         }
@@ -502,9 +606,12 @@ mod tests {
     }
 
     /// A clipboard whose reads are counted: a picture on it costs a conversion each.
+    #[derive(Default)]
     struct Counting {
         reads: Arc<AtomicU32>,
         next: Option<LocalSnapshot>,
+        /// What was copied before the session began.
+        before: Option<LocalSnapshot>,
     }
 
     impl ClipboardBackend for Counting {
@@ -529,24 +636,32 @@ mod tests {
         fn poll(&mut self) -> nexa_clip::Result<Option<LocalSnapshot>> {
             Ok(self.next.take())
         }
+        fn current(&mut self) -> nexa_clip::Result<Option<LocalSnapshot>> {
+            Ok(self.before.clone())
+        }
     }
 
-    #[test]
-    fn a_copy_just_polled_is_served_without_reading_it_again() {
-        let picture = Bytes::from_static(b"\x89PNG a large picture");
-        let reads = Arc::new(AtomicU32::new(0));
-        let (control, _control_rx) = async_mpsc::unbounded_channel();
-        let (data, _data_rx) = async_mpsc::unbounded_channel();
+    fn text_snapshot(text: &'static [u8], owner_marker: bool) -> LocalSnapshot {
+        LocalSnapshot {
+            formats: vec![FormatInfo::of(ClipKind::Text, text)],
+            data: vec![(ClipKind::Text, Bytes::from_static(text))],
+            owner_marker,
+            sensitive: false,
+        }
+    }
+
+    /// A driver on `backend`, connected, with what it sends to the peer.
+    fn connected_driver(
+        backend: Counting,
+    ) -> (
+        Driver,
+        async_mpsc::UnboundedReceiver<ClipMessage>,
+        async_mpsc::UnboundedReceiver<ClipMessage>,
+    ) {
+        let (control, control_rx) = async_mpsc::unbounded_channel();
+        let (data, data_rx) = async_mpsc::unbounded_channel();
         let mut driver = Driver {
-            backend: Box::new(Counting {
-                reads: reads.clone(),
-                next: Some(LocalSnapshot {
-                    formats: vec![FormatInfo::of(ClipKind::Png, &picture)],
-                    data: vec![(ClipKind::Png, picture.clone())],
-                    owner_marker: false,
-                    sensitive: false,
-                }),
-            }),
+            backend: Box::new(backend),
             sync: ClipSync::new(ME, ClipConfig::default()),
             out: Outbound { control, data },
             callbacks: ClipCallbacks {
@@ -556,7 +671,85 @@ mod tests {
             },
             prefetch: None,
             polled: Vec::new(),
+            offered: false,
         };
+        driver.feed(ClipEvent::Connected);
+        (driver, control_rx, data_rx)
+    }
+
+    /// Copy, connect, paste: the paste used to land on whatever the host's clipboard
+    /// held, because only copies made during the session were ever sent.
+    #[test]
+    fn the_first_paste_offers_what_was_copied_before_the_session() {
+        let (mut driver, mut sent, _data) = connected_driver(Counting {
+            before: Some(text_snapshot(b"copied before connecting", false)),
+            ..Counting::default()
+        });
+        driver.poll_backend();
+        assert!(sent.try_recv().is_err(), "nothing leaves before a paste");
+
+        driver.offer_current();
+        let Ok(ClipMessage::Announce(announce)) = sent.try_recv() else {
+            panic!("the copy is announced at the first paste");
+        };
+        assert_eq!(
+            announce.inline,
+            vec![(
+                ClipKind::Text,
+                Bytes::from_static(b"copied before connecting")
+            )]
+        );
+        assert_eq!(
+            driver.sync.paste_requirement(),
+            Some(announce.generation),
+            "and the paste waits for it"
+        );
+        driver.offer_current();
+        assert!(sent.try_recv().is_err(), "once");
+    }
+
+    #[test]
+    fn a_copy_made_during_the_session_is_not_replaced_by_an_older_one() {
+        // The peer copied since the session began: that is what a paste means.
+        let (mut driver, mut sent, _data) = connected_driver(Counting {
+            before: Some(text_snapshot(b"old", false)),
+            ..Counting::default()
+        });
+        let theirs = b"copied on the host";
+        driver.feed(ClipEvent::Received(ClipMessage::Announce(ClipAnnounce {
+            generation: (7, DeviceId(*b"the-other-device")),
+            origin: DeviceId(*b"the-other-device"),
+            formats: vec![FormatInfo::of(ClipKind::Text, theirs)],
+            inline: vec![(ClipKind::Text, Bytes::from_static(theirs))],
+        })));
+        while sent.try_recv().is_ok() {}
+        driver.offer_current();
+        assert!(sent.try_recv().is_err());
+        assert_eq!(driver.sync.paste_requirement(), None);
+
+        // What this app wrote itself in an earlier session is the peer's own copy.
+        let (mut driver, mut sent, _data) = connected_driver(Counting {
+            before: Some(text_snapshot(b"from the host, last time", true)),
+            ..Counting::default()
+        });
+        driver.offer_current();
+        assert!(sent.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_copy_just_polled_is_served_without_reading_it_again() {
+        let picture = Bytes::from_static(b"\x89PNG a large picture");
+        let reads = Arc::new(AtomicU32::new(0));
+        let (mut driver, _control_rx, _data_rx) = connected_driver(Counting {
+            reads: reads.clone(),
+            next: Some(LocalSnapshot {
+                formats: vec![FormatInfo::of(ClipKind::Png, &picture)],
+                data: vec![(ClipKind::Png, picture.clone())],
+                owner_marker: false,
+                sensitive: false,
+            }),
+            before: None,
+        });
         driver.poll_backend();
         assert_eq!(driver.read_local(ClipKind::Png).unwrap(), picture);
         assert_eq!(reads.load(Relaxed), 0, "not read a second time");
@@ -571,16 +764,50 @@ mod tests {
         tx.try_send(DriverMsg::StreamEnded).unwrap();
         let handle = ClipHandle { tx };
         let started = Instant::now();
-        assert_eq!(handle.paste_requirement(Duration::from_millis(30)), None);
+        assert_eq!(
+            handle.paste_requirement(Duration::from_millis(30), |_| {}),
+            PasteNeed::Known(None)
+        );
         assert!(started.elapsed() < Duration::from_secs(1));
     }
 
+    /// The clipboard thread busy (a large picture being read or written) used to mean
+    /// "nothing to wait for", and the paste went ahead of the copy it was meant for.
     #[test]
-    fn a_paste_query_waits_at_most_its_limit() {
-        let (tx, _rx) = mpsc::sync_channel(4);
+    fn a_paste_query_waits_at_most_its_limit_and_is_answered_later() {
+        let (tx, rx) = mpsc::sync_channel(4);
         let handle = ClipHandle { tx };
+        let (late_tx, late_rx) = mpsc::channel();
         let started = Instant::now();
-        assert_eq!(handle.paste_requirement(Duration::from_millis(30)), None);
+        let need = handle.paste_requirement(Duration::from_millis(30), move |required| {
+            let _ = late_tx.send(required);
+        });
+        assert_eq!(need, PasteNeed::Later);
         assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(late_rx.try_recv().is_err(), "not before there is an answer");
+
+        // The clipboard thread gets to the query.
+        let Ok(DriverMsg::PasteQuery(reply)) = rx.try_recv() else {
+            panic!("the query is still queued");
+        };
+        let generation = (3, ME);
+        reply.give(Some(generation));
+        assert_eq!(late_rx.try_recv(), Ok(Some(generation)));
+    }
+
+    #[test]
+    fn a_paste_query_answered_in_time_is_known_at_once() {
+        let (tx, rx) = mpsc::sync_channel(4);
+        let handle = ClipHandle { tx };
+        let answering = thread::spawn(move || {
+            if let Ok(DriverMsg::PasteQuery(reply)) = rx.recv() {
+                reply.give(Some((9, ME)));
+            }
+        });
+        let need = handle.paste_requirement(Duration::from_secs(5), |_| {
+            panic!("answered in time: no late answer");
+        });
+        assert_eq!(need, PasteNeed::Known(Some((9, ME))));
+        answering.join().unwrap();
     }
 }

@@ -362,3 +362,133 @@ fn a_queued_paste_also_waits_for_its_download() {
     h.applied(6, 2_000);
     assert_eq!(h.take(), [8]);
 }
+
+// A paste recorded before the clipboard thread has said what it waits for: that thread
+// was busy (a large picture being read or written) for longer than the input thread
+// may wait, and the paste used to go ahead as if nothing were pending.
+
+#[test]
+fn an_unanswered_paste_is_held_until_the_answer_names_its_generation() {
+    let mut h = Harness::new();
+    h.gate.on_paste_unanswered(1, At(0), &mut h.out);
+    h.key(7, 1);
+    h.pointer(100, 2);
+    assert_eq!(h.take(), [100], "the V key waits, the pointer does not");
+
+    h.gate
+        .on_paste_answered(1, Some(generation(5)), At(40), &mut h.out);
+    assert!(h.take().is_empty(), "now it waits for generation 5");
+    h.applied(5, 90);
+    assert_eq!(h.take(), [7]);
+    let ended = h.gate.take_notices();
+    assert_eq!(ended[0].reason, ReleaseReason::Applied);
+    assert_eq!(ended[0].until, Some(generation(5)));
+    assert_eq!(ended[0].waited, Duration::from_millis(90));
+}
+
+#[test]
+fn an_unanswered_paste_goes_at_once_when_there_is_nothing_to_wait_for() {
+    let mut h = Harness::new();
+    h.gate.on_paste_unanswered(1, At(0), &mut h.out);
+    h.key(7, 1);
+    h.gate.on_paste_answered(1, None, At(35), &mut h.out);
+    assert_eq!(h.take(), [7]);
+    assert!(!h.gate.is_holding());
+
+    // Also when what it waits for is already there.
+    h.applied(5, 40);
+    h.gate.on_paste_unanswered(2, At(50), &mut h.out);
+    h.key(8, 51);
+    h.gate
+        .on_paste_answered(2, Some(generation(5)), At(60), &mut h.out);
+    assert_eq!(h.take(), [8]);
+}
+
+#[test]
+fn an_unanswered_paste_gives_up_at_the_deadline_and_ignores_a_stale_answer() {
+    let mut h = Harness::new();
+    h.gate.on_paste_unanswered(1, At(0), &mut h.out);
+    h.key(7, 1);
+    h.poll(DEADLINE_MS - 1);
+    assert!(h.take().is_empty());
+    h.poll(DEADLINE_MS);
+    assert_eq!(h.take(), [7]);
+    let ended = h.gate.take_notices();
+    assert_eq!(ended[0].reason, ReleaseReason::Deadline);
+    assert_eq!(ended[0].until, None);
+
+    // The answer for a hold that is over, or for a ticket never given, changes nothing.
+    h.paste(Some(generation(9)), DEADLINE_MS + 10);
+    h.key(8, DEADLINE_MS + 11);
+    h.gate
+        .on_paste_answered(1, None, At(DEADLINE_MS + 20), &mut h.out);
+    h.gate
+        .on_paste_answered(77, None, At(DEADLINE_MS + 21), &mut h.out);
+    assert!(h.take().is_empty(), "generation 9 is still awaited");
+    h.applied(9, DEADLINE_MS + 30);
+    assert_eq!(h.take(), [8]);
+}
+
+#[test]
+fn an_answered_paste_waits_for_its_download_like_any_other() {
+    let mut h = Harness::new();
+    h.progress(5, 10);
+    h.gate.on_paste_unanswered(1, At(20), &mut h.out);
+    h.key(7, 21);
+    h.gate
+        .on_paste_answered(1, Some(generation(5)), At(60), &mut h.out);
+    h.poll(20 + DEADLINE_MS + 100);
+    assert!(h.take().is_empty(), "the host is still fetching it");
+    h.applied(5, 3_000);
+    assert_eq!(h.take(), [7]);
+}
+
+#[test]
+fn a_late_answer_still_leaves_the_peer_its_time_to_confirm() {
+    let mut h = Harness::new();
+    h.gate.on_paste_unanswered(1, At(0), &mut h.out);
+    h.key(7, 1);
+    // The clipboard thread took 700 ms over a large picture; the peer hears of the
+    // copy only now.
+    h.gate
+        .on_paste_answered(1, Some(generation(5)), At(700), &mut h.out);
+    h.poll(DEADLINE_MS + 100);
+    assert!(h.take().is_empty(), "100 ms would not be a fair chance");
+    h.applied(5, 1_000);
+    assert_eq!(h.take(), [7]);
+    assert_eq!(
+        h.gate.take_notices()[0].waited,
+        Duration::from_millis(1_000),
+        "counted from the key press"
+    );
+
+    // Without a confirmation it gives up one timeout after the answer.
+    h.gate.on_paste_unanswered(2, At(2_000), &mut h.out);
+    h.key(8, 2_001);
+    h.gate
+        .on_paste_answered(2, Some(generation(6)), At(2_700), &mut h.out);
+    h.poll(2_700 + DEADLINE_MS - 1);
+    assert!(h.take().is_empty());
+    h.poll(2_700 + DEADLINE_MS);
+    assert_eq!(h.take(), [8]);
+}
+
+#[test]
+fn an_unanswered_paste_behind_another_keeps_its_place() {
+    let mut h = Harness::new();
+    h.paste(Some(generation(5)), 0);
+    h.key(7, 1);
+    h.gate.on_paste_unanswered(1, At(2), &mut h.out);
+    h.key(8, 3);
+    h.gate.on_paste_unanswered(2, At(4), &mut h.out);
+    h.key(9, 5);
+    // The second's answer comes while the first is still held: nothing to wait for.
+    h.gate.on_paste_answered(2, None, At(10), &mut h.out);
+    h.gate
+        .on_paste_answered(1, Some(generation(6)), At(11), &mut h.out);
+    assert!(h.take().is_empty());
+    h.applied(5, 20);
+    assert_eq!(h.take(), [7], "the next paste waits for generation 6");
+    h.applied(6, 30);
+    assert_eq!(h.take(), [8, 9]);
+}

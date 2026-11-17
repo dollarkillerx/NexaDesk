@@ -649,6 +649,48 @@ async fn the_host_cursor_becomes_the_local_one_and_leaves_the_video() {
     .await;
 }
 
+/// A key pressed on a Mac host hides its cursor, and the Mac goes on reporting it
+/// hidden while the only moves it gets are injected ones: the viewer's pointer stayed
+/// invisible after typing. It comes back with the first move, as on the Mac itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cursor_hidden_by_typing_comes_back_when_the_pointer_moves() {
+    let h = host(perms(true, true, false)).await;
+    host_cursor(&h, &arrow(1), true, None);
+    let v = Viewer::connect(&h, Mode::Office).await;
+    v.wait_stream("stream", |_| true).await;
+    v.set_active(true);
+    until("input thread", WAIT, || lock(&v.probe.key_tx).is_some()).await;
+    until("shape shown", WAIT, || shown_hosts(&v).len() == 1).await;
+    let beam = shown_hosts(&v)[0];
+
+    host_cursor(&h, &arrow(1), false, None);
+    until("hidden by the key", WAIT, || {
+        v.cursor_calls().last() == Some(&Shown::Hidden)
+    })
+    .await;
+
+    assert_eq!(
+        v.command(Command::Move(PointerMove { x: 960.0, y: 540.0 })),
+        abi::NEXA_OK
+    );
+    until(
+        "back with the move",
+        WAIT,
+        || matches!(v.cursor_calls().last(), Some(Shown::Host(id, ..)) if *id == beam),
+    )
+    .await;
+
+    // Still "hidden" at the host, and over something with another shape by now.
+    host_cursor(&h, &arrow(2), false, None);
+    until(
+        "the shape it has now",
+        WAIT,
+        || matches!(v.cursor_calls().last(), Some(Shown::Host(id, ..)) if *id != beam),
+    )
+    .await;
+    v.close();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn only_moves_the_viewer_did_not_make_come_back() {
     let h = host(perms(true, true, false)).await;

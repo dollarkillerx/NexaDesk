@@ -108,6 +108,9 @@ impl ClipPlatform for GeneralClipboard {
     fn poll(&mut self) -> nexa_clip::Result<Option<LocalSnapshot>> {
         self.0.poll()
     }
+    fn current(&mut self) -> nexa_clip::Result<Option<LocalSnapshot>> {
+        self.0.snapshot().map(Some)
+    }
 }
 
 impl Deps for RealDeps {

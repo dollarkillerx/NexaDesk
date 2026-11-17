@@ -1223,6 +1223,7 @@ fn start_input(
             key_source: core.deps.key_source(tx.clone()),
             fallback: session.fallback.clone(),
             clip: session.clip.clone(),
+            commands: tx.clone(),
             view: session.view.clone(),
             events: core.events.clone(),
             tag: session.tag,
