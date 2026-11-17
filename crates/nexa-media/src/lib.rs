@@ -14,6 +14,7 @@ use nexa_wire::control::{Chroma, Codec, Mode};
 pub mod caps_cache;
 pub mod convert;
 pub mod diag;
+pub mod fanout;
 pub mod layout;
 #[cfg(target_os = "macos")]
 pub mod macos;
@@ -22,7 +23,7 @@ mod resample;
 #[cfg(windows)]
 pub mod windows;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum MediaError {
     #[error("{what}: OS status {status}")]
     Os { what: &'static str, status: i32 },

@@ -1,7 +1,7 @@
 //! The display kept on while someone watches it, as on macOS (`macos::power`).
 //!
-//! Windows ties the request to the thread that makes it, so the capturer holds it on
-//! its own thread for as long as it runs.
+//! Windows ties the request to the thread that makes it, so a display's duplication
+//! holds it on its own thread for as long as anyone watches the display.
 
 use windows::Win32::System::Power::{
     ES_CONTINUOUS, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED, SetThreadExecutionState,
