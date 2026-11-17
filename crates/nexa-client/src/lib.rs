@@ -14,7 +14,9 @@ pub mod presenter;
 pub mod proto;
 #[cfg(target_os = "macos")]
 mod real;
+#[cfg(windows)]
+#[path = "real_windows.rs"]
+mod real;
 #[cfg(target_os = "macos")]
 mod real_cursor;
-#[cfg(target_os = "macos")]
 pub mod terminal;

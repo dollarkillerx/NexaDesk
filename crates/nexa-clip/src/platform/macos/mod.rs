@@ -15,7 +15,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
-use objc2::{AnyThread, DefinedClass, define_class, msg_send};
+use objc2::{AnyThread, DefinedClass, Message, define_class, msg_send};
 use objc2_app_kit::{
     NSBitmapImageFileType, NSBitmapImageRep, NSBitmapImageRepPropertyKey, NSPasteboard,
     NSPasteboardItem, NSPasteboardItemDataProvider, NSPasteboardType, NSPasteboardWriting,
@@ -130,7 +130,13 @@ define_class!(
             item: &NSPasteboardItem,
             pasteboard_type: &NSPasteboardType,
         ) {
-            self.fulfil(item, pasteboard_type);
+            // The fetch may block for seconds. Meanwhile the clipboard thread can replace
+            // the contents, or another app can copy: either releases the item, and with it
+            // this provider, while the call still uses them (the 0.1.3 SIGSEGV). These
+            // references keep both alive until it returns.
+            let this = self.retain();
+            let item = item.retain();
+            this.fulfil(&item, pasteboard_type);
         }
     }
 );
@@ -197,7 +203,7 @@ struct Written {
     generation: Gen,
     formats: Vec<FormatInfo>,
     promised: Vec<ClipKind>,
-    /// Kept alive for as long as the pasteboard may ask it for data.
+    /// To ask what has been rendered. The item on the pasteboard retains it too.
     provider: Option<Retained<PromiseProvider>>,
 }
 
@@ -211,7 +217,9 @@ pub struct MacClipboardBackend {
 
 // SAFETY: every method takes `&mut self`, so the pasteboard handle is used by
 // one thread at a time; NSPasteboard is not confined to the main thread. The
-// provider's ivars are Send + Sync.
+// provider's ivars are Send + Sync. AppKit calls the provider on its own thread
+// while this one may replace the contents, so each call retains the provider and
+// the item it was given.
 unsafe impl Send for MacClipboardBackend {}
 
 impl MacClipboardBackend {

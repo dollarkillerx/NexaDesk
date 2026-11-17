@@ -5,6 +5,11 @@
 //! paste and everything after it, in order, until the confirmation arrives or
 //! the deadline passes.
 //!
+//! The peer confirms only once the content is on its clipboard, which for a large
+//! image means after the download. While the peer is still fetching the awaited
+//! generation ([`InputGate::on_progress`]), the deadline moves on with it, up to
+//! [`PASTE_GATE_MAX_HOLD`]: a paste must not reach the peer ahead of its content.
+//!
 //! A paste pressed while another one is being held records its own requirement
 //! in the queue. When the earlier hold ends, the queue is released up to that
 //! point and the later paste is then held for its own generation, so a single
@@ -20,6 +25,14 @@ use crate::types::Gen;
 
 /// How long a paste may wait for its clipboard (§8.3).
 pub const PASTE_GATE_TIMEOUT: Duration = Duration::from_millis(800);
+
+/// How long a paste keeps waiting after the peer last fetched the awaited
+/// content. The same as a fetch's own timeout (§8.2): until then it may still
+/// arrive.
+pub const PASTE_GATE_PROGRESS_GRACE: Duration = Duration::from_secs(10);
+
+/// The longest any paste is held, however the download goes.
+pub const PASTE_GATE_MAX_HOLD: Duration = Duration::from_secs(60);
 
 const MAX_NOTICES: usize = 32;
 
@@ -92,6 +105,8 @@ pub struct InputGate<E, T> {
     hold: Option<Hold<T>>,
     queue: VecDeque<Slot<E, T>>,
     applied: Option<Gen>,
+    /// The newest generation the peer was seen fetching, and when.
+    progress: Option<(Gen, T)>,
     stats: GateStats,
     notices: VecDeque<HoldEnded>,
 }
@@ -115,6 +130,7 @@ impl<E, T: ClipInstant> InputGate<E, T> {
             hold: None,
             queue: VecDeque::new(),
             applied: None,
+            progress: None,
             stats: GateStats::default(),
             notices: VecDeque::new(),
         }
@@ -164,6 +180,26 @@ impl<E, T: ClipInstant> InputGate<E, T> {
         self.expire(now, out);
     }
 
+    /// The peer is still fetching `generation` (`ClipCommand::GateProgress`): a
+    /// paste waiting for it keeps waiting, see the module notes.
+    pub fn on_progress(&mut self, generation: Gen, now: T) {
+        if self
+            .progress
+            .is_none_or(|(seen, at)| (seen, at) <= (generation, now))
+        {
+            self.progress = Some((generation, now));
+        }
+        if let Some(hold) = self.hold
+            && hold.until == generation
+        {
+            let deadline = self.deadline_for(hold.until, hold.pressed_at);
+            self.hold = Some(Hold {
+                deadline: hold.deadline.max(deadline),
+                ..hold
+            });
+        }
+    }
+
     /// Releases anything whose deadline has passed.
     pub fn poll(&mut self, now: T, out: &mut Vec<E>) {
         self.expire(now, out);
@@ -210,8 +246,19 @@ impl<E, T: ClipInstant> InputGate<E, T> {
         self.hold = Some(Hold {
             until,
             pressed_at,
-            deadline: pressed_at + self.timeout,
+            deadline: self.deadline_for(until, pressed_at),
         });
+    }
+
+    /// The plain timeout, or longer while the peer is still fetching `until`.
+    fn deadline_for(&self, until: Gen, pressed_at: T) -> T {
+        let plain = pressed_at + self.timeout;
+        match self.progress {
+            Some((generation, at)) if generation == until => plain
+                .max(at + PASTE_GATE_PROGRESS_GRACE)
+                .min(pressed_at + PASTE_GATE_MAX_HOLD.max(self.timeout)),
+            _ => plain,
+        }
     }
 
     fn expire(&mut self, now: T, out: &mut Vec<E>) {
@@ -256,7 +303,7 @@ impl<E, T: ClipInstant> InputGate<E, T> {
                     if self.is_applied(until) {
                         let waited = now.saturating_since(pressed_at);
                         self.record(until, ReleaseReason::Applied, waited);
-                    } else if pressed_at + self.timeout <= now {
+                    } else if self.deadline_for(until, pressed_at) <= now {
                         let waited = now.saturating_since(pressed_at);
                         self.record(until, ReleaseReason::Deadline, waited);
                     } else {

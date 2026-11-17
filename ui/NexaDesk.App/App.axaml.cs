@@ -127,18 +127,14 @@ public partial class App : Application
                 _tray?.Dispose();
                 core.Dispose();
             };
-            main.Opened += async (_, _) => await vm.Host.TryAttachExistingAsync();
-            if (StartInBackground) _ = HostAtLoginAsync(vm.Host);
+            // Remote control comes on by itself at a Windows login, and after a restart that
+            // happened while hosting (see MainViewModel.ResumesHosting). That also picks up an
+            // agent still running, so the window's own attach would only race it on the link.
+            if (StartInBackground || vm.ResumesHosting) _ = vm.Host.AttachOrStartAsync();
+            else main.Opened += async (_, _) => await vm.Host.TryAttachExistingAsync();
             _ = vm.Updates.CheckDailyAsync();
         }
         base.OnFrameworkInitializationCompleted();
-    }
-
-    /// <summary>Started at login: an agent still running is picked up, else remote control is turned on.</summary>
-    static async Task HostAtLoginAsync(HostViewModel host)
-    {
-        await host.TryAttachExistingAsync();
-        if (host.StartCommand.CanExecute(null)) await host.StartCommand.ExecuteAsync(null);
     }
 
     static string DeviceName()

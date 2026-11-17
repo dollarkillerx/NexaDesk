@@ -272,6 +272,7 @@ fn perms_of(p: &Permissions) -> Perms {
         clipboard: p.clipboard,
         file: p.file,
         audio: p.audio,
+        terminal: p.terminal,
     }
 }
 

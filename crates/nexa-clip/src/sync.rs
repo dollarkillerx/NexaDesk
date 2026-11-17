@@ -224,6 +224,13 @@ pub enum ClipCommand {
         /// The confirmed generation.
         generation: Gen,
     },
+    /// The peer is fetching this local generation, so it has not confirmed it
+    /// yet only because the content is still on its way. Forward to
+    /// `InputGate::on_progress`.
+    GateProgress {
+        /// The generation being fetched.
+        generation: Gen,
+    },
     /// Show on the toolbar.
     Notify(ClipNotice),
 }
@@ -937,6 +944,7 @@ impl<T: ClipInstant> ClipSync<T> {
             self.send_fetch_error(&fetch, status, out);
             return;
         }
+        out.push(ClipCommand::GateProgress { generation });
         if let Some(bytes) = self.lookup_servable(generation, kind) {
             self.serve(&fetch, &bytes, out);
             return;

@@ -1,15 +1,19 @@
 //! Drives [`ClipSync`] over the Clipboard stream on the `clipboard` thread (§1, §8).
 //!
 //! Promised formats, §8.6's open note: AppKit calls the promise provider on the owner's
-//! main thread, and a synchronous fetch there would freeze the UI. So there are two
-//! modes, and the UI side (the viewer) never lets a promise reach the pasteboard:
+//! main thread, and a synchronous fetch there blocks that thread, and the app that is
+//! pasting, until the content has arrived. So there are two modes, and both the viewer
+//! and the agent use Eager:
 //!
 //! - [`PromiseMode::Eager`]: fetch every non-inline format first, then write everything
 //!   as ordinary data. The pasteboard entry appears when the data is here; until then
-//!   the previous contents stay. Nothing ever blocks in a provider.
-//! - [`PromiseMode::Lazy`]: write promises and let the provider block in the resolver,
-//!   for the agent, whose main thread has no UI to freeze and where promises keep the
-//!   §8.3 paste gate fast.
+//!   the previous contents stay. Nothing ever blocks in a provider. The peer's paste gate
+//!   keeps a paste waiting while this side is still fetching (`ClipCommand::GateProgress`),
+//!   so the paste lands on the new content.
+//! - [`PromiseMode::Lazy`]: write promises and let the provider block in the resolver.
+//!   No longer used: on the agent, a large image pasted on the host blocked its main
+//!   thread for the whole download (and 0.1.3 crashed when the clipboard changed
+//!   meanwhile).
 
 use std::{
     collections::{BTreeSet, HashMap, VecDeque},
@@ -148,6 +152,8 @@ impl ClipChannel {
 pub struct ClipCallbacks {
     /// `ClipCommand::GateRelease`, for `InputGate::on_applied`.
     pub on_gate_release: Box<dyn Fn(Gen) + Send>,
+    /// `ClipCommand::GateProgress`, for `InputGate::on_progress`.
+    pub on_gate_progress: Box<dyn Fn(Gen) + Send>,
     pub on_notice: Box<dyn Fn(ClipNotice) + Send>,
 }
 
@@ -370,6 +376,10 @@ impl Driver {
                 }
                 ClipCommand::GateRelease { generation } => {
                     (self.callbacks.on_gate_release)(generation);
+                    Vec::new()
+                }
+                ClipCommand::GateProgress { generation } => {
+                    (self.callbacks.on_gate_progress)(generation);
                     Vec::new()
                 }
                 ClipCommand::Notify(notice) => {

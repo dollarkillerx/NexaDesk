@@ -276,6 +276,78 @@ fn promised_png_serves_both_png_and_tiff_from_one_fetch() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
+thread_local! {
+    /// Runs inside the next promise fetch on this thread, as the clipboard thread would
+    /// meanwhile in the agent.
+    static DURING_FETCH: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// nexa-agent 0.1.3 crashed (SIGSEGV in `provide`) when the clipboard was replaced while a
+/// paste waited for the peer's image: that released the provider and item still in use.
+#[test]
+fn a_clipboard_replaced_while_a_paste_waits_keeps_what_the_wait_uses() {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let board = PrivateBoard::new();
+    let resolver: PromiseResolver = Arc::new(|_, _| {
+        if let Some(run) = DURING_FETCH.with(|hook| hook.borrow_mut().take()) {
+            run();
+        }
+        Some(PNG_1X1.to_vec())
+    });
+    let clip = Rc::new(RefCell::new(MacClipboardBackend::new(
+        board.0.clone(),
+        resolver,
+    )));
+    clip.borrow_mut()
+        .write_promise(
+            generation(1),
+            &[FormatInfo::of(ClipKind::Png, PNG_1X1)],
+            &[],
+        )
+        .unwrap();
+    let provider = objc2::rc::Weak::from_retained(
+        clip.borrow()
+            .written
+            .as_ref()
+            .unwrap()
+            .provider
+            .as_ref()
+            .unwrap(),
+    );
+
+    let alive = Rc::new(Cell::new(None));
+    {
+        let (clip, alive) = (Rc::clone(&clip), Rc::clone(&alive));
+        DURING_FETCH.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                // A newer copy arrives while the paste still waits.
+                clip.borrow_mut()
+                    .write_promise(
+                        generation(2),
+                        &[FormatInfo::of(ClipKind::Text, b"newer")],
+                        &[(ClipKind::Text, Bytes::from_static(b"newer"))],
+                    )
+                    .unwrap();
+                alive.set(Some(provider.load().is_some()));
+            }))
+        });
+    }
+
+    // Another application pastes: AppKit calls the provider, which waits on the peer.
+    let _ = board.raw(PNG_TYPE);
+    assert_eq!(
+        alive.get(),
+        Some(true),
+        "the provider outlived the replacement"
+    );
+    // The late answer went to the replaced item, not over the newer copy.
+    assert_eq!(board.string(TEXT_TYPE).as_deref(), Some("newer"));
+    assert_eq!(clip.borrow_mut().read(ClipKind::Text).unwrap(), b"newer");
+}
+
 #[test]
 fn a_promise_is_listed_without_being_rendered() {
     let board = PrivateBoard::new();

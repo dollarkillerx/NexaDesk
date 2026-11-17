@@ -902,11 +902,14 @@ fn start_clipboard(
     Some(channel.spawn(
         backend,
         env.device,
-        // The agent has no UI whose main thread a slow promise could freeze.
-        PromiseMode::Lazy,
+        // Not Lazy: a promise is answered on the main thread, which would then wait out
+        // the whole download of a large image (and the app pasting with it). The
+        // viewer's paste gate holds the paste while this side is still fetching.
+        PromiseMode::Eager,
         (send, recv),
         ClipCallbacks {
             on_gate_release: Box::new(|_| {}),
+            on_gate_progress: Box::new(|_| {}),
             on_notice: Box::new(move |n| ui.event(AgentEvent::ClipboardNotice(n))),
         },
         bulk,

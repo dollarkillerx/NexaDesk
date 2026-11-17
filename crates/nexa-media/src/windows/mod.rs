@@ -6,8 +6,10 @@
 
 mod capture;
 mod cursor;
+mod decoder;
 mod encoder;
 mod power;
+mod present;
 
 use nexa_wire::control::{Caps, Chroma, Codec, CodecCap};
 use windows::{
@@ -23,7 +25,9 @@ use windows::{
 
 pub use capture::DxgiCapturer;
 pub use cursor::WinCursorSource;
+pub use decoder::MfDecoder;
 pub use encoder::MfEncoder;
+pub use present::D3dPresenter;
 pub use power::{DisplayAwake, wake_display};
 
 /// A monitor on the desktop.
@@ -97,9 +101,9 @@ pub fn virtual_desktop() -> (i32, i32, i32, i32) {
     }
 }
 
-/// What this host can send: H.264 4:2:0 from Media Foundation, up to 1080p while it
-/// is the software encoder, at up to 60 fps. Nothing to decode yet (the viewer side
-/// is docs/WINDOWS.md stage 3).
+/// What this computer can send and show: H.264 4:2:0 from Media Foundation, sent up
+/// to 1080p while it is the software encoder, at up to 60 fps, and decoded up to the
+/// decoder's 4096×2304 (a Retina Mac's screen included).
 pub fn caps() -> Caps {
     Caps {
         encode: vec![CodecCap {
@@ -108,7 +112,12 @@ pub fn caps() -> Caps {
             max_w: 1920,
             max_h: 1080,
         }],
-        decode: Vec::new(),
+        decode: vec![CodecCap {
+            codec: Codec::H264 as i32,
+            chroma: Chroma::Yuv420 as i32,
+            max_w: 4096,
+            max_h: 2304,
+        }],
         rfi: false,
         ltr: false,
         max_fps: 60,

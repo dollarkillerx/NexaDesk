@@ -36,7 +36,7 @@ public class HeadlessUiTests
     internal static T Find<T>(Window w, string name) where T : Control =>
         w.FindControl<T>(name) ?? throw new Xunit.Sdk.XunitException($"no control named {name}");
 
-    static void Click(Window w, Control c)
+    internal static void Click(Window w, Control c)
     {
         Pump();
         var p = c.TranslatePoint(new Point(c.Bounds.Width / 2, c.Bounds.Height / 2), w)
@@ -188,9 +188,23 @@ public class HeadlessUiTests
         Pump();
         Assert.True(_windows.BannerStack.IsCollapsed);
         Assert.False(Deep<Button>(banner, "BannerDisconnectButton").Single().IsEffectivelyVisible);
-        Assert.True(Find<Button>(banner, "ExpandBannerButton").IsEffectivelyVisible);
+        var tab = Find<Border>(banner, "ExpandBannerButton");
+        Assert.True(tab.IsEffectivelyVisible);
         Assert.True(banner.IsVisible);
-        Click(banner, Find<Button>(banner, "ExpandBannerButton"));
+
+        // Dragging the tab moves it and leaves it folded.
+        var before = banner.Position;
+        var at = tab.TranslatePoint(new Point(tab.Bounds.Width / 2, tab.Bounds.Height / 2), banner)!.Value;
+        banner.MouseMove(at);
+        banner.MouseDown(at, MouseButton.Left);
+        banner.MouseMove(at + new Point(40, 30));
+        banner.MouseUp(at + new Point(40, 30), MouseButton.Left);
+        Pump();
+        Assert.True(_windows.BannerStack.IsCollapsed, "a drag is not a click");
+        Assert.Equal(before + new PixelPoint(40, 30), banner.Position);
+
+        // A click without moving unfolds it.
+        Click(banner, tab);
         Pump();
         Assert.False(_windows.BannerStack.IsCollapsed);
 
@@ -247,7 +261,7 @@ public class HeadlessUiTests
         Pump();
         Assert.Contains(new SessionCommand.PointerMove(320, 200), session.Commands);
 
-        Click(toolbar, Find<Button>(toolbar, "HideButton"));
+        Click(toolbar, Find<Button>(toolbar, "CollapseToolbarButton"));
         Assert.False(toolbar.IsVisible);
 
         vm.OnEvent(new HostKeyEvent(5));

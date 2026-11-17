@@ -49,7 +49,8 @@
                         ToolTip.Tip="{l:T Toolbar.HudTip}" />
           <Button Name="DiagnosticsButton" Classes="small quiet" Content="{l:T Toolbar.Diagnostics}" Click="OnDiagnostics" />
           <Button Name="FullScreenButton" Classes="small quiet" Content="{l:T Toolbar.FullScreen}" Click="OnFullScreen" />
-          <Button Name="HideButton" Classes="small quiet" Content="{l:T Toolbar.Hide}" Command="{Binding ToggleToolbarCommand}" />
+          <Button Name="CollapseToolbarButton" Classes="small quiet" Content="{l:T Toolbar.Collapse}" Command="{Binding CollapseToolbarCommand}"
+                  ToolTip.Tip="{Binding CollapseToolbarTip}" />
           <Button Name="ToolbarDisconnectButton" Classes="small danger" Margin="6,0,0,0" Content="{l:T Toolbar.Disconnect}" Command="{Binding DisconnectCommand}" />
         </StackPanel>
       </Grid>

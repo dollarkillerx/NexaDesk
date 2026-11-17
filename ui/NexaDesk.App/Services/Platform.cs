@@ -388,7 +388,7 @@ public sealed class SettingsStore(string path) : ISettingsStore
             var s = JsonSerializer.Deserialize(f, SettingsJson.Default.AppSettings) ?? new AppSettings();
             // Only what the app itself would have written is honoured.
             return new AppSettings(ViewModels.Texts.NormalizeServer(s.SignalServer) ?? "", s.AnnounceOnLan,
-                Localization.L.IsSupported(s.Language ?? "") ? s.Language! : "", s.AllowBrowsers);
+                Localization.L.IsSupported(s.Language ?? "") ? s.Language! : "", s.AllowBrowsers, s.ResumeHosting);
         }
         catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException)
         {

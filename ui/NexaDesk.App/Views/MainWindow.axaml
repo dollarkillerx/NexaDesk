@@ -454,6 +454,8 @@
               <TextBlock Classes="section" Text="{l:T Host.PairedDevices}" VerticalAlignment="Center" />
               <Button Grid.Column="1" Classes="small ghost" Content="{l:T Host.Refresh}" Command="{Binding RefreshPairingsCommand}" />
             </Grid>
+            <TextBlock Name="NoPairedText" Classes="muted" TextWrapping="Wrap" Text="{l:T Host.NoPairedDevices}"
+                       IsVisible="{Binding NoPairedDevices}" />
             <ItemsControl Name="PairedList" ItemsSource="{Binding Paired}" IsVisible="{Binding IsHosting}">
               <ItemsControl.ItemTemplate>
                 <DataTemplate x:DataType="vm:PairedDeviceViewModel">

@@ -265,3 +265,100 @@ fn stats_count_hits_and_waiting_time() {
     assert_eq!(stats.held, 1);
     assert_eq!(stats.total_wait, Duration::from_millis(25));
 }
+
+// ------------------------------------------- the peer still downloading the paste
+
+const GRACE_MS: u64 = nexa_clip::PASTE_GATE_PROGRESS_GRACE.as_millis() as u64;
+const MAX_HOLD_MS: u64 = nexa_clip::PASTE_GATE_MAX_HOLD.as_millis() as u64;
+
+impl Harness {
+    fn progress(&mut self, lamport: u64, at: u64) {
+        self.gate.on_progress(generation(lamport), At(at));
+    }
+}
+
+#[test]
+fn a_paste_waits_while_the_peer_is_still_downloading_its_content() {
+    let mut h = Harness::new();
+    h.paste(Some(generation(5)), 0);
+    h.key(7, 1);
+    h.progress(5, 500);
+    h.poll(DEADLINE_MS + 100);
+    assert!(h.take().is_empty(), "the content is still on its way");
+    h.progress(5, 3_000);
+    h.poll(6_000);
+    assert!(h.take().is_empty());
+    h.applied(5, 6_500);
+    assert_eq!(h.take(), [7]);
+    let ended = h.gate.take_notices();
+    assert_eq!(ended[0].reason, ReleaseReason::Applied);
+    assert_eq!(ended[0].waited, Duration::from_millis(6_500));
+}
+
+#[test]
+fn a_download_that_started_before_the_paste_counts() {
+    let mut h = Harness::new();
+    h.progress(5, 100);
+    h.paste(Some(generation(5)), 2_000);
+    h.key(7, 2_001);
+    assert_eq!(h.gate.next_deadline(), Some(At(100 + GRACE_MS)));
+}
+
+#[test]
+fn a_stalled_download_releases_the_paste_after_the_grace() {
+    let mut h = Harness::new();
+    h.paste(Some(generation(5)), 0);
+    h.key(7, 1);
+    h.progress(5, 500);
+    h.poll(500 + GRACE_MS - 1);
+    assert!(h.take().is_empty());
+    h.poll(500 + GRACE_MS);
+    assert_eq!(h.take(), [7]);
+    assert_eq!(h.gate.take_notices()[0].reason, ReleaseReason::Deadline);
+}
+
+#[test]
+fn fetching_another_generation_does_not_extend_the_hold() {
+    let mut h = Harness::new();
+    h.progress(4, 0);
+    h.paste(Some(generation(5)), 0);
+    h.key(7, 1);
+    h.progress(4, 500);
+    assert_eq!(h.gate.next_deadline(), Some(At(DEADLINE_MS)));
+    h.poll(DEADLINE_MS);
+    assert_eq!(h.take(), [7]);
+}
+
+#[test]
+fn no_paste_is_held_longer_than_the_cap() {
+    let mut h = Harness::new();
+    h.paste(Some(generation(5)), 0);
+    h.key(7, 1);
+    let mut at = 0;
+    while at < MAX_HOLD_MS + 20_000 {
+        h.progress(5, at);
+        h.poll(at);
+        at += 1_000;
+    }
+    assert_eq!(h.take(), [7]);
+    assert_eq!(
+        h.gate.take_notices()[0].waited,
+        Duration::from_millis(MAX_HOLD_MS)
+    );
+}
+
+#[test]
+fn a_queued_paste_also_waits_for_its_download() {
+    let mut h = Harness::new();
+    h.paste(Some(generation(5)), 0);
+    h.key(7, 1);
+    h.paste(Some(generation(6)), 2);
+    h.key(8, 3);
+    h.progress(6, 400);
+    h.applied(5, 500);
+    assert_eq!(h.take(), [7]);
+    h.poll(DEADLINE_MS + 100);
+    assert!(h.take().is_empty(), "generation 6 is still downloading");
+    h.applied(6, 2_000);
+    assert_eq!(h.take(), [8]);
+}

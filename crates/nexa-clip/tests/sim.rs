@@ -215,6 +215,9 @@ impl Sim {
                 let peer = self.peer(side);
                 peer.gate.on_applied(generation, now, &mut peer.released);
             }
+            ClipCommand::GateProgress { generation } => {
+                self.peer(side).gate.on_progress(generation, now);
+            }
             ClipCommand::Notify(notice) => self.peer(side).notices.push(notice),
         }
     }
@@ -1269,6 +1272,52 @@ fn large_clipboard_does_not_delay_the_paste_past_the_announcement() {
     sim.drain();
     assert_eq!(sim.a.released, [7]);
     assert_eq!(sim.b.os.promised_kinds(), [ClipKind::Png]);
+}
+
+/// The agent fetches a large image before writing it (no promise on its pasteboard),
+/// so it confirms only once the image is there. A paste pressed meanwhile waits for
+/// that, however long past the plain 800 ms deadline, as long as the fetch moves.
+#[test]
+fn a_paste_waits_for_a_peer_that_downloads_before_writing() {
+    let mut sim = Sim::with_config(tiny_window());
+    let png = large_png(5000, 71);
+    sim.user_copy(Side::A, &[(ClipKind::Png, &png)]);
+    paste(&mut sim, Side::A);
+    key(&mut sim, Side::A, 7);
+
+    // B fetches first and confirms afterwards: hold its early confirmation back.
+    sim.deliver(Side::B, 0);
+    let early = sim
+        .to_a
+        .iter()
+        .position(|m| matches!(m, ClipMessage::Applied(_)))
+        .expect("B answered the announcement");
+    let confirmation = sim.to_a.remove(early);
+    sim.render_promises(Side::B);
+
+    let mut fetches = 0;
+    while !sim.to_a.is_empty() || !sim.to_b.is_empty() {
+        sim.advance(700);
+        if !sim.to_a.is_empty() {
+            fetches += 1;
+            sim.deliver(Side::A, 0);
+        }
+        while !sim.to_b.is_empty() {
+            sim.deliver(Side::B, 0);
+        }
+        let now = sim.now;
+        sim.a.gate.poll(now, &mut sim.a.released);
+        assert!(
+            sim.a.released.is_empty(),
+            "released before the image landed"
+        );
+    }
+    assert!(fetches >= 3 && sim.now.0 > 800 * 2);
+    assert_eq!(sim.b.os.content(ClipKind::Png).unwrap(), png);
+
+    sim.queue(Side::A).push(confirmation);
+    sim.deliver(Side::A, 0);
+    assert_eq!(sim.a.released, [7]);
 }
 
 #[test]

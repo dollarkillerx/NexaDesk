@@ -601,6 +601,20 @@ public class HostViewModelTests
     }
 
     [Fact]
+    public async Task An_empty_paired_list_says_how_a_device_gets_there()
+    {
+        var vm = await Hosting();
+        _link.Raise(new AgentMessage.Pairings([]));
+        Assert.True(vm.NoPairedDevices);
+        _link.Raise(new AgentMessage.Pairings([
+            new PairedDevice(Samples.ViewerKey, "id", "王小明的 MacBook Pro", new Permissions(true, true, false), 1, (ulong)Samples.T0.ToUnixTimeSeconds(), false),
+        ]));
+        Assert.False(vm.NoPairedDevices);
+        vm.StopCommand.Execute(null);
+        Assert.False(vm.NoPairedDevices, "only while hosting");
+    }
+
+    [Fact]
     public async Task Paired_devices_can_be_revoked_or_made_to_ask_again()
     {
         var vm = await Hosting();

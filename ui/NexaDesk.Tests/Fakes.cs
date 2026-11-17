@@ -52,17 +52,14 @@ public sealed class FakeSession(ulong tag) : ISession
     public string LastError => "";
     public List<bool> InputActive { get; } = new();
     public List<SessionCommand> Commands { get; } = new();
-    public List<ulong> OpenTerminals { get; } = new();
-    ulong _nextTerminal = 1;
+    public List<FakeTerminal> Terminals { get; } = new();
 
-    public int OpenTerminal(nint nsView, out ulong id)
+    public (NexaDesk.Terminal.ITerminalBackend? Terminal, int Status) StartTerminal(int cols, int rows)
     {
-        id = _nextTerminal++;
-        OpenTerminals.Add(id);
-        return 0;
+        var t = new FakeTerminal { Size = (cols, rows) };
+        Terminals.Add(t);
+        return (t, 0);
     }
-
-    public void CloseTerminal(ulong id) => OpenTerminals.Remove(id);
     public List<(nint, uint, uint, float)> Attached { get; } = new();
     public int SetInputResult { get; set; }
     public int CloseCount { get; private set; }
@@ -371,4 +368,31 @@ public static class Samples
 
     public static ConnectedEvent Connected(ulong tag, bool input = true, bool clipboard = true) =>
         new(tag, HostKey, "工作室 Mac mini", new Permissions(true, input, clipboard), 2, true);
+}
+
+/// <summary>A terminal that records what the view sends and plays what a test feeds it.</summary>
+public sealed class FakeTerminal : NexaDesk.Terminal.ITerminalBackend
+{
+    public (int Cols, int Rows) Size { get; set; }
+    public List<byte[]> Written { get; } = new();
+    public bool Disposed { get; private set; }
+    public event Action<ReadOnlyMemory<byte>>? DataReceived;
+    public event Action<NexaDesk.Terminal.TerminalExit>? Exited;
+
+    public void Feed(string text) => DataReceived?.Invoke(System.Text.Encoding.UTF8.GetBytes(text));
+    public void End(string why) => Exited?.Invoke(new NexaDesk.Terminal.TerminalExit(null, false, why));
+
+    public ValueTask WriteAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
+    {
+        Written.Add(data.ToArray());
+        return ValueTask.CompletedTask;
+    }
+
+    public void Resize(int columns, int rows) => Size = (columns, rows);
+
+    public ValueTask DisposeAsync()
+    {
+        Disposed = true;
+        return ValueTask.CompletedTask;
+    }
 }

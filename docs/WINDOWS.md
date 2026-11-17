@@ -28,7 +28,7 @@
 | 游戏模式锁定指针 | CGAssociateMouse | `Deps::pointer_lock` |
 | 本地指针 | NSCursor | `Deps::cursor_display` |
 | 声音播放 | AudioUnit | `Deps::audio_output` |
-| 终端视图 | WKWebView + xterm.js | `nexa-client::terminal` |
+| 终端视图 | MySSH 的原生终端控件（`ui/NexaDesk.Terminal`，XTerm.NET） | `nexa-client::terminal` 只负责数据流，macOS 和 Windows 共用 |
 | 显示器唤醒 | IOKit 电源断言 | `nexa-media::macos::power` |
 | 应用和被控端通信 | Unix socket | `nexa-agent::ipc` |
 | 界面原生部分 | NSView 句柄、SMAppService 登录项、权限引导 | `ui/NexaDesk.App` |
@@ -47,7 +47,7 @@
 | 剪贴板 | Win32 剪贴板：文字、HTML（CF_HTML）、PNG / DIB | 和 macOS 端互通的格式 |
 | 系统声音 | WASAPI loopback | 系统自带 |
 | Opus | libopus（`audiopus` crate，从源码编译） | Windows 没有系统自带的 Opus；需要新增一个依赖 |
-| 终端视图 | WebView2 + 同一份 xterm.js | Windows 11 自带 WebView2 运行时 |
+| 终端视图 | 同一个原生终端控件（Avalonia） | 不需要 WebView2，和 macOS 共用一份 |
 | 本地通信 | 命名管道（只允许当前用户） | 对应 Unix socket |
 | 开机启动 | 注册表 Run 项 | 对应 SMAppService |
 | 显示器唤醒 | SetThreadExecutionState | 对应 IOKit 断言 |
@@ -76,7 +76,7 @@
 
 1. **能在 Windows 上编译**（完成）：整个项目能按 `x86_64-pc-windows-gnu` 编译；被控端和应用的本地通信在 Windows 上改用只允许本人打开的命名管道，名字由数据目录算出（`\\.\pipe\nexadesk-<路径的 FNV-1a>`）。
 2. **被控端（从 Mac 控制 Windows）**（已写完，等真机验收）：DXGI 截屏转 NV12、Media Foundation 软件 H.264（先到 1080p）、SendInput（扫描码和 Unicode 文字）、剪贴板文字、主机指针、显示器唤醒、按显示器的 DPI 感知；界面通过命名管道连被控端，“登录时启动”、通知区域图标、只运行一份。验收：用 Mac 版或浏览器连上 Windows 电脑，能看、能操作、能复制粘贴、能开 PowerShell 终端。这一阶段 Windows 版还不能去连别的电脑，界面上会说明。
-3. **控制端（从 Windows 控制 Mac）**：解码、D3D11 显示、键盘钩子、指针、游戏模式、WebView2 终端。验收：Windows 上的 NexaDesk 能连 Mac，组合键按“Windows 控制 Mac”的规则改写，延迟和 Mac 版相当。
+3. **控制端（从 Windows 控制 Mac）**（画面和操作已写完，等真机验收）：Media Foundation 解码 H.264（低延迟模式，NV12 回到内存）、D3D11 交换链显示（着色器把 BT.709 转成 RGB，按比例留黑边），画面放在一个 STATIC 子窗口里（鼠标穿透给会话窗口）；低级键盘钩子捕获按键（Win、Alt+Tab 也能捕获，主机键是 Ctrl+Alt+Win+G）；游戏模式用 Raw Input 加 ClipCursor。终端用 MySSH 的原生终端控件（两个平台共用，见上表）。还没做：本地显示对方的指针形状（现在显示的是本机箭头）、HEVC 解码。验收：Windows 上的 NexaDesk 能连 Mac，组合键按“Windows 控制 Mac”的规则改写，延迟和 Mac 版相当。
 4. **声音**：WASAPI 采集和播放、libopus。
 5. **安装包**（完成，见第 3 节）：Velopack 安装包和免安装 zip；以后加自动更新和（可选）签名。
 6. **以后再做**：作为 Windows 服务运行，才能在登录界面、锁屏和 UAC 弹窗时也能控制（普通用户进程看不到安全桌面）；ARM64 版。

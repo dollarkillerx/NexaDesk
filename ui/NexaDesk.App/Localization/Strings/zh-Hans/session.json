@@ -24,7 +24,6 @@
   "Toolbar.HudTip": "在画面上显示分段延迟、路径和帧率",
   "Toolbar.Diagnostics": "诊断",
   "Toolbar.FullScreen": "全屏",
-  "Toolbar.Hide": "隐藏",
   "Toolbar.Disconnect": "断开",
   "Diagnostics.Title": "连接诊断",
   "Diagnostics.Path": "路径",
@@ -70,5 +69,11 @@
   "Session.Resolution.Native": "原生",
   "Toolbar.Terminal": "终端",
   "Toolbar.TerminalTip": "在新窗口里打开对方电脑的命令行（shell）。关掉窗口就结束这个 shell。",
-  "Terminal.Title": "{0} 的终端"
+  "Terminal.Title": "{0} 的终端",
+  "Toolbar.MenuSession": "会话",
+  "Toolbar.Collapse": "收起",
+  "Toolbar.ExpandOrMove": "点击展开工具条（{0}）；拖动可移动位置",
+  "Toolbar.CollapseTip": "把工具条收起成一个小标签：点标签、按 {0}，或用菜单栏的“会话”菜单都能展开。",
+  "Toolbar.MenuExpand": "展开工具条",
+  "Toolbar.MenuCollapse": "收起工具条"
 }

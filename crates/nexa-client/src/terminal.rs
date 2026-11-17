@@ -1,300 +1,150 @@
-//! The host's command line in the app (`nexa_session::terminal`): xterm.js, the web
-//! page's own copy, in a WKWebView inside a view the UI hands over, wired to one
-//! `Terminal` stream of the session.
+//! The host's command line in the app (`nexa_session::terminal`): one `Terminal`
+//! stream of the session, its bytes handed to the UI's terminal control (MySSH's
+//! native Avalonia `TerminalView`, the same on macOS and Windows) through a callback,
+//! and the control's keys and size sent back.
 //!
-//! Keys and sizes come from the page through a script message handler; output goes
-//! back with `evaluateJavaScript`. WebKit is only touched on the main thread; the
-//! stream runs on the session's runtime and posts what arrives to the main queue.
+//! The stream runs on the session's runtime. Output goes to the callback from that
+//! runtime's threads; [`close`] waits for a callback in progress and allows no more,
+//! so the UI can free what the callback uses as soon as it returns.
 
 use std::{
-    cell::RefCell,
     collections::HashMap,
-    ffi::c_void,
     sync::{
-        Arc, Once,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicU64, Ordering::Relaxed},
     },
 };
 
-use data_encoding::BASE64;
-use dispatch2::DispatchQueue;
 use nexa_session::{
     framed::open_bi,
     handshake::FLUSH_TIMEOUT,
     terminal::{CHUNK, TermBody, TermMsg, TermSize},
 };
 use nexa_wire::framing::StreamType;
-use objc2::{
-    AnyThread, ClassType, DefinedClass, MainThreadMarker, define_class, msg_send,
-    rc::{Allocated, Retained},
-    runtime::{AnyClass, AnyObject, AnyProtocol, NSObject, NSObjectProtocol},
-};
-use objc2_core_foundation::CGRect;
-use objc2_foundation::NSString;
 use quinn::Connection;
 use tokio::sync::mpsc;
 
-use crate::client::Session;
-
-#[link(name = "WebKit", kind = "framework")]
-unsafe extern "C" {}
-
-/// From the page to the stream.
+/// From the control to the stream.
 pub enum TermCmd {
     Data(Vec<u8>),
     Resize(TermSize),
 }
 
-/// A terminal the page is ready for: the session opens its stream.
+/// From the stream to the control.
+pub enum TermOut<'a> {
+    Data(&'a [u8]),
+    /// The shell ended or the stream closed; nothing follows.
+    Exit(&'a str),
+}
+
+/// Where output goes. `None` once the terminal was closed here.
+type Sink = Arc<Mutex<Option<Box<dyn FnMut(TermOut<'_>) + Send>>>>;
+
+/// A terminal the control is ready for: the session opens its stream.
 pub struct TermLink {
-    pub id: u64,
     pub size: TermSize,
     pub cmds: mpsc::UnboundedReceiver<TermCmd>,
+    sink: Sink,
 }
 
-/// From the stream to the page.
-enum TermOut {
-    Data(Vec<u8>),
-    Exit(String),
+struct Open {
+    cmds: mpsc::UnboundedSender<TermCmd>,
+    sink: Sink,
 }
 
-const HANDLER: &str = "nexa";
-/// NSViewWidthSizable | NSViewHeightSizable: the terminal fills its view as it resizes.
-const FILL: usize = 2 | 16;
-
-define_class!(
-    #[unsafe(super(NSObject))]
-    #[name = "NexaTerminalBridge"]
-    #[ivars = u64]
-    struct Bridge;
-
-    unsafe impl NSObjectProtocol for Bridge {}
-
-    impl Bridge {
-        #[unsafe(method(userContentController:didReceiveScriptMessage:))]
-        fn did_receive(&self, _controller: &AnyObject, message: &AnyObject) {
-            // SAFETY: WKScriptMessage's `body`, an object or nil.
-            let body: Option<Retained<AnyObject>> = unsafe { msg_send![message, body] };
-            // The page posts nothing but strings.
-            if let Some(text) = body.and_then(|b| b.downcast::<NSString>().ok()) {
-                on_message(*self.ivars(), &text.to_string());
-            }
-        }
-    }
-);
-
-impl Bridge {
-    fn new(id: u64) -> Retained<Self> {
-        let this = Self::alloc().set_ivars(id);
-        // SAFETY: NSObject's init takes no arguments.
-        unsafe { msg_send![super(this), init] }
-    }
-
-    /// WebKit takes a handler that says it is a WKScriptMessageHandler.
-    fn conform() {
-        static ONCE: Once = Once::new();
-        ONCE.call_once(|| {
-            if let Some(protocol) = AnyProtocol::get(c"WKScriptMessageHandler") {
-                // SAFETY: a class this module defined, and a protocol the runtime knows.
-                unsafe {
-                    objc2::ffi::class_addProtocol(
-                        Self::class() as *const AnyClass as *mut AnyClass,
-                        protocol,
-                    )
-                };
-            }
-        });
-    }
-}
-
-/// What starts the stream once the page is ready: the session's, or a test's.
-pub type Opener = Box<dyn Fn(TermLink)>;
-
-struct Pane {
-    webview: Retained<AnyObject>,
-    controller: Retained<AnyObject>,
-    open: Opener,
-    /// Set once the page said its size and the stream was asked for.
-    cmds: Option<mpsc::UnboundedSender<TermCmd>>,
-}
-
-thread_local! {
-    /// Main thread only: the panes showing, by id.
-    static PANES: RefCell<HashMap<u64, Pane>> = RefCell::new(HashMap::new());
+fn terminals() -> &'static Mutex<HashMap<u64, Open>> {
+    static OPEN: OnceLock<Mutex<HashMap<u64, Open>>> = OnceLock::new();
+    OPEN.get_or_init(Default::default)
 }
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-/// Shows a terminal in `parent` (an NSView) for `session`. Main thread only.
-/// The shell starts once the page has laid itself out and knows its size.
-///
-/// # Safety
-/// `parent` must be a live NSView.
-pub(crate) unsafe fn attach(session: Arc<Session>, parent: *mut c_void) -> Result<u64, String> {
-    // SAFETY: per the contract.
-    unsafe { attach_with(parent, Box::new(move |link| session.open_terminal(link))) }
+/// The size a control asked for, kept within what a shell can use.
+pub fn size(cols: u32, rows: u32) -> TermSize {
+    TermSize {
+        cols: cols.clamp(2, 1000),
+        rows: rows.clamp(1, 500),
+    }
 }
 
-/// [`attach`] with whatever should open the stream, for the self-test example.
-///
-/// # Safety
-/// `parent` must be a live NSView.
-pub unsafe fn attach_with(parent: *mut c_void, open: Opener) -> Result<u64, String> {
-    MainThreadMarker::new().ok_or("not on the main thread")?;
-    if parent.is_null() {
-        return Err("no view".into());
-    }
-    // SAFETY: a live NSView, per the contract.
-    let parent: &AnyObject = unsafe { &*(parent as *const AnyObject) };
-    let config_class = AnyClass::get(c"WKWebViewConfiguration").ok_or("WebKit is missing")?;
-    let webview_class = AnyClass::get(c"WKWebView").ok_or("WebKit is missing")?;
-    Bridge::conform();
+/// Registers a terminal: `out` receives its output until [`close`]. Returns its id and
+/// the link the session's stream task takes.
+pub fn start(size: TermSize, out: Box<dyn FnMut(TermOut<'_>) + Send>) -> (u64, TermLink) {
     let id = NEXT_ID.fetch_add(1, Relaxed);
-    let bridge = Bridge::new(id);
-    // SAFETY: documented WebKit and AppKit messages with the argument types they take.
-    let (webview, controller) = unsafe {
-        let config: Retained<AnyObject> = msg_send![config_class, new];
-        let controller: Retained<AnyObject> = msg_send![&*config, userContentController];
-        let name = NSString::from_str(HANDLER);
-        let _: () = msg_send![&*controller, addScriptMessageHandler: &*bridge, name: &*name];
-        let frame: CGRect = msg_send![parent, bounds];
-        let allocated: Allocated<AnyObject> = msg_send![webview_class, alloc];
-        let webview: Retained<AnyObject> =
-            msg_send![allocated, initWithFrame: frame, configuration: &*config];
-        let _: () = msg_send![&*webview, setAutoresizingMask: FILL];
-        let _: () = msg_send![parent, addSubview: &*webview];
-        let html = NSString::from_str(&page());
-        let none: Option<&AnyObject> = None;
-        let _: Option<Retained<AnyObject>> =
-            msg_send![&*webview, loadHTMLString: &*html, baseURL: none];
-        (webview, controller)
-    };
-    PANES.with(|p| {
-        p.borrow_mut().insert(
+    let (tx, rx) = mpsc::unbounded_channel();
+    let sink: Sink = Arc::new(Mutex::new(Some(out)));
+    terminals()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(
             id,
-            Pane {
-                webview,
-                controller,
-                open,
-                cmds: None,
+            Open {
+                cmds: tx,
+                sink: sink.clone(),
             },
-        )
-    });
-    Ok(id)
+        );
+    (
+        id,
+        TermLink {
+            size,
+            cmds: rx,
+            sink,
+        },
+    )
 }
 
-/// Takes the terminal away; its stream ends, and the shell with it. Main thread only.
-pub fn detach(id: u64) {
-    let Some(pane) = PANES.with(|p| p.borrow_mut().remove(&id)) else {
-        return;
-    };
-    let name = NSString::from_str(HANDLER);
-    // SAFETY: documented messages; the controller holds the bridge until this.
-    unsafe {
-        let _: () = msg_send![&*pane.controller, removeScriptMessageHandlerForName: &*name];
-        let _: () = msg_send![&*pane.webview, removeFromSuperview];
+/// Keys (or pasted text) typed into the terminal. False if it is not open.
+pub fn write(id: u64, data: &[u8]) -> bool {
+    send(id, TermCmd::Data(data.to_vec()))
+}
+
+/// The control's new size in cells. False if the terminal is not open.
+pub fn resize(id: u64, cols: u32, rows: u32) -> bool {
+    send(id, TermCmd::Resize(size(cols, rows)))
+}
+
+fn send(id: u64, cmd: TermCmd) -> bool {
+    terminals()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&id)
+        .is_some_and(|t| t.cmds.send(cmd).is_ok())
+}
+
+/// Takes the terminal away; its shell ends. When this returns, the output callback is
+/// not running and will not run again.
+pub fn close(id: u64) {
+    let open = terminals()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&id);
+    if let Some(open) = open {
+        // Waits for a callback in progress, then turns the sink off.
+        *open.sink.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        // Dropping the sender ends the stream task.
+        drop(open.cmds);
     }
-    drop(pane.cmds);
 }
 
-/// What the page says: `{t:"ready"|"r", c, r}` its size, `{t:"d", d}` typed text.
-fn on_message(id: u64, text: &str) {
-    let Ok(m) = serde_json::from_str::<serde_json::Value>(text) else {
-        return;
-    };
-    let size = || TermSize {
-        cols: m["c"].as_u64().unwrap_or(80).min(1000) as u32,
-        rows: m["r"].as_u64().unwrap_or(24).min(500) as u32,
-    };
-    PANES.with(|p| {
-        let mut panes = p.borrow_mut();
-        let Some(pane) = panes.get_mut(&id) else {
-            return;
-        };
-        match m["t"].as_str() {
-            Some("ready") if pane.cmds.is_none() => {
-                let (tx, rx) = mpsc::unbounded_channel();
-                pane.cmds = Some(tx);
-                (pane.open)(TermLink {
-                    id,
-                    size: size(),
-                    cmds: rx,
-                });
-            }
-            Some("d") => {
-                if let (Some(tx), Some(d)) = (&pane.cmds, m["d"].as_str()) {
-                    let _ = tx.send(TermCmd::Data(d.as_bytes().to_vec()));
-                }
-            }
-            Some("r") => {
-                if let Some(tx) = &pane.cmds {
-                    let _ = tx.send(TermCmd::Resize(size()));
-                }
-            }
-            _ => {}
-        }
-    });
-}
-
-/// Shows `data` as if the host had sent it (the self-test example's echo).
-pub fn show(id: u64, data: Vec<u8>) {
-    post(id, TermOut::Data(data));
-}
-
-/// Runs `js` in the terminal's page and hands its result, as text, to `done` (main thread).
-pub fn eval(id: u64, js: &str, done: impl Fn(Option<String>) + 'static) {
-    PANES.with(|p| {
-        let panes = p.borrow();
-        let Some(pane) = panes.get(&id) else {
-            return done(None);
-        };
-        let js = NSString::from_str(js);
-        let block = block2::RcBlock::new(move |result: *mut AnyObject, _error: *mut AnyObject| {
-            // SAFETY: WebKit hands a valid object or nil for the duration of the call.
-            let text = unsafe { result.as_ref() }
-                .and_then(|r| r.downcast_ref::<NSString>())
-                .map(|s| s.to_string());
-            done(text);
-        });
-        // SAFETY: a documented message, with a completion block of the documented type.
-        unsafe {
-            let _: () =
-                msg_send![&*pane.webview, evaluateJavaScript: &*js, completionHandler: &*block];
-        }
-    });
-}
-
-fn post(id: u64, out: TermOut) {
-    DispatchQueue::main().exec_async(move || deliver(id, out));
-}
-
-fn deliver(id: u64, out: TermOut) {
-    let js = match out {
-        TermOut::Data(d) => format!("nexaWrite('{}')", BASE64.encode(&d)),
-        TermOut::Exit(why) => format!("nexaExit({})", serde_json::Value::String(why)),
-    };
-    PANES.with(|p| {
-        let panes = p.borrow();
-        let Some(pane) = panes.get(&id) else { return };
-        let js = NSString::from_str(&js);
-        let done: Option<&block2::Block<dyn Fn(*mut AnyObject, *mut AnyObject)>> = None;
-        // SAFETY: a documented message; no completion handler.
-        unsafe {
-            let _: () =
-                msg_send![&*pane.webview, evaluateJavaScript: &*js, completionHandler: done];
-        }
-    });
+fn emit(sink: &Sink, out: TermOut<'_>) {
+    if let Some(f) = sink.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        f(out);
+    }
 }
 
 /// The stream for one terminal, on the session's runtime, until either side ends it.
 pub(crate) async fn run(conn: Connection, link: TermLink) {
-    let TermLink { id, size, mut cmds } = link;
+    let TermLink {
+        size,
+        mut cmds,
+        sink,
+    } = link;
     let (mut send, mut recv) = match open_bi(&conn, StreamType::Terminal).await {
         Ok(s) => s,
-        Err(e) => return post(id, TermOut::Exit(e.to_string())),
+        Err(e) => return emit(&sink, TermOut::Exit(&e.to_string())),
     };
     if let Err(e) = send.send(&TermMsg::from(TermBody::Open(size))).await {
-        return post(id, TermOut::Exit(e.to_string()));
+        return emit(&sink, TermOut::Exit(&e.to_string()));
     }
     loop {
         tokio::select! {
@@ -313,18 +163,18 @@ pub(crate) async fn run(conn: Connection, link: TermLink) {
                 None => break,
             },
             msg = recv.next::<TermMsg>() => match msg {
-                Ok(Some(TermMsg { body: Some(TermBody::Data(d)) })) => post(id, TermOut::Data(d)),
+                Ok(Some(TermMsg { body: Some(TermBody::Data(d)) })) => emit(&sink, TermOut::Data(&d)),
                 Ok(Some(TermMsg { body: Some(TermBody::Exit(why)) })) => {
-                    post(id, TermOut::Exit(why));
+                    emit(&sink, TermOut::Exit(&why));
                     break;
                 }
                 Ok(Some(_)) => {}
                 Ok(None) => {
-                    post(id, TermOut::Exit("closed".into()));
+                    emit(&sink, TermOut::Exit("closed"));
                     break;
                 }
                 Err(e) => {
-                    post(id, TermOut::Exit(e.to_string()));
+                    emit(&sink, TermOut::Exit(&e.to_string()));
                     break;
                 }
             },
@@ -333,51 +183,50 @@ pub(crate) async fn run(conn: Connection, link: TermLink) {
     send.finish_and_flush(FLUSH_TIMEOUT).await;
 }
 
-/// The page: xterm.js and its fit addon, loaded from strings (no files, no server).
-fn page() -> String {
-    const XTERM: &str = include_str!("../../nexa-web-page/web/vendor/xterm.mjs");
-    const FIT: &str = include_str!("../../nexa-web-page/web/vendor/addon-fit.mjs");
-    const CSS: &str = include_str!("../../nexa-web-page/web/vendor/xterm.css");
-    let json = |s: &str| serde_json::Value::String(s.to_owned()).to_string();
-    format!(
-        r##"<!doctype html><html><head><meta charset="utf-8"><style>{CSS}
-html,body{{margin:0;height:100%;background:#161616;overflow:hidden}}
-#t{{position:absolute;inset:6px 0 0 8px}}
-</style></head><body><div id="t"></div><script type="module">
-const send = (m) => window.webkit.messageHandlers.{HANDLER}.postMessage(JSON.stringify(m));
-const load = (src) => import(URL.createObjectURL(new Blob([src], {{ type: "text/javascript" }})));
-const {{ Terminal }} = await load({xterm});
-const {{ FitAddon }} = await load({fit});
-const term = new Terminal({{
-  fontFamily: "SF Mono, Menlo, monospace", fontSize: 13, cursorBlink: true, macOptionIsMeta: true,
-  theme: {{ background: "#161616", foreground: "#f4f4f4", cursor: "#f4f4f4" }},
-}});
-const fit = new FitAddon();
-term.loadAddon(fit);
-term.open(document.getElementById("t"));
-window.nexaTerm = term;
-fit.fit();
-term.onData((d) => send({{ t: "d", d }}));
-term.onResize(({{ cols, rows }}) => send({{ t: "r", c: cols, r: rows }}));
-new ResizeObserver(() => fit.fit()).observe(document.body);
-window.nexaWrite = (b64) => term.write(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
-window.nexaExit = (why) => term.write("\r\n\x1b[2m[" + why + "]\x1b[0m\r\n");
-send({{ t: "ready", c: term.cols, r: term.rows }});
-term.focus();
-</script></body></html>"##,
-        xterm = json(XTERM),
-        fit = json(FIT),
-    )
-}
-
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn the_page_carries_xterm_and_its_bridge() {
-        let page = super::page();
-        assert!(page.contains("messageHandlers.nexa.postMessage"));
-        assert!(page.contains("nexaWrite") && page.contains("nexaExit"));
-        // The libraries go in as JSON strings: no stray script end can cut the page.
-        assert_eq!(page.matches("</script>").count(), 1);
+    fn closing_stops_output_and_commands() {
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let s2 = seen.clone();
+        let (id, link) = start(
+            size(80, 24),
+            Box::new(move |o| {
+                s2.lock().unwrap().push(match o {
+                    TermOut::Data(d) => String::from_utf8_lossy(d).into_owned(),
+                    TermOut::Exit(why) => format!("exit: {why}"),
+                })
+            }),
+        );
+        assert!(write(id, b"ls\r"));
+        assert!(resize(id, 100, 30));
+        emit(&link.sink, TermOut::Data(b"hello"));
+        close(id);
+        emit(&link.sink, TermOut::Exit("late"));
+        assert_eq!(*seen.lock().unwrap(), vec!["hello".to_owned()]);
+        assert!(!write(id, b"x"), "closed");
+        let mut cmds = link.cmds;
+        assert!(matches!(cmds.try_recv(), Ok(TermCmd::Data(d)) if d == b"ls\r"));
+        assert!(matches!(
+            cmds.try_recv(),
+            Ok(TermCmd::Resize(TermSize {
+                cols: 100,
+                rows: 30
+            }))
+        ));
+    }
+
+    #[test]
+    fn sizes_stay_within_what_a_shell_takes() {
+        assert_eq!(size(0, 0), TermSize { cols: 2, rows: 1 });
+        assert_eq!(
+            size(5000, 5000),
+            TermSize {
+                cols: 1000,
+                rows: 500
+            }
+        );
     }
 }

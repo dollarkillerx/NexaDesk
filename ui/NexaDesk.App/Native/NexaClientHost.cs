@@ -141,22 +141,20 @@ internal sealed unsafe class NativeSession(NexaSession* handle, ulong tag) : ISe
 
     public int AttachView(nint nsView, uint widthPx, uint heightPx, float scale) =>
         _handle == null ? NEXA_E_BAD_HANDLE
-            : Check(nexa_session_attach_view(_handle, (void*)nsView, NEXA_VIEW_NSVIEW, widthPx, heightPx, scale));
+            : Check(nexa_session_attach_view(_handle, (void*)nsView,
+                OperatingSystem.IsWindows() ? NEXA_VIEW_HWND : NEXA_VIEW_NSVIEW, widthPx, heightPx, scale));
 
     public int ResizeView(uint widthPx, uint heightPx, float scale) =>
         _handle == null ? NEXA_E_BAD_HANDLE : Check(nexa_session_resize_view(_handle, widthPx, heightPx, scale));
 
     public int DetachView() => _handle == null ? NEXA_E_BAD_HANDLE : Check(nexa_session_detach_view(_handle));
 
-    public int OpenTerminal(nint nsView, out ulong id)
+    public (NexaDesk.Terminal.ITerminalBackend? Terminal, int Status) StartTerminal(int cols, int rows)
     {
-        ulong opened = 0;
-        var rc = _handle == null ? NEXA_E_BAD_HANDLE : Check(nexa_terminal_open(_handle, (void*)nsView, &opened));
-        id = opened;
-        return rc;
+        if (_handle == null) return (null, NEXA_E_BAD_HANDLE);
+        var (terminal, rc) = NativeTerminal.Start(_handle, cols, rows);
+        return (terminal, Check(rc));
     }
-
-    public void CloseTerminal(ulong id) => nexa_terminal_close(id);
 
     public int SetInputActive(bool active) =>
         _handle == null ? NEXA_E_BAD_HANDLE : Check(nexa_session_set_input_active(_handle, active));
