@@ -104,6 +104,12 @@ impl Tuning {
         if let Some(c) = control {
             *c.preset.lock().unwrap_or_else(|e| e.into_inner()) = Some(p);
         }
+        // What the stream may grow to. Without it str0m never probes, and a mostly still
+        // screen sends too little for the estimate to grow, or even to stay up: browser
+        // streams stayed near the 8 Mbit/s start, and once the estimate sank Auto stepped
+        // down to its small, slow preset on a fast network, whatever resolution was asked.
+        rtc.bwe()
+            .set_bitrate(Bitrate::ZERO, Bitrate::bps(u64::from(p.max_bps)));
         let note = serde_json::json!({
             "t": "q",
             "q": self.quality.name(),

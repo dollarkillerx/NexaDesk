@@ -177,6 +177,31 @@ pub enum WebEvent {
         remote: SocketAddr,
         reason: String,
     },
+    /// Every few seconds while a session shows the screen: what its stream did.
+    StreamStats {
+        id: u64,
+        stats: StreamStats,
+    },
+}
+
+/// What a browser's stream did over `over`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StreamStats {
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub over: Duration,
+    /// Frames encoded and sent.
+    pub frames: u32,
+    /// Frames let go before encoding: the network loop was behind.
+    pub skipped: u32,
+    /// Of `frames`, still pictures sent again, or tried again after a failure.
+    pub repeats: u32,
+    pub failures: u32,
+    pub encode_time: Duration,
+    pub bytes: u64,
+    /// The encoder's bitrate, from the browser's bandwidth estimate.
+    pub target_bps: u32,
 }
 
 /// The machine and the person at it, as the agent provides them.

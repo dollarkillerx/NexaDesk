@@ -408,6 +408,7 @@ pub(crate) async fn run(mut ws: Pipe, peer: SocketAddr, path: rtc::Path, shared:
     let media = screen.map(|screen| {
         MediaThread::spawn(
             host.clone(),
+            id,
             screen,
             &shared.config,
             cursor_source.is_none(),

@@ -340,6 +340,8 @@ impl WebHost for TermHost {
             }
             WebEvent::SessionEnded { id, reason } => println!("[{id}] ended: {reason}"),
             WebEvent::Refused { remote, reason } => println!("refused {}: {reason}", remote.ip()),
+            // No screen here, so no streams.
+            WebEvent::StreamStats { .. } => {}
         }
     }
 }

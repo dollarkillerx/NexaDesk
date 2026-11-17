@@ -19,7 +19,7 @@ use nexa_session::host::IDLE_REFRESH_AFTER;
 use nexa_wire::control::{Chroma, Codec, Mode};
 use tokio::sync::mpsc;
 
-use crate::{WebConfig, WebHost, WebScreen};
+use crate::{StreamStats, WebConfig, WebEvent, WebHost, WebScreen};
 
 pub(crate) struct Frame {
     pub data: Vec<u8>,
@@ -211,8 +211,10 @@ pub(crate) struct MediaThread {
 }
 
 impl MediaThread {
+    /// `id` is the session's, for its stream statistics.
     pub(crate) fn spawn(
         host: Arc<dyn WebHost>,
+        id: u64,
         screen: WebScreen,
         config: &WebConfig,
         show_cursor: bool,
@@ -226,7 +228,7 @@ impl MediaThread {
         let handle = thread::Builder::new()
             .name("web-capture-encode".into())
             .spawn(move || {
-                if let Err(e) = run(host, screen, start_bps, show_cursor, &ctl, out) {
+                if let Err(e) = run(host, id, screen, start_bps, show_cursor, &ctl, out) {
                     *ctl.failed.lock().unwrap_or_else(|e| e.into_inner()) = Some(e);
                 }
             })
@@ -281,6 +283,9 @@ const MAX_ENCODE_FAILURES: u32 = 30;
 
 /// How long to wait for a new picture: long enough for one at `fps`, short enough that
 /// an idle refresh goes out on time.
+/// How often a stream says what it did (`WebEvent::StreamStats`), as the app's do.
+const STATS_EVERY: Duration = Duration::from_secs(5);
+
 fn frame_wait(fps: u32) -> Duration {
     Duration::from_secs_f64(2.0 / f64::from(fps.max(1)))
 }
@@ -310,6 +315,7 @@ impl Drop for MediaThread {
 
 fn run(
     host: Arc<dyn WebHost>,
+    id: u64,
     screen: WebScreen,
     start_bps: u32,
     show_cursor: bool,
@@ -336,7 +342,24 @@ fn run(
     let mut refresh_step = IDLE_REFRESH_AFTER.len();
     let mut failures = 0;
     let mut sent_at: Option<Duration> = None;
+    let mut stats = StreamStats::default();
+    let mut stats_from = Instant::now();
     while !ctl.stop.load(Relaxed) {
+        if stats_from.elapsed() >= STATS_EVERY {
+            host.event(WebEvent::StreamStats {
+                id,
+                stats: StreamStats {
+                    width: capture.width,
+                    height: capture.height,
+                    fps: capture.fps,
+                    over: stats_from.elapsed(),
+                    target_bps: bitrate,
+                    ..stats
+                },
+            });
+            stats = StreamStats::default();
+            stats_from = Instant::now();
+        }
         // A new quality: a new size or frame rate needs a new capture and encoder.
         if let Some(next) = take_preset()
             && next != current
@@ -351,6 +374,7 @@ fn run(
                 (capture.width, capture.height, capture.fps);
             first = true;
         }
+        let mut repeat = false;
         let frame = match capturer.next(frame_wait(capture.fps)) {
             Ok(CaptureEvent::Frame(f)) => {
                 last = Some(f.image.clone());
@@ -371,6 +395,7 @@ fn run(
                 if due {
                     refresh_step += 1;
                 }
+                repeat = true;
                 // Now, not when it was captured: the browser takes a frame with the
                 // previous one's timestamp for the same frame.
                 CapturedFrame {
@@ -390,9 +415,10 @@ fn run(
             Err(e) => return Err(e.to_string()),
         };
         if out.capacity() == 0 {
-            // The network loop is behind: skip this frame, and make the next one
-            // independent of anything the browser may not have.
-            ctl.force_key.store(true, Relaxed);
+            // The network loop is behind: skip this frame. Not a key frame next: the
+            // encoder never saw this one, so the next refers only to frames the browser
+            // has. A forced key frame, many times larger, only added to the backlog.
+            stats.skipped += 1;
             continue;
         }
         let bps = ctl.bitrate.swap(0, Relaxed);
@@ -404,10 +430,16 @@ fn run(
             force_key: first || ctl.force_key.swap(false, Relaxed),
         };
         buf.clear();
-        match encoder.encode(&frame, frame_id, opts, &mut buf) {
+        let encoding = Instant::now();
+        let encoded = encoder.encode(&frame, frame_id, opts, &mut buf);
+        stats.encode_time += encoding.elapsed();
+        match encoded {
             Ok(_) => {
                 first = false;
                 failures = 0;
+                stats.frames += 1;
+                stats.repeats += u32::from(repeat);
+                stats.bytes += buf.len() as u64;
                 frame_id = frame_id.wrapping_add(1);
                 // Always later than the last frame sent: a refresh is stamped when it is made, and a
                 // picture captured just before that can arrive after it.
@@ -439,6 +471,7 @@ fn run(
             // frames" ended browser sessions at once).
             Err(e) => {
                 failures += 1;
+                stats.failures += 1;
                 if failures >= MAX_ENCODE_FAILURES {
                     return Err(e.to_string());
                 }
@@ -585,7 +618,7 @@ mod tests {
             size_pixels: (1920, 1080),
         };
         let (tx, _rx) = mpsc::channel(4);
-        let media = MediaThread::spawn(host, screen, &c, false, tx);
+        let media = MediaThread::spawn(host, 0, screen, &c, false, tx);
         let wait_for = |n: u32| {
             let deadline = Instant::now() + Duration::from_secs(5);
             while made.load(Relaxed) < n && Instant::now() < deadline {
@@ -699,7 +732,7 @@ mod tests {
             size_pixels: (1920, 1080),
         };
         let (tx, rx) = mpsc::channel(8);
-        let media = MediaThread::spawn(host, screen, &WebConfig::default(), false, tx);
+        let media = MediaThread::spawn(host, 0, screen, &WebConfig::default(), false, tx);
         (media, rx, calls)
     }
 

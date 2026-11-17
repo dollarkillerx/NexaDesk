@@ -19,7 +19,8 @@ use nexa_session::{
     input::InputSink,
 };
 use nexa_web::{
-    BrowserAnswer, BrowserAuth, BrowserRequest, WebClipboard, WebEvent, WebHost, WebScreen,
+    BrowserAnswer, BrowserAuth, BrowserRequest, StreamStats, WebClipboard, WebEvent, WebHost,
+    WebScreen,
 };
 use nexa_wire::control::Permissions;
 
@@ -41,6 +42,29 @@ pub(crate) struct AgentWeb {
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A browser stream's statistics as the app's sessions write theirs.
+fn stream_stats_line(session: u64, s: &StreamStats) -> String {
+    let secs = s.over.as_secs_f64().max(0.001);
+    let per_s = |n: u32| f64::from(n) / secs;
+    let encode_ms = if s.frames + s.failures == 0 {
+        0.0
+    } else {
+        s.encode_time.as_secs_f64() * 1000.0 / f64::from(s.frames + s.failures)
+    };
+    format!(
+        "nexa-agent: session {session} stream {}x{}@{} (browser): {:.1} frames/s, {:.1} skipped/s, {:.1} repeats/s, {} failures, encode {encode_ms:.1} ms, sent {:.2} Mbit/s, target {:.2} Mbit/s",
+        s.width,
+        s.height,
+        s.fps,
+        per_s(s.frames),
+        per_s(s.skipped),
+        per_s(s.repeats),
+        s.failures,
+        s.bytes as f64 * 8.0 / secs / 1e6,
+        f64::from(s.target_bps) / 1e6,
+    )
 }
 
 fn browser_name(browser: &str) -> String {
@@ -192,6 +216,11 @@ impl WebHost for AgentWeb {
                 remote,
                 reason: format!("browser: {reason}"),
             },
+            // For agent.log, beside the app's sessions' lines; nothing for the UI.
+            WebEvent::StreamStats { id, stats } => {
+                eprintln!("{}", stream_stats_line(ID_BASE + id, &stats));
+                return;
+            }
         };
         self.ui.event(event);
         if let Some(s) = self.shared.upgrade() {
@@ -229,5 +258,39 @@ impl WebClipboard for BrowserClipboard {
                 &[(ClipKind::Text, bytes)],
             )
             .map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_browser_stream_is_logged_as_the_apps_are() {
+        let stats = StreamStats {
+            width: 2560,
+            height: 1440,
+            fps: 60,
+            over: Duration::from_secs(5),
+            frames: 150,
+            skipped: 5,
+            repeats: 10,
+            failures: 1,
+            encode_time: Duration::from_millis(1510),
+            bytes: 12_500_000,
+            target_bps: 22_000_000,
+        };
+        assert_eq!(
+            stream_stats_line(ID_BASE + 1, &stats),
+            "nexa-agent: session 281474976710657 stream 2560x1440@60 (browser): 30.0 frames/s, \
+             1.0 skipped/s, 2.0 repeats/s, 1 failures, encode 10.0 ms, sent 20.00 Mbit/s, \
+             target 22.00 Mbit/s"
+        );
+        // Nothing sent: no division by nothing.
+        let idle = StreamStats {
+            over: Duration::from_secs(5),
+            ..StreamStats::default()
+        };
+        assert!(stream_stats_line(1, &idle).contains("encode 0.0 ms, sent 0.00 Mbit/s"));
     }
 }
