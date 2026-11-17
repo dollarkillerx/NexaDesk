@@ -251,7 +251,16 @@ impl WebClipboard for BrowserClipboard {
         self.write(&[(ClipKind::Text, text.as_bytes())])
     }
 
-    fn set_image(&mut self, png: &[u8], text: Option<&str>) -> Result<(), String> {
+    fn set_image(&mut self, file: &[u8], text: Option<&str>) -> Result<(), String> {
+        // A large photo comes as JPEG; the clipboard is given PNG.
+        let converted;
+        let png = if file.starts_with(b"\x89PNG") {
+            file
+        } else {
+            converted = nexa_clip::platform::png_of_picture(file)
+                .ok_or("the picture from the browser could not be read")?;
+            &converted
+        };
         let mut content = vec![(ClipKind::Png, png)];
         content.extend(text.map(|t| (ClipKind::Text, t.as_bytes())));
         self.write(&content)

@@ -161,10 +161,15 @@ mod demo {
             self.0.lock().unwrap().clipboard = text.to_string();
             Ok(())
         }
-        fn set_image(&mut self, png: &[u8], text: Option<&str>) -> Result<(), String> {
+        fn set_image(&mut self, file: &[u8], text: Option<&str>) -> Result<(), String> {
+            let kind = if file.starts_with(b"\x89PNG") {
+                "PNG"
+            } else {
+                "JPEG"
+            };
             println!(
-                "picture from the browser: {} bytes of PNG{}",
-                png.len(),
+                "picture from the browser: {} bytes of {kind}{}",
+                file.len(),
                 text.map_or(String::new(), |t| format!(
                     ", and {} chars",
                     t.chars().count()

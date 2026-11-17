@@ -2,6 +2,7 @@
 // and input over WebRTC. The protocol is described in crates/nexa-web/src/session.rs.
 import { apply, lang, LANGS, setLang, t } from "./i18n.js";
 import { Keyboard, MAC_BROWSER } from "./keyboard.js";
+import { forSending } from "./picture.js";
 import { setupTouch } from "./touch.js";
 import { watch } from "./stats.js";
 import { RemoteTerminal } from "./term.js";
@@ -779,61 +780,55 @@ function sendClip(text) {
   return true;
 }
 
-/** A pasted picture, as a PNG file: no larger, or the host refuses it. */
+/** A pasted picture, as sent: no larger, or the host refuses it. */
 const MAX_IMAGE = 16 * 1024 * 1024;
-/** PNG bytes per message; base64 makes it 128 KiB, under the DataChannel's 256 KiB. */
-const IMAGE_PIECE = 96 * 1024;
-/** Sending waits while this much is still queued in the browser. */
-const QUEUED_MOST = 4 * 1024 * 1024;
+/** Bytes per binary message, well under the DataChannel's 256 KiB. */
+const IMAGE_PIECE = 64 * 1024;
+/** The picture shares the channel with the pointer and keys, which wait behind whatever is
+ *  queued: no more than this is, a few milliseconds on a LAN. */
+const QUEUED_MOST = 256 * 1024;
 
-/** Base64 of any length (spreading a large array into one call would overflow). */
-function b64Large(bytes) {
-  let s = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) {
-    s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  }
-  return btoa(s);
+/** Resolves once `dc` has no more than `QUEUED_MOST` queued, or has closed. */
+function drained(dc) {
+  if (dc.readyState !== "open" || dc.bufferedAmount <= QUEUED_MOST) return Promise.resolve();
+  return new Promise((done) => {
+    dc.bufferedAmountLowThreshold = QUEUED_MOST / 2;
+    const go = () => {
+      dc.removeEventListener("bufferedamountlow", go);
+      dc.removeEventListener("close", go);
+      done();
+    };
+    dc.addEventListener("bufferedamountlow", go);
+    dc.addEventListener("close", go);
+  });
 }
 
-/** `blob` as PNG: pictures copied from some programs are JPEG or TIFF. */
-async function asPng(blob) {
-  if (blob.type === "image/png") return blob;
-  const bitmap = await createImageBitmap(blob);
-  const canvas = typeof OffscreenCanvas === "function"
-    ? new OffscreenCanvas(bitmap.width, bitmap.height)
-    : Object.assign(document.createElement("canvas"), { width: bitmap.width, height: bitmap.height });
-  canvas.getContext("2d").drawImage(bitmap, 0, 0);
-  bitmap.close?.();
-  if (canvas.convertToBlob) return canvas.convertToBlob({ type: "image/png" });
-  return new Promise((done) => canvas.toBlob(done, "image/png"));
-}
-
-/** Sends a pasted picture to the host in pieces, then its end with any text beside it;
- *  false if it may not, or the picture is too large or cannot be read. */
+/** Sends a pasted picture to the host in binary pieces (`forSending` decides PNG or
+ *  JPEG), then its end with any text beside it; false if it may not, or the picture is
+ *  too large or cannot be read. */
 async function sendImage(file, text) {
   const s = session;
   if (!s?.started || !s.clipboard || s.dc?.readyState !== "open") return false;
-  let png;
+  let picture, bytes;
   try {
-    png = new Uint8Array(await (await asPng(file)).arrayBuffer());
+    picture = await forSending(file);
+    bytes = new Uint8Array(await picture.blob.arrayBuffer());
   } catch {
     toast(t("clip.imageUnreadable"));
     return false;
   }
-  if (png.length > MAX_IMAGE) {
+  if (bytes.length > MAX_IMAGE) {
     toast(t("clip.imageTooLarge"));
     return false;
   }
   const dc = s.dc;
-  for (let i = 0; i < png.length; i += IMAGE_PIECE) {
-    while (dc.readyState === "open" && dc.bufferedAmount > QUEUED_MOST) {
-      await new Promise((r) => setTimeout(r, 20));
-    }
+  for (let i = 0; i < bytes.length; i += IMAGE_PIECE) {
+    await drained(dc);
     if (session !== s || dc.readyState !== "open") return false;
-    dc.send(JSON.stringify({ t: "ci", s: b64Large(png.subarray(i, i + IMAGE_PIECE)) }));
+    dc.send(bytes.subarray(i, i + IMAGE_PIECE));
   }
   const caption = new TextEncoder().encode(text).length <= MAX_CLIP_JSON / 2 ? text : "";
-  dc.send(JSON.stringify({ t: "ce", n: png.length, s: caption }));
+  dc.send(JSON.stringify({ t: "ce", n: bytes.length, f: picture.kind, s: caption }));
   return true;
 }
 

@@ -153,10 +153,11 @@ pub trait WebClipboard: Send {
     fn poll(&mut self) -> Option<String>;
     /// Puts text from the browser on the host's clipboard.
     fn set_text(&mut self, text: &str) -> Result<(), String>;
-    /// Puts a picture from the browser (a PNG file), with any text copied beside it, on
-    /// the host's clipboard.
-    fn set_image(&mut self, png: &[u8], text: Option<&str>) -> Result<(), String> {
-        let _ = (png, text);
+    /// Puts a picture from the browser, with any text copied beside it, on the host's
+    /// clipboard. `file` is a PNG, or a JPEG for a large photo (which clipboards want as
+    /// PNG: see `nexa_clip::platform::png_of_picture`).
+    fn set_image(&mut self, file: &[u8], text: Option<&str>) -> Result<(), String> {
+        let _ = (file, text);
         Err("this host does not take pictures".into())
     }
 }

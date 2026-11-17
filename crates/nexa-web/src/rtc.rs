@@ -559,8 +559,13 @@ async fn run(
                         term = None;
                     }
                     Event::ChannelData(d) if Some(d.id) == input_channel => {
-                        // Quality is for anyone watching, input only with permission.
-                        if let Some(q) = quality_request(&d.data) {
+                        // Binary messages are pieces of a pasted picture; quality is for
+                        // anyone watching, input only with permission.
+                        if d.binary {
+                            if let (Some(input), Some(msg)) = (&input, Msg::picture_piece(d.data)) {
+                                input.send(msg);
+                            }
+                        } else if let Some(q) = quality_request(&d.data) {
                             tuning.quality = q;
                             tuning.reduced = false;
                             tuning.poor_since = None;

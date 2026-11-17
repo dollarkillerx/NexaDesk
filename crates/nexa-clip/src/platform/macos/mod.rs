@@ -87,6 +87,11 @@ fn png_to_tiff(png: &[u8]) -> Option<Vec<u8>> {
     Some(rep.TIFFRepresentation()?.to_vec())
 }
 
+/// Any picture NSBitmapImageRep reads (JPEG, TIFF…) as PNG.
+pub(crate) fn png_of_picture(file: &[u8]) -> Option<Vec<u8>> {
+    tiff_to_png(file)
+}
+
 fn tiff_to_png(tiff: &[u8]) -> Option<Vec<u8>> {
     let rep = NSBitmapImageRep::imageRepWithData(&NSData::with_bytes(tiff))?;
     let properties = NSDictionary::<NSBitmapImageRepPropertyKey, objc2::runtime::AnyObject>::new();

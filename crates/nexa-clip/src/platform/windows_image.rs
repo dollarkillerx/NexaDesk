@@ -7,9 +7,10 @@
 use windows::Win32::{
     Foundation::HGLOBAL,
     Graphics::Imaging::{
-        CLSID_WICImagingFactory, GUID_ContainerFormatPng, GUID_WICPixelFormat32bppBGRA,
-        IWICBitmapFrameEncode, IWICImagingFactory, WICBitmapDitherTypeNone,
-        WICBitmapEncoderNoCache, WICBitmapPaletteTypeCustom, WICDecodeMetadataCacheOnDemand,
+        CLSID_WICImagingFactory, GUID_ContainerFormatPng, GUID_WICPixelFormat24bppBGR,
+        GUID_WICPixelFormat32bppBGRA, IWICBitmapFrameEncode, IWICImagingFactory,
+        WICBitmapDitherTypeNone, WICBitmapEncoderNoCache, WICBitmapPaletteTypeCustom,
+        WICDecodeMetadataCacheOnDemand,
     },
     System::{
         Com::{
@@ -85,6 +86,18 @@ pub(super) fn decode(file: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
 
 /// A PNG of straight-alpha BGRA rows, top first.
 pub(super) fn encode_png(w: u32, h: u32, bgra: &[u8]) -> Option<Vec<u8>> {
+    encode(&GUID_ContainerFormatPng, w, h, bgra)
+}
+
+/// Any picture WIC reads (JPEG, TIFF, BMP…) as PNG.
+pub(super) fn png_of_picture(file: &[u8]) -> Option<Vec<u8>> {
+    let (w, h, bgra) = decode(file)?;
+    encode_png(w, h, &bgra)
+}
+
+/// A `container` file (PNG; JPEG in tests) of straight-alpha BGRA rows, top first. An
+/// encoder that wants 24-bit BGR (JPEG) is given that.
+fn encode(container: &windows::core::GUID, w: u32, h: u32, bgra: &[u8]) -> Option<Vec<u8>> {
     if bgra.len() != w as usize * h as usize * 4 {
         return None;
     }
@@ -93,9 +106,7 @@ pub(super) fn encode_png(w: u32, h: u32, bgra: &[u8]) -> Option<Vec<u8>> {
     // it owns; the block is read, locked, within the length written.
     unsafe {
         let stream = CreateStreamOnHGlobal(HGLOBAL::default(), true).ok()?;
-        let encoder = wic
-            .CreateEncoder(&GUID_ContainerFormatPng, std::ptr::null())
-            .ok()?;
+        let encoder = wic.CreateEncoder(container, std::ptr::null()).ok()?;
         encoder.Initialize(&stream, WICBitmapEncoderNoCache).ok()?;
         let mut frame: Option<IWICBitmapFrameEncode> = None;
         encoder
@@ -106,11 +117,18 @@ pub(super) fn encode_png(w: u32, h: u32, bgra: &[u8]) -> Option<Vec<u8>> {
         frame.SetSize(w, h).ok()?;
         let mut format = GUID_WICPixelFormat32bppBGRA;
         frame.SetPixelFormat(&mut format).ok()?;
-        // PNG takes BGRA with alpha as it is; anything else would need converting.
-        if format != GUID_WICPixelFormat32bppBGRA {
+        // PNG takes BGRA with alpha as it is; JPEG asks for BGR.
+        if format == GUID_WICPixelFormat32bppBGRA {
+            frame.WritePixels(h, w * 4, bgra).ok()?;
+        } else if format == GUID_WICPixelFormat24bppBGR {
+            let bgr: Vec<u8> = (0..bgra.len())
+                .step_by(4)
+                .flat_map(|i| [bgra[i], bgra[i + 1], bgra[i + 2]])
+                .collect();
+            frame.WritePixels(h, w * 3, &bgr).ok()?;
+        } else {
             return None;
         }
-        frame.WritePixels(h, w * 4, bgra).ok()?;
         frame.Commit().ok()?;
         encoder.Commit().ok()?;
         let mut written = 0u64;
@@ -253,6 +271,23 @@ mod tests {
         dib.extend([1, 2, 3, 4, 5, 6, 0, 0]);
         let png = png_of_dib(&dib).expect("convert");
         assert_eq!(decode(&png), Some((2, 1, vec![1, 2, 3, 255, 4, 5, 6, 255])));
+    }
+
+    #[test]
+    fn a_jpeg_becomes_a_png_of_the_same_size() {
+        use windows::Win32::Graphics::Imaging::GUID_ContainerFormatJpeg;
+        let px = picture();
+        let opaque: Vec<u8> = (0..px.len())
+            .step_by(4)
+            .flat_map(|i| [px[i], px[i + 1], px[i + 2], 255])
+            .collect();
+        let jpeg = encode(&GUID_ContainerFormatJpeg, 3, 2, &opaque).expect("jpeg");
+        assert!(jpeg.starts_with(&[0xFF, 0xD8, 0xFF]));
+        let png = png_of_picture(&jpeg).expect("convert");
+        assert!(is_png(&png));
+        let (w, h, px) = decode(&png).expect("decode");
+        assert_eq!((w, h), (3, 2));
+        assert!(px.iter().skip(3).step_by(4).all(|&a| a == 255), "opaque");
     }
 
     #[test]

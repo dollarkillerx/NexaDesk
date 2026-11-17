@@ -45,6 +45,11 @@ pub const ASSETS: &[Asset] = &[
         body: include_bytes!("../web/cursor.js"),
     },
     Asset {
+        path: "/picture.js",
+        content_type: "text/javascript; charset=utf-8",
+        body: include_bytes!("../web/picture.js"),
+    },
+    Asset {
         path: "/saved.js",
         content_type: "text/javascript; charset=utf-8",
         body: include_bytes!("../web/saved.js"),

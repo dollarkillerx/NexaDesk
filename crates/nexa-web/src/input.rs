@@ -46,9 +46,12 @@ const CLIP_WRITE_WAIT: Duration = Duration::from_secs(1);
 const IMAGE_WRITE_WAIT: Duration = Duration::from_secs(3);
 /// The largest picture a browser may paste, as a PNG file.
 pub(crate) const MAX_IMAGE: usize = 16 * 1024 * 1024;
-/// One piece of it, base64: the page sends 96 KiB at a time.
+/// One piece of it, base64 (pages before binary pieces sent 96 KiB at a time).
 const MAX_IMAGE_PART: usize = 192 * 1024;
+/// One binary piece: the page sends 64 KiB at a time.
+const MAX_IMAGE_BYTES: usize = 128 * 1024;
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+const JPEG_SIGNATURE: &[u8] = &[0xFF, 0xD8, 0xFF];
 /// One wheel notch is 120; more than a few pages per event is not a person scrolling.
 const MAX_WHEEL: i32 = 120 * 40;
 const TICK: Duration = Duration::from_millis(100);
@@ -88,20 +91,33 @@ pub(crate) enum Msg {
     /// Text the browser has on its clipboard, put on the host's (only with permission).
     #[serde(rename = "c")]
     Clip { s: String },
-    /// A piece of a picture the browser pastes: PNG bytes, base64, in order.
+    /// A piece of a picture the browser pastes, base64, in order (pages before binary
+    /// pieces).
     #[serde(rename = "ci")]
     ClipImage { s: String },
-    /// The picture is whole: `n` bytes, with any text copied beside it. It goes on the
-    /// host's clipboard before the paste keystroke after it.
+    /// A piece of a picture the browser pastes, in order: a binary message on the input
+    /// channel, never JSON ([`Msg::picture_piece`]).
+    #[serde(skip)]
+    ClipImageBytes(Vec<u8>),
+    /// The picture is whole: `n` bytes of a PNG, or of a JPEG (`f: "jpeg"`) for a large
+    /// photo, with any text copied beside it. It goes on the host's clipboard before the
+    /// paste keystroke after it.
     #[serde(rename = "ce")]
     ClipImageEnd {
         n: usize,
         #[serde(default)]
         s: String,
+        #[serde(default)]
+        f: String,
     },
 }
 
 impl Msg {
+    /// A binary message on the input channel: a piece of a pasted picture, if not too big.
+    pub(crate) fn picture_piece(data: Vec<u8>) -> Option<Self> {
+        (data.len() <= MAX_IMAGE_BYTES).then_some(Self::ClipImageBytes(data))
+    }
+
     /// Parses and checks one message; anything odd is dropped, not clamped into meaning.
     pub(crate) fn parse(data: &[u8]) -> Option<Self> {
         let msg: Msg = serde_json::from_slice(data).ok()?;
@@ -120,8 +136,12 @@ impl Msg {
             }
             Msg::Clip { s } => s.len() <= MAX_CLIP && !s.contains('\0'),
             Msg::ClipImage { s } => s.len() <= MAX_IMAGE_PART,
-            Msg::ClipImageEnd { n, s } => {
-                *n <= MAX_IMAGE && s.len() <= MAX_CLIP && !s.contains('\0')
+            Msg::ClipImageBytes(_) => false,
+            Msg::ClipImageEnd { n, s, f } => {
+                *n <= MAX_IMAGE
+                    && s.len() <= MAX_CLIP
+                    && !s.contains('\0')
+                    && matches!(f.as_str(), "" | "png" | "jpeg")
             }
         };
         ok.then_some(msg)
@@ -172,10 +192,11 @@ impl InputThread {
                             }
                         }
                         // Nothing is gathered for a session without the clipboard.
-                        Ok(Msg::ClipImage { s }) if clip.is_some() => picture.add(&s),
-                        Ok(Msg::ClipImageEnd { n, s }) => {
-                            if let (Some(c), Some(png)) = (&clip, picture.finish(n)) {
-                                c.set_image(png, (!s.is_empty()).then_some(s));
+                        Ok(Msg::ClipImage { s }) if clip.is_some() => picture.add_base64(&s),
+                        Ok(Msg::ClipImageBytes(b)) if clip.is_some() => picture.add(&b),
+                        Ok(Msg::ClipImageEnd { n, s, f }) => {
+                            if let (Some(c), Some(file)) = (&clip, picture.finish(n, &f)) {
+                                c.set_image(file, (!s.is_empty()).then_some(s));
                             }
                         }
                         Ok(msg) => {
@@ -225,7 +246,7 @@ struct ClipWatch {
 
 enum Write {
     Text(String),
-    Image { png: Vec<u8>, text: Option<String> },
+    Image { file: Vec<u8>, text: Option<String> },
 }
 
 /// A picture the browser is pasting, as its pieces arrive.
@@ -237,23 +258,39 @@ struct Picture {
 }
 
 impl Picture {
-    fn add(&mut self, piece: &str) {
+    fn add(&mut self, piece: &[u8]) {
         if self.broken {
             return;
         }
-        match BASE64.decode(piece.as_bytes()) {
-            Ok(b) if self.bytes.len() + b.len() <= MAX_IMAGE => self.bytes.extend(b),
-            _ => {
-                self.broken = true;
-                self.bytes = Vec::new();
-            }
+        if self.bytes.len() + piece.len() <= MAX_IMAGE {
+            self.bytes.extend_from_slice(piece);
+        } else {
+            self.broken();
         }
     }
 
-    /// The PNG, if all `n` bytes of one arrived; the next picture starts afresh either way.
-    fn finish(&mut self, n: usize) -> Option<Vec<u8>> {
+    fn add_base64(&mut self, piece: &str) {
+        match BASE64.decode(piece.as_bytes()) {
+            Ok(b) => self.add(&b),
+            Err(_) => self.broken(),
+        }
+    }
+
+    fn broken(&mut self) {
+        self.broken = true;
+        self.bytes = Vec::new();
+    }
+
+    /// The file, if all `n` bytes of a PNG, or of a JPEG when `kind` says so, arrived; the
+    /// next picture starts afresh either way.
+    fn finish(&mut self, n: usize, kind: &str) -> Option<Vec<u8>> {
         let Picture { bytes, broken } = std::mem::take(self);
-        (!broken && bytes.len() == n && bytes.starts_with(PNG_SIGNATURE)).then_some(bytes)
+        let signature = if kind == "jpeg" {
+            JPEG_SIGNATURE
+        } else {
+            PNG_SIGNATURE
+        };
+        (!broken && bytes.len() == n && bytes.starts_with(signature)).then_some(bytes)
     }
 }
 
@@ -276,7 +313,9 @@ impl ClipWatch {
                         Ok((write, done)) => {
                             let _ = match write {
                                 Write::Text(text) => clip.set_text(&text),
-                                Write::Image { png, text } => clip.set_image(&png, text.as_deref()),
+                                Write::Image { file, text } => {
+                                    clip.set_image(&file, text.as_deref())
+                                }
                             };
                             let _ = done.send(());
                         }
@@ -304,9 +343,9 @@ impl ClipWatch {
         self.write(Write::Text(text.to_owned()), CLIP_WRITE_WAIT);
     }
 
-    /// As `set_text`, for a picture, which may take the host longer.
-    fn set_image(&self, png: Vec<u8>, text: Option<String>) {
-        self.write(Write::Image { png, text }, IMAGE_WRITE_WAIT);
+    /// As `set_text`, for a picture (PNG or JPEG), which may take the host longer.
+    fn set_image(&self, file: Vec<u8>, text: Option<String>) {
+        self.write(Write::Image { file, text }, IMAGE_WRITE_WAIT);
     }
 
     fn write(&self, write: Write, wait: Duration) {
@@ -333,7 +372,10 @@ fn carry_out(sink: &mut dyn InputSink, screen: &WebScreen, msg: Msg) {
             let held: Vec<u32> = c.iter().map(|c| (PAGE_KEYBOARD << 16) | c).collect();
             sink.apply_key_state(&held, now);
         }
-        Msg::Clip { .. } | Msg::ClipImage { .. } | Msg::ClipImageEnd { .. } => {}
+        Msg::Clip { .. }
+        | Msg::ClipImage { .. }
+        | Msg::ClipImageBytes(_)
+        | Msg::ClipImageEnd { .. } => {}
     }
 }
 
@@ -426,7 +468,8 @@ mod tests {
             Msg::parse(br#"{"t":"ce","n":12}"#),
             Some(Msg::ClipImageEnd {
                 n: 12,
-                s: String::new()
+                s: String::new(),
+                f: String::new(),
             })
         );
         let huge = format!(r#"{{"t":"ce","n":{}}}"#, MAX_IMAGE + 1);
@@ -580,6 +623,7 @@ mod tests {
         input.send(Msg::ClipImageEnd {
             n: png.len(),
             s: "caption".into(),
+            f: String::new(),
         });
         input.send(Msg::Key {
             c: 0x19,
@@ -589,6 +633,44 @@ mod tests {
         assert_eq!(
             wait_for(&log, 2, Duration::from_secs(2)),
             ["picture 24 Some(\"caption\")", "key 19 true"]
+        );
+    }
+
+    #[test]
+    fn a_large_photo_comes_as_binary_jpeg_pieces() {
+        let (input, log) = session(Board::Slow(Duration::ZERO));
+        let jpeg = [JPEG_SIGNATURE, b"\xE0 a photo"].concat();
+        for piece in jpeg.chunks(5) {
+            input.send(Msg::picture_piece(piece.to_vec()).expect("small"));
+        }
+        input.send(Msg::ClipImageEnd {
+            n: jpeg.len(),
+            s: String::new(),
+            f: "jpeg".into(),
+        });
+        // A PNG said to be a JPEG is not one.
+        for piece in pieces(&fake_png()) {
+            input.send(piece);
+        }
+        input.send(Msg::ClipImageEnd {
+            n: fake_png().len(),
+            s: String::new(),
+            f: "jpeg".into(),
+        });
+        input.send(Msg::Key {
+            c: 0x19,
+            d: true,
+            r: false,
+        });
+        assert_eq!(
+            wait_for(&log, 2, Duration::from_secs(2)),
+            ["picture 12 None", "key 19 true"]
+        );
+        assert_eq!(Msg::picture_piece(vec![0; MAX_IMAGE_BYTES + 1]), None);
+        assert_eq!(
+            Msg::parse(br#"{"t":"ce","n":3,"f":"gif"}"#),
+            None,
+            "only PNG and JPEG"
         );
     }
 
@@ -603,12 +685,14 @@ mod tests {
         input.send(Msg::ClipImageEnd {
             n: png.len(),
             s: String::new(),
+            f: String::new(),
         });
         // Not base64.
         input.send(Msg::ClipImage { s: "!!".into() });
         input.send(Msg::ClipImageEnd {
             n: 1,
             s: String::new(),
+            f: String::new(),
         });
         // Not a PNG.
         input.send(Msg::ClipImage {
@@ -617,6 +701,7 @@ mod tests {
         input.send(Msg::ClipImageEnd {
             n: 6,
             s: String::new(),
+            f: String::new(),
         });
         input.send(Msg::Key {
             c: 0x19,
@@ -631,6 +716,7 @@ mod tests {
         input.send(Msg::ClipImageEnd {
             n: png.len(),
             s: String::new(),
+            f: String::new(),
         });
         assert_eq!(
             wait_for(&log, 2, Duration::from_secs(2)),
