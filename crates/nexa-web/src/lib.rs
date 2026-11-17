@@ -145,14 +145,20 @@ impl BrowserAnswer {
     };
 }
 
-/// The host's clipboard, text only, as a browser session uses it. Used on the session's
-/// input thread, so `poll` and `set_text` never race.
+/// The host's clipboard as a browser session uses it: text both ways, and pictures from
+/// the browser. Used on one thread of the session's, so its calls never race.
 pub trait WebClipboard: Send {
     /// Text someone copied on the host since the last call. Never what `set_text` put
     /// there, nor anything the OS marks as sensitive (passwords).
     fn poll(&mut self) -> Option<String>;
     /// Puts text from the browser on the host's clipboard.
     fn set_text(&mut self, text: &str) -> Result<(), String>;
+    /// Puts a picture from the browser (a PNG file), with any text copied beside it, on
+    /// the host's clipboard.
+    fn set_image(&mut self, png: &[u8], text: Option<&str>) -> Result<(), String> {
+        let _ = (png, text);
+        Err("this host does not take pictures".into())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

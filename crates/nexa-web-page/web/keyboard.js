@@ -6,8 +6,9 @@
 //   different keys, so the key's position would type something else on the host.
 // - Text an input method composes (Chinese, Japanese…) or a phone keyboard types goes as
 //   text, which the host types as Unicode: the keys that made it mean nothing there.
-// - A paste sends the browser's clipboard text first, then the paste keystroke, on the
-//   same ordered channel, so the host pastes what was just copied here.
+// - A paste sends the browser's clipboard first (its text, or a picture as PNG), then the
+//   paste keystroke, on the same ordered channel, so the host pastes what was just
+//   copied here.
 //
 // The field holds focus while a session runs; an input method needs an editable
 // element to work in. It sits where the pointer last was, so a candidate window opens
@@ -35,6 +36,8 @@ const ENTER = 0x28, BACKSPACE = 0x2a, DELETE = 0x4c;
 const TEXT_CHUNK = 240;
 // How long a paste keystroke waits for the browser's paste event.
 const PASTE_WAIT = 400;
+// A paste keystroke held while a picture is read and sent.
+const PASTE_HELD = -1;
 
 /** A symbol typed with no shortcut modifier: sent as the character, not the key.
  *  Letters, digits and space stay keys: every Latin layout agrees on them, and games
@@ -79,12 +82,15 @@ export class Keyboard {
    * @param field   the hidden <textarea>
    * @param send    sends one input message to the host (dropped unless input is allowed)
    * @param sendClip sends clipboard text to the host; returns false if not allowed
+   * @param sendImage sends a pasted picture (a File) and any text beside it; resolves
+   *                  once it is sent
    * @param active  whether a session with input is showing
    */
-  constructor({ field, send, sendClip, active }) {
+  constructor({ field, send, sendClip, sendImage = null, active }) {
     this.field = field;
     this.send = send;
     this.sendClip = sendClip;
+    this.sendImage = sendImage;
     this.active = active;
     /** Ctrl and ⌘ trade places: for a keyboard whose shortcut key is not the host's (a
      *  PC's on a Mac, a Mac's on Windows or Linux). */
@@ -223,6 +229,23 @@ export class Keyboard {
     e.preventDefault();
     // Sent even when only watching: the clipboard is a permission of its own.
     const text = e.clipboardData?.getData("text/plain") ?? "";
+    const item = [...(e.clipboardData?.items ?? [])].find(
+      (i) => i.kind === "file" && i.type.startsWith("image/"),
+    );
+    const image = item?.getAsFile();
+    if (image && this.sendImage) {
+      // The keystroke waits for the picture, which takes a moment to read and send.
+      const waiting = this.active() && this.pendingPaste !== null;
+      if (waiting) {
+        clearTimeout(this.pendingPaste);
+        this.pendingPaste = PASTE_HELD;
+      }
+      this.sendImage(image, text).finally(() => {
+        // Unless the page let go of everything meanwhile.
+        if (waiting && this.pendingPaste === PASTE_HELD) this.finishPaste();
+      });
+      return;
+    }
     if (text) this.sendClip(text);
     if (this.active() && this.pendingPaste !== null) this.finishPaste();
   }
@@ -230,7 +253,8 @@ export class Keyboard {
   finishPaste() {
     clearTimeout(this.pendingPaste);
     this.pendingPaste = null;
-    this.tap(KEY_V);
+    // With the host's paste modifier, even if ⌘ or Ctrl was let go while a picture went.
+    this.tap(KEY_V, [this.hostMac ? META : CTRL]);
   }
 
   /** What a phone keyboard (or anything else that edits the field) typed. */

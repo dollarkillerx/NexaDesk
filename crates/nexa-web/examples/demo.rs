@@ -161,6 +161,17 @@ mod demo {
             self.0.lock().unwrap().clipboard = text.to_string();
             Ok(())
         }
+        fn set_image(&mut self, png: &[u8], text: Option<&str>) -> Result<(), String> {
+            println!(
+                "picture from the browser: {} bytes of PNG{}",
+                png.len(),
+                text.map_or(String::new(), |t| format!(
+                    ", and {} chars",
+                    t.chars().count()
+                ))
+            );
+            Ok(())
+        }
     }
 
     impl InputSink for Sink {

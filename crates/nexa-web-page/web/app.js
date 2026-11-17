@@ -779,6 +779,64 @@ function sendClip(text) {
   return true;
 }
 
+/** A pasted picture, as a PNG file: no larger, or the host refuses it. */
+const MAX_IMAGE = 16 * 1024 * 1024;
+/** PNG bytes per message; base64 makes it 128 KiB, under the DataChannel's 256 KiB. */
+const IMAGE_PIECE = 96 * 1024;
+/** Sending waits while this much is still queued in the browser. */
+const QUEUED_MOST = 4 * 1024 * 1024;
+
+/** Base64 of any length (spreading a large array into one call would overflow). */
+function b64Large(bytes) {
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(s);
+}
+
+/** `blob` as PNG: pictures copied from some programs are JPEG or TIFF. */
+async function asPng(blob) {
+  if (blob.type === "image/png") return blob;
+  const bitmap = await createImageBitmap(blob);
+  const canvas = typeof OffscreenCanvas === "function"
+    ? new OffscreenCanvas(bitmap.width, bitmap.height)
+    : Object.assign(document.createElement("canvas"), { width: bitmap.width, height: bitmap.height });
+  canvas.getContext("2d").drawImage(bitmap, 0, 0);
+  bitmap.close?.();
+  if (canvas.convertToBlob) return canvas.convertToBlob({ type: "image/png" });
+  return new Promise((done) => canvas.toBlob(done, "image/png"));
+}
+
+/** Sends a pasted picture to the host in pieces, then its end with any text beside it;
+ *  false if it may not, or the picture is too large or cannot be read. */
+async function sendImage(file, text) {
+  const s = session;
+  if (!s?.started || !s.clipboard || s.dc?.readyState !== "open") return false;
+  let png;
+  try {
+    png = new Uint8Array(await (await asPng(file)).arrayBuffer());
+  } catch {
+    toast(t("clip.imageUnreadable"));
+    return false;
+  }
+  if (png.length > MAX_IMAGE) {
+    toast(t("clip.imageTooLarge"));
+    return false;
+  }
+  const dc = s.dc;
+  for (let i = 0; i < png.length; i += IMAGE_PIECE) {
+    while (dc.readyState === "open" && dc.bufferedAmount > QUEUED_MOST) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    if (session !== s || dc.readyState !== "open") return false;
+    dc.send(JSON.stringify({ t: "ci", s: b64Large(png.subarray(i, i + IMAGE_PIECE)) }));
+  }
+  const caption = new TextEncoder().encode(text).length <= MAX_CLIP_JSON / 2 ? text : "";
+  dc.send(JSON.stringify({ t: "ce", n: png.length, s: caption }));
+  return true;
+}
+
 /** Text copied on the host: straight onto this clipboard if the browser lets us. */
 async function receiveClip(text) {
   if (window.isSecureContext && navigator.clipboard?.writeText && document.hasFocus()) {
@@ -879,6 +937,7 @@ function setupInput() {
     field: $("kbd"),
     send,
     sendClip,
+    sendImage,
     active: () => inSession() && !!session?.input,
   });
   keyboard.onLatch = (latched) => {

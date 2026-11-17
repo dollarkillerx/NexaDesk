@@ -248,15 +248,31 @@ impl WebClipboard for BrowserClipboard {
     }
 
     fn set_text(&mut self, text: &str) -> Result<(), String> {
+        self.write(&[(ClipKind::Text, text.as_bytes())])
+    }
+
+    fn set_image(&mut self, png: &[u8], text: Option<&str>) -> Result<(), String> {
+        let mut content = vec![(ClipKind::Png, png)];
+        content.extend(text.map(|t| (ClipKind::Text, t.as_bytes())));
+        self.write(&content)
+    }
+}
+
+impl BrowserClipboard {
+    /// Puts `content` on the clipboard, all of it inline.
+    fn write(&mut self, content: &[(ClipKind, &[u8])]) -> Result<(), String> {
         let generation = (self.next, self.device);
         self.next += 1;
-        let bytes = bytes::Bytes::copy_from_slice(text.as_bytes());
+        let inline: Vec<(ClipKind, bytes::Bytes)> = content
+            .iter()
+            .map(|(kind, data)| (*kind, bytes::Bytes::copy_from_slice(data)))
+            .collect();
+        let formats: Vec<FormatInfo> = inline
+            .iter()
+            .map(|(kind, data)| FormatInfo::of(*kind, data))
+            .collect();
         self.board
-            .write_promise(
-                generation,
-                &[FormatInfo::of(ClipKind::Text, &bytes)],
-                &[(ClipKind::Text, bytes)],
-            )
+            .write_promise(generation, &formats, &inline)
             .map_err(|e| e.to_string())
     }
 }

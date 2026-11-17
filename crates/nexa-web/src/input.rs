@@ -19,6 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use data_encoding::BASE64;
 use nexa_session::input::InputSink;
 use serde::Deserialize;
 
@@ -41,6 +42,13 @@ const CLIP_POLL: Duration = Duration::from_millis(250);
 /// How long a paste waits for the host's clipboard to take the browser's text before
 /// the keys after it go on anyway.
 const CLIP_WRITE_WAIT: Duration = Duration::from_secs(1);
+/// The same for a picture, which the host may have to convert.
+const IMAGE_WRITE_WAIT: Duration = Duration::from_secs(3);
+/// The largest picture a browser may paste, as a PNG file.
+pub(crate) const MAX_IMAGE: usize = 16 * 1024 * 1024;
+/// One piece of it, base64: the page sends 96 KiB at a time.
+const MAX_IMAGE_PART: usize = 192 * 1024;
+const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 /// One wheel notch is 120; more than a few pages per event is not a person scrolling.
 const MAX_WHEEL: i32 = 120 * 40;
 const TICK: Duration = Duration::from_millis(100);
@@ -80,6 +88,17 @@ pub(crate) enum Msg {
     /// Text the browser has on its clipboard, put on the host's (only with permission).
     #[serde(rename = "c")]
     Clip { s: String },
+    /// A piece of a picture the browser pastes: PNG bytes, base64, in order.
+    #[serde(rename = "ci")]
+    ClipImage { s: String },
+    /// The picture is whole: `n` bytes, with any text copied beside it. It goes on the
+    /// host's clipboard before the paste keystroke after it.
+    #[serde(rename = "ce")]
+    ClipImageEnd {
+        n: usize,
+        #[serde(default)]
+        s: String,
+    },
 }
 
 impl Msg {
@@ -100,6 +119,10 @@ impl Msg {
                 c.len() <= MAX_HELD && c.iter().all(|c| (HID_MIN..=HID_MAX).contains(c))
             }
             Msg::Clip { s } => s.len() <= MAX_CLIP && !s.contains('\0'),
+            Msg::ClipImage { s } => s.len() <= MAX_IMAGE_PART,
+            Msg::ClipImageEnd { n, s } => {
+                *n <= MAX_IMAGE && s.len() <= MAX_CLIP && !s.contains('\0')
+            }
         };
         ok.then_some(msg)
     }
@@ -140,11 +163,19 @@ impl InputThread {
                     .clipboard
                     .then(|| ClipWatch::spawn(host.clone(), to_browser));
                 let mut sink = grants.input.then(|| host.input_sink().ok()).flatten();
+                let mut picture = Picture::default();
                 loop {
                     match rx.recv_timeout(TICK) {
                         Ok(Msg::Clip { s }) => {
                             if let Some(c) = &clip {
                                 c.set_text(&s);
+                            }
+                        }
+                        // Nothing is gathered for a session without the clipboard.
+                        Ok(Msg::ClipImage { s }) if clip.is_some() => picture.add(&s),
+                        Ok(Msg::ClipImageEnd { n, s }) => {
+                            if let (Some(c), Some(png)) = (&clip, picture.finish(n)) {
+                                c.set_image(png, (!s.is_empty()).then_some(s));
                             }
                         }
                         Ok(msg) => {
@@ -188,15 +219,49 @@ impl InputThread {
 /// up the pointer and keys and a panic ended them for the rest of the session. Only
 /// sessions with the clipboard did that, and a fixed password always grants it.
 struct ClipWatch {
-    /// Browser text for the host's clipboard, and where to say it is there.
-    writes: mpsc::Sender<(String, mpsc::SyncSender<()>)>,
+    /// What the browser puts on the host's clipboard, and where to say it is there.
+    writes: mpsc::Sender<(Write, mpsc::SyncSender<()>)>,
+}
+
+enum Write {
+    Text(String),
+    Image { png: Vec<u8>, text: Option<String> },
+}
+
+/// A picture the browser is pasting, as its pieces arrive.
+#[derive(Default)]
+struct Picture {
+    bytes: Vec<u8>,
+    /// A piece that was not base64, or one too many: the picture is dropped.
+    broken: bool,
+}
+
+impl Picture {
+    fn add(&mut self, piece: &str) {
+        if self.broken {
+            return;
+        }
+        match BASE64.decode(piece.as_bytes()) {
+            Ok(b) if self.bytes.len() + b.len() <= MAX_IMAGE => self.bytes.extend(b),
+            _ => {
+                self.broken = true;
+                self.bytes = Vec::new();
+            }
+        }
+    }
+
+    /// The PNG, if all `n` bytes of one arrived; the next picture starts afresh either way.
+    fn finish(&mut self, n: usize) -> Option<Vec<u8>> {
+        let Picture { bytes, broken } = std::mem::take(self);
+        (!broken && bytes.len() == n && bytes.starts_with(PNG_SIGNATURE)).then_some(bytes)
+    }
 }
 
 impl ClipWatch {
     /// `to_browser` receives text copied on the host, encoded for the page. The thread
     /// ends when this is dropped, once a look under way returns; it is not waited for.
     fn spawn(host: Arc<dyn WebHost>, to_browser: tokio::sync::mpsc::Sender<String>) -> Self {
-        let (writes, requests) = mpsc::channel::<(String, mpsc::SyncSender<()>)>();
+        let (writes, requests) = mpsc::channel::<(Write, mpsc::SyncSender<()>)>();
         let _ = thread::Builder::new()
             .name("web-clipboard".into())
             .spawn(move || {
@@ -208,8 +273,11 @@ impl ClipWatch {
                 let mut polled = Instant::now();
                 loop {
                     match requests.recv_timeout(CLIP_POLL.saturating_sub(polled.elapsed())) {
-                        Ok((text, done)) => {
-                            let _ = clip.set_text(&text);
+                        Ok((write, done)) => {
+                            let _ = match write {
+                                Write::Text(text) => clip.set_text(&text),
+                                Write::Image { png, text } => clip.set_image(&png, text.as_deref()),
+                            };
                             let _ = done.send(());
                         }
                         Err(RecvTimeoutError::Timeout) => {
@@ -233,9 +301,18 @@ impl ClipWatch {
     /// stuck holds the keys up for `CLIP_WRITE_WAIT` at most; one that could not be
     /// opened, not at all.
     fn set_text(&self, text: &str) {
+        self.write(Write::Text(text.to_owned()), CLIP_WRITE_WAIT);
+    }
+
+    /// As `set_text`, for a picture, which may take the host longer.
+    fn set_image(&self, png: Vec<u8>, text: Option<String>) {
+        self.write(Write::Image { png, text }, IMAGE_WRITE_WAIT);
+    }
+
+    fn write(&self, write: Write, wait: Duration) {
         let (done, written) = mpsc::sync_channel(1);
-        if self.writes.send((text.to_owned(), done)).is_ok() {
-            let _ = written.recv_timeout(CLIP_WRITE_WAIT);
+        if self.writes.send((write, done)).is_ok() {
+            let _ = written.recv_timeout(wait);
         }
     }
 }
@@ -256,7 +333,7 @@ fn carry_out(sink: &mut dyn InputSink, screen: &WebScreen, msg: Msg) {
             let held: Vec<u32> = c.iter().map(|c| (PAGE_KEYBOARD << 16) | c).collect();
             sink.apply_key_state(&held, now);
         }
-        Msg::Clip { .. } => {}
+        Msg::Clip { .. } | Msg::ClipImage { .. } | Msg::ClipImageEnd { .. } => {}
     }
 }
 
@@ -339,6 +416,21 @@ mod tests {
             })
         );
         assert_eq!(Msg::parse(br#"{"t":"c","s":"a\u0000"}"#), None);
+        assert_eq!(
+            Msg::parse(br#"{"t":"ci","s":"iVBO"}"#),
+            Some(Msg::ClipImage { s: "iVBO".into() })
+        );
+        let big = format!(r#"{{"t":"ci","s":"{}"}}"#, "A".repeat(MAX_IMAGE_PART + 4));
+        assert_eq!(Msg::parse(big.as_bytes()), None);
+        assert_eq!(
+            Msg::parse(br#"{"t":"ce","n":12}"#),
+            Some(Msg::ClipImageEnd {
+                n: 12,
+                s: String::new()
+            })
+        );
+        let huge = format!(r#"{{"t":"ce","n":{}}}"#, MAX_IMAGE + 1);
+        assert_eq!(Msg::parse(huge.as_bytes()), None);
         let big = format!(r#"{{"t":"c","s":"{}"}}"#, "x".repeat(MAX_CLIP + 1));
         assert_eq!(Msg::parse(big.as_bytes()), None);
         assert_eq!(Msg::parse(br#"{"t":"x"}"#), None);
@@ -421,6 +513,10 @@ mod tests {
             lock(&self.0).push(format!("clipboard {text}"));
             Ok(())
         }
+        fn set_image(&mut self, png: &[u8], text: Option<&str>) -> Result<(), String> {
+            lock(&self.0).push(format!("picture {} {text:?}", png.len()));
+            Ok(())
+        }
     }
 
     /// Input and clipboard granted, as a fixed password grants them.
@@ -459,6 +555,87 @@ mod tests {
             thread::sleep(Duration::from_millis(2));
         }
         lock(log).clone()
+    }
+
+    /// A PNG's signature and some bytes, as the page sends them: base64, in pieces.
+    fn pieces(png: &[u8]) -> Vec<Msg> {
+        png.chunks(9)
+            .map(|c| Msg::ClipImage {
+                s: BASE64.encode(c),
+            })
+            .collect()
+    }
+
+    fn fake_png() -> Vec<u8> {
+        [PNG_SIGNATURE, b"0123456789abcdef"].concat()
+    }
+
+    #[test]
+    fn a_pasted_picture_is_on_the_clipboard_before_the_key_after_it() {
+        let (input, log) = session(Board::Slow(Duration::ZERO));
+        let png = fake_png();
+        for piece in pieces(&png) {
+            input.send(piece);
+        }
+        input.send(Msg::ClipImageEnd {
+            n: png.len(),
+            s: "caption".into(),
+        });
+        input.send(Msg::Key {
+            c: 0x19,
+            d: true,
+            r: false,
+        });
+        assert_eq!(
+            wait_for(&log, 2, Duration::from_secs(2)),
+            ["picture 24 Some(\"caption\")", "key 19 true"]
+        );
+    }
+
+    #[test]
+    fn a_broken_or_short_picture_is_dropped_and_input_goes_on() {
+        let (input, log) = session(Board::Slow(Duration::ZERO));
+        let png = fake_png();
+        // One byte short of what the end says.
+        for piece in pieces(&png[..png.len() - 1]) {
+            input.send(piece);
+        }
+        input.send(Msg::ClipImageEnd {
+            n: png.len(),
+            s: String::new(),
+        });
+        // Not base64.
+        input.send(Msg::ClipImage { s: "!!".into() });
+        input.send(Msg::ClipImageEnd {
+            n: 1,
+            s: String::new(),
+        });
+        // Not a PNG.
+        input.send(Msg::ClipImage {
+            s: BASE64.encode(b"GIF89a"),
+        });
+        input.send(Msg::ClipImageEnd {
+            n: 6,
+            s: String::new(),
+        });
+        input.send(Msg::Key {
+            c: 0x19,
+            d: true,
+            r: false,
+        });
+        assert_eq!(wait_for(&log, 1, Duration::from_secs(2)), ["key 19 true"]);
+        // And the next good one still goes through.
+        for piece in pieces(&png) {
+            input.send(piece);
+        }
+        input.send(Msg::ClipImageEnd {
+            n: png.len(),
+            s: String::new(),
+        });
+        assert_eq!(
+            wait_for(&log, 2, Duration::from_secs(2)),
+            ["key 19 true", "picture 24 None"]
+        );
     }
 
     #[test]
