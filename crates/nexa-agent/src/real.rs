@@ -1,7 +1,7 @@
 //! The real machine. Only `main.rs` compiles this, so nothing in the library or its
 //! tests can reach the injector, the general pasteboard or the screen.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use nexa_clip::{
     ClipKind, ClipboardBackend, FormatInfo, Gen, LocalSnapshot,
@@ -13,7 +13,10 @@ use nexa_input::{
 };
 use nexa_media::{
     AudioCapture, AudioEncoder, CaptureConfig, Capturer, CursorSource, Encoder, EncoderConfig,
-    macos::{OpusEncoder, ScreenCapturer, SystemAudioCapture, SystemCursorSource, VtEncoder},
+    macos::{
+        OpusEncoder, ScreenCapturer, SystemAudioCapture, SystemCursorSource, VtEncoder,
+        wake_and_wait,
+    },
 };
 use nexa_session::{clip::ClipPlatform, input::InputSink};
 use objc2_core_graphics::{
@@ -24,6 +27,22 @@ use objc2_core_graphics::{
 use nexa_agent::{Platform, ScreenInfo};
 
 pub struct RealPlatform;
+
+const WAKE_REASON: &str = "NexaDesk: a viewer connected";
+/// How long a sleeping display may take to come back (as the capturer allows).
+const WAKE_WAIT: Duration = Duration::from_secs(4);
+
+/// The displays that are on: a sleeping one is not listed.
+fn active_displays() -> Result<Vec<CGDirectDisplayID>, String> {
+    let mut ids = [0 as CGDirectDisplayID; 16];
+    let mut count = 0u32;
+    // SAFETY: both pointers are valid for the array's length.
+    let status = unsafe { CGGetActiveDisplayList(ids.len() as u32, ids.as_mut_ptr(), &mut count) };
+    if status.0 != 0 {
+        return Err(format!("CGGetActiveDisplayList failed: {}", status.0));
+    }
+    Ok(ids[..count as usize].to_vec())
+}
 
 struct InjectorSink<T: EventTarget>(Injector<T>);
 
@@ -115,20 +134,26 @@ fn describe(display_id: CGDirectDisplayID, index: usize) -> Result<ScreenInfo, S
 
 impl Platform for RealPlatform {
     fn screen(&self) -> Result<ScreenInfo, String> {
-        describe(CGMainDisplayID(), 0)
+        describe(CGMainDisplayID(), 0).or_else(|e| {
+            // Asleep, the main display has no current mode: wake it and ask again.
+            wake_and_wait(WAKE_REASON, WAKE_WAIT, || {
+                describe(CGMainDisplayID(), 0).ok()
+            })
+            .ok_or(e)
+        })
     }
 
     fn displays(&self) -> Result<Vec<ScreenInfo>, String> {
-        let mut ids = [0 as CGDirectDisplayID; 16];
-        let mut count = 0u32;
-        // SAFETY: both pointers are valid for the array's length.
-        let status =
-            unsafe { CGGetActiveDisplayList(ids.len() as u32, ids.as_mut_ptr(), &mut count) };
-        if status.0 != 0 {
-            return Err(format!("CGGetActiveDisplayList failed: {}", status.0));
+        let mut ids = active_displays()?;
+        if ids.is_empty() {
+            // A sleeping display is not active: wake it as a touch of the mouse would,
+            // then look again, rather than end the session with "no display 0".
+            ids = wake_and_wait(WAKE_REASON, WAKE_WAIT, || {
+                active_displays().ok().filter(|ids| !ids.is_empty())
+            })
+            .unwrap_or_default();
         }
         let main = CGMainDisplayID();
-        let mut ids: Vec<CGDirectDisplayID> = ids[..count as usize].to_vec();
         // The main display is always index 0, which is what a viewer starts on.
         ids.sort_by_key(|id| *id != main);
         ids.iter()

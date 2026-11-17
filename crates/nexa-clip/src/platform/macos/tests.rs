@@ -548,3 +548,24 @@ fn two_backends_on_one_pasteboard_can_be_used_at_once() {
 struct SendBoard(Retained<NSPasteboard>);
 // SAFETY: only used through MacClipboardBackend, as the sessions use the general one.
 unsafe impl Send for SendBoard {}
+
+/// A browser sends a large photo as JPEG; a Mac host puts it on the pasteboard as PNG
+/// (`png_of_picture`, with the same NSBitmapImageRep as TIFF).
+#[test]
+fn a_jpeg_from_a_browser_becomes_a_png() {
+    // A JPEG made by the system from the 1x1 PNG.
+    let rep = NSBitmapImageRep::imageRepWithData(&NSData::with_bytes(PNG_1X1)).unwrap();
+    let props = NSDictionary::<NSBitmapImageRepPropertyKey, objc2::runtime::AnyObject>::new();
+    // SAFETY: the empty dictionary has the key and value types the method wants.
+    let jpeg =
+        unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::JPEG, &props) }
+            .unwrap()
+            .to_vec();
+    assert!(jpeg.starts_with(&[0xFF, 0xD8]), "not a JPEG");
+    let png = crate::platform::png_of_picture(&jpeg).expect("converted");
+    assert!(png.starts_with(b"\x89PNG"), "not a PNG");
+    let back = NSBitmapImageRep::imageRepWithData(&NSData::with_bytes(&png)).unwrap();
+    assert_eq!((back.pixelsWide(), back.pixelsHigh()), (1, 1));
+    // Not a picture at all: nothing, not a crash.
+    assert!(crate::platform::png_of_picture(b"not a picture").is_none());
+}

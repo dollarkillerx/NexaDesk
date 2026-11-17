@@ -38,7 +38,7 @@ pub use audio_capture::SystemAudioCapture;
 pub use audio_output::{AudioOutputUnit, RenderFn};
 pub use cursor::SystemCursorSource;
 pub use present::{MetalPresenter, fit_viewport};
-pub use power::{DisplayAwake, wake_display};
+pub use power::{DisplayAwake, wake_and_wait, wake_display};
 
 /// A retained CVPixelBuffer.
 #[derive(Clone)]
