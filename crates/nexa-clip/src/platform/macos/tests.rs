@@ -70,6 +70,77 @@ fn generation(n: u64) -> Gen {
     (n, DeviceId([n as u8; 16]))
 }
 
+/// Two Macs on one Apple ID also share their clipboards through Universal Clipboard.
+/// A copy on the peer arrives here twice: at once through the session, and a second or
+/// two later as Apple's placeholder, which replaces ours and is fetched from the other
+/// Mac when read (slowly, behind a "Pasting from …" panel). Ours goes back instead.
+#[test]
+fn a_universal_clipboard_placeholder_of_the_peer_s_copy_is_replaced_by_ours() {
+    let board = PrivateBoard::new();
+    let mut backend = backend(&board);
+    let text = b"copied on the other Mac";
+    let formats = [FormatInfo::of(ClipKind::Text, text)];
+    backend
+        .write_promise(
+            generation(3),
+            &formats,
+            &[(ClipKind::Text, Bytes::from_static(text))],
+        )
+        .unwrap();
+    assert!(backend.poll().unwrap().is_some_and(|s| s.owner_marker));
+
+    board.foreign_write(&[
+        (REMOTE_TYPE, b""),
+        (TEXT_TYPE, b"the same, to be fetched from the other Mac"),
+    ]);
+    assert_eq!(backend.poll().unwrap(), None, "nothing new for the peer");
+    assert_eq!(backend.owner_on_board(), Some(generation(3)));
+    assert_eq!(
+        board.string(TEXT_TYPE).as_deref(),
+        Some("copied on the other Mac")
+    );
+    assert!(board.raw(REMOTE_TYPE).is_none());
+    assert_eq!(
+        backend.poll().unwrap(),
+        None,
+        "and our own write is not news"
+    );
+}
+
+/// From another device and not on the heels of the peer's copy, a placeholder is what
+/// the person copied there: it is read like any other copy.
+#[test]
+fn a_universal_clipboard_copy_of_its_own_is_read_as_a_copy() {
+    let board = PrivateBoard::new();
+    let mut backend = backend(&board);
+    // Nothing written here yet.
+    board.foreign_write(&[(REMOTE_TYPE, b""), (TEXT_TYPE, b"from the phone")]);
+    let snapshot = backend.poll().unwrap().expect("a change");
+    assert!(!snapshot.owner_marker);
+    assert_eq!(
+        snapshot.data,
+        vec![(ClipKind::Text, Bytes::from_static(b"from the phone"))]
+    );
+
+    // Long after the peer's copy was written.
+    let text = b"from the peer";
+    backend
+        .write_promise(
+            generation(4),
+            &[FormatInfo::of(ClipKind::Text, text)],
+            &[(ClipKind::Text, Bytes::from_static(text))],
+        )
+        .unwrap();
+    let _ = backend.poll().unwrap();
+    backend.written.as_mut().unwrap().at = Instant::now() - REMOTE_ECHO_WINDOW * 2;
+    board.foreign_write(&[(REMOTE_TYPE, b""), (TEXT_TYPE, b"from the phone, later")]);
+    let snapshot = backend.poll().unwrap().expect("a change");
+    assert_eq!(
+        snapshot.data,
+        vec![(ClipKind::Text, Bytes::from_static(b"from the phone, later"))]
+    );
+}
+
 #[test]
 fn inline_text_round_trips() {
     let board = PrivateBoard::new();

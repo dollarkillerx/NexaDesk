@@ -10,7 +10,7 @@
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use objc2::rc::Retained;
@@ -18,7 +18,8 @@ use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, Message, define_class, msg_send};
 use objc2_app_kit::{
     NSBitmapImageFileType, NSBitmapImageRep, NSBitmapImageRepPropertyKey, NSPasteboard,
-    NSPasteboardItem, NSPasteboardItemDataProvider, NSPasteboardType, NSPasteboardWriting,
+    NSPasteboardContentsOptions, NSPasteboardItem, NSPasteboardItemDataProvider, NSPasteboardType,
+    NSPasteboardWriting,
 };
 use objc2_foundation::{NSArray, NSData, NSDictionary, NSString};
 
@@ -37,6 +38,12 @@ const PNG_TYPE: &str = "public.png";
 const TIFF_TYPE: &str = "public.tiff";
 const OWNER_TYPE: &str = "app.nexadesk.owner";
 const CONCEALED_TYPE: &str = "org.nspasteboard.ConcealedType";
+/// On a placeholder for another Apple device's clipboard (Universal Clipboard): the
+/// content is fetched from that device when someone reads it.
+const REMOTE_TYPE: &str = "com.apple.is-remote-clipboard";
+/// How long after the peer's copy was written here a Universal Clipboard placeholder
+/// counts as the same copy, arriving a second time by Apple's own path.
+const REMOTE_ECHO_WINDOW: Duration = Duration::from_secs(10);
 
 const ALL_KINDS: [ClipKind; 4] = [ClipKind::Text, ClipKind::Html, ClipKind::Rtf, ClipKind::Png];
 
@@ -218,6 +225,9 @@ fn board_lock() -> MutexGuard<'static, ()> {
 struct Written {
     generation: Gen,
     formats: Vec<FormatInfo>,
+    /// The content, to put back if Universal Clipboard replaces it with a placeholder.
+    inline: Vec<(ClipKind, Bytes)>,
+    at: Instant,
     promised: Vec<ClipKind>,
     /// To ask what has been rendered. The item on the pasteboard retains it too.
     provider: Option<Retained<PromiseProvider>>,
@@ -264,13 +274,43 @@ impl MacClipboardBackend {
     /// every [`POLL_INTERVAL`] and feed the result to
     /// [`ClipEvent::LocalChanged`](crate::ClipEvent::LocalChanged).
     pub fn poll(&mut self) -> Result<Option<LocalSnapshot>> {
-        let _board = board_lock();
-        let count = self.board.changeCount();
-        if count == self.change_count {
-            return Ok(None);
+        let echoed = {
+            let _board = board_lock();
+            let count = self.board.changeCount();
+            if count == self.change_count {
+                return Ok(None);
+            }
+            self.change_count = count;
+            if !self.is_remote_echo() {
+                return Ok(Some(self.snapshot_locked()));
+            }
+            self.written
+                .as_ref()
+                .map(|w| (w.generation, w.formats.clone(), w.inline.clone(), w.at))
+        };
+        // The peer's copy, already here, has come a second time through Universal
+        // Clipboard (both Macs on one Apple ID) and replaced ours with a placeholder.
+        // Reading that would fetch the same content again from the other Mac, slowly
+        // and behind the system's "Pasting from …" panel, here and for every paste
+        // after. Ours goes back instead, and nothing has changed for the peer.
+        if let Some((generation, formats, inline, at)) = echoed {
+            self.write_promise(generation, &formats, &inline)?;
+            if let Some(written) = &mut self.written {
+                written.at = at; // one window per copy, however often it is put back
+            }
+            let _board = board_lock();
+            self.change_count = self.board.changeCount();
         }
-        self.change_count = count;
-        Ok(Some(self.snapshot_locked()))
+        Ok(None)
+    }
+
+    /// Whether the clipboard now holds another Apple device's placeholder that
+    /// replaced the peer's copy just written here.
+    fn is_remote_echo(&self) -> bool {
+        self.written.as_ref().is_some_and(|written| {
+            written.promised.is_empty() && written.at.elapsed() <= REMOTE_ECHO_WINDOW
+        }) && self.has_type(REMOTE_TYPE)
+            && self.owner_locked().is_none()
     }
 
     /// Describes the clipboard as it is now, without touching our own promises.
@@ -438,7 +478,14 @@ impl ClipboardBackend for MacClipboardBackend {
         };
 
         let _board = board_lock();
-        self.board.clearContents();
+        // For this Mac only. Two Macs on one Apple ID also share their clipboards
+        // through Universal Clipboard: what was written here for the peer went back
+        // to the Mac it was copied on as a remote placeholder, replacing the original
+        // there. The next read of it (this backend's own poll first) then fetched the
+        // person's own copy back from here over Apple's slower path, behind a
+        // "Pasting from …" panel.
+        self.board
+            .prepareForNewContentsWithOptions(NSPasteboardContentsOptions::CurrentHostOnly);
         let writing: Retained<ProtocolObject<dyn NSPasteboardWriting>> =
             ProtocolObject::from_retained(item);
         if !self
@@ -450,6 +497,8 @@ impl ClipboardBackend for MacClipboardBackend {
         self.written = Some(Written {
             generation,
             formats: formats.to_vec(),
+            inline: inline.to_vec(),
+            at: Instant::now(),
             promised,
             provider,
         });
