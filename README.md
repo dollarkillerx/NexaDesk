@@ -1,216 +1,220 @@
 # NexaDesk
 
-轻量的远程控制软件。目标是高清、低延迟，粘贴可靠，键盘对 Win / Mac 友好，能自己打洞，也能借助 Tailscale。界面用 Avalonia，后端用 Rust。
-
-> **状态**：macOS ↔ macOS 的功能已经写完，自动化测试全部通过，但**还没在两台真实的 Mac、真实的网络上验证过**。浏览器端（查看、控制、命令行，含手机、输入法、剪贴板，可经自建服务器跨网络）已在 Chrome 中做过自动化端到端测试，并经公网服务器实测过。Linux / Windows 的命令行被控端已能构建，Linux 版已在服务器上注册运行，Windows 版尚未实机运行。Windows 图形版的第一个预览版已发布（目前只能被控，尚未实机验证）。暂时不建议用在重要场合。
-
-## 截图
-
-主窗口：左边连接别的设备（局域网和 Tailscale 里的设备会自动列出），右边允许别人控制本机：最上面是放大显示的设备 ID 和一次性码，点一下就复制，设备 ID 可以重置；下面是固定密码和对方可输入的地址。自动跟随系统的浅色和深色。
-
-<p>
-  <img src="docs/images/main.png" width="49%" alt="主窗口（浅色）">
-  <img src="docs/images/main-dark.png" width="49%" alt="主窗口（深色）">
+<p align="center">
+  <img src="./assets/icon/AppIcon-1024.png" width="128" alt="NexaDesk Logo">
 </p>
 
-有人连接时，本机弹出确认窗口：显示对方是谁、怎么验证的、密钥指纹，由你勾选允许的权限。“拒绝”是默认按钮，“允许”在窗口出现一秒后才能点。用固定密码连接的是机主本人，不弹窗。浏览器端不用安装任何软件，连接时可以选“屏幕”还是“终端”；连过的设备可以保存在浏览器里，下次点一下就能连上。
-
-<p>
-  <img src="docs/images/consent.png" width="36%" alt="连接确认">
-  <img src="docs/images/web.png" width="62%" alt="浏览器端连接页">
+<p align="center">
+  Lightweight, low-latency remote control: a sharp picture, a keyboard for Mac and Windows, control from any browser
 </p>
 
-浏览器里看到并操作对方的屏幕。顶栏显示连接方式、延迟和帧率；展开后可以看丢包和码率，切换画质和分辨率（自动时跟浏览器窗口一样清晰），以及符号键按键上的字还是按位置输入。选“终端”时只打开对方的命令行，不传画面。
-
-<p>
-  <img src="docs/images/web-session.png" width="56%" alt="浏览器端会话与网络面板">
-  <img src="docs/images/web-terminal.png" width="42%" alt="浏览器端命令行">
+<p align="center">
+  <a href="https://nexadesk-bq9.pages.dev/en/">Website</a> · <a href="https://github.com/dollarkillerx/NexaDesk/releases/latest">Download</a>
 </p>
 
-手机上同样可用：顶栏换成图标，横屏时给画面让出更多空间，弹出键盘时多一排 Esc、Tab、修饰键和方向键。对方的指针由浏览器自己画出来，不等画面传回，点哪里就立刻显示在哪里。
-
-<p>
-  <img src="docs/images/web-phone.png" width="26%" alt="手机上的连接页：已保存的连接，其中一个正在编辑">
-  <img src="docs/images/web-phone-session.png" width="72%" alt="手机横屏控制，带按键栏">
+<p align="center">
+  <strong>English</strong> | <a href="./README.zh-CN.md">简体中文</a> | <a href="./README.ja-JP.md">日本語</a>
 </p>
 
-控制别人时，画面上方是工具栏（模式、声音、文件、HUD、诊断）。被控制时，本机顶部一直显示提示条，每个连接的人一行，可以单独断开；挡住画面时可以收起成一个小标签，但不会完全隐藏。
+> **Status**: preview. macOS ↔ macOS is in everyday use; the browser viewer (screen, control and command line, phones included, across networks through your own server) is tested end to end in Chrome and over a public server. The Windows app can be controlled and, since 0.1.5, can control a Mac, but neither has been tried on real hardware yet. Not recommended for anything critical yet.
+
+## Features
+
+- **Low-latency picture** - ScreenCaptureKit capture, VideoToolbox hardware HEVC / H.264 with low-latency rate control and long-term reference frames: after a loss only the frames that depend on it are re-referenced, no waiting for a keyframe. Wi-Fi radio stalls are told apart from congestion. A watched display does not sleep; a sleeping one is woken, as with Apple Screen Sharing.
+- **Transport** - QUIC over one UDP socket: control on reliable streams, video in DATAGRAMs with Reed-Solomon error correction per frame, so one lost packet does not hold up the frames behind it.
+- **Connecting, no server by default**
+  - Local network: found over mDNS, connected directly.
+  - Across networks: **Tailscale recommended**. Sign both machines in to the same Tailscale account; NexaDesk lists the tailnet's devices and shows whether a path is direct or relayed through DERP.
+  - Your own server (optional): connect by a 9-digit device ID, with hole punching and port mapping (PCP, NAT-PMP, UPnP), then a UDP relay, and a WebSocket relay where UDP is blocked.
+- **Keyboard for Mac and Windows** - Keys go by physical code and shortcuts by intent: ⌘C on a Mac controlling Windows sends Ctrl+C, without swapping Ctrl and Cmd everywhere. The mapping can be edited and previewed. Symbols come out as printed on your keyboard, so a Japanese keyboard controlling a US-layout Mac types the right characters.
+- **Paste that is never stale** - The clipboard syncs by generation; a paste waits until the new content has reached the other side, also for large images still downloading. Text and images both sync.
+- **Control from a browser** - Nothing to install on the other side.
+  - On the LAN and Tailscale, open `https://host-address:47801`: the page and WebRTC come from the host itself, through no server.
+  - With your own server, open its address from any network and type the device ID. Traffic starts over the server's TURN relay; once the host allows the connection, it shares its LAN and Tailscale addresses and the browser switches to a direct path when it can.
+  - The pointer is drawn locally, so it moves without delay.
+  - Saved devices reconnect with one tap; saved passwords are encrypted with a key the page cannot export, and one-time codes are never saved.
+  - Phones: touch gestures, the on-screen keyboard, input methods, and a row of Esc, Tab, modifier and arrow keys.
+  - Off by default: turn on "Allow browsers to connect" in the main window.
+- **Command line** - Open just the host's shell, in the app (a native terminal control, the same on macOS and Windows) or in a browser (xterm.js). It is a separate permission, off by default, and the shell and everything it started end with the session. Linux and Windows machines without a desktop run the command-line host `nexa-term-host` (bash / PowerShell), see [docs/TERM_HOST.md](docs/TERM_HOST.md).
+- **Several people at once** - Up to four people (app and browsers together) can connect to the same Mac, each allowed separately and each able to control; whoever leaves ends only their own session.
+- **Sign-in** - A one-time code (the host allows it), a fixed password (the owner's own way in, no prompt), or through a server just the device ID, which the host sees as an unverified request. The device ID can be reset at any time.
+- **Stays reachable** - Remote control is on when NexaDesk starts, also after "Restart to update", so updating a host from afar does not lock you out; once you stop it yourself, it stays off until you start it again. It can also start at login.
+- **More** - Pointer shapes, sound (Opus), file transfer, several displays, game mode (locked pointer, stronger error correction), automatic reconnect within 30 seconds, HUD and connection diagnostics.
+- **Multi-language** - English, Simplified Chinese, Japanese. Follows the system language; can be switched in the main window (applies after a restart).
+- **Security**
+  - Mutual TLS; a device's identity is its public key.
+  - First contact pairs with SPAKE2 using a one-time code or the fixed password, bound to the TLS session; the peer's key is pinned from then on. The fixed password is kept only as an Argon2id hash.
+  - The host confirms each connection (paired devices can be set to connect unattended; the fixed password goes straight in) and shows a banner the whole time.
+  - Pairing guesses are limited per source.
+
+## Screenshots
+
+The main window: connect to other devices on the left (LAN and Tailscale devices are listed by themselves); allow remote control of this computer on the right, with the device ID and one-time code shown large (a click copies them), the fixed password and the addresses others can type. Follows light and dark mode.
 
 <p>
-  <img src="docs/images/toolbar.png" width="80%" alt="控制端工具栏"><br>
-  <img src="docs/images/banner.png" width="60%" alt="被控端提示条（两人同时连接）">
-  <img src="docs/images/banner-folded.png" width="14%" alt="收起后的提示条">
+  <img src="docs/images/main.png" width="49%" alt="Main window (light)">
+  <img src="docs/images/main-dark.png" width="49%" alt="Main window (dark)">
 </p>
 
-截图里的设备、地址、代码和已保存的连接都是虚构的。界面改动后运行 `scripts/screenshots.sh` 重新生成：应用界面由 `ui/NexaDesk.Screenshots` 用真实的界面代码离屏渲染；浏览器页面由 `scripts/web-screenshots.mjs` 在无界面的 Google Chrome 里对演示主机走一遍真实的会话截取（电脑和手机尺寸各一遍），终端用的是一个干净的 `/bin/sh`。
+When someone connects, the host asks: who it is, how they proved it, their key fingerprint, and which permissions to allow. "Deny" is the default button and "Allow" only works a second after the prompt appears. The browser viewer needs no install; pick "Screen" or "Terminal" when connecting, and save devices in the browser for one-tap reconnects.
 
-## 特点
+<p>
+  <img src="docs/images/consent.png" width="36%" alt="Connection prompt">
+  <img src="docs/images/web.png" width="62%" alt="Browser connect page">
+</p>
 
-- **传输**：一个 UDP socket 上跑 QUIC。控制走可靠流，视频走 DATAGRAM，每帧带 Reed-Solomon 纠错。拥塞控制由应用层自己做，丢一个包不会卡住后面的帧。
-- **连接，默认不用服务器**：
-  - 局域网：mDNS 自动发现，直接连接。
-  - 跨网络：**推荐 Tailscale**。两边登录同一个 Tailscale 账号即可互连，Tailscale 负责打洞，打不通时自动中转。NexaDesk 会列出 tailnet 里运行 NexaDesk 的设备，并标明是直连还是经 DERP 中转。
-  - 可选的自建服务器：按 9 位设备 ID 连接，自己打洞（端口映射依次尝试 PCP、NAT-PMP、UPnP），打不通就走 UDP 中继，UDP 被封锁时走 WebSocket 中继。
-- **画面**：macOS 用 ScreenCaptureKit 采集，VideoToolbox 硬件编码 HEVC / H.264，用低延迟码率控制和长期参考帧（LTR）。丢帧后只让失效的帧之后的画面重新参考，不必等关键帧。有人连着时被控端的显示器不会因空闲而关闭；显示器已经睡着时，连接会先把它唤醒，和 Apple 屏幕共享一样。
-- **键盘**：按物理键码传输，控制端改写组合键意图。例如在 Mac 上按 ⌘C 控制 Windows 时发出 Ctrl+C，而不是全局对调 Ctrl 和 Cmd。映射表可以编辑和预览。符号默认按控制端键盘上印的字输入（键盘设置里可以关掉），两边键盘布局不同时也不会打错，比如日文键盘控制英文配列的 Mac。
-- **剪贴板与粘贴**：按代际同步。远端粘贴前先等剪贴板到达对端，再放行粘贴键，避免粘贴出旧内容。
-- **游戏模式**：锁定指针，发送相对移动；FEC 更强，延迟更低。
-- **浏览器控制**：对方不用安装任何软件。
-  - 局域网和 Tailscale 里，用浏览器打开 `https://本机地址:47801`，页面和 WebRTC 都由本机提供，不经过服务器。
-  - 有自建服务器时，从任何网络打开服务器的网址、输入设备 ID 连接。先经服务器的 TURN 中转；本机点了允许之后，才把自己的局域网和 Tailscale 地址告诉浏览器，同一网络里自动切到直连。
-  - 指针在浏览器本地画：对方只发指针的形状和位置，不画进画面，所以鼠标移动没有延迟。别人（对方本人、另一个连接者、程序）移动的指针照样显示在对方说的位置。
-  - 连过的设备可以保存在浏览器里，可以存多台，点一下直接连：保存了固定密码的直接登录，没保存的向对方发连接请求。每台可以改名、更新或不再保存密码、删除。密码先用浏览器生成的、页面也导不出的密钥加密再存；一次性码从不保存。
-  - 手机可用触控手势和屏幕键盘，页面按手机屏幕排版（顶栏换成图标，横屏时更紧凑）；输入法照常可用，文字剪贴板双向同步，非 Mac 键盘的 Ctrl+C/V 自动对应 ⌘C/V。符号按你键盘上印的字输入，两边键盘布局不同（比如日文键盘控制英文配列的 Mac）也不会打错；字母、数字和快捷键仍按物理位置发送，网络面板里也可以切回全部按位置。页面支持中文、English、日本語。
-  - 顶栏显示连接方式、延迟和帧率；画质可选自动、清晰、均衡、弱网，分辨率可选自动（按浏览器窗口的实际像素）、原生、1080p、720p。
-  - 默认关闭，在主窗口底部打开“允许浏览器连接”。
-- **登录方式**：一次性码（对方点允许）；固定密码（机主自己的入口，直接进入）；经服务器时也可以只填设备 ID，对方会看到标明“无法核实身份”的请求。设备 ID 可以随时重置。
-- **多人同时连接**：最多 4 人同时连接同一台 Mac（应用和浏览器合计），每人单独确认，都能操作，互不顶替；谁离开就只结束谁的会话。本机提示条每人一行，可以单独断开，也可以收起。
-- **命令行**：浏览器连接时可以选“屏幕”或“终端”。终端打开被控端的 shell（xterm.js），是单独一项权限，默认不勾；会话结束时 shell 和它启动的所有进程一起结束。没有图形界面的 Linux / Windows 机器用命令行被控端 `nexa-term-host`（bash / PowerShell），见 [docs/TERM_HOST.md](docs/TERM_HOST.md)。
-- **其他**：光标形状、声音（Opus）、文件收发、多显示器、断线 30 秒内自动重连、HUD 与连接诊断。
-- **多语言**：简体中文、English、日本語。默认跟随 macOS 的语言设置，也可以在主窗口右上角切换（重启后生效）。
-- **安全**：
-  - 双向 TLS，身份就是设备公钥。
-  - 首次连接用一次性码或固定密码做 SPAKE2 配对，并绑定到 TLS 会话；之后钉住对方公钥。固定密码在“允许别人控制本机”下设置，只保存 Argon2id 的结果，和一次性码同时有效，原生端和浏览器都能用。
-  - 被控时本机要确认（可对已配对设备设为无人值守；固定密码直接进入），并一直显示提示条。
-  - 配对猜测按来源限制。
+The host's screen in a browser. The top bar shows the path, latency and frame rate; open it for loss and bitrate, quality and resolution, and whether symbols follow the printed key or the key's position. "Terminal" opens only the command line, with no picture.
 
-## 仓库结构
+<p>
+  <img src="docs/images/web-session.png" width="56%" alt="Browser session with the network panel">
+  <img src="docs/images/web-terminal.png" width="42%" alt="Command line in a browser">
+</p>
 
-| 路径 | 内容 |
-|---|---|
-| `crates/nexa-wire` | 线上格式：数据报、帧、控制消息、信令消息 |
-| `crates/nexa-net` | 自定义 QUIC socket、拥塞与码率控制、FEC、STUN、打洞、路径管理、端口映射、Tailscale、mDNS |
-| `crates/nexa-media` | 采集、编解码、呈现、光标、音频（macOS 实现） |
-| `crates/nexa-input` | 组合键改写、键位表、输入捕获与注入 |
-| `crates/nexa-clip` | 剪贴板同步与粘贴闸门 |
-| `crates/nexa-auth` | 设备身份、配对、钉住、访问决策 |
-| `crates/nexa-session` | 会话握手、被控端与控制端的会话逻辑、文件传输、重连、会合 |
-| `crates/nexa-agent` | 被控端进程 `nexa-agent` |
-| `crates/nexa-client` | 控制端动态库 `libnexa_client`（C ABI，供 UI 调用） |
-| `crates/nexa-signal` | 信令 + STUN + 中继服务器 `nexa-signal` |
-| `crates/nexa-web` | 浏览器访问：HTTPS、信令和 WebRTC（str0m），由被控端提供；经服务器的会话走 TURN |
-| `crates/nexa-web-page` | 浏览器端网页，由被控端和信令服务器共用 |
-| `crates/nexa-turn` | TURN 服务器与客户端（纯状态机），只在同一服务器的分配之间中转 |
-| `crates/nexa-web-pake` | 浏览器一侧的配对（SPAKE2），编译为 WebAssembly |
-| `crates/nexa-term` | 伪终端上的 shell（Linux / macOS 用 PTY，Windows 用 ConPTY），随会话结束整个进程树 |
-| `crates/nexa-term-host` | 只有命令行的被控端 `nexa-term-host`，用于 Linux、Windows 服务器 |
-| `ui/` | Avalonia 桌面应用（.NET 10，NativeAOT）、测试和 README 截图工具 |
-| `deploy/` | 服务器的 systemd 单元、Docker 镜像与 Compose、配置模板、证书续期钩子 |
-| `docs/` | 设计文档、部署说明、M0 验证报告 |
-| `spikes/` | M0 阶段的验证代码 |
-| `third_party/` | 打了小补丁的第三方代码（dimpl，让 Linux 版不依赖 aws-lc），说明见其中的 README |
+On a phone the top bar turns into icons, landscape gives the picture more room, and the keyboard brings a row of Esc, Tab, modifier and arrow keys.
 
-## 下载
+<p>
+  <img src="docs/images/web-phone.png" width="26%" alt="Connect page on a phone, one saved connection being edited">
+  <img src="docs/images/web-phone-session.png" width="72%" alt="Controlling from a phone held sideways, with the key row">
+</p>
 
-从 [GitHub Releases](https://github.com/dollarkillerx/NexaDesk/releases/latest) 下载：
+While controlling, the toolbar sits above the picture (mode, sound, files, HUD, diagnostics) and collapses into a small tab you can drag aside. While controlled, the host shows a banner at the top, a line per person, each with its own Disconnect; it folds into a small tab that can be moved, but never hides.
 
-- **macOS**（Apple 芯片，macOS 14+）：[NexaDesk-macOS.dmg](https://github.com/dollarkillerx/NexaDesk/releases/latest/download/NexaDesk-macOS.dmg)，Developer ID 签名并经 Apple 公证。
-- **Windows**（x64，Windows 10 / 11，预览版，只能被控）：[NexaDesk-win-Setup.exe](https://github.com/dollarkillerx/NexaDesk/releases/latest/download/NexaDesk-win-Setup.exe)，按用户安装，不需要管理员权限；还没有代码签名，SmartScreen 提示时点“更多信息 → 仍要运行”。
+<p>
+  <img src="docs/images/toolbar.png" width="80%" alt="Viewer toolbar"><br>
+  <img src="docs/images/banner.png" width="60%" alt="Host banner (two people connected)">
+  <img src="docs/images/banner-folded.png" width="14%" alt="Folded banner">
+</p>
 
-两个版本都会自动更新（[Velopack](https://velopack.io)）：启动后和之后每天检查一次 GitHub Releases，有新版本就在后台下载，主窗口底部显示“重启以更新”。不会自动重启，因为重启会断开远程连接。
+<sub>Devices, addresses, codes and saved connections in the screenshots are made up. Regenerate them with `scripts/screenshots.sh` after UI changes: the app's windows are rendered off screen from the real UI code by `ui/NexaDesk.Screenshots`, and the browser pages are captured by `scripts/web-screenshots.mjs` in headless Google Chrome against a demo host (desktop and phone sizes).</sub>
 
-## 发布
+## Download
 
-在这台 Mac 上打两个平台的包，然后把 `dist/macos/` 和 `dist/windows/` 里的文件全部上传到同一个 GitHub Release（应用的更新程序从那里读 `releases.osx.json` / `releases.win.json`）：
+From [GitHub Releases](https://github.com/dollarkillerx/NexaDesk/releases/latest) or the [website](https://nexadesk-bq9.pages.dev/en/):
 
-```bash
-NEXA_NOTARY_PROFILE=<notarytool 凭据名> scripts/package-macos.sh
-scripts/package-windows.sh
-```
+- **macOS** (Apple silicon, macOS 14+): [NexaDesk-macOS.dmg](https://github.com/dollarkillerx/NexaDesk/releases/latest/download/NexaDesk-macOS.dmg). Signed with a Developer ID and notarized by Apple.
+- **Windows** (x64, Windows 10 / 11, preview): [NexaDesk-win-Setup.exe](https://github.com/dollarkillerx/NexaDesk/releases/latest/download/NexaDesk-win-Setup.exe). Installs per user, no administrator rights needed. Not code-signed yet: if SmartScreen appears, choose **More info → Run anyway**.
 
-版本号来自 `ui/NexaDesk.App/NexaDesk.App.csproj` 的 `<Version>`。Windows 包用 mingw 交叉编译，见 [docs/WINDOWS.md](docs/WINDOWS.md)。
+Both update themselves ([Velopack](https://velopack.io)): they check GitHub Releases at start and then daily, download a new version in the background and show "Restart to update" at the bottom of the main window. They never restart by themselves, since a restart drops remote sessions.
 
-## 构建（macOS）
+## Getting Started
 
-需要：
+1. Open NexaDesk on both Macs and grant Screen Recording and Accessibility when asked (and Local Network the first time on a LAN).
+2. Not on the same network? Install [Tailscale](https://tailscale.com/download) on both and sign in to the same account.
+3. On the host, under "Allow remote control", click Start. It listens on all networks by default and lists the addresses others can type (Tailscale name, LAN IP) and a one-time code.
+4. On the viewer, pick the host and type the one-time code:
+   - click Connect under "NexaDesk devices on the local network" or "NexaDesk devices on your Tailscale network";
+   - or type its address, e.g. `192.168.1.20` or `studio.tail1234.ts.net` (default port 47800).
+5. Control starts once the host allows it. A paired device connects directly next time.
 
-- macOS 14 或更高；
-- Xcode 命令行工具；
-- Rust stable（edition 2024）；
-- .NET 10 SDK。
+Without Tailscale, run your own signaling server and connect by 9-digit device ID: see [docs/DEPLOY.md](docs/DEPLOY.md), then enter its address under "Advanced: self-hosted signaling server (optional)".
 
-打包成一个应用：
+Set a **fixed password** on the host to go straight in without a prompt, for your own computers.
 
-```bash
-scripts/package-macos.sh
-```
+Linux or Windows machines without a desktop: build the command-line host with `scripts/build-term-host.sh`, run `nexa-term-host --signal wss://your-server:8443`, then open the server's address in a browser, choose "Terminal" and type the device ID it prints. See [docs/TERM_HOST.md](docs/TERM_HOST.md).
 
-产物是 `dist/NexaDesk.app`。默认是 ad-hoc 签名：每次重新打包，macOS 都会把它当成新应用，“屏幕录制”“辅助功能”权限和钥匙串的“始终允许”都要重新给。先运行一次下面的脚本，在登录钥匙串里建一个本机签名证书（“NexaDesk Local Signing”），之后每次打包都用它签名，macOS 会认为是同一个应用，给过的权限不会再丢：
-
-```bash
-scripts/make-signing-identity.sh
-```
-
-这个证书的私钥只应留在本机：拿到它的人可以签出被 macOS 当作 NexaDesk、带着同样权限的程序。钥匙串里有 Developer ID Application 证书时，脚本会优先用它，并开启 hardened runtime（公证需要）。
-
-应用图标在 `assets/icon/`（`AppIcon.icns` 和 1024 px 原图），已提交到仓库，打包时直接使用。图标由 `scripts/make-app-icon.swift` 用代码绘制；修改后运行 `scripts/make-app-icon.sh` 重新生成。
-
-只编译 Rust 部分：
-
-```bash
-cargo build --release -p nexa-agent -p nexa-client
-```
-
-## 使用
-
-1. 两台 Mac 都打开 NexaDesk.app，按提示授予“屏幕录制”和“辅助功能”权限，首次在局域网使用时还要允许“本地网络”。
-2. 不在同一个局域网时，两台都安装 [Tailscale](https://tailscale.com/download) 并登录同一个账号。同一局域网内不需要。
-3. 被控的一台点“允许别人控制本机”。默认监听所有网络，窗口里会列出对方可以输入的地址（Tailscale 名称、局域网 IP）和一次性码。
-4. 控制的一台选择对方，然后输入一次性码：
-   - 在“局域网中的 NexaDesk 设备”或“Tailscale 网络中的 NexaDesk 设备”里点“连接”；
-   - 也可以手动输入对方的地址，例如 `192.168.1.20` 或 `studio.tail1234.ts.net`（默认端口 47800）。
-5. 被控端确认后开始控制。配对过的设备下次可以直接连接。
-
-不能用 Tailscale 时，可以自建信令服务器，按 9 位设备 ID 连接：部署方法见 [docs/DEPLOY.md](docs/DEPLOY.md)，然后在主窗口的“高级：自建信令服务器（可选）”里填写地址。
-
-被控端可以在“固定密码”里设一个密码：用它连接时直接进入，不弹确认窗口，适合连自己的电脑。
-
-没有图形界面的 Linux 或 Windows 机器，用命令行被控端：`scripts/build-term-host.sh` 构建，`nexa-term-host --signal wss://你的服务器:8443` 运行，然后在浏览器里打开服务器网址、选“终端”、输入它打印的设备 ID。详见 [docs/TERM_HOST.md](docs/TERM_HOST.md)。
-
-被控端也可以从命令行运行，在终端里确认连接：
+The host can also run from the command line and confirm connections in the terminal:
 
 ```bash
 nexa-agent --listen '[::]:47800'
 ```
 
-`nexa-agent --help` 列出全部选项，例如 `--paired-only`、`--relay-only`、`--no-lan-discovery`。
+`nexa-agent --help` lists every option, e.g. `--paired-only`, `--relay-only`, `--no-lan-discovery`.
 
-连接断开时想知道原因：NexaDesk.app 把被控端的日志写在 `~/Library/Logs/NexaDesk/agent.log`，每个会话的开始、结束和结束原因都在里面（超过 1 MB 时旧的移到 `agent.log.1`）。
+Why did a connection end? NexaDesk.app writes the host's log to `~/Library/Logs/NexaDesk/agent.log`: each session's start, end and reason, and every 5 seconds a line of stream statistics (frames, bitrate, target, Wi-Fi stalls). Past 1 MB the old log moves to `agent.log.1`.
 
-## 测试
+## Build from Source
+
+Prerequisites: macOS 14+, Xcode command-line tools, Rust stable (edition 2024), [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0).
+
+```bash
+git clone https://github.com/dollarkillerx/NexaDesk.git
+cd NexaDesk
+
+scripts/package-macos.sh                              # the app: dist/NexaDesk.app
+cargo build --release -p nexa-agent -p nexa-client    # Rust only
+```
+
+By default the app is signed ad hoc, so macOS treats every new build as a new app and asks again for Screen Recording, Accessibility and Keychain access. Run this once to create a local signing certificate ("NexaDesk Local Signing") in the login keychain; later builds use it and keep their permissions:
+
+```bash
+scripts/make-signing-identity.sh
+```
+
+Keep that certificate's private key on this Mac only: whoever has it can sign programs macOS treats as NexaDesk, with the same permissions. With a Developer ID Application certificate in the keychain, the script uses that instead and turns on the hardened runtime (needed for notarization).
+
+The app icon is in `assets/icon/`, drawn in code by `scripts/make-app-icon.swift`; run `scripts/make-app-icon.sh` after changing it.
+
+### Releasing
+
+Package both platforms on a Mac, then upload every file in `dist/macos/` and `dist/windows/` to one GitHub Release (the updater reads `releases.osx.json` / `releases.win.json` from the latest release):
+
+```bash
+NEXA_NOTARY_PROFILE=<notarytool profile> scripts/package-macos.sh
+scripts/package-windows.sh
+```
+
+The version comes from `<Version>` in `ui/NexaDesk.App/NexaDesk.App.csproj`. The Windows package is cross-compiled with mingw, see [docs/WINDOWS.md](docs/WINDOWS.md).
+
+### Tests
 
 ```bash
 cargo test --workspace
-```
-
-```bash
 dotnet test ui/NexaDesk.Tests
 ```
 
-需要真实硬件或网络的测试默认忽略，例如真实组播、屏幕采集，以及会触发系统权限提示的测试。
+Tests that need real hardware or networks are ignored by default (real multicast, screen capture, anything that brings up a system permission prompt).
 
-试用浏览器端，不需要屏幕录制权限（合成画面，经真实 H.264 编码器；收到的鼠标和按键会画进画面）：
+To try the browser viewer without Screen Recording (a synthetic picture through the real H.264 encoder; the mouse and keys it receives are drawn into it):
 
 ```bash
 cargo run -p nexa-web --example demo
 ```
 
-然后在另一台设备的浏览器，或本机浏览器，打开 `https://本机局域网地址:47801`（不要用 127.0.0.1），接受自签证书的提示，输入终端里显示的一次性码。按 F9 会让演示主机“复制”一行文字，可以用来试剪贴板。改了 `crates/nexa-web-pake` 之后，运行 `scripts/build-web-pake.sh` 重新生成 `crates/nexa-web-page/web/pake.wasm`。
+Then open `https://this-mac's-LAN-address:47801` (not 127.0.0.1) in a browser, accept the self-signed certificate and type the one-time code shown in the terminal. F9 makes the demo host "copy" a line of text, to try the clipboard. After changing `crates/nexa-web-pake`, run `scripts/build-web-pake.sh` to rebuild `crates/nexa-web-page/web/pake.wasm`.
 
-## 文档
+## Repository Layout
 
-- [docs/DESIGN.md](docs/DESIGN.md)：总体设计与里程碑
-- [docs/DETAILED_DESIGN.md](docs/DETAILED_DESIGN.md)：详细设计，各章末尾的“实现修订”记录了实际实现与设计的差异
-- [docs/DEPLOY.md](docs/DEPLOY.md)：部署信令、STUN 和中继服务器
-- [docs/WEB_CLIENT.md](docs/WEB_CLIENT.md)：Web 控制端的方案与第一版实现
-- [docs/TERM_HOST.md](docs/TERM_HOST.md)：Linux / Windows 命令行被控端
-- [docs/spikes/M0-report.md](docs/spikes/M0-report.md)：M0 验证报告
+| Path | Contents |
+|---|---|
+| `crates/nexa-wire` | Wire formats: datagrams, frames, control and signaling messages |
+| `crates/nexa-net` | QUIC socket, congestion and rate control, FEC, STUN, hole punching, path management, port mapping, Tailscale, mDNS |
+| `crates/nexa-media` | Capture, encode / decode, presentation, cursor, audio (macOS and Windows) |
+| `crates/nexa-input` | Shortcut rewriting, keymaps, input capture and injection |
+| `crates/nexa-clip` | Clipboard sync and the paste gate |
+| `crates/nexa-auth` | Device identity, pairing, pinning, access decisions |
+| `crates/nexa-session` | Session handshake, host and viewer session logic, file transfer, reconnect, rendezvous |
+| `crates/nexa-agent` | The host process `nexa-agent` |
+| `crates/nexa-client` | The viewer library `libnexa_client` (C ABI for the UI) |
+| `crates/nexa-signal` | Signaling + STUN + relay server `nexa-signal` |
+| `crates/nexa-web` | Browser access: HTTPS, signaling and WebRTC (str0m), served by the host; TURN through a server |
+| `crates/nexa-web-page` | The browser page, shared by the host and the signaling server |
+| `crates/nexa-turn` | TURN server and client (pure state machines), relaying only between allocations on one server |
+| `crates/nexa-web-pake` | The browser side of pairing (SPAKE2), compiled to WebAssembly |
+| `crates/nexa-term` | A shell on a pseudo-terminal (PTY on Linux / macOS, ConPTY on Windows); the whole process tree ends with the session |
+| `crates/nexa-term-host` | The command-line host `nexa-term-host` for Linux and Windows servers |
+| `ui/` | The Avalonia desktop app (.NET 10), the terminal control (`NexaDesk.Terminal`), tests and the README screenshot tool |
+| `deploy/` | Server systemd units, Docker image and Compose, config templates, certificate renewal hook |
+| `docs/` | Design documents, deployment, the M0 validation report |
+| `spikes/` | M0 validation code |
+| `third_party/` | Lightly patched third-party code (dimpl, so the Linux build needs no aws-lc), see its README |
 
-## 尚未完成
+## Documentation
 
-- **验证**：两台 Mac 的实机联调；真实 NAT 环境下的打洞测试（经自建服务器中继已在公网实测，见 docs/DEPLOY.md §6）。
-- **macOS**：登录界面和锁屏前的远程访问。
-- **Windows**：被控端的实机验证；控制端（从 Windows 控制别的电脑）、声音、作为服务运行（登录界面和 UAC），见 [docs/WINDOWS.md](docs/WINDOWS.md)。
-- **Web 端后续**：iPhone / Safari、Firefox 上的实测（Android 上的 Chrome 已用过）；TURN over TCP/TLS（UDP 被封的网络）；声音和文件传输；应用（非浏览器）里的终端。
-- **命令行被控端**：Windows 版的实机运行；作为 Windows 服务运行。
-- **产品决定**：无人值守机器的首次配对方式；知道 ID 的人默认能做什么；文件权限是否按方向拆开。
+- [docs/DESIGN.md](docs/DESIGN.md): overall design and milestones
+- [docs/DETAILED_DESIGN.md](docs/DETAILED_DESIGN.md): detailed design; each chapter ends with how the implementation differs
+- [docs/DEPLOY.md](docs/DEPLOY.md): deploying the signaling, STUN and relay server
+- [docs/WEB_CLIENT.md](docs/WEB_CLIENT.md): the browser viewer
+- [docs/TERM_HOST.md](docs/TERM_HOST.md): the Linux / Windows command-line host
+- [docs/WINDOWS.md](docs/WINDOWS.md): the Windows port
+- [docs/spikes/M0-report.md](docs/spikes/M0-report.md): M0 validation report
+
+The design documents are in Chinese.
+
+## Not Done Yet
+
+- **Validation**: hole punching on real NATs (relaying through your own server is tested over the public internet, see docs/DEPLOY.md §6).
+- **macOS**: remote access at the login window and lock screen.
+- **Windows**: trying the host and the viewer on real hardware; the host's pointer shape on the viewer, HEVC, sound, running as a service (login screen and UAC), see [docs/WINDOWS.md](docs/WINDOWS.md).
+- **Browser**: testing on iPhone / Safari and Firefox (Chrome on Android is in use); TURN over TCP/TLS for networks that block UDP; sound and file transfer.
+- **Command-line host**: running the Windows build on real hardware; running as a Windows service.
+- **Product decisions**: how an unattended machine is first paired; what someone who only knows the ID may do; whether file permission is split by direction.
