@@ -5,12 +5,16 @@
 //! `KeyboardEvent.code`), positions as fractions of the picture, so the page never needs
 //! to know the host's resolution and the host checks every value.
 //!
-//! Clipboard text travels on the same channel and is handled on the same thread as keys,
+//! Clipboard text travels on the same channel and is written on the same thread as keys,
 //! so text pasted from the browser is on the host's clipboard before the paste keystroke
-//! that follows it is carried out. Text copied on the host goes back the same way.
+//! that follows it is carried out. Text copied on the host is looked for on a thread of
+//! its own ([`ClipWatch`]) and goes back on the same channel.
 
 use std::{
-    sync::{Arc, mpsc},
+    sync::{
+        Arc,
+        mpsc::{self, RecvTimeoutError},
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -32,6 +36,9 @@ pub(crate) const MAX_CLIP: usize = 192 * 1024;
 pub(crate) const MAX_OUTBOUND: usize = 255 * 1024;
 /// How often the host's clipboard is looked at.
 const CLIP_POLL: Duration = Duration::from_millis(250);
+/// How long a paste waits for the host's clipboard to take the browser's text before
+/// the keys after it go on anyway.
+const CLIP_WRITE_WAIT: Duration = Duration::from_secs(1);
 /// One wheel notch is 120; more than a few pages per event is not a person scrolling.
 const MAX_WHEEL: i32 = 120 * 40;
 const TICK: Duration = Duration::from_millis(100);
@@ -119,18 +126,15 @@ impl InputThread {
         let handle = thread::Builder::new()
             .name("web-input".into())
             .spawn(move || {
+                let clip = grants
+                    .clipboard
+                    .then(|| ClipWatch::spawn(host.clone(), to_browser));
                 let mut sink = grants.input.then(|| host.input_sink().ok()).flatten();
-                let mut clip = grants.clipboard.then(|| host.clipboard().ok()).flatten();
-                // What was on the clipboard before the session is not the browser's.
-                if let Some(c) = clip.as_mut() {
-                    let _ = c.poll();
-                }
-                let mut polled = Instant::now();
                 loop {
                     match rx.recv_timeout(TICK) {
                         Ok(Msg::Clip { s }) => {
-                            if let Some(c) = clip.as_mut() {
-                                let _ = c.set_text(&s);
+                            if let Some(c) = &clip {
+                                c.set_text(&s);
                             }
                         }
                         Ok(msg) => {
@@ -150,14 +154,6 @@ impl InputThread {
                             return;
                         }
                     }
-                    if let Some(c) = clip.as_mut()
-                        && polled.elapsed() >= CLIP_POLL
-                    {
-                        polled = Instant::now();
-                        if let Some(text) = c.poll().and_then(|t| clip_message(&t)) {
-                            let _ = to_browser.try_send(text);
-                        }
-                    }
                 }
             })
             .expect("spawn input thread");
@@ -171,6 +167,65 @@ impl InputThread {
     pub(crate) fn send(&self, msg: Msg) {
         if let Some(tx) = &self.tx {
             let _ = tx.try_send(msg);
+        }
+    }
+}
+
+/// The host's clipboard for one session, made, looked at and written on a thread of its
+/// own. Looking can be slow (on a Mac every change is read whole, a copied picture
+/// converted to PNG before its text is found) and making or reading it can fail outright;
+/// it used to happen between input messages on the input thread, where a slow look held
+/// up the pointer and keys and a panic ended them for the rest of the session. Only
+/// sessions with the clipboard did that, and a fixed password always grants it.
+struct ClipWatch {
+    /// Browser text for the host's clipboard, and where to say it is there.
+    writes: mpsc::Sender<(String, mpsc::SyncSender<()>)>,
+}
+
+impl ClipWatch {
+    /// `to_browser` receives text copied on the host, encoded for the page. The thread
+    /// ends when this is dropped, once a look under way returns; it is not waited for.
+    fn spawn(host: Arc<dyn WebHost>, to_browser: tokio::sync::mpsc::Sender<String>) -> Self {
+        let (writes, requests) = mpsc::channel::<(String, mpsc::SyncSender<()>)>();
+        let _ = thread::Builder::new()
+            .name("web-clipboard".into())
+            .spawn(move || {
+                let Ok(mut clip) = host.clipboard() else {
+                    return;
+                };
+                // What was on the clipboard before the session is not the browser's.
+                let _ = clip.poll();
+                let mut polled = Instant::now();
+                loop {
+                    match requests.recv_timeout(CLIP_POLL.saturating_sub(polled.elapsed())) {
+                        Ok((text, done)) => {
+                            let _ = clip.set_text(&text);
+                            let _ = done.send(());
+                        }
+                        Err(RecvTimeoutError::Timeout) => {
+                            polled = Instant::now();
+                            if let Some(text) = clip.poll().and_then(|t| clip_message(&t)) {
+                                if to_browser.is_closed() {
+                                    return;
+                                }
+                                let _ = to_browser.try_send(text);
+                            }
+                        }
+                        Err(RecvTimeoutError::Disconnected) => return,
+                    }
+                }
+            });
+        Self { writes }
+    }
+
+    /// Puts the browser's text on the host's clipboard before the input after it: a paste
+    /// made while the clipboard is still being opened waits for it. A clipboard that is
+    /// stuck holds the keys up for `CLIP_WRITE_WAIT` at most; one that could not be
+    /// opened, not at all.
+    fn set_text(&self, text: &str) {
+        let (done, written) = mpsc::sync_channel(1);
+        if self.writes.send((text.to_owned(), done)).is_ok() {
+            let _ = written.recv_timeout(CLIP_WRITE_WAIT);
         }
     }
 }
@@ -282,5 +337,195 @@ mod tests {
         };
         assert_eq!(to_points(&s, 0.0, 0.0), (-1440.0, 100.0));
         assert_eq!(to_points(&s, 0.5, 1.0), (-720.0, 1000.0));
+    }
+
+    use std::sync::{Mutex, MutexGuard};
+
+    use crate::WebClipboard;
+
+    type Log = Arc<Mutex<Vec<String>>>;
+
+    fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+        m.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// What the host's clipboard does.
+    #[derive(Clone, Copy)]
+    enum Board {
+        /// Every look takes this long, as a Mac reading a large copied picture does.
+        Slow(Duration),
+        /// Takes this long to open, then is quick.
+        SlowToOpen(Duration),
+        /// Cannot be made at all.
+        Panics,
+    }
+
+    struct TestHost {
+        log: Log,
+        board: Board,
+    }
+
+    struct Sink(Log);
+
+    impl InputSink for Sink {
+        fn key(&mut self, hid: u32, down: bool, _: bool, _: Instant) {
+            lock(&self.0).push(format!("key {:x} {down}", hid & 0xffff));
+        }
+        fn move_absolute(&mut self, x: f64, y: f64) {
+            lock(&self.0).push(format!("move {x} {y}"));
+        }
+        fn move_relative(&mut self, _: i32, _: i32) {}
+        fn button(&mut self, _: u32, _: bool, _: Option<(f64, f64)>, _: Instant) {}
+        fn wheel(&mut self, _: i32, _: i32) {}
+        fn text(&mut self, _: &str) {}
+        fn apply_key_state(&mut self, _: &[u32], _: Instant) {}
+        fn poll_timeout(&mut self, _: Instant) {}
+        fn release_all(&mut self, _: Instant) {}
+    }
+
+    struct Clip(Log, Duration);
+
+    impl WebClipboard for Clip {
+        fn poll(&mut self) -> Option<String> {
+            thread::sleep(self.1);
+            None
+        }
+        fn set_text(&mut self, text: &str) -> Result<(), String> {
+            lock(&self.0).push(format!("clipboard {text}"));
+            Ok(())
+        }
+    }
+
+    impl WebHost for TestHost {
+        fn screen(&self) -> Result<WebScreen, String> {
+            Err("unused".into())
+        }
+        fn capturer(
+            &self,
+            _: nexa_media::CaptureConfig,
+        ) -> nexa_media::Result<Box<dyn nexa_media::Capturer>> {
+            Err(nexa_media::MediaError::Unsupported("test"))
+        }
+        fn encoder(
+            &self,
+            _: nexa_media::EncoderConfig,
+        ) -> nexa_media::Result<Box<dyn nexa_media::Encoder>> {
+            Err(nexa_media::MediaError::Unsupported("test"))
+        }
+        fn input_available(&self) -> bool {
+            true
+        }
+        fn input_sink(&self) -> Result<Box<dyn InputSink>, String> {
+            Ok(Box::new(Sink(self.log.clone())))
+        }
+        fn clipboard(&self) -> Result<Box<dyn WebClipboard>, String> {
+            match self.board {
+                Board::Slow(d) => Ok(Box::new(Clip(self.log.clone(), d))),
+                Board::SlowToOpen(d) => {
+                    thread::sleep(d);
+                    Ok(Box::new(Clip(self.log.clone(), Duration::ZERO)))
+                }
+                Board::Panics => panic!("the pasteboard cannot be opened"),
+            }
+        }
+        fn ask(&self, _: &crate::BrowserRequest, _: Duration) -> crate::BrowserAnswer {
+            crate::BrowserAnswer::DENY
+        }
+        fn event(&self, _: crate::WebEvent) {}
+    }
+
+    /// Input and clipboard granted, as a fixed password grants them.
+    fn session(board: Board) -> (InputThread, Log) {
+        let log = Log::default();
+        let host = Arc::new(TestHost {
+            log: log.clone(),
+            board,
+        });
+        let screen = WebScreen {
+            display: 1,
+            origin_points: (0.0, 0.0),
+            size_points: (100.0, 100.0),
+            size_pixels: (200, 200),
+        };
+        let (to_browser, _) = tokio::sync::mpsc::channel(4);
+        let grants = Grants {
+            input: true,
+            clipboard: true,
+        };
+        (InputThread::spawn(host, screen, grants, to_browser), log)
+    }
+
+    fn wait_for(log: &Log, n: usize, within: Duration) -> Vec<String> {
+        let deadline = Instant::now() + within;
+        while lock(log).len() < n && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(2));
+        }
+        lock(log).clone()
+    }
+
+    #[test]
+    fn a_slow_clipboard_never_holds_up_the_pointer() {
+        let (input, log) = session(Board::Slow(Duration::from_secs(2)));
+        // The first look at the clipboard is under way.
+        thread::sleep(Duration::from_millis(50));
+        let sent = Instant::now();
+        input.send(Msg::Move { x: 0.5, y: 0.25 });
+        assert_eq!(
+            wait_for(&log, 1, Duration::from_secs(1)),
+            ["move 50 25"],
+            "the pointer waited for the clipboard"
+        );
+        assert!(sent.elapsed() < Duration::from_millis(500));
+    }
+
+    #[test]
+    fn a_stuck_clipboard_holds_a_paste_up_for_a_moment_only() {
+        let (input, log) = session(Board::Slow(Duration::from_secs(30)));
+        // The first look is under way and will not return during the test.
+        thread::sleep(Duration::from_millis(400));
+        input.send(Msg::Clip { s: "hello".into() });
+        input.send(Msg::Move { x: 0.0, y: 0.0 });
+        let started = Instant::now();
+        assert_eq!(
+            wait_for(&log, 1, CLIP_WRITE_WAIT * 3),
+            ["move 0 0"],
+            "the pointer stayed stuck behind the paste"
+        );
+        assert!(started.elapsed() < CLIP_WRITE_WAIT * 2);
+        // Ending the session does not wait for the clipboard either.
+        let ending = Instant::now();
+        drop(input);
+        assert!(ending.elapsed() < Duration::from_millis(500));
+    }
+
+    #[test]
+    fn a_clipboard_that_cannot_be_opened_leaves_the_keys_and_pointer_working() {
+        let (input, log) = session(Board::Panics);
+        input.send(Msg::Move { x: 1.0, y: 1.0 });
+        input.send(Msg::Key {
+            c: 0x04,
+            d: true,
+            r: false,
+        });
+        assert_eq!(
+            wait_for(&log, 2, Duration::from_secs(1)),
+            ["move 100 100", "key 4 true"]
+        );
+    }
+
+    #[test]
+    fn pasted_text_is_on_the_clipboard_before_the_key_after_it() {
+        // Pasted right away, while the clipboard is still being opened.
+        let (input, log) = session(Board::SlowToOpen(Duration::from_millis(200)));
+        input.send(Msg::Clip { s: "hello".into() });
+        input.send(Msg::Key {
+            c: 0x19,
+            d: true,
+            r: false,
+        });
+        assert_eq!(
+            wait_for(&log, 2, Duration::from_secs(1)),
+            ["clipboard hello", "key 19 true"]
+        );
     }
 }

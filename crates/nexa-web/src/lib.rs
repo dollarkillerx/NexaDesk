@@ -190,7 +190,8 @@ pub trait WebHost: Send + Sync + 'static {
     fn input_available(&self) -> bool;
     /// Called once per session on its input thread, only if input was allowed.
     fn input_sink(&self) -> Result<Box<dyn InputSink>, String>;
-    /// Called once per session on its input thread, only if the clipboard was allowed.
+    /// Called once per session on a thread of its own, only if the clipboard was allowed;
+    /// `poll` (every 250 ms, and it may be slow) and `set_text` are called there too.
     fn clipboard(&self) -> Result<Box<dyn WebClipboard>, String> {
         Err("this host does not share its clipboard".into())
     }
