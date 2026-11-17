@@ -16,17 +16,17 @@
 //! (browsers ignore 127.0.0.1 as a WebRTC address), accept the self-signed certificate,
 //! and type the printed code.
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 fn main() {
-    eprintln!("the demo uses the macOS H.264 encoder");
+    eprintln!("the demo uses the H.264 encoder of macOS or Windows");
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn main() {
     demo::main();
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 mod demo {
     use std::{
         collections::BTreeSet,
@@ -39,7 +39,7 @@ mod demo {
     use nexa_auth::OneTimeCode;
     use nexa_media::{
         CaptureConfig, CaptureEvent, CapturedFrame, Capturer, CpuFrame, Encoder, EncoderConfig,
-        NativeImage, macos::VtEncoder,
+        NativeImage,
     };
     use nexa_session::input::InputSink;
     use nexa_web::{
@@ -100,7 +100,11 @@ mod demo {
             }))
         }
         fn encoder(&self, config: EncoderConfig) -> nexa_media::Result<Box<dyn Encoder>> {
-            Ok(Box::new(VtEncoder::new(config)?))
+            #[cfg(target_os = "macos")]
+            return Ok(Box::new(nexa_media::macos::VtEncoder::new(config)?));
+            // The frames are in memory: Microsoft's software encoder takes them.
+            #[cfg(windows)]
+            return nexa_media::windows::encoder(config);
         }
         /// An arrow where the browser last put the pointer, as a real host's cursor.
         fn cursor_source(&self) -> Option<Box<dyn nexa_media::CursorSource>> {
