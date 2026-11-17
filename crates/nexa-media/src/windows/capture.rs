@@ -3,6 +3,12 @@
 //! ([`GpuConverter`]); otherwise it is copied to memory and converted to NV12 at the
 //! stream's size on the CPU.
 //!
+//! DXGI allows one duplication of a display per process: a second `DuplicateOutput`
+//! fails with E_INVALIDARG. So every stream of a display (one per viewer, app or
+//! browser) reads the same [`Duplication`], pumped by a [`Fanout`] that copies each new
+//! desktop into a texture; each [`DxgiCapturer`] scales and converts that on its own, at
+//! its own size, frame rate and cursor.
+//!
 //! Duplication leaves the cursor out; when the stream must carry it (`show_cursor`),
 //! it is drawn in from [`WinCursorSource`].
 
@@ -37,10 +43,16 @@ use windows::{
     core::Interface,
 };
 
-use super::{Display, WinCursorSource, gpu::GpuConverter, power::DisplayAwake};
+use super::{
+    Display, WinCursorSource,
+    gpu::{GpuConverter, Kind, texture},
+    power::DisplayAwake,
+};
 use crate::{
     CaptureConfig, CaptureEvent, CapturedFrame, Capturer, CursorSource, DisplayMode, MediaError,
-    NativeImage, Result, convert::bgra_to_nv12,
+    NativeImage, Result,
+    convert::bgra_to_nv12,
+    fanout::{Fanout, Feed, Source, Update},
 };
 
 fn os(what: &'static str) -> impl FnOnce(windows::core::Error) -> MediaError {
@@ -53,48 +65,57 @@ fn os(what: &'static str) -> impl FnOnce(windows::core::Error) -> MediaError {
 /// Set once the GPU path failed in this process: later captures use the CPU path.
 static GPU_FAILED: AtomicBool = AtomicBool::new(false);
 
-pub struct DxgiCapturer {
+/// The one duplication of each display that someone is watching.
+static DUPLICATIONS: Fanout<Duplication> = Fanout::new();
+
+/// How often the pump looks for a new desktop. It never waits inside `AcquireNextFrame`:
+/// on a device the streams' hardware encoders share, a frame wait of a few milliseconds,
+/// over and over, starves the encoder ("stopped asking for frames", seen on an NVIDIA
+/// GPU). A look with no wait, then a short sleep, leaves it the device.
+const POLL: Duration = Duration::from_millis(2);
+
+/// A display's desktop duplication, run on its fanout's thread.
+struct Duplication {
     device: ID3D11Device,
     context: ID3D11DeviceContext,
     dup: IDXGIOutputDuplication,
-    staging: Option<(ID3D11Texture2D, u32, u32)>,
-    /// The display's size and place on the desktop.
-    source: (u32, u32),
-    origin: (i32, i32),
-    /// The stream's size.
-    out: (u32, u32),
-    interval: Duration,
-    next_at: Instant,
-    show_cursor: bool,
-    cursor: WinCursorSource,
-    /// The GPU path, when a hardware encoder will take its frames.
-    gpu: Option<GpuConverter>,
-    /// Whether a desktop has been received since the capture began.
-    got_desktop: bool,
-    /// The last frame's pixels, tight BGRA rows: re-sent with the cursor when only it moved.
-    pixels: Vec<u8>,
-    have_frame: bool,
-    _awake: DisplayAwake,
+    /// The display's size, as duplicated.
+    mode: (u32, u32),
+    /// The last desktop, for every stream to read.
+    latest: Option<Desktop>,
+    /// Taken on the pump's thread, which Windows ties it to.
+    awake: Option<DisplayAwake>,
 }
 
-// SAFETY: the D3D11 device and context and the duplication are used from one thread at
-// a time (`next` takes `&mut self`); D3D11 devices are free-threaded.
-unsafe impl Send for DxgiCapturer {}
+// SAFETY: made on one thread, then moved to the pump's and used only there; D3D11
+// devices are free-threaded.
+unsafe impl Send for Duplication {}
 
-impl DxgiCapturer {
-    /// `config.display` is a [`Display::id`], 0 meaning the primary display;
-    /// `width`/`height` of 0 capture at the display's own size.
-    pub fn new(config: CaptureConfig) -> Result<Self> {
-        if config.fps == 0 {
-            return Err(MediaError::Other("fps must be non-zero".into()));
-        }
-        let displays = super::displays().map_err(MediaError::Other)?;
-        let display: &Display = match config.display {
-            0 => displays.first(),
-            id => displays.iter().find(|d| d.id == id),
-        }
-        .ok_or_else(|| MediaError::Other(format!("display {} not found", config.display)))?;
-        let index = display.id - 1;
+/// A display's last desktop, in video memory on its duplication's device.
+#[derive(Clone)]
+struct Desktop {
+    texture: ID3D11Texture2D,
+    size: (u32, u32),
+}
+
+// SAFETY: D3D11 resources are free-threaded. Streams only copy from it, through the
+// multithread-protected immediate context, which orders those copies with the pump's.
+unsafe impl Send for Desktop {}
+
+/// What the streams of a display share: the device its desktops are on, and its size.
+struct Device {
+    device: ID3D11Device,
+    context: ID3D11DeviceContext,
+    mode: (u32, u32),
+}
+
+// SAFETY: as for `Desktop`: the device is free-threaded and the context protected.
+unsafe impl Send for Device {}
+unsafe impl Sync for Device {}
+
+impl Duplication {
+    /// Duplicates display `index` (`Display::id - 1`).
+    fn open(index: u32) -> Result<Self> {
         // SAFETY: DXGI and D3D11 constructors with valid arguments; every out pointer
         // is a local that lives through the call.
         let (device, context, dup) = unsafe {
@@ -129,7 +150,8 @@ impl DxgiCapturer {
             }
             let device: ID3D11Device = device.ok_or(MediaError::Other("no D3D11 device".into()))?;
             let context = context.ok_or(MediaError::Other("no D3D11 context".into()))?;
-            // The hardware encoder's own threads use this device too.
+            // The pump, every stream of the display and their hardware encoders' own
+            // threads all use this device.
             if let Ok(m) = device.cast::<ID3D11Multithread>() {
                 let _ = m.SetMultithreadProtected(true);
             }
@@ -140,7 +162,131 @@ impl DxgiCapturer {
         };
         // SAFETY: a valid duplication.
         let desc = unsafe { dup.GetDesc() };
-        let source = (desc.ModeDesc.Width, desc.ModeDesc.Height);
+        Ok(Self {
+            device,
+            context,
+            dup,
+            mode: (desc.ModeDesc.Width, desc.ModeDesc.Height),
+            latest: None,
+            awake: None,
+        })
+    }
+
+    /// Copies a new desktop out of the duplication, for the streams to read.
+    fn keep(&mut self, resource: IDXGIResource) -> Result<Desktop> {
+        let frame: ID3D11Texture2D = resource.cast().map_err(os("ID3D11Texture2D"))?;
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        // SAFETY: a valid texture.
+        unsafe { frame.GetDesc(&mut desc) };
+        let size = (desc.Width, desc.Height);
+        let latest = match self.latest.take() {
+            Some(d) if d.size == size => d,
+            // The first desktop, or one of a new size: the streams see a mode change in it.
+            _ => Desktop {
+                texture: texture(&self.device, size.0, size.1, desc.Format, Kind::Target)?,
+                size,
+            },
+        };
+        // SAFETY: a copy between two textures of one size and format.
+        unsafe { self.context.CopyResource(&latest.texture, &frame) };
+        self.latest = Some(latest.clone());
+        Ok(latest)
+    }
+}
+
+impl Source for Duplication {
+    type Picture = Desktop;
+    type Info = Device;
+
+    fn info(&self) -> Device {
+        Device {
+            device: self.device.clone(),
+            context: self.context.clone(),
+            mode: self.mode,
+        }
+    }
+
+    fn acquire(&mut self, timeout: Duration) -> Update<Desktop> {
+        // The display stays on for as long as anyone watches it.
+        self.awake.get_or_insert_with(DisplayAwake::hold);
+        let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
+        let mut resource: Option<IDXGIResource> = None;
+        // SAFETY: valid out pointers; the frame is released below on every path.
+        match unsafe { self.dup.AcquireNextFrame(0, &mut info, &mut resource) } {
+            Ok(()) => {}
+            // Nothing new: look again soon (see `POLL` for why not wait in there).
+            Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => {
+                thread::sleep(timeout.min(POLL));
+                return Update::Idle;
+            }
+            // A mode change, a secure desktop (UAC, lock screen), a full-screen switch.
+            Err(e) if e.code() == DXGI_ERROR_ACCESS_LOST => return Update::Lost,
+            Err(e) => return Update::Failed(os("AcquireNextFrame")(e)),
+        }
+        let update = match resource {
+            Some(r) if info.LastPresentTime != 0 || self.latest.is_none() => {
+                self.keep(r).map_or_else(Update::Failed, Update::Picture)
+            }
+            // Only the pointer moved: the picture is the last one.
+            _ => Update::Pointer,
+        };
+        // SAFETY: the frame acquired above.
+        let _ = unsafe { self.dup.ReleaseFrame() };
+        update
+    }
+}
+
+/// One stream of a display: its share of the display's duplication, made into frames
+/// at the stream's own size and rate.
+pub struct DxgiCapturer {
+    feed: Feed<Duplication>,
+    device: ID3D11Device,
+    context: ID3D11DeviceContext,
+    staging: Option<(ID3D11Texture2D, u32, u32)>,
+    /// The display's size and place on the desktop.
+    source: (u32, u32),
+    origin: (i32, i32),
+    /// The stream's size.
+    out: (u32, u32),
+    interval: Duration,
+    next_at: Instant,
+    show_cursor: bool,
+    cursor: WinCursorSource,
+    /// The GPU path, when a hardware encoder will take its frames.
+    gpu: Option<GpuConverter>,
+    /// Whether a desktop has been received since the capture began.
+    got_desktop: bool,
+    /// The last frame's pixels, tight BGRA rows: re-sent with the cursor when only it moved.
+    pixels: Vec<u8>,
+    have_frame: bool,
+}
+
+// SAFETY: the D3D11 device and context are free-threaded and multithread-protected; the
+// display's other streams and its pump share them, and this stream's own textures are
+// used from one thread at a time (`next` takes `&mut self`).
+unsafe impl Send for DxgiCapturer {}
+
+impl DxgiCapturer {
+    /// `config.display` is a [`Display::id`], 0 meaning the primary display;
+    /// `width`/`height` of 0 capture at the display's own size.
+    pub fn new(config: CaptureConfig) -> Result<Self> {
+        if config.fps == 0 {
+            return Err(MediaError::Other("fps must be non-zero".into()));
+        }
+        let displays = super::displays().map_err(MediaError::Other)?;
+        let display: &Display = match config.display {
+            0 => displays.first(),
+            id => displays.iter().find(|d| d.id == id),
+        }
+        .ok_or_else(|| MediaError::Other(format!("display {} not found", config.display)))?;
+        // The duplication another stream of this display runs, or a new one.
+        let feed = DUPLICATIONS.subscribe(display.id, || Duplication::open(display.id - 1))?;
+        let (device, context, mode) = {
+            let shared = feed.info();
+            (shared.device.clone(), shared.context.clone(), shared.mode)
+        };
+        // Its size now: its latest desktop's, when another stream already watches it.
+        let source = feed.latest().map_or(mode, |d| d.size);
         let out = if config.width == 0 || config.height == 0 {
             source
         } else {
@@ -150,9 +296,9 @@ impl DxgiCapturer {
             .then(|| GpuConverter::new(&device, &context, source, out, config.fps).ok())
             .flatten();
         Ok(Self {
+            feed,
             device,
             context,
-            dup,
             staging: None,
             source,
             origin: (display.rect.0, display.rect.1),
@@ -165,7 +311,6 @@ impl DxgiCapturer {
             got_desktop: false,
             pixels: Vec::new(),
             have_frame: false,
-            _awake: DisplayAwake::hold(),
         })
     }
 
@@ -204,36 +349,31 @@ impl DxgiCapturer {
         Ok(texture)
     }
 
-    /// Keeps the acquired frame on the GPU, or notes a new size.
-    fn take(&mut self, resource: IDXGIResource) -> Result<()> {
+    /// Keeps a new desktop on the GPU, or notes a new size.
+    fn take(&mut self, desktop: &Desktop) -> Result<()> {
         let Some(gpu) = self.gpu.as_mut() else {
-            return self.read(resource);
+            return self.read(desktop);
         };
-        let texture: ID3D11Texture2D = resource.cast().map_err(os("ID3D11Texture2D"))?;
-        let mut desc = D3D11_TEXTURE2D_DESC::default();
-        // SAFETY: a valid texture.
-        unsafe { texture.GetDesc(&mut desc) };
-        if (desc.Width, desc.Height) == gpu.source() {
-            gpu.take(&texture);
+        if desktop.size == gpu.source() {
+            gpu.take(&desktop.texture);
             self.got_desktop = true;
         }
         // A different size is a mode change: `next` reports it.
-        self.source = (desc.Width, desc.Height);
+        self.source = desktop.size;
         Ok(())
     }
 
-    /// Copies the acquired frame's pixels into `self.pixels`.
-    fn read(&mut self, resource: IDXGIResource) -> Result<()> {
-        let texture: ID3D11Texture2D = resource.cast().map_err(os("ID3D11Texture2D"))?;
+    /// Copies a new desktop's pixels into `self.pixels`.
+    fn read(&mut self, desktop: &Desktop) -> Result<()> {
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         // SAFETY: a valid texture.
-        unsafe { texture.GetDesc(&mut desc) };
+        unsafe { desktop.texture.GetDesc(&mut desc) };
         let staging = self.staging(desc.Width, desc.Height, desc.Format)?;
         let (w, h) = (desc.Width as usize, desc.Height as usize);
         // SAFETY: a copy between textures of one size and format, then a read-only map
         // released before returning; rows are copied within `RowPitch`.
         unsafe {
-            self.context.CopyResource(&staging, &texture);
+            self.context.CopyResource(&staging, &desktop.texture);
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
             self.context
                 .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
@@ -332,14 +472,11 @@ impl Capturer for DxgiCapturer {
         if self.next_at > now {
             thread::sleep((self.next_at - now).min(timeout));
         }
-        let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
-        let mut resource: Option<IDXGIResource> = None;
-        let wait = timeout.as_millis().min(u128::from(u32::MAX)) as u32;
-        // SAFETY: valid out pointers; the frame is released below on every path.
-        match unsafe { self.dup.AcquireNextFrame(wait, &mut info, &mut resource) } {
-            Ok(()) => {}
-            Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => {
-                // Nothing new on screen; a moving cursor still needs a frame when drawn in.
+        let desktop = match self.feed.next(timeout, self.show_cursor) {
+            Update::Picture(d) => d,
+            // Nothing new on screen, or only the pointer moved: a cursor drawn in still
+            // needs a frame. (Streams that do not draw it are not woken for the pointer.)
+            Update::Idle | Update::Pointer => {
                 return Ok(if self.show_cursor && self.have_frame {
                     self.next_at = Instant::now() + self.interval;
                     self.frame()
@@ -347,20 +484,11 @@ impl Capturer for DxgiCapturer {
                     CaptureEvent::Idle
                 });
             }
-            // A mode change, a secure desktop (UAC, lock screen), a full-screen switch.
-            Err(e) if e.code() == DXGI_ERROR_ACCESS_LOST => return Ok(CaptureEvent::AccessLost),
-            Err(e) => return Err(os("AcquireNextFrame")(e)),
-        }
-        let before = self.source;
-        let read = match resource {
-            // Only the pointer moved: the picture is the last one.
-            Some(_) if info.LastPresentTime == 0 && self.have_frame => Ok(()),
-            Some(r) => self.take(r),
-            None => Ok(()),
+            Update::Lost => return Ok(CaptureEvent::AccessLost),
+            Update::Failed(e) => return Err(e),
         };
-        // SAFETY: the frame acquired above.
-        let _ = unsafe { self.dup.ReleaseFrame() };
-        read?;
+        let before = self.source;
+        self.take(&desktop)?;
         if !self.have_frame && !self.got_desktop {
             return Ok(CaptureEvent::Idle);
         }

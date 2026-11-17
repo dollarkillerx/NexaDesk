@@ -2,7 +2,10 @@
 
 mod common;
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, atomic::Ordering::SeqCst},
+    time::Duration,
+};
 
 use bytes::Bytes;
 use common::{FakeUi, Host, Injected, caps, host, perms, until};
@@ -595,6 +598,108 @@ async fn no_more_than_four_people_at_once() {
     let (_ep, _conn, result) = connect_with_code(&h, &fifth).await;
     assert!(result.is_err(), "a fifth person is turned away");
     assert_eq!(ui.prompts(), 4, "without asking anyone");
+}
+
+/// What Windows hosts did with DXGI desktop duplication, one per display per process:
+/// each viewer's stream opened its own, and the second viewer's session ended at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_capture_per_display_unshared_ends_the_second_viewer() {
+    let ui = FakeUi::allowing(perms(true, false, false), false);
+    let h = host_with(ui.clone()).await;
+    h.platform.state.exclusive_capture.store(true, SeqCst);
+    let first = DeviceIdentity::generate();
+    let (_ep1, conn1, result) = connect_with_code(&h, &first).await;
+    let mut accepted1 = result.unwrap();
+    begin_stream(&mut accepted1).await;
+
+    let second = DeviceIdentity::generate();
+    let (_ep2, conn2, result) = connect_with_code(&h, &second).await;
+    let mut accepted2 = result.unwrap();
+    accepted2
+        .control
+        .send(ControlBody::Request(StreamRequest {
+            mode: Mode::Balanced as i32,
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+    match tokio::time::timeout(WAIT, conn2.closed())
+        .await
+        .expect("the second session ends")
+    {
+        quinn::ConnectionError::ApplicationClosed(c) => {
+            assert_eq!(&c.reason[..], b"capture failed")
+        }
+        other => panic!("expected the host to end it, got {other}"),
+    }
+    assert!(conn1.close_reason().is_none(), "the first goes on");
+}
+
+/// As Windows hosts do now: every viewer of a display reads its one capture, each
+/// with a stream of its own, and one rebuilding its stream does not disturb the other.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn viewers_of_one_display_share_its_one_capture() {
+    let ui = FakeUi::allowing(perms(true, false, false), false);
+    let h = host_with(ui.clone()).await;
+    let state = h.platform.state.clone();
+    state.exclusive_capture.store(true, SeqCst);
+    state.shared_capture.store(true, SeqCst);
+    let pictures = |stream: usize| {
+        common::lock(&state.stream_pictures)
+            .get(stream)
+            .map_or(0, |n| n.load(SeqCst))
+    };
+    let mut viewers = Vec::new();
+    for _ in 0..2 {
+        let me = DeviceIdentity::generate();
+        let (ep, conn, result) = connect_with_code(&h, &me).await;
+        let mut accepted = result.unwrap();
+        begin_stream(&mut accepted).await;
+        viewers.push((ep, conn, accepted));
+    }
+    until("both streams get pictures", WAIT, || {
+        pictures(0) > 5 && pictures(1) > 5
+    })
+    .await;
+    assert_eq!(state.capturers_live.load(SeqCst), 1, "one capture for both");
+    assert_eq!(h.agent.active_sessions().len(), 2);
+
+    // The second switches to game mode: its stream is rebuilt, old stages first.
+    tokio::time::sleep(Duration::from_millis(600)).await; // past the rebuild rate limit
+    let accepted = &mut viewers[1].2;
+    accepted
+        .control
+        .send(ControlBody::Request(StreamRequest {
+            mode: Mode::Game as i32,
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+    loop {
+        match tokio::time::timeout(WAIT, accepted.control.recv())
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            Some(ControlBody::Config(c)) if c.mode == Mode::Game as i32 => break,
+            Some(_) => {}
+            None => panic!("control ended"),
+        }
+    }
+    let before = pictures(0);
+    until("the rebuilt stream gets pictures", WAIT, || pictures(2) > 5).await;
+    assert!(pictures(0) > before, "the first viewer's stream went on");
+    assert_eq!(state.capturers_live.load(SeqCst), 1);
+    assert_eq!(h.agent.active_sessions().len(), 2);
+
+    // Once both have gone, so has the capture.
+    for (_, conn, _) in &viewers {
+        conn.close(0u32.into(), b"bye");
+    }
+    until("the capture let go", WAIT, || {
+        state.capturers_live.load(SeqCst) == 0
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

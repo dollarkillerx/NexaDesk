@@ -61,6 +61,7 @@
 - **界面**：NativeAOT 不能在 macOS 上交叉编译到 Windows，所以 Windows 版是自带运行时的 JIT 版本加 ReadyToRun（代码和 AOT 版相同，体积大一些，第一次启动稍慢）。
 - **CI**：暂不用。`.github/workflows/windows.yml` 只能手动触发，留着以后用。
 - **真机测试**：在你的 Windows 电脑上装 `dist/windows/NexaDesk-win-Setup.exe`。
+- **在 Windows 上直接跑测试**（装了 Rust 的 MSVC 工具链和 VS 2022 生成工具时）：把 VS 自带的 CMake 加进 PATH，`CMAKE_GENERATOR="Visual Studio 17 2022"`，再 `cargo --config 'profile.dev.package.audiopus_sys.opt-level=2' test --workspace`（libopus 用 Debug 编译会链接调试版 C 运行库，和 Rust 的对不上）。
 - **安装包**：Velopack（`vpk "[win]" pack`）：
   - 按用户安装到 `%LocalAppData%\NexaDesk`，不需要管理员权限，开始菜单和桌面快捷方式；
   - 安装界面只有进度，没有文字，所以不分语言；应用本身按 Windows 显示语言选中文、日语或英语，设置里也能改；
@@ -84,6 +85,8 @@
 4. **声音**（已写完，等真机验收）：被控端用 WASAPI loopback 录默认输出设备（让 Windows 转成 48 kHz 立体声浮点；老系统不支持时按设备格式录、自己转换），什么都没在播放时补静音；控制端用 WASAPI 事件驱动播放。换了默认设备（插拔耳机）会自动重新打开。Opus 用 libopus 1.3.1（`crates/nexa-opus`，`audiopus_sys` 从源码静态编译，`.cargo/config.toml` 为 CMake 4 设了 `CMAKE_POLICY_VERSION_MINIMUM`），不多带 DLL。
 
    切换模式、换屏幕、分辨率变化、UAC 或锁屏之后，流水线都要重建：DXGI 每个进程对每块屏幕只能有一个复制，所以要先释放旧的截屏和编码器，再建新的（`nexa-session/src/host.rs` 的 `Released`）。以前顺序反了，Windows 被控端一切到游戏模式就断开。浏览器会话在所有平台上都没有声音。
+
+   **几个人同时看同一块屏幕**（最多 4 人，应用和浏览器一起算）：以前每个会话各建一个 DXGI 复制，第二个会话的 `DuplicateOutput` 失败（E_INVALIDARG，日志里是 `DuplicateOutput: OS status -2147024809`），第二个人一连上就断开。现在每块屏幕只有一个复制，在自己的线程上取画面，复制到一张共用的桌面纹理（`nexa-media/src/fanout.rs`，`windows/capture.rs` 的 `Duplication`）；每个会话从这里拿最新的桌面，再按自己的大小、帧率、要不要画指针，各自走 GPU 或 CPU 路径缩放和编码。最后一个会话离开时复制才释放，释放完才返回，所以重建时“先释放旧的”照旧有效；只是自己重建的会话会接着用别人还在用的那个复制。模式变化、UAC、锁屏让复制失效时，每个会话都收到 AccessLost、各自重建，再共用新建的那一个。取画面的线程不在 `AcquireNextFrame` 里等（超时 0，没有新画面就睡 2 ms）：在和硬件编码器共用的设备上反复等，编码器会饿死（“the hardware encoder stopped asking for frames”，NVIDIA 显卡上实测）。显示器保持唤醒也改由这个线程持有。macOS 不受影响（ScreenCaptureKit 允许多个流）。在 Windows 11 + NVIDIA 显卡的电脑上验证过：一个人、两个人同时（各自尺寸）、一个人反复重建而另一个人一直在看，GPU 编码都正常（`cargo test -p nexa-media --test windows_capture -- --ignored --nocapture`，需要真的屏幕）。
 5. **安装包**（完成，见第 3 节）：Velopack 安装包和免安装 zip；以后加自动更新和（可选）签名。
 6. **以后再做**：作为 Windows 服务运行，才能在登录界面、锁屏和 UAC 弹窗时也能控制（普通用户进程看不到安全桌面）；ARM64 版。
 

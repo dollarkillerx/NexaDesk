@@ -19,7 +19,8 @@ use nexa_clip::{ClipKind, ClipboardBackend, FakeBackend, FormatInfo, Gen, LocalS
 use nexa_media::{
     CaptureConfig, CaptureEvent, CapturedFrame, Capturer, CpuFrame, DecodedFrame, Decoder,
     DisplayMode, EncodeOpts, EncodedMeta, Encoder, EncoderCaps, EncoderConfig, FrameId, FrameMeta,
-    NativeImage, PresentMode, PresentStat, Presenter, Recovery,
+    MediaError, NativeImage, PresentMode, PresentStat, Presenter, Recovery,
+    fanout::{Fanout, Feed, Source, Update},
 };
 use nexa_session::{
     clip::ClipPlatform,
@@ -96,6 +97,53 @@ impl Capturer for FakeCapturer {
             captured_at: Instant::now(),
             dirty: vec![],
         }))
+    }
+}
+
+/// The display as DXGI desktop duplication has it, for `shared_capture`: with
+/// `exclusive_capture`, one capture of it at a time in the process.
+struct FakeDuplication(Arc<FakePlatformState>);
+
+impl Drop for FakeDuplication {
+    fn drop(&mut self) {
+        self.0.capturers_live.fetch_sub(1, SeqCst);
+    }
+}
+
+impl Source for FakeDuplication {
+    type Picture = ();
+    type Info = ();
+
+    fn info(&self) {}
+
+    /// A new picture every 5 ms.
+    fn acquire(&mut self, timeout: Duration) -> Update<()> {
+        thread::sleep(timeout.min(Duration::from_millis(5)));
+        Update::Picture(())
+    }
+}
+
+/// One stream's frames from the shared [`FakeDuplication`], as Windows streams read theirs.
+struct SharedCapturer {
+    feed: Feed<FakeDuplication>,
+    pictures: Arc<AtomicU32>,
+}
+
+impl Capturer for SharedCapturer {
+    fn next(&mut self, timeout: Duration) -> nexa_media::Result<CaptureEvent> {
+        Ok(match self.feed.next(timeout, false) {
+            Update::Picture(()) => {
+                self.pictures.fetch_add(1, SeqCst);
+                CaptureEvent::Frame(CapturedFrame {
+                    image: image(),
+                    captured_at: Instant::now(),
+                    dirty: vec![],
+                })
+            }
+            Update::Pointer | Update::Idle => CaptureEvent::Idle,
+            Update::Lost => CaptureEvent::AccessLost,
+            Update::Failed(e) => return Err(e),
+        })
     }
 }
 
@@ -253,8 +301,15 @@ pub struct FakePlatformState {
     pub inject_sinks_created: AtomicU32,
     pub clipboards_created: AtomicU32,
     pub encoders_created: AtomicU32,
+    /// Captures of the display open now: with `shared_capture`, the one all streams read.
     pub capturers_live: AtomicU32,
     pub exclusive_capture: AtomicBool,
+    /// Every stream of the display reads one capture of it, as on Windows
+    /// (`nexa_media::fanout`), instead of opening its own.
+    pub shared_capture: AtomicBool,
+    /// With `shared_capture`: the pictures each stream ever made has read, in order.
+    pub stream_pictures: Mutex<Vec<Arc<AtomicU32>>>,
+    duplications: &'static Fanout<FakeDuplication>,
     pub input_unavailable: AtomicBool,
     pub fire_mode_change: AtomicBool,
     pub pixels: Mutex<(u32, u32)>,
@@ -268,10 +323,26 @@ impl Default for FakePlatformState {
             encoders_created: AtomicU32::new(0),
             capturers_live: AtomicU32::new(0),
             exclusive_capture: AtomicBool::new(false),
+            shared_capture: AtomicBool::new(false),
+            stream_pictures: Mutex::new(Vec::new()),
+            duplications: Box::leak(Box::new(Fanout::new())),
             input_unavailable: AtomicBool::new(false),
             fire_mode_change: AtomicBool::new(false),
             pixels: Mutex::new((1920, 1080)),
         }
+    }
+}
+
+impl FakePlatformState {
+    /// Counts one more capture of the display, unless one is open and only one may be.
+    fn open_capture(&self) -> nexa_media::Result<()> {
+        if self.capturers_live.fetch_add(1, SeqCst) > 0 && self.exclusive_capture.load(SeqCst) {
+            self.capturers_live.fetch_sub(1, SeqCst);
+            return Err(MediaError::Other(
+                "the display is already being captured".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -294,14 +365,17 @@ impl Platform for FakePlatform {
         })
     }
     fn capturer(&self, _: CaptureConfig) -> nexa_media::Result<Box<dyn Capturer>> {
-        if self.state.capturers_live.fetch_add(1, SeqCst) > 0
-            && self.state.exclusive_capture.load(SeqCst)
-        {
-            self.state.capturers_live.fetch_sub(1, SeqCst);
-            return Err(nexa_media::MediaError::Other(
-                "the display is already being captured".into(),
-            ));
+        if self.state.shared_capture.load(SeqCst) {
+            let state = self.state.clone();
+            let feed = self.state.duplications.subscribe(1, || {
+                state.open_capture()?;
+                Ok(FakeDuplication(state))
+            })?;
+            let pictures = Arc::new(AtomicU32::new(0));
+            lock(&self.state.stream_pictures).push(pictures.clone());
+            return Ok(Box::new(SharedCapturer { feed, pictures }));
         }
+        self.state.open_capture()?;
         Ok(Box::new(FakeCapturer(self.state.clone())))
     }
     fn encoder(&self, _: EncoderConfig) -> nexa_media::Result<Box<dyn Encoder>> {
