@@ -112,6 +112,38 @@ const RECOVERY_PROBE_DURATION: Duration = Duration::from_millis(300);
 /// Quiet time after a cut or a probe before the next recovery probe.
 const RECOVERY_PROBE_GAP: Duration = Duration::from_millis(500);
 
+/// Queueing delay is how much later than its fastest recent frame a frame's fastest
+/// packet arrived: the least one-way delay of each frame, less the least of those
+/// over this window. Taking the least per frame sets aside jitter and the batches a
+/// cellular link delivers in; what is left is the queue.
+const QUEUE_BASE_WINDOW_US: i64 = 20_000_000;
+/// A queue this deep, held for [`QUEUE_PERSIST_US`], is congestion whatever the delay
+/// trend says: a radio stall restarts the trend, and a link that delivers in bursts
+/// (a phone's hotspot) stalls all the time, so the trend never builds there.
+const QUEUE_HIGH_US: i64 = 80_000;
+/// Long enough for a key frame's burst on a still screen to drain.
+const QUEUE_PERSIST_US: i64 = 500_000;
+/// A trend reading Overuse is noise (jitter) unless the queue is at least this deep.
+const QUEUE_CONFIRM_US: i64 = 10_000;
+/// A probe that builds this much queue has found the link's limit: it ends there,
+/// and a recovery probe gives up on the old rate. A probe lasts less than
+/// [`QUEUE_PERSIST_US`], and on a link that stalls all the time the trend is
+/// restarted too often to see one, so without this every probe looked clean and kept
+/// padding a hotspot past what it carries (overflow, losses, frozen picture).
+const QUEUE_PROBE_LIMIT_US: i64 = 50_000;
+/// A queue reading older than this says nothing about now (nothing was sent since).
+const QUEUE_FRESH: Duration = Duration::from_millis(300);
+/// A cut for a lasting queue keeps at least this share of the target.
+const QUEUE_CUT_FLOOR: f64 = 0.5;
+/// The link estimate is the median of the frame trains of this window: a train
+/// delivered in one batch (a cellular link) reads as a link many times faster than
+/// it is, and one such reading used to stay the estimate for good.
+const CAPACITY_WINDOW: Duration = Duration::from_secs(10);
+const CAPACITY_SAMPLES: usize = 32;
+/// The pacer may spread a frame at the link estimate, but no faster than this many
+/// times the target.
+const PACE_CAPACITY_MAX_OF_TARGET: f64 = 4.0;
+
 /// Frame trains shorter than this say nothing useful about the bottleneck at
 /// the 250 µs feedback resolution.
 const CAPACITY_MIN_PACKETS: u32 = 8;
@@ -138,7 +170,9 @@ pub fn fec_ratio(loss_ewma: f64, mode: Mode) -> f64 {
 /// when the capacity is unknown.
 pub fn pace_rate_bps(target_bps: u64, capacity_bps: Option<u64>) -> u64 {
     let by_target = target_bps as f64 * PACE_TARGET_FACTOR;
-    let by_capacity = capacity_bps.map_or(0.0, |c| c as f64 * PACE_CAPACITY_FACTOR);
+    let by_capacity = capacity_bps.map_or(0.0, |c| {
+        (c as f64 * PACE_CAPACITY_FACTOR).min(target_bps as f64 * PACE_CAPACITY_MAX_OF_TARGET)
+    });
     by_target.max(by_capacity) as u64
 }
 
@@ -459,10 +493,12 @@ struct Group {
     last_arrival: i64,
     bytes_after_first: u64,
     packets: u32,
+    /// The least one-way delay of its packets, on an offset clock (see [`QueueDelay`]).
+    min_owd: i64,
 }
 
 impl Group {
-    fn start(frame_id: u32, rec: &SentRecord, arrival: i64) -> Self {
+    fn start(frame_id: u32, rec: &SentRecord, arrival: i64, owd: i64) -> Self {
         Self {
             frame_id,
             last_sent: rec.sent_at,
@@ -470,10 +506,12 @@ impl Group {
             last_arrival: arrival,
             bytes_after_first: 0,
             packets: 1,
+            min_owd: owd,
         }
     }
 
-    fn extend(&mut self, rec: &SentRecord, arrival: i64) {
+    fn extend(&mut self, rec: &SentRecord, arrival: i64, owd: i64) {
+        self.min_owd = self.min_owd.min(owd);
         self.last_sent = self.last_sent.max(rec.sent_at);
         self.last_arrival = self.last_arrival.max(arrival);
         self.bytes_after_first += u64::from(rec.bytes);
@@ -485,6 +523,56 @@ impl Group {
         let span = self.last_arrival - self.first_arrival;
         (self.packets >= CAPACITY_MIN_PACKETS && span >= CAPACITY_MIN_SPAN_US)
             .then(|| self.bytes_after_first as f64 * 8e6 / span as f64)
+    }
+}
+
+/// How deep the bottleneck's queue is, from one-way delays. The sender's and the
+/// receiver's clocks differ by an unknown offset, which cancels out: the queue is a
+/// frame's least delay less the least of the last [`QUEUE_BASE_WINDOW_US`].
+#[derive(Debug, Default)]
+struct QueueDelay {
+    /// (arrival µs, least delay) of recent frames, increasing in delay: a sliding
+    /// minimum.
+    window: VecDeque<(i64, i64)>,
+    /// The last frame's queueing, µs.
+    current: i64,
+    /// When the queue last went over [`QUEUE_HIGH_US`] and has stayed there.
+    high_since: Option<i64>,
+    /// Frames measured so far, to tell when a feedback brought a new reading.
+    readings: u64,
+}
+
+impl QueueDelay {
+    fn on_group(&mut self, arrival: i64, min_owd: i64) {
+        while self.window.back().is_some_and(|&(_, d)| d >= min_owd) {
+            self.window.pop_back();
+        }
+        self.window.push_back((arrival, min_owd));
+        while self
+            .window
+            .front()
+            .is_some_and(|&(at, _)| arrival - at > QUEUE_BASE_WINDOW_US)
+        {
+            self.window.pop_front();
+        }
+        let base = self.window.front().map_or(min_owd, |&(_, d)| d);
+        self.current = min_owd - base;
+        self.readings += 1;
+        if self.current >= QUEUE_HIGH_US {
+            self.high_since.get_or_insert(arrival);
+        } else if self.current < QUEUE_HIGH_US / 2 {
+            self.high_since = None;
+        }
+    }
+
+    /// A queue over [`QUEUE_HIGH_US`] for [`QUEUE_PERSIST_US`] up to `now` (arrival µs).
+    fn lasting(&self, now: i64) -> bool {
+        self.high_since
+            .is_some_and(|since| now - since >= QUEUE_PERSIST_US)
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
     }
 }
 
@@ -509,6 +597,11 @@ pub struct RateController {
     loss_ewma: f64,
     last_loss_tick: Option<Instant>,
     capacity: Option<f64>,
+    /// Recent frame-train rates (when, bps), whose median is `capacity`.
+    trains: VecDeque<(Instant, f64)>,
+    queue: QueueDelay,
+    /// When the queue reading last changed.
+    queue_read_at: Option<Instant>,
     probe_ends: Option<Instant>,
     probe_congested: bool,
     /// What a recovery probe pads up to; `None` for the startup probe.
@@ -553,6 +646,9 @@ impl RateController {
             loss_ewma: 0.0,
             last_loss_tick: None,
             capacity: None,
+            trains: VecDeque::new(),
+            queue: QueueDelay::default(),
+            queue_read_at: None,
             probe_ends: Some(now + PROBE_DURATION),
             probe_congested: false,
             probe_cap: None,
@@ -586,6 +682,11 @@ impl RateController {
 
     pub fn link_capacity_bps(&self) -> Option<u64> {
         self.capacity.map(|c| c as u64)
+    }
+
+    /// The bottleneck's queue as of the last frame, in ms (see [`QueueDelay`]).
+    pub fn queue_delay_ms(&self) -> f64 {
+        self.queue.current as f64 / 1e3
     }
 
     pub fn set_mode(&mut self, mode: Mode) {
@@ -652,6 +753,7 @@ impl RateController {
     }
 
     pub fn on_feedback(&mut self, fb: &TransportFeedback, now: Instant) {
+        let readings = self.queue.readings;
         let mut arrival = self.unwrap_arrival(fb.base_arrival_us);
         let (mut received, mut lost) = (0u64, 0u64);
         for (i, status) in fb.statuses.iter().enumerate() {
@@ -672,6 +774,9 @@ impl RateController {
                 }
             }
         }
+        if self.queue.readings != readings {
+            self.queue_read_at = Some(now);
+        }
         self.record_loss(now, received, lost);
         self.update_target(now);
     }
@@ -687,6 +792,9 @@ impl RateController {
         self.recv_meter.clear();
         self.loss_window.clear();
         self.capacity = None;
+        self.trains.clear();
+        self.queue.clear();
+        self.queue_read_at = None;
         self.congestion_point = None;
         self.last_rx = None;
         self.probe_ends = None;
@@ -757,21 +865,23 @@ impl RateController {
             }
         }
         let Some(frame) = rec.frame_id else { return };
+        let owd = arrival - self.micros(rec.sent_at);
         if let Some(group) = self.current_group.as_mut().filter(|g| g.frame_id == frame) {
-            group.extend(rec, arrival);
+            group.extend(rec, arrival, owd);
             return;
         }
         if let Some(finished) = self
             .current_group
-            .replace(Group::start(frame, rec, arrival))
+            .replace(Group::start(frame, rec, arrival, owd))
         {
             self.finish_group(finished);
         }
     }
 
     fn finish_group(&mut self, group: Group) {
+        self.queue.on_group(group.last_arrival, group.min_owd);
         if let Some(rate) = group.train_rate_bps() {
-            self.capacity = Some(self.capacity.map_or(rate, |c| c.max(rate)));
+            self.add_train(rate, group.last_sent);
         }
         if let Some(prev) = self.previous_group.replace(group) {
             let arrival_delta = group.last_arrival - prev.last_arrival;
@@ -788,6 +898,23 @@ impl RateController {
                 );
             }
         }
+    }
+
+    /// A frame train's rate joins the link estimate, the median of recent ones.
+    fn add_train(&mut self, rate: f64, at: Instant) {
+        self.trains.push_back((at, rate));
+        while self.trains.len() > CAPACITY_SAMPLES
+            || self
+                .trains
+                .front()
+                .is_some_and(|&(t, _)| at.saturating_duration_since(t) > CAPACITY_WINDOW)
+                && self.trains.len() > 3
+        {
+            self.trains.pop_front();
+        }
+        let mut rates: Vec<f64> = self.trains.iter().map(|&(_, r)| r).collect();
+        rates.sort_by(f64::total_cmp);
+        self.capacity = Some(rates[rates.len() / 2]);
     }
 
     fn record_loss(&mut self, now: Instant, received: u64, lost: u64) {
@@ -836,6 +963,9 @@ impl RateController {
             self.grown(dt)
         };
 
+        if self.probe_ends.is_some() && self.queue.current >= QUEUE_PROBE_LIMIT_US {
+            self.probe_congested = true;
+        }
         let before = self.target;
         let delay_based = self.delay_based(recv, grown, app_limited, now);
         let loss_based = self.loss_based(grown, now);
@@ -881,6 +1011,15 @@ impl RateController {
         app_limited: bool,
         now: Instant,
     ) -> f64 {
+        // A queue that stays deep is congestion, whatever the trend says and however
+        // little is sent: on a hotspot the trend never builds (it stalls all the time),
+        // and a target that a still screen left high floods the link when it moves.
+        let fresh = self
+            .queue_read_at
+            .is_some_and(|t| now.saturating_duration_since(t) < QUEUE_FRESH);
+        if fresh && self.queue.lasting(self.newest_arrival) {
+            return self.cut(recv, now, QUEUE_CUT_FLOOR);
+        }
         match self.detector.state {
             DelayState::Normal => grown,
             DelayState::Underuse => self.target,
@@ -888,24 +1027,36 @@ impl RateController {
             // radio, not a queue we built: Wi-Fi going off-channel for a moment (AWDL)
             // looks just like it. The receive rate then measures what was sent, not
             // the link, and cutting to it took a 100 Mbit/s LAN to the floor in
-            // seconds. Real congestion still shows as loss, which cuts as usual.
+            // seconds. Real congestion still shows as loss, or as a lasting queue.
             DelayState::Overuse if app_limited => self.target,
-            DelayState::Overuse => {
-                self.probe_congested = true;
-                let may_cut = self
-                    .last_decrease
-                    .is_none_or(|t| now.saturating_duration_since(t) >= DECREASE_INTERVAL);
-                match recv {
-                    Some(recv) if may_cut => {
-                        self.last_decrease = Some(now);
-                        self.congestion_point = Some(recv);
-                        // Under Overuse the receive rate is the bottleneck rate.
-                        self.capacity = self.capacity.map(|c| c.min(recv));
-                        self.target.min(OVERUSE_BACKOFF * recv)
-                    }
-                    _ => self.target,
+            // A rising trend with no queue behind it is jitter (a far, noisy path),
+            // which used to cut such a link to the floor.
+            DelayState::Overuse if self.queue.current < QUEUE_CONFIRM_US => self.target,
+            DelayState::Overuse => self.cut(recv, now, 0.0),
+        }
+    }
+
+    /// Cuts to just under the receive rate (the bottleneck's, while congested), at
+    /// most every [`DECREASE_INTERVAL`] and to no less than `floor` × the target.
+    fn cut(&mut self, recv: Option<f64>, now: Instant, floor: f64) -> f64 {
+        self.probe_congested = true;
+        let may_cut = self
+            .last_decrease
+            .is_none_or(|t| now.saturating_duration_since(t) >= DECREASE_INTERVAL);
+        match recv {
+            Some(recv) if may_cut => {
+                self.last_decrease = Some(now);
+                self.congestion_point = Some(recv);
+                // Under congestion the receive rate is the bottleneck rate (when
+                // something was received to measure it).
+                if recv > 0.0 {
+                    self.capacity = self.capacity.map(|c| c.min(recv));
                 }
+                self.target
+                    .min(OVERUSE_BACKOFF * recv)
+                    .max(floor * self.target)
             }
+            _ => self.target,
         }
     }
 
@@ -1002,6 +1153,11 @@ mod tests {
         /// The radio away (another channel, as AWDL does) for `.1` µs every `.0` µs:
         /// what arrives meanwhile waits for it to come back.
         stalls: Option<(u64, u64)>,
+        /// A cellular link hands packets over in batches, every this many µs.
+        batch_us: u64,
+        /// Jitter per packet, independently: a later packet may overtake an earlier
+        /// one (a path through several queues), unlike [`Bottleneck::jitter_us`].
+        reorder_jitter_us: u64,
     }
 
     impl Bottleneck {
@@ -1019,13 +1175,18 @@ mod tests {
             let extra = (self.rng.unit() * self.jitter_us as f64) as u64;
             let mut arrival =
                 (self.busy_until_us + self.one_way_us + extra).max(self.last_arrival_us);
+            let reordered = (self.rng.unit() * self.reorder_jitter_us as f64) as u64;
             if let Some((every, away)) = self.stalls {
                 let into = arrival % every;
                 if into < away {
                     arrival += away - into;
                 }
             }
+            if self.batch_us > 0 {
+                arrival = arrival.div_ceil(self.batch_us) * self.batch_us;
+            }
             self.last_arrival_us = arrival;
+            let arrival = arrival + reordered;
             Some((arrival, queueing))
         }
     }
@@ -1050,6 +1211,13 @@ mod tests {
         /// The share of its budget the encoder fills at budgets below 1 Mbit/s (a
         /// hardware encoder dropping frames it cannot fit).
         low_budget_fill: f64,
+        one_way_ms: f64,
+        /// How much the bottleneck queues before it drops.
+        max_queue_ms: f64,
+        /// See [`Bottleneck::batch_us`], in ms.
+        batch_ms: f64,
+        /// See [`Bottleneck::reorder_jitter_us`], in ms.
+        reorder_jitter_ms: f64,
     }
 
     impl Default for Scenario {
@@ -1066,6 +1234,10 @@ mod tests {
                 jitter_ms: 0.0,
                 stalls_ms: None,
                 low_budget_fill: 1.0,
+                one_way_ms: 15.0,
+                max_queue_ms: 300.0,
+                batch_ms: 0.0,
+                reorder_jitter_ms: 0.0,
             }
         }
     }
@@ -1169,8 +1341,10 @@ mod tests {
         let mut ctl = RateController::new(cfg, Mode::Office, t0);
         let mut link = Bottleneck {
             busy_until_us: 0,
-            one_way_us: 15_000,
-            max_queue_us: 300_000,
+            one_way_us: (s.one_way_ms * 1e3) as u64,
+            max_queue_us: (s.max_queue_ms * 1e3) as u64,
+            batch_us: (s.batch_ms * 1e3) as u64,
+            reorder_jitter_us: (s.reorder_jitter_ms * 1e3) as u64,
             random_loss: s.random_loss,
             rng: Rng(0x1234_5678_9ABC_DEF1),
             jitter_us: (s.jitter_ms * 1e3) as u64,
@@ -1287,7 +1461,21 @@ mod tests {
         fb_seq: &mut u16,
     ) -> Option<TransportFeedback> {
         // Packets past the last arrival are still in flight or indistinguishable from it.
-        let last = rx.iter().rposition(|p| p.1.is_some_and(|a| a <= now))?;
+        let mut last = rx.iter().rposition(|p| p.1.is_some_and(|a| a <= now))?;
+        // As the viewer's FeedbackBuilder: stop before a gap whose later packets came
+        // less than 50 ms ago (it may be a packet overtaken, not lost).
+        for i in 0..=last {
+            if rx[i].1.is_none_or(|a| a > now) {
+                let after = rx.iter().skip(i).find_map(|p| p.1.filter(|&a| a <= now));
+                if after.is_some_and(|a| now - a < 50_000) {
+                    if i == 0 {
+                        return None;
+                    }
+                    last = i - 1;
+                    break;
+                }
+            }
+        }
         let reported: Vec<_> = rx.drain(..=last).collect();
         let base_tick = reported.iter().find_map(|p| p.1)? / 250;
         let mut previous_tick = base_tick;
@@ -1297,7 +1485,8 @@ mod tests {
                 None => PacketStatus::NotReceived,
                 Some(a) if a > now => PacketStatus::NotReceived,
                 Some(a) => {
-                    let tick = a / 250;
+                    // As the viewer's FeedbackBuilder: from the latest arrival so far.
+                    let tick = (a / 250).max(previous_tick);
                     let delta = (tick - previous_tick) as u16;
                     previous_tick = tick;
                     PacketStatus::Received { delta_ticks: delta }
@@ -1542,6 +1731,82 @@ mod tests {
         );
         report("wifi-active", &trace, 10.0, 90.0, capacity);
         assert!(lowest >= 10.0 * MBPS, "slid to {:.2} Mbps", lowest / MBPS);
+    }
+
+    /// A phone's hotspot: 5 Mbit/s, 180 ms round trip, a deep buffer, packets handed
+    /// over in 20 ms batches, and a screen that is mostly still with bursts of motion.
+    /// The session came from Wi-Fi with a 14 Mbit/s target. The batches read as radio
+    /// stalls and as a link of hundreds of Mbit/s, the still screen kept the target,
+    /// and every burst of motion flooded the hotspot (300 ms+ of queue, losses).
+    #[test]
+    fn a_hotspot_is_not_flooded_when_the_screen_starts_moving() {
+        let capacity = 5.0 * MBPS;
+        let trace = simulate(Scenario {
+            secs: 60.0,
+            initial_bps: 14.0 * MBPS,
+            capacity: |_| 5.0 * MBPS,
+            app_demand: Some(|t| match (t as u64) % 10 {
+                0..=5 => 0.4 * MBPS,
+                _ => f64::INFINITY,
+            }),
+            keyframes: Some((5.0, 300_000.0)),
+            jitter_ms: 5.0,
+            one_way_ms: 90.0,
+            max_queue_ms: 1_000.0,
+            // Batches far enough apart to read as radio stalls, as a real hotspot's
+            // did (6 to 18 every 5 s in agent.log).
+            batch_ms: 40.0,
+            ..Default::default()
+        });
+        // The motion of the later cycles, once the first has taught it the link.
+        let mut motion_queue = Vec::new();
+        for cycle in 2..6 {
+            let from = f64::from(cycle) * 10.0 + 6.0;
+            motion_queue.push(trace.queue_stats(from, from + 4.0).1);
+        }
+        let worst_p95 = motion_queue.iter().copied().fold(0.0, f64::max);
+        let estimate = trace.targets.last().unwrap().2.unwrap_or(0.0);
+        println!(
+            "[hotspot 5M, 180 ms, 40 ms batches] queue p95 in motion per cycle {motion_queue:.0?} ms; target mean 20-60 s {:.2} Mbps; link estimate {:.1} Mbps",
+            trace.mean_target(20.0, 60.0) / MBPS,
+            estimate / MBPS
+        );
+        report("hotspot", &trace, 20.0, 60.0, capacity);
+        assert!(worst_p95 < 150.0, "queue p95 {worst_p95:.0} ms in motion");
+        assert!(trace.mean_target(20.0, 60.0) <= 1.2 * capacity);
+        assert!(estimate < 10.0 * capacity, "link estimate {estimate}");
+    }
+
+    /// A far path with jitter: 300 ms round trip, each packet up to 40 ms late on its
+    /// own (so they can arrive out of order), 1% loss,
+    /// 20 Mbit/s. The jitter reads as a rising delay trend, but there is no queue:
+    /// it used to cut the rate to the floor (0.1 Mbit/s, 11 fps end to end).
+    #[test]
+    fn a_far_jittery_path_is_not_cut_to_the_floor() {
+        let capacity = 20.0 * MBPS;
+        let trace = simulate(Scenario {
+            secs: 60.0,
+            initial_bps: 5.0 * MBPS,
+            capacity: |_| 20.0 * MBPS,
+            random_loss: 0.01,
+            reorder_jitter_ms: 40.0,
+            one_way_ms: 150.0,
+            ..Default::default()
+        });
+        let lowest = trace
+            .targets
+            .iter()
+            .filter(|s| s.0 >= 5.0)
+            .map(|s| s.1)
+            .fold(f64::INFINITY, f64::min);
+        println!(
+            "[far, jittery 40 ms, 1% loss, C=20M] target mean 20-60 s {:.2} Mbps, lowest after 5 s {:.2} Mbps",
+            trace.mean_target(20.0, 60.0) / MBPS,
+            lowest / MBPS
+        );
+        report("far-jittery", &trace, 20.0, 60.0, capacity);
+        assert!(lowest >= 2.0 * MBPS, "cut to {:.2} Mbps", lowest / MBPS);
+        assert!(trace.mean_target(20.0, 60.0) >= 5.0 * MBPS);
     }
 
     /// On a slow link packets arrive far apart anyway: that is the queue, not the
@@ -2028,8 +2293,11 @@ mod tests {
         const FRAME: Duration = Duration::from_nanos(8_333_333); // 120 fps
         // Unknown capacity falls back to 1.5 × target.
         assert_eq!(pace_rate_bps(100_000_000, None), 150_000_000);
-        // Capacity dominates when 0.8 × C exceeds 1.5 × target.
-        assert_eq!(pace_rate_bps(100_000_000, Some(1_000_000_000)), 800_000_000);
+        // Capacity dominates when 0.8 × C exceeds 1.5 × target, up to 4 × target: a
+        // link estimate many times the target (a cellular link's batches) would let a
+        // key frame flood it.
+        assert_eq!(pace_rate_bps(100_000_000, Some(300_000_000)), 240_000_000);
+        assert_eq!(pace_rate_bps(100_000_000, Some(1_000_000_000)), 400_000_000);
         // Target dominates otherwise.
         assert_eq!(pace_rate_bps(100_000_000, Some(120_000_000)), 150_000_000);
 
@@ -2037,9 +2305,9 @@ mod tests {
         let frame_bytes = 100_000_000u64 / 8 / 120;
         let w = pacing_window(frame_bytes, 100_000_000, None, FRAME);
         assert!((w.as_secs_f64() * 1e3 - 4.1667).abs() < 0.01, "{w:?}");
-        // Revised formula on a 1 Gbps link: bytes × 8 / 800 Mbps = 1.04 ms.
+        // Revised formula on a 1 Gbps link: bytes × 8 / 400 Mbps (4 × target) = 2.08 ms.
         let w = pacing_window(frame_bytes, 100_000_000, Some(1_000_000_000), FRAME);
-        assert!((w.as_secs_f64() * 1e3 - 1.0417).abs() < 0.01, "{w:?}");
+        assert!((w.as_secs_f64() * 1e3 - 2.0833).abs() < 0.01, "{w:?}");
         // A small frame is proportionally shorter.
         let w = pacing_window(10_000, 100_000_000, None, FRAME);
         assert!((w.as_secs_f64() * 1e3 - 0.5333).abs() < 0.01, "{w:?}");

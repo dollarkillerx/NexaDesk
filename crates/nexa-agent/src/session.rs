@@ -428,20 +428,22 @@ async fn log_stream(media: Arc<HostMedia>, session: u64, (w, h, fps): (u32, u32,
             0.0
         };
         let sent = (now.3 - last.3) as f64 * 8.0 / secs / 1e6;
-        let (target, link, stalls) = media.rate_snapshot();
-        let link = link.map_or("unknown".to_owned(), |l| {
+        let rate = media.rate_snapshot();
+        let link = rate.link_bps.map_or("unknown".to_owned(), |l| {
             format!("{:.1} Mbit/s", l as f64 / 1e6)
         });
         eprintln!(
-            "nexa-agent: session {session} stream {w}x{h}@{fps}: {:.1} frames/s, {:.1} skipped/s, encode {encode_ms:.1} ms, sent {sent:.2} Mbit/s, target {:.2} Mbit/s, encoder {:.2} Mbit/s, link {link}, {} radio stalls",
+            "nexa-agent: session {session} stream {w}x{h}@{fps}: {:.1} frames/s, {:.1} skipped/s, encode {encode_ms:.1} ms, sent {sent:.2} Mbit/s, target {:.2} Mbit/s, encoder {:.2} Mbit/s, link {link}, queue {:.0} ms, loss {:.1}%, {} radio stalls",
             frames as f64 / secs,
             skipped as f64 / secs,
-            target as f64 / 1e6,
+            rate.target_bps as f64 / 1e6,
             s.encoder_bps.load(Relaxed) as f64 / 1e6,
-            stalls - last_stalls,
+            rate.queue_ms,
+            rate.loss * 100.0,
+            rate.stalls - last_stalls,
         );
         last = now;
-        last_stalls = stalls;
+        last_stalls = rate.stalls;
     }
 }
 

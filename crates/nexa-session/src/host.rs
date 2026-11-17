@@ -183,6 +183,19 @@ struct AudioThread {
     join: JoinHandle<()>,
 }
 
+/// What the rate controller thinks of the link now, for the stream log.
+#[derive(Clone, Copy, Debug)]
+pub struct RateSnapshot {
+    pub target_bps: u64,
+    pub link_bps: Option<u64>,
+    /// Radio stalls set aside so far.
+    pub stalls: u64,
+    /// The bottleneck's queue, as of the last frame.
+    pub queue_ms: f64,
+    /// Smoothed loss, 0 to 1.
+    pub loss: f64,
+}
+
 pub struct HostMedia {
     stop: Arc<AtomicBool>,
     threads: Mutex<Vec<JoinHandle<()>>>,
@@ -346,9 +359,15 @@ impl HostMedia {
     /// The most the rate controller may send, from the viewer's quality choice.
     /// The rate controller's target and its estimate of the link, in bit/s, and the
     /// radio stalls it has set aside so far.
-    pub fn rate_snapshot(&self) -> (u64, Option<u64>, u64) {
+    pub fn rate_snapshot(&self) -> RateSnapshot {
         let rate = self.rate.lock().unwrap_or_else(|e| e.into_inner());
-        (rate.target_bps(), rate.link_capacity_bps(), rate.stalls())
+        RateSnapshot {
+            target_bps: rate.target_bps(),
+            link_bps: rate.link_capacity_bps(),
+            stalls: rate.stalls(),
+            queue_ms: rate.queue_delay_ms(),
+            loss: rate.loss_ewma(),
+        }
     }
 
     pub fn set_max_bps(&self, max_bps: u64) {
