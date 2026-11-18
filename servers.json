@@ -1,5 +1,6 @@
 {
   "endpoints": [
-    { "endpoint": "wss://150.251.158.58:8443", "key": "oZVyM6nHCJb5uzuVemDqiOCX" }
+    { "endpoint": "wss://150.251.158.58:8443", "key": "oZVyM6nHCJb5uzuVemDqiOCX" },
+    { "endpoint": "wss://209.33.171.123:8443", "key": "TCELu5SjiodDIg3xUlmQviq0" }
   ]
 }
