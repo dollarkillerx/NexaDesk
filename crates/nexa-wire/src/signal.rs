@@ -17,7 +17,7 @@
 //! message Challenge  { uint32 proto = 1; bytes nonce = 2; }
 //! message Register   { uint32 proto = 1; bytes pubkey = 2; bytes x25519 = 3;
 //!                      bytes x25519_sig = 4; bytes sig = 5; string server_name = 6;
-//!                      bytes id_seed = 7; }
+//!                      bytes id_seed = 7; bytes access_proof = 8; }
 //! message Registered { string short_id = 1; repeated string stun_servers = 2;
 //!                      repeated string relays = 3; string stun_note = 4; }
 //! message Lookup     { uint64 req_id = 1; string short_id = 2; }
@@ -69,6 +69,9 @@ pub enum ErrorCode {
     NotRegistered = 5,
     /// The server is full.
     Unavailable = 6,
+    /// The server asks for an access secret and the registration had none, or a
+    /// wrong one. A client that does not know this code shows the message.
+    AccessDenied = 7,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -101,6 +104,11 @@ pub struct Register {
     /// changing it; empty keeps the ID the key always had.
     #[prost(bytes = "vec", tag = "7")]
     pub id_seed: Vec<u8>,
+    /// HMAC proving knowledge of the server's access secret, bound to the challenge,
+    /// the server name and the device key (`nexa_auth::signal_access`). Empty when the
+    /// device has none; servers that ask for no secret ignore it.
+    #[prost(bytes = "vec", tag = "8")]
+    pub access_proof: Vec<u8>,
 }
 
 /// The longest [`Register::id_seed`] a server accepts.

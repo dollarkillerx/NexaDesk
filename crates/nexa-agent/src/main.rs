@@ -161,6 +161,9 @@ fn web_certificate(data_dir: &std::path::Path) -> std::io::Result<nexa_web::WebT
     nexa_web::WebTls::load_or_create(data_dir, &names)
 }
 
+/// Where the agent finds the access password of a signaling server that asks for one.
+const SIGNAL_SECRET_ENV: &str = "NEXA_SIGNAL_SECRET";
+
 #[cfg(any(target_os = "macos", windows))]
 const USAGE: &str = "usage: nexa-agent --listen <ip:port> [--name <device name>] [--data-dir <dir>] [--consent terminal|ui]\n\
                  [--signal <wss://server[:port]>] [--signal-ca <pem>] [--paired-only] [--relay-only]\n\
@@ -174,6 +177,8 @@ const USAGE: &str = "usage: nexa-agent --listen <ip:port> [--name <device name>]
   --signal    also be reachable by device ID through this nexa-signal server; the ID is shown\n\
               once registered. Pairing and consent work exactly as for --listen.\n\
   --signal-ca extra CA certificate(s) for the server (default: <data-dir>/signal-ca.pem if present)\n\
+              A server that asks for an access password gets it from the environment\n\
+              variable NEXA_SIGNAL_SECRET.\n\
   --paired-only  only devices already paired may make this Mac reveal its addresses\n\
   --relay-only   never offer a direct address to connecting devices; always use the relay.\n\
                  Also turns off the LAN announcement.\n\
@@ -342,7 +347,11 @@ fn run() -> Result<(), String> {
         None => None,
         Some(url) => {
             nexa_session::rendezvous::signal::parse_url(url).map_err(|e| e.to_string())?;
-            let mut server = nexa_session::rendezvous::signal::SignalConfig::new(url.clone());
+            // The server's access password, when it asks for one: in the environment,
+            // never on the command line where other processes could read it.
+            let secret = std::env::var(SIGNAL_SECRET_ENV).unwrap_or_default();
+            let mut server = nexa_session::rendezvous::signal::SignalConfig::new(url.clone())
+                .with_access_secret(&secret);
             let ca = args
                 .signal_ca
                 .clone()

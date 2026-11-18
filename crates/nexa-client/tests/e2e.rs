@@ -253,6 +253,7 @@ impl Viewer {
             fps: 0,
             auth: Some(ConnectAuth::Code(h.agent.current_code().to_string())),
             signal_server: String::new(),
+            signal_secret: String::new(),
         })
     }
 
@@ -404,6 +405,7 @@ async fn a_pairing_the_host_no_longer_has_is_forgotten_here() {
         fps: 0,
         auth: Some(ConnectAuth::KnownHost(key.clone())),
         signal_server: String::new(),
+        signal_secret: String::new(),
     });
     viewer
         .wait_event("refused as not paired", |b| {
@@ -434,6 +436,7 @@ async fn a_paired_viewer_reconnects_with_its_pin_and_a_wrong_pin_is_named() {
         fps: 0,
         auth: Some(ConnectAuth::KnownHost(key)),
         signal_server: String::new(),
+        signal_secret: String::new(),
     });
     until("second Connected", WAIT, || {
         lock(&viewer.events.0)
@@ -454,6 +457,7 @@ async fn a_paired_viewer_reconnects_with_its_pin_and_a_wrong_pin_is_named() {
         fps: 0,
         auth: Some(ConnectAuth::KnownHost(other)),
         signal_server: String::new(),
+        signal_secret: String::new(),
     });
     let ended = viewer
         .wait_event("refused", |b| matches!(b, EventBody::Disconnected(_)))
@@ -482,6 +486,7 @@ async fn a_host_with_a_different_key_is_reported_as_a_pin_mismatch() {
         fps: 0,
         auth: Some(ConnectAuth::KnownHost(pinned)),
         signal_server: String::new(),
+        signal_secret: String::new(),
     });
     let ended = viewer
         .wait_event("refused", |b| matches!(b, EventBody::Disconnected(d) if d.reason != DisconnectReason::ClosedLocally as i32))
@@ -1023,6 +1028,7 @@ async fn garbage_and_stale_handles_return_errors() {
         fps: 0,
         auth: None,
         signal_server: String::new(),
+        signal_secret: String::new(),
     });
     viewer
         .wait_event("invalid", |b| {
@@ -1067,6 +1073,11 @@ async fn a_panic_in_the_session_ends_it_and_releases_capture() {
 
 /// A plain-ws signaling server, STUN and relay, all on 127.0.0.1.
 async fn signal_server() -> nexa_signal::Server {
+    guarded_signal_server(&[]).await
+}
+
+/// The same, registering only devices that know one of `secrets` (none: anyone).
+async fn guarded_signal_server(secrets: &[&str]) -> nexa_signal::Server {
     let ws = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let stun = nexa_net::udp::UdpIo::bind_tokio("127.0.0.1:0".parse().unwrap()).unwrap();
     let relay = nexa_net::udp::UdpIo::bind_tokio("127.0.0.1:0".parse().unwrap()).unwrap();
@@ -1075,6 +1086,7 @@ async fn signal_server() -> nexa_signal::Server {
         nexa_signal::Settings {
             tls: None,
             server_names: vec!["127.0.0.1".into()],
+            access_secrets: secrets.iter().map(|s| (*s).to_owned()).collect(),
             stun_advertise: vec![stun_addr],
             relay_advertise: Some(relay_addr),
             relay: nexa_signal::relay::RelayLimits {
@@ -1109,8 +1121,18 @@ async fn host_by_id(
     p: nexa_wire::control::Permissions,
     relay_only: bool,
 ) -> (Host, String) {
+    host_by_id_with_secret(server, p, relay_only, "").await
+}
+
+async fn host_by_id_with_secret(
+    server: &nexa_signal::Server,
+    p: nexa_wire::control::Permissions,
+    relay_only: bool,
+    secret: &str,
+) -> (Host, String) {
     let setup = nexa_agent::SignalSetup {
-        server: nexa_session::rendezvous::signal::SignalConfig::new(signal_url(server)),
+        server: nexa_session::rendezvous::signal::SignalConfig::new(signal_url(server))
+            .with_access_secret(secret),
         bind_ip: "127.0.0.1".parse().unwrap(),
         interfaces: None,
         paired_only: false,
@@ -1139,6 +1161,7 @@ fn by_id(id: &str, server: &nexa_signal::Server, tag: u64, auth: ConnectAuth) ->
         fps: 0,
         auth: Some(auth),
         signal_server: signal_url(server),
+        signal_secret: String::new(),
     }
 }
 
@@ -1147,6 +1170,77 @@ fn last_path(v: &Viewer, tag: u64) -> Option<(i32, String)> {
         Some(EventBody::Stats(s)) if e.tag == tag => Some((s.path, s.path_detail.clone())),
         _ => None,
     })
+}
+
+/// A server with an access password: a host without it says so and is not
+/// registered, a viewer without it is told why, and with it both connect as usual.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_server_that_asks_for_a_password_gets_it_from_host_and_viewer() {
+    let server = guarded_signal_server(&["open sesame"]).await;
+
+    // A host that does not know it: not registered, and the status says what is missing.
+    let setup = nexa_agent::SignalSetup {
+        server: nexa_session::rendezvous::signal::SignalConfig::new(signal_url(&server)),
+        bind_ip: "127.0.0.1".parse().unwrap(),
+        interfaces: None,
+        paired_only: false,
+        relay_only: false,
+        system_services: false,
+    };
+    let stranger = common::host_with(
+        FakeUi::allowing(perms(true, false, false), true),
+        Timeouts::default(),
+        Some(setup),
+    )
+    .await;
+    until("refused", WAIT, || {
+        matches!(
+            stranger.agent.signal_status().state,
+            nexa_agent::SignalState::Error(_)
+        )
+    })
+    .await;
+    match stranger.agent.signal_status().state {
+        nexa_agent::SignalState::Error(why) => assert!(why.contains("access password"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(server.registered(), 0);
+
+    // One that does, and a viewer without it, then with it.
+    let (h, id) =
+        host_by_id_with_secret(&server, perms(true, false, false), false, "open sesame").await;
+    let viewer = Viewer::new();
+    let _ = viewer.connect(by_id(
+        &id,
+        &server,
+        1,
+        ConnectAuth::Code(h.agent.current_code().to_string()),
+    ));
+    let ended = viewer
+        .wait_event("refused", |b| matches!(b, EventBody::Disconnected(_)))
+        .await;
+    match &ended {
+        EventBody::Disconnected(d) => {
+            assert_eq!(d.reason, DisconnectReason::SignalServer as i32, "{d:?}");
+            assert!(d.message.contains("access password"), "{}", d.message);
+            assert!(!d.message.contains("open sesame"));
+        }
+        other => panic!("{other:?}"),
+    }
+    // A new viewer: the first one's events still say "refused".
+    let viewer = Viewer::new();
+    let mut request = by_id(
+        &id,
+        &server,
+        2,
+        ConnectAuth::Code(h.agent.current_code().to_string()),
+    );
+    request.signal_secret = "open sesame".into();
+    let session = viewer.connect(request);
+    let c = viewer.wait_connected().await;
+    assert_eq!(c.host_key, h.agent.public_key().to_hex());
+    // SAFETY: handles are registry ids.
+    unsafe { abi::nexa_session_close(session) };
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

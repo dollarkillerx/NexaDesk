@@ -20,6 +20,7 @@ pub mod identity;
 pub mod keystore;
 pub mod pairing;
 pub mod secrets;
+pub mod signal_access;
 pub mod store;
 pub mod tls;
 

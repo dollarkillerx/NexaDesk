@@ -58,13 +58,14 @@ fn main() {
         warn(&config, settings.tls.is_some());
         let server = start(settings, sockets).await.map_err(|e| e.to_string())?;
         eprintln!(
-            "nexa-signal: signaling on {}{}, STUN {:?}, relay {:?}",
+            "nexa-signal: signaling on {}{}, {}, STUN {:?}, relay {:?}",
             server.ws_addr,
             if config.signal.tls_cert.is_some() {
                 " (TLS)"
             } else {
                 ""
             },
+            access(&config),
             config.stun_advertised(),
             config.relay_advertised()
         );
@@ -93,14 +94,23 @@ fn check(path: &Path, config: &Config) -> i32 {
     };
     warn(config, tls);
     println!(
-        "{}: OK. signaling {}{}, STUN {:?}, relay {:?}",
+        "{}: OK. signaling {}{}, {}, STUN {:?}, relay {:?}",
         path.display(),
         config.signal.listen,
         if tls { " (TLS)" } else { "" },
+        access(config),
         config.stun_advertised(),
         config.relay_advertised()
     );
     0
+}
+
+fn access(config: &Config) -> String {
+    match config.signal.access_secrets.len() {
+        0 => "open to any device".to_owned(),
+        1 => "access password required".to_owned(),
+        n => format!("access password required ({n} accepted)"),
+    }
 }
 
 fn warn(config: &Config, tls: bool) {
@@ -115,6 +125,22 @@ fn warn(config: &Config, tls: bool) {
     }
     if config.relay.is_none() {
         eprintln!("nexa-signal: no relay configured: peers behind two hard NATs cannot connect");
+    }
+    let secrets = &config.signal.access_secrets;
+    if secrets.is_empty() {
+        eprintln!(
+            "nexa-signal: note: no signal.access_secrets, so any device that knows the address can register and use the relays"
+        );
+    }
+    if secrets.iter().any(|s| s.trim().chars().count() < 10) {
+        eprintln!(
+            "nexa-signal: warning: an access secret is shorter than 10 characters; a server that is shown a proof can try passwords against it offline"
+        );
+    }
+    if !secrets.is_empty() && config.web.is_some() {
+        eprintln!(
+            "nexa-signal: warning: [web] is on, and browsers do not use the access password: the page, /web and TURN stay open to anyone"
+        );
     }
     if config.signal.server_names.is_empty() {
         eprintln!(

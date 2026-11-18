@@ -61,6 +61,15 @@ pub struct SignalSection {
     /// server is refused.
     #[serde(default)]
     pub server_names: Vec<String>,
+    /// Access secrets. With none the server is open: any device may register. With
+    /// one or more, a device registers only by proving it knows one of them, and
+    /// several let a secret be replaced without cutting everyone off at once (list
+    /// the new one, hand it out, then drop the old). The secret never crosses the
+    /// wire; see `nexa_auth::signal_access`. It gates the signaling, the relays that
+    /// registered devices are granted and the lookups, but not STUN, and not the
+    /// browser page and TURN (`[web]`), which are open to browsers by design.
+    #[serde(default)]
+    pub access_secrets: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -156,6 +165,11 @@ tls_cert = "/etc/nexa-signal/fullchain.pem"
 tls_key = "/etc/nexa-signal/privkey.pem"
 # The names clients use to reach this server (recommended).
 server_names = ["signal.example.com"]
+# A shared password for registering. Without it anyone who knows the address may
+# register devices and use the relays. Clients enter the same password in their
+# settings; it is never sent, only a proof of it. List two to replace one without
+# cutting everyone off. Keep this file readable by the service only.
+# access_secrets = ["a long password nobody would guess"]
 
 [stun]
 # Two addresses, ideally on two different public IPs, so clients can tell an
@@ -197,6 +211,16 @@ impl Config {
         if self.signal.tls_cert.is_some() != self.signal.tls_key.is_some() {
             return Err(ConfigError::Invalid(
                 "tls_cert and tls_key go together".into(),
+            ));
+        }
+        if self
+            .signal
+            .access_secrets
+            .iter()
+            .any(|s| s.trim().is_empty())
+        {
+            return Err(ConfigError::Invalid(
+                "signal.access_secrets: a secret may not be empty".into(),
             ));
         }
         if self.stun.listen.len() > 2 {
@@ -292,6 +316,23 @@ listen = "127.0.0.1:8443"
 lisen = "x"
 "#;
         assert!(Config::from_toml(unknown).is_err());
+    }
+
+    #[test]
+    fn access_secrets_are_optional_and_never_empty() {
+        let open = Config::from_toml(EXAMPLE).unwrap();
+        assert!(open.signal.access_secrets.is_empty());
+        let with = EXAMPLE.replace(
+            "# access_secrets = [\"a long password nobody would guess\"]",
+            "access_secrets = [\"one\", \"two\"]",
+        );
+        let c = Config::from_toml(&with).unwrap();
+        assert_eq!(c.signal.access_secrets, ["one", "two"]);
+        let empty = EXAMPLE.replace(
+            "# access_secrets = [\"a long password nobody would guess\"]",
+            "access_secrets = [\"  \"]",
+        );
+        assert!(Config::from_toml(&empty).is_err());
     }
 
     #[test]

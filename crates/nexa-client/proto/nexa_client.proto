@@ -17,6 +17,7 @@ enum Mode { MODE_OFFICE = 0; MODE_BALANCED = 1; MODE_GAME = 2; }
 message ConnectRequest {
   string address = 1;                 // "host:port" (IPv4, IPv6, or a resolvable name), or a 9-digit device ID
   string signal_server = 8;           // wss://server[:port]; needed when address is an ID
+  string signal_secret = 10;          // the server's access password, if it asks for one
   uint64 tag = 2;
   Mode mode = 3;
   uint32 fps = 7;                     // 0 = host's choice

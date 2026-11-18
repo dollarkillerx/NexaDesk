@@ -96,6 +96,12 @@ fn server_ips() -> HashSet<IpAddr> {
 }
 
 async fn world(tls: bool) -> World {
+    world_guarded(tls, &[]).await
+}
+
+/// A server that registers only devices that know one of `secrets`. The `signal`
+/// of the world it returns has no secret yet: a test gives clients theirs.
+async fn world_guarded(tls: bool, secrets: &[&str]) -> World {
     let net = SimNet::new();
     net.add_public_host(ip("203.0.113.1"), Duration::from_millis(20));
     net.add_public_host(ip("203.0.113.2"), Duration::from_millis(20));
@@ -122,6 +128,7 @@ async fn world(tls: bool) -> World {
         Settings {
             tls: tls_cfg,
             server_names: vec![if tls { "localhost" } else { "127.0.0.1" }.to_owned()],
+            access_secrets: secrets.iter().map(|s| (*s).to_owned()).collect(),
             stun_advertise: vec![STUN_A.parse().unwrap(), STUN_B.parse().unwrap()],
             relay_advertise: Some(RELAY.parse().unwrap()),
             relay: RelayLimits {
@@ -562,6 +569,59 @@ async fn udp_blocked_except_to_the_server_uses_the_relay() {
 async fn public_host_is_reached_directly() {
     let r = scenario("easy viewer → public host", Nat::Easy, Nat::None, false).await;
     assert_eq!(r.settled, PathClass::Direct);
+}
+
+/// A server with an access secret: devices that do not know it cannot register or
+/// use it, and ones that do connect through it as usual, relay included.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_server_with_an_access_secret_admits_only_those_who_know_it() {
+    use nexa_session::rendezvous::signal::SignalError;
+    for tls in [false, true] {
+        let w = world_guarded(tls, &["old password", "open sesame"]).await;
+        let dev = device();
+        let refused = |r: Result<SignalClient, SignalError>| match r {
+            Err(SignalError::AccessDenied(why)) => why,
+            Err(other) => panic!("tls {tls}: {other}"),
+            Ok(_) => panic!("tls {tls}: registered without the password"),
+        };
+        assert!(refused(SignalClient::connect(&w.signal, &dev.keys).await).contains("needs"));
+        let wrong = w.signal.clone().with_access_secret("open sesam");
+        assert!(refused(SignalClient::connect(&wrong, &dev.keys).await).contains("wrong"));
+        assert_eq!(w.server.registered(), 0);
+        for secret in ["open sesame", "  old password\n"] {
+            let right = w.signal.clone().with_access_secret(secret);
+            let d = device();
+            let c = SignalClient::connect(&right, &d.keys).await.unwrap();
+            assert_eq!(c.registration.short_id.len(), 9);
+            std::mem::forget(c);
+        }
+        assert_eq!(w.server.registered(), 2);
+    }
+}
+
+/// Behind two hard NATs the pair meets over the relay, which a guarded server grants
+/// to devices that registered, and only to them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn devices_that_know_the_secret_connect_through_a_guarded_server() {
+    let mut w = world_guarded(false, &["open sesame"]).await;
+    w.signal = w.signal.clone().with_access_secret("open sesame");
+    let (vlan, hlan) = (ip(VIEWER_LAN), ip(HOST_LAN));
+    w.net
+        .add_nat(Nat::Hard.config(ip(VIEWER_PUBLIC), 10).unwrap(), &[vlan]);
+    w.net
+        .add_nat(Nat::Hard.config(ip(HOST_PUBLIC), 15).unwrap(), &[hlan]);
+    let (viewer, host_dev) = (device(), device());
+    let mut host = start_host(&w, &host_dev, options(&w.net, hlan)).await;
+    let o = tokio::time::timeout(
+        Duration::from_secs(40),
+        connect(&w, &viewer, &host_dev, &mut host, options(&w.net, vlan)),
+    )
+    .await
+    .expect("timed out")
+    .unwrap();
+    exchange(&o.viewer_conn, &o.host.1).await;
+    assert_eq!(o.first, PathClass::Relay);
+    std::mem::forget(host);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

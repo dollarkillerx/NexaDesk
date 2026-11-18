@@ -54,6 +54,8 @@ pub struct Sockets {
 pub struct Settings {
     pub tls: Option<Arc<rustls::ServerConfig>>,
     pub server_names: Vec<String>,
+    /// Empty: anyone may register. See `config::SignalSection::access_secrets`.
+    pub access_secrets: Vec<String>,
     /// What clients are told; one entry per STUN socket.
     pub stun_advertise: Vec<SocketAddr>,
     pub relay_advertise: Option<SocketAddr>,
@@ -136,6 +138,7 @@ pub async fn start(settings: Settings, sockets: Sockets) -> std::io::Result<Serv
     let hub = Arc::new(Mutex::new(Hub::new(HubSettings {
         limits: settings.limits.clone(),
         server_names: settings.server_names.clone(),
+        access_secrets: settings.access_secrets.clone(),
         stun: settings.stun_advertise.clone(),
         stun_note,
         relay: settings.relay_advertise.filter(|_| sockets.relay.is_some()),

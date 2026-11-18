@@ -866,7 +866,8 @@ async fn connect_by_id(
             "no signaling server is set, so a device ID cannot be used".to_owned(),
         ));
     }
-    let mut server = SignalConfig::new(request.signal_server.trim().to_owned());
+    let mut server = SignalConfig::new(request.signal_server.trim().to_owned())
+        .with_access_secret(&request.signal_secret);
     let ca = core.data_dir.join("signal-ca.pem");
     if ca.exists() {
         server = server

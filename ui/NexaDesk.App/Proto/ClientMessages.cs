@@ -108,7 +108,7 @@ public abstract record ConnectAuth
 
 /// <summary>Address is "ip:port" or a 9-digit device ID; SignalServer is used for IDs.</summary>
 public sealed record ConnectRequest(string Address, ulong Tag, StreamMode Mode, uint Fps, ConnectAuth Auth,
-    string SignalServer = "")
+    string SignalServer = "", string SignalSecret = "")
 {
     public byte[] Encode()
     {
@@ -121,6 +121,7 @@ public sealed record ConnectRequest(string Address, ulong Tag, StreamMode Mode, 
             case ConnectAuth.Request: w.Bool(9, true); break;
         }
         w.String(8, SignalServer);
+        w.String(10, SignalSecret);
         return w.ToArray();
     }
 

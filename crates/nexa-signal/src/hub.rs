@@ -128,6 +128,7 @@ pub struct BrowserRoute {
 pub struct Hub {
     limits: Limits,
     server_names: Vec<String>,
+    access_secrets: Vec<String>,
     stun: Vec<SocketAddr>,
     stun_note: String,
     relay: Option<SocketAddr>,
@@ -175,6 +176,7 @@ fn session_error(code: ErrorCode, session_id: &[u8], message: &str) -> SignalSer
 pub struct HubSettings {
     pub limits: Limits,
     pub server_names: Vec<String>,
+    pub access_secrets: Vec<String>,
     pub stun: Vec<SocketAddr>,
     pub stun_note: Option<String>,
     pub relay: Option<SocketAddr>,
@@ -194,6 +196,7 @@ impl Hub {
             connect_dst: Keyed::new(rate(l.connect_per_target), MAX_TRACKED),
             limits: s.limits,
             server_names: s.server_names,
+            access_secrets: s.access_secrets,
             stun: s.stun,
             stun_note: s.stun_note.unwrap_or_default(),
             relay: s.relay,
@@ -394,6 +397,29 @@ impl Hub {
         }
         if r.proto != SIGNAL_PROTOCOL {
             return Err(error(ErrorCode::BadRequest, "unsupported protocol version"));
+        }
+        // A server with an access secret lets in only devices that know one. Every
+        // attempt counts against the registration limit above, so guessing is slow.
+        if !self.access_secrets.is_empty()
+            && !self.access_secrets.iter().fold(false, |ok, secret| {
+                // Every secret is tried, so the time says nothing about which matched.
+                ok | nexa_auth::signal_access::verify_access_proof(
+                    secret,
+                    nonce,
+                    &r.server_name,
+                    &r.pubkey,
+                    &r.access_proof,
+                )
+            })
+        {
+            return Err(error(
+                ErrorCode::AccessDenied,
+                if r.access_proof.is_empty() {
+                    "this server needs an access password"
+                } else {
+                    "wrong access password"
+                },
+            ));
         }
         let pubkey: [u8; 32] = r
             .pubkey
@@ -729,6 +755,7 @@ mod tests {
         Hub::new(HubSettings {
             limits: Limits::default(),
             server_names: vec!["signal.test".into()],
+            access_secrets: vec![],
             stun: vec!["203.0.113.1:3478".parse().unwrap()],
             stun_note: Some("one".into()),
             relay: Some("203.0.113.1:3480".parse().unwrap()),
@@ -817,6 +844,7 @@ mod tests {
         let mut plain = Hub::new(HubSettings {
             limits: Limits::default(),
             server_names: vec![],
+            access_secrets: vec![],
             stun: vec![],
             stun_note: None,
             relay: None,
@@ -848,7 +876,91 @@ mod tests {
             x25519: x,
             server_name: name.into(),
             id_seed: seed.to_vec(),
+            access_proof: vec![],
         }
+    }
+
+    fn with_proof(mut r: Register, secret: &str, nonce: &[u8; 32]) -> Register {
+        r.access_proof =
+            nexa_auth::signal_access::access_proof(secret, nonce, &r.server_name, &r.pubkey)
+                .to_vec();
+        r
+    }
+
+    fn guarded(secrets: &[&str]) -> Hub {
+        let mut h = hub();
+        h.access_secrets = secrets.iter().map(|s| (*s).to_owned()).collect();
+        h
+    }
+
+    fn try_register(h: &mut Hub, r: &Register, nonce: &[u8; 32]) -> Result<(), ErrorCode> {
+        let (tx, _rx) = mpsc::channel(8);
+        h.register(1, [192, 0, 2, 1].into(), nonce, r, tx, Instant::now())
+            .map(|_| ())
+            .map_err(|e| match e.body {
+                Some(ServerBody::Error(e)) => ErrorCode::try_from(e.code).unwrap(),
+                other => panic!("{other:?}"),
+            })
+    }
+
+    /// A server with no access secret lets anyone in, and one with a secret only
+    /// those who prove they know it; any of several will do.
+    #[test]
+    fn a_guarded_server_asks_for_proof_of_a_secret() {
+        let id = DeviceIdentity::generate();
+        let nonce = [4u8; 32];
+        let plain = reg(&id, &nonce, "signal.test");
+
+        // Open: no proof needed, and one that is sent is no obstacle.
+        assert_eq!(try_register(&mut hub(), &plain, &nonce), Ok(()));
+        let proved = with_proof(plain.clone(), "whatever", &nonce);
+        assert_eq!(try_register(&mut hub(), &proved, &nonce), Ok(()));
+
+        // Guarded: none, a wrong one and a proof for another connection are refused.
+        let mut h = guarded(&["open sesame"]);
+        assert_eq!(
+            try_register(&mut h, &plain, &nonce),
+            Err(ErrorCode::AccessDenied)
+        );
+        let wrong = with_proof(plain.clone(), "open sesam", &nonce);
+        assert_eq!(
+            try_register(&mut h, &wrong, &nonce),
+            Err(ErrorCode::AccessDenied)
+        );
+        let stale = with_proof(plain.clone(), "open sesame", &[5u8; 32]);
+        assert_eq!(
+            try_register(&mut h, &stale, &nonce),
+            Err(ErrorCode::AccessDenied)
+        );
+        assert_eq!(h.registered(), 0);
+
+        // The right one gets in, and so does either of two.
+        let right = with_proof(plain.clone(), "open sesame", &nonce);
+        assert_eq!(try_register(&mut h, &right, &nonce), Ok(()));
+        assert_eq!(h.registered(), 1);
+        let mut two = guarded(&["old secret", "new secret"]);
+        for secret in ["old secret", "new secret"] {
+            let other = DeviceIdentity::generate();
+            let r = with_proof(reg(&other, &nonce, "signal.test"), secret, &nonce);
+            assert_eq!(try_register(&mut two, &r, &nonce), Ok(()));
+        }
+        assert_eq!(two.registered(), 2);
+    }
+
+    /// The proof is for the device that sent it: another device's cannot be used.
+    #[test]
+    fn a_proof_does_not_carry_over_to_another_device() {
+        let (a, b) = (DeviceIdentity::generate(), DeviceIdentity::generate());
+        let nonce = [4u8; 32];
+        let mut proved = with_proof(reg(&a, &nonce, "signal.test"), "s", &nonce);
+        let theirs = reg(&b, &nonce, "signal.test");
+        proved.pubkey = theirs.pubkey;
+        proved.x25519_sig = theirs.x25519_sig;
+        proved.sig = theirs.sig;
+        assert_eq!(
+            try_register(&mut guarded(&["s"]), &proved, &nonce),
+            Err(ErrorCode::AccessDenied)
+        );
     }
 
     fn join(

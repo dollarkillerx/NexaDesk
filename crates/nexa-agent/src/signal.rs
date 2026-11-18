@@ -151,7 +151,13 @@ pub(crate) async fn run(shared: Arc<Shared>, setup: SignalSetup, keys: Arc<Signa
                     _ = tokio::time::sleep(backoff) => {}
                     _ = shutdown.wait_for(|s| *s) => break,
                 }
-                backoff = (backoff * 2).min(BACKOFF_MAX);
+                // Another try cannot help: the password stays what it is until it is
+                // changed, and each try counts against the server's limits.
+                backoff = if matches!(e, nexa_session::rendezvous::signal::SignalError::AccessDenied(_)) {
+                    BACKOFF_MAX
+                } else {
+                    (backoff * 2).min(BACKOFF_MAX)
+                };
                 continue;
             }
         };
