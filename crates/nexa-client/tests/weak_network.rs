@@ -264,6 +264,11 @@ impl Link {
         lock(&self.state).cut = cut;
     }
 
+    /// Changes what the link does to the host's packets from now on.
+    fn set_down(&self, change: impl FnOnce(&mut Impairment)) {
+        change(&mut lock(&self.state).down.imp);
+    }
+
     /// Loses everything the host sends for the next `time`.
     fn lose(&self, time: Duration) {
         lock(&self.state).lose_down_until = Some(Instant::now() + time);
@@ -1070,6 +1075,67 @@ async fn a_long_outage_reconnects_by_itself() {
     );
     assert!(!v.saw(|b| matches!(b, EventBody::Disconnected(_))));
     assert!(back < Duration::from_secs(10), "{back:?}");
+}
+
+/// Light work on a far link (typing, with a larger repaint for 0.3 s of every 2 s),
+/// a slow spell of four seconds that cuts the bitrate, and the link as it was again.
+/// The recovery probes that find out at once whether the old rate is back did
+/// nothing here: their padding rode on small frames that may carry little, the pacer
+/// spread what was left like a key frame, and they were judged before a round trip
+/// had reported them. The bitrate then crept back only while the screen was busy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn light_work_on_a_far_link_gets_its_bitrate_back() {
+    let (up, down) = both(Impairment {
+        delay: Duration::from_millis(135),
+        jitter: Duration::from_millis(5),
+        ..Impairment::CLEAN
+    });
+    let h = host().await;
+    *lock(&h.probe.still) = Some(|t| t.as_millis() % 2000 >= 300);
+    *lock(&h.probe.started) = Some(Instant::now());
+    let link = Link::start(h.addr, up, down).await;
+    let (_v, _) = Viewer::connect(&h, &link).await;
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    let before = h.probe.bps.load(SeqCst);
+    // Four seconds at 1 Mbit/s: two repaints, whenever in their cycle it begins.
+    link.set_down(|imp| imp.rate_bps = Some(1_000_000));
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let low = h.probe.bps.load(SeqCst);
+    link.set_down(|imp| imp.rate_bps = None);
+    let restored = Instant::now();
+    let mut back = None;
+    // For a failure: the bitrate and what the host sent, every half second.
+    let mut seen = String::new();
+    let (mut last_sent, mut next_note) = (lock(&link.state).down.stats.sent, Duration::ZERO);
+    while restored.elapsed() < Duration::from_secs(20) {
+        let bps = h.probe.bps.load(SeqCst);
+        if restored.elapsed() >= next_note {
+            next_note += Duration::from_millis(500);
+            let sent = lock(&link.state).down.stats.sent;
+            seen += &format!(" {:.1}/{}", f64::from(bps) / 1e6, sent - last_sent);
+            last_sent = sent;
+        }
+        if f64::from(bps) >= 0.8 * f64::from(before) {
+            back = Some(restored.elapsed());
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    eprintln!("    after the slow spell, Mbit/s / packets per half second:{seen}");
+    eprintln!(
+        "light work, 270 ms round trip, 4 s at 1 Mbit/s: bitrate {:.1} Mbit/s before, {:.1} at the end of the slow spell, back at 80% after {:?}",
+        f64::from(before) / 1e6,
+        f64::from(low) / 1e6,
+        back
+    );
+    assert!(
+        f64::from(low) < 0.5 * f64::from(before),
+        "no cut to recover from"
+    );
+    assert!(
+        back.is_some_and(|t| t < Duration::from_secs(8)),
+        "the bitrate stayed down: {back:?}"
+    );
 }
 
 /// Game mode gives a frame a frame interval and a half (25 ms) to arrive, and a
