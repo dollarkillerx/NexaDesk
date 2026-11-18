@@ -31,14 +31,46 @@ pub struct Config {
 
 /// Browser access across the internet (docs/WEB_CLIENT.md §12): the page on the
 /// signaling port, and TURN on the first STUN address.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WebSection {
+    /// A password for browsers, apart from the signaling key (browsers cannot hold
+    /// that one): the page asks for it next to the device ID, and the server puts a
+    /// browser through, and hands it TURN credentials, only when it is right. Without
+    /// one, browsers are not asked for anything here; what lets a browser into a host
+    /// is still the host's own password, one-time code or consent (§9).
+    #[serde(default)]
+    pub password: Option<String>,
     /// TURN allocations at once. Each browser session takes two.
     #[serde(default = "default_turn_allocations")]
     pub max_allocations: usize,
     #[serde(default = "default_turn_per_ip")]
     pub max_per_ip: usize,
+}
+
+impl std::fmt::Debug for WebSection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebSection")
+            .field("password", &self.password.as_ref().map(|_| ".."))
+            .field("max_allocations", &self.max_allocations)
+            .field("max_per_ip", &self.max_per_ip)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for SignalSection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SignalSection")
+            .field("listen", &self.listen)
+            .field("tls_cert", &self.tls_cert)
+            .field("tls_key", &self.tls_key)
+            .field("server_names", &self.server_names)
+            .field(
+                "access_secrets",
+                &format!("{} (hidden)", self.access_secrets.len()),
+            )
+            .finish()
+    }
 }
 
 fn default_turn_allocations() -> usize {
@@ -48,7 +80,7 @@ fn default_turn_per_ip() -> usize {
     8
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SignalSection {
     /// TCP address for WebSocket signaling.
@@ -61,13 +93,12 @@ pub struct SignalSection {
     /// server is refused.
     #[serde(default)]
     pub server_names: Vec<String>,
-    /// Access secrets. With none the server is open: any device may register. With
-    /// one or more, a device registers only by proving it knows one of them, and
-    /// several let a secret be replaced without cutting everyone off at once (list
-    /// the new one, hand it out, then drop the old). The secret never crosses the
-    /// wire; see `nexa_auth::signal_access`. It gates the signaling, the relays that
-    /// registered devices are granted and the lookups, but not STUN, and not the
-    /// browser page and TURN (`[web]`), which are open to browsers by design.
+    /// The signaling key, required: a device registers only by proving it knows one
+    /// of these, and several let a key be replaced without cutting everyone off at
+    /// once (list the new one, hand it out, then drop the old). The key never crosses
+    /// the wire; see `nexa_auth::signal_access`. It gates the signaling, the relays
+    /// that registered devices are granted and the lookups, but not STUN, and not the
+    /// browser page and TURN (`[web]`, which has a password of its own).
     #[serde(default)]
     pub access_secrets: Vec<String>,
 }
@@ -156,6 +187,11 @@ impl Limits {
     }
 }
 
+/// The shortest signaling key accepted.
+pub const MIN_ACCESS_SECRET_CHARS: usize = 10;
+/// The key `--example-config` prints: refused, so that nobody runs with it.
+pub const EXAMPLE_SECRET: &str = "CHANGE-THIS-to-a-long-key-of-your-own";
+
 pub const EXAMPLE: &str = r#"# nexa-signal: signaling, STUN and relay in one process (§4.3, §4.6).
 # All state is in memory; restarting makes clients register again.
 
@@ -165,11 +201,11 @@ tls_cert = "/etc/nexa-signal/fullchain.pem"
 tls_key = "/etc/nexa-signal/privkey.pem"
 # The names clients use to reach this server (recommended).
 server_names = ["signal.example.com"]
-# A shared password for registering. Without it anyone who knows the address may
-# register devices and use the relays. Clients enter the same password in their
-# settings; it is never sent, only a proof of it. List two to replace one without
-# cutting everyone off. Keep this file readable by the service only.
-# access_secrets = ["a long password nobody would guess"]
+# The signaling key, required. Devices register only by proving they know it, and it
+# keeps strangers off the relays. Clients enter the same key in their settings; it is
+# never sent, only a proof of it. At least 10 characters. List two to replace one
+# without cutting everyone off. Keep this file readable by the service only.
+access_secrets = ["CHANGE-THIS-to-a-long-key-of-your-own"]
 
 [stun]
 # Two addresses, ideally on two different public IPs, so clients can tell an
@@ -188,6 +224,9 @@ token_ttl_secs = 3600
 [web]
 # Browsers anywhere: the page at https://signal.example.com/, and TURN on the first
 # STUN address. A browser session's screen and input go through this server.
+# A password for browsers (optional, and not the signaling key): the page asks for it
+# next to the device ID. Without it browsers are asked for nothing here.
+# password = "something people will type"
 max_allocations = 200
 
 [limits]
@@ -213,20 +252,42 @@ impl Config {
                 "tls_cert and tls_key go together".into(),
             ));
         }
-        // Clients trim what a person typed, so a secret with spaces at either end
-        // could never be matched.
+        // A signaling server always has a key: the only thing between its relays and
+        // the whole internet.
+        if self.signal.access_secrets.is_empty() {
+            return Err(ConfigError::Invalid(
+                "signal.access_secrets: the signaling server needs a key; list at least one (see --example-config)"
+                    .into(),
+            ));
+        }
         for s in &self.signal.access_secrets {
-            if s.trim().is_empty() {
-                return Err(ConfigError::Invalid(
-                    "signal.access_secrets: a secret may not be empty".into(),
-                ));
-            }
+            // Clients trim what a person typed, so a key with spaces at either end
+            // could never be matched.
             if s.trim() != s {
                 return Err(ConfigError::Invalid(
-                    "signal.access_secrets: a secret may not start or end with a space or a line break"
+                    "signal.access_secrets: a key may not start or end with a space or a line break"
                         .into(),
                 ));
             }
+            if s.chars().count() < MIN_ACCESS_SECRET_CHARS {
+                return Err(ConfigError::Invalid(format!(
+                    "signal.access_secrets: a key needs at least {MIN_ACCESS_SECRET_CHARS} characters"
+                )));
+            }
+            if s == EXAMPLE_SECRET {
+                return Err(ConfigError::Invalid(
+                    "signal.access_secrets: replace the key of the example with your own".into(),
+                ));
+            }
+        }
+        if let Some(w) = &self.web
+            && let Some(p) = &w.password
+            && (p.is_empty() || p.trim() != p)
+        {
+            return Err(ConfigError::Invalid(
+                "web.password: not empty, and no space or line break at either end (leave it out for browsers without a password)"
+                    .into(),
+            ));
         }
         if self.stun.listen.len() > 2 {
             return Err(ConfigError::Invalid("at most two STUN addresses".into()));
@@ -292,54 +353,127 @@ pub fn stun_note(advertised: &[SocketAddr]) -> Option<String> {
 mod tests {
     use super::*;
 
+    const KEY: &str = r#"access_secrets = ["a key of its own"]"#;
+
+    /// `--example-config` with a key of one's own, as an operator would make it.
+    fn example() -> String {
+        EXAMPLE.replace(&format!("{EXAMPLE_SECRET:?}"), "\"a key of its own\"")
+    }
+
     #[test]
-    fn example_parses_and_validates() {
-        let c = Config::from_toml(EXAMPLE).unwrap();
+    fn example_parses_and_validates_once_it_has_a_key_of_its_own() {
+        let c = Config::from_toml(&example()).unwrap();
         assert_eq!(c.stun_advertised().len(), 2);
         assert!(c.stun_note().unwrap().contains("share one IP"));
         assert_eq!(c.relay_advertised().unwrap().port(), 3480);
+        // As printed it is refused: nobody runs with the key of the example.
+        assert!(
+            Config::from_toml(EXAMPLE)
+                .unwrap_err()
+                .to_string()
+                .contains("example")
+        );
     }
 
     #[test]
     fn rejects_unusable_configs() {
-        let wildcard = r#"
+        let wildcard = format!(
+            r#"
 [signal]
 listen = "127.0.0.1:8443"
+{KEY}
 [stun]
 listen = ["0.0.0.0:3478"]
-"#;
-        assert!(Config::from_toml(wildcard).is_err());
-        let half_tls = r#"
+"#
+        );
+        assert!(Config::from_toml(&wildcard).is_err());
+        let half_tls = format!(
+            r#"
 [signal]
 listen = "127.0.0.1:8443"
+{KEY}
 tls_cert = "a.pem"
-"#;
-        assert!(Config::from_toml(half_tls).is_err());
-        let unknown = r#"
+"#
+        );
+        assert!(Config::from_toml(&half_tls).is_err());
+        let unknown = format!(
+            r#"
 [signal]
 listen = "127.0.0.1:8443"
+{KEY}
 lisen = "x"
-"#;
-        assert!(Config::from_toml(unknown).is_err());
+"#
+        );
+        assert!(Config::from_toml(&unknown).is_err());
+    }
+
+    /// The signaling server always has a key, of some length, as typed.
+    #[test]
+    fn the_signaling_key_is_required() {
+        let with = |keys: &str| {
+            Config::from_toml(&format!(
+                "[signal]\nlisten = \"127.0.0.1:8443\"\naccess_secrets = {keys}\n"
+            ))
+        };
+        let c = with(r#"["one long enough", "and another one"]"#).unwrap();
+        assert_eq!(
+            c.signal.access_secrets,
+            ["one long enough", "and another one"]
+        );
+        // None at all: refused, with the way out in the message.
+        let none = Config::from_toml("[signal]\nlisten = \"127.0.0.1:8443\"\n").unwrap_err();
+        assert!(none.to_string().contains("needs a key"), "{none}");
+        assert!(with("[]").is_err());
+        for bad in [
+            r#"["short"]"#,
+            r#"["  padded key here"]"#,
+            r#"["line key here\n"]"#,
+            r#"["ok key of length", "x"]"#,
+        ] {
+            assert!(with(bad).is_err(), "{bad}");
+        }
+        assert!(with(r#"["ten chars!!"]"#).is_ok());
+        assert!(with(r#"["123456789"]"#).is_err());
     }
 
     #[test]
-    fn access_secrets_are_optional_and_never_empty() {
-        let open = Config::from_toml(EXAMPLE).unwrap();
-        assert!(open.signal.access_secrets.is_empty());
-        let with = EXAMPLE.replace(
-            "# access_secrets = [\"a long password nobody would guess\"]",
-            "access_secrets = [\"one\", \"two\"]",
+    fn the_web_password_is_optional_and_never_empty() {
+        let with = |web: &str| {
+            Config::from_toml(&format!(
+                "[signal]\nlisten = \"127.0.0.1:8443\"\naccess_secrets = [\"a key of its own\"]\n[stun]\nlisten = [\"127.0.0.1:3478\"]\n[web]\n{web}\n"
+            ))
+        };
+        assert!(with("").unwrap().web.unwrap().password.is_none());
+        assert_eq!(
+            with(r#"password = "hunter2""#)
+                .unwrap()
+                .web
+                .unwrap()
+                .password
+                .as_deref(),
+            Some("hunter2")
         );
-        let c = Config::from_toml(&with).unwrap();
-        assert_eq!(c.signal.access_secrets, ["one", "two"]);
-        for bad in ["  ", " padded", "line\\n"] {
-            let text = EXAMPLE.replace(
-                "# access_secrets = [\"a long password nobody would guess\"]",
-                &format!("access_secrets = [\"{bad}\"]"),
-            );
-            assert!(Config::from_toml(&text).is_err(), "{bad:?}");
+        for bad in [
+            r#"password = """#,
+            r#"password = " x""#,
+            r#"password = "x\n""#,
+        ] {
+            assert!(with(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn secrets_do_not_show_in_debug_output() {
+        let text = format!(
+            "{:?}",
+            Config::from_toml(&example().replace(
+                "max_allocations = 200",
+                "password = \"web password\"\nmax_allocations = 200",
+            ))
+            .unwrap()
+        );
+        assert!(!text.contains("a key of its own"), "{text}");
+        assert!(!text.contains("web password"), "{text}");
     }
 
     #[test]

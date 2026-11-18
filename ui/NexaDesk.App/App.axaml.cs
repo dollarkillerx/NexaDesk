@@ -130,8 +130,18 @@ public partial class App : Application
             // Remote control comes on by itself at a Windows login, and after a restart that
             // happened while hosting (see MainViewModel.ResumesHosting). That also picks up an
             // agent still running, so the window's own attach would only race it on the link.
-            if (StartInBackground || vm.ResumesHosting) _ = vm.Host.AttachOrStartAsync();
-            else main.Opened += async (_, _) => await vm.Host.TryAttachExistingAsync();
+            // The server's access key comes out of the Keychain first: the agent starts with it.
+            if (StartInBackground || vm.ResumesHosting)
+                _ = Task.Run(async () =>
+                {
+                    await vm.Settings.LoadSecretAsync();
+                    await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() => vm.Host.AttachOrStartAsync());
+                });
+            else
+            {
+                _ = vm.Settings.LoadSecretAsync();
+                main.Opened += async (_, _) => await vm.Host.TryAttachExistingAsync();
+            }
             _ = vm.Updates.CheckDailyAsync();
         }
         base.OnFrameworkInitializationCompleted();

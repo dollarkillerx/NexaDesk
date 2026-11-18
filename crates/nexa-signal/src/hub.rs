@@ -89,6 +89,8 @@ pub struct WebTurn {
     pub secret: Vec<u8>,
     /// Where browsers and hosts reach TURN.
     pub server: SocketAddr,
+    /// What a browser must present to be put through (`[web] password`); `None`: nothing.
+    pub password: Option<String>,
 }
 
 /// How long TURN credentials handed to one browser session stay valid.
@@ -100,6 +102,8 @@ pub enum BrowserRefusal {
     /// Browser access is not configured on this server.
     Unavailable,
     RateLimited,
+    /// This server asks browsers for a password, and there was none or a wrong one.
+    Key,
     /// No such device online.
     Offline,
     /// The host's connection is backed up.
@@ -112,6 +116,7 @@ impl BrowserRefusal {
         match self {
             Self::Unavailable => "unavailable",
             Self::RateLimited => "rate",
+            Self::Key => "key",
             Self::Offline => "offline",
             Self::Busy => "busy",
         }
@@ -261,6 +266,7 @@ impl Hub {
         &mut self,
         ip: IpAddr,
         short_id: &str,
+        key: &str,
         out: mpsc::Sender<ToBrowser>,
         now: Instant,
         unix: u64,
@@ -268,8 +274,15 @@ impl Hub {
         let Some(web) = self.web.clone() else {
             return Err(BrowserRefusal::Unavailable);
         };
+        // Every attempt counts against the limit, so guessing the password is slow.
         if !self.connect_ip.allow(&ip, now) {
             return Err(BrowserRefusal::RateLimited);
+        }
+        // Before anything is said about which devices are online.
+        if let Some(password) = &web.password
+            && !nexa_auth::signal_access::secrets_equal(password, key)
+        {
+            return Err(BrowserRefusal::Key);
         }
         let Some(peer) = normalize_short_id(short_id).and_then(|id| self.peers.get(&id)) else {
             return Err(BrowserRefusal::Offline);
@@ -764,8 +777,77 @@ mod tests {
             web: Some(WebTurn {
                 secret: b"turn secret".to_vec(),
                 server: "203.0.113.1:3478".parse().unwrap(),
+                password: None,
             }),
         })
+    }
+
+    fn with_web_password(password: &str) -> Hub {
+        let mut h = hub();
+        if let Some(w) = h.web.as_mut() {
+            w.password = Some(password.into());
+        }
+        h
+    }
+
+    /// A server that asks browsers for a password puts through only those that know
+    /// it, before saying anything about which devices are online, and counts each
+    /// try against the browser's address.
+    #[test]
+    fn a_browser_needs_the_web_password_when_there_is_one() {
+        let mut h = with_web_password("let me in");
+        let host = DeviceIdentity::generate();
+        let (host_id, mut host_rx) = join(&mut h, 1, &host);
+        let ip: IpAddr = [192, 0, 2, 9].into();
+        let try_with = |h: &mut Hub, id: &str, key: &str| {
+            let (tx, _rx) = mpsc::channel(8);
+            h.open_browser(ip, id, key, tx, Instant::now(), 1_800_000_000)
+                .map(|_| ())
+        };
+        // None, a wrong one, and one for another try: refused alike, whether or not
+        // the device is online.
+        for key in ["", "let me", "Let me in", "let me in "] {
+            assert_eq!(
+                try_with(&mut h, &host_id, key),
+                Err(BrowserRefusal::Key),
+                "{key:?}"
+            );
+            assert_eq!(
+                try_with(&mut h, "123456789", key),
+                Err(BrowserRefusal::Key),
+                "{key:?}"
+            );
+        }
+        assert!(
+            host_rx.try_recv().is_err(),
+            "the host heard of a refused browser"
+        );
+        // The right one gets through; an unknown device is then offline, as before.
+        assert_eq!(try_with(&mut h, &host_id, "let me in"), Ok(()));
+        assert!(host_rx.try_recv().is_ok());
+        assert_eq!(
+            try_with(&mut h, "123456789", "let me in"),
+            Err(BrowserRefusal::Offline)
+        );
+        assert_eq!(BrowserRefusal::Key.code(), "key");
+    }
+
+    /// Without a web password a browser sends none and is asked for none.
+    #[test]
+    fn browsers_are_asked_for_nothing_without_a_web_password() {
+        let mut h = hub();
+        let host = DeviceIdentity::generate();
+        let (host_id, _rx) = join(&mut h, 1, &host);
+        let (tx, _brx) = mpsc::channel(8);
+        let ip: IpAddr = [192, 0, 2, 9].into();
+        assert!(
+            h.open_browser(ip, &host_id, "", tx.clone(), Instant::now(), 1)
+                .is_ok()
+        );
+        assert!(
+            h.open_browser(ip, &host_id, "anything", tx, Instant::now(), 1)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -778,7 +860,7 @@ mod tests {
         let browser_ip: IpAddr = [192, 0, 2, 9].into();
         let (tx, mut browser_rx) = mpsc::channel(8);
         let route = h
-            .open_browser(browser_ip, &host_id, tx, Instant::now(), 1_800_000_000)
+            .open_browser(browser_ip, &host_id, "", tx, Instant::now(), 1_800_000_000)
             .unwrap();
         assert_eq!(route.turn_server, "203.0.113.1:3478".parse().unwrap());
         assert_eq!(
@@ -837,7 +919,7 @@ mod tests {
         let (tx, _rx) = mpsc::channel(8);
         let ip: IpAddr = [192, 0, 2, 9].into();
         assert_eq!(
-            h.open_browser(ip, "123456789", tx.clone(), Instant::now(), 0)
+            h.open_browser(ip, "123456789", "", tx.clone(), Instant::now(), 0)
                 .err(),
             Some(BrowserRefusal::Offline)
         );
@@ -854,7 +936,7 @@ mod tests {
         });
         assert_eq!(
             plain
-                .open_browser(ip, "123456789", tx, Instant::now(), 0)
+                .open_browser(ip, "123456789", "", tx, Instant::now(), 0)
                 .err(),
             Some(BrowserRefusal::Unavailable)
         );

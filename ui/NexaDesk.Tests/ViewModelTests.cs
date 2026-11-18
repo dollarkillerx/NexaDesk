@@ -840,6 +840,11 @@ public class DeviceIdTests
         string? changed = null;
         s.ServerChanged += v => changed = v;
         s.ServerInput = "signal.example.com";
+        // A signaling server always has a key: not saved without it.
+        Assert.False(s.SaveCommand.CanExecute(null));
+        Assert.NotNull(s.SecretHint);
+        s.SecretInput = "the server's key";
+        Assert.Null(s.SecretHint);
         Assert.True(s.SaveCommand.CanExecute(null));
         s.SaveCommand.Execute(null);
         Assert.Equal("wss://signal.example.com", store.Current.SignalServer);

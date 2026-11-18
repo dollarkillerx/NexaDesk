@@ -2,7 +2,7 @@
 //! (docs/WEB_CLIENT.md §12).
 //!
 //! ```text
-//! browser → server  {type:"hello", id:"123456789"}
+//! browser → server  {type:"hello", id:"123456789", key:"…"}   (key: only when /mode said so)
 //! server → browser  {type:"routed", ice:{urls, username, credential}}   or {type:"error", code}
 //! then              the direct-access protocol (nexa-web's session.rs), frame by frame,
 //!                   between the browser and the host, which gets them as BrowserText
@@ -72,8 +72,11 @@ where
         }
     })
     .await;
-    let id = match hello {
-        Ok(Some(v)) if v["type"] == "hello" => v["id"].as_str().unwrap_or("").to_string(),
+    let (id, key) = match hello {
+        Ok(Some(v)) if v["type"] == "hello" => (
+            v["id"].as_str().unwrap_or("").to_string(),
+            v["key"].as_str().unwrap_or("").to_string(),
+        ),
         _ => {
             let _ = send(&mut sink, json!({"type": "error", "code": "protocol"})).await;
             return;
@@ -84,6 +87,7 @@ where
     let opened = hub.lock().unwrap_or_else(|e| e.into_inner()).open_browser(
         ip,
         &id,
+        &key,
         tx,
         Instant::now(),
         unix_now(),

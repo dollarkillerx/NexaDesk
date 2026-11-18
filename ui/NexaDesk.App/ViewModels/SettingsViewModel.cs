@@ -18,10 +18,12 @@ public sealed record LanguageOption(string Code, string Name)
 public sealed partial class SettingsViewModel : ObservableObject
 {
     readonly ISettingsStore _store;
+    readonly ISavedPasswords? _passwords;
 
-    public SettingsViewModel(ISettingsStore store)
+    public SettingsViewModel(ISettingsStore store, ISavedPasswords? passwords = null)
     {
         _store = store;
+        _passwords = passwords;
         var loaded = store.Load();
         _savedServer = loaded.SignalServer;
         _serverInput = _savedServer;
@@ -91,16 +93,56 @@ public sealed partial class SettingsViewModel : ObservableObject
     private string _savedServer;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(ServerHint), nameof(IsDirty))]
+    [NotifyPropertyChangedFor(nameof(ServerHint), nameof(SecretHint), nameof(IsDirty))]
     [NotifyCanExecuteChangedFor(nameof(SaveCommand))]
     private string _serverInput;
 
     /// <summary>Raised after a change is saved.</summary>
     public event Action<string>? ServerChanged;
 
+    /// <summary>
+    /// The server's access key, in effect ("" with no server). A signaling server always asks for
+    /// one, so a server is only saved with it. Kept in the login Keychain under the server it
+    /// belongs to, never in settings.json; <see cref="LoadSecretAsync"/> reads it back at start.
+    /// </summary>
+    [ObservableProperty]
+    private string _savedSecret = "";
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(SecretHint), nameof(IsDirty))]
+    [NotifyCanExecuteChangedFor(nameof(SaveCommand))]
+    private string _secretInput = "";
+
+    /// <summary>Why the key could not be kept in the Keychain, after a Save.</summary>
+    [ObservableProperty]
+    private string? _secretError;
+
+    static string AccountFor(string server) => "signal-access:" + server;
+
+    /// <summary>Reads the saved server's key back from the Keychain. Run before anything uses it.</summary>
+    public async Task LoadSecretAsync()
+    {
+        if (_passwords == null || SavedServer.Length == 0) return;
+        var kept = await _passwords.LoadAsync(AccountFor(SavedServer)) ?? "";
+        // What the person typed while the Keychain answered wins.
+        if (SecretInput.Length == 0 && SavedSecret.Length == 0) SecretInput = kept;
+        SavedSecret = kept;
+        OnServerChanged();
+    }
+
+    void OnServerChanged() => ServerChanged?.Invoke(SavedServer);
+
     public bool HasServer => SavedServer.Length > 0;
 
-    public bool IsDirty => (ServerInput.Trim().Length == 0 ? "" : Texts.NormalizeServer(ServerInput)) != SavedServer;
+    string TypedSecret => SecretInput.Trim();
+
+    string? TypedServer => ServerInput.Trim().Length == 0 ? "" : Texts.NormalizeServer(ServerInput);
+
+    public bool IsDirty => TypedServer != SavedServer || (TypedServer?.Length > 0 && TypedSecret != SavedSecret);
+
+    /// <summary>A server needs its key: it cannot be saved without one.</summary>
+    public string? SecretHint =>
+        ServerInput.Trim().Length > 0 && TypedSecret.Length == 0 ? L.Get("Main.SecretHint") : null;
 
     public string? ServerHint =>
         ServerInput.Trim().Length > 0 && Texts.NormalizeServer(ServerInput) == null
@@ -111,15 +153,32 @@ public sealed partial class SettingsViewModel : ObservableObject
         ? L.Format("Main.ServerInUse", SavedServer)
         : L.Get("Main.ServerNotUsed");
 
-    bool CanSave() => IsDirty && ServerHint == null;
+    bool CanSave() => IsDirty && ServerHint == null && SecretHint == null;
 
     [RelayCommand(CanExecute = nameof(CanSave))]
-    private void Save()
+    private async Task SaveAsync()
     {
-        var value = ServerInput.Trim().Length == 0 ? "" : Texts.NormalizeServer(ServerInput);
+        var value = TypedServer;
         if (value == null) return;
+        var secret = value.Length == 0 ? "" : TypedSecret;
+        SecretError = null;
+        // The key first: a server is never saved without the key it needs.
+        if (value.Length > 0 && _passwords != null)
+        {
+            var why = await _passwords.SaveAsync(AccountFor(value), secret);
+            if (why != null)
+            {
+                SecretError = L.Format("Main.SecretNotKept", why);
+                return;
+            }
+        }
+        // A server given up takes its key with it.
+        if (value.Length == 0 && SavedServer.Length > 0 && _passwords != null)
+            await _passwords.DeleteAsync(AccountFor(SavedServer));
         SavedServer = value;
+        SavedSecret = secret;
         ServerInput = value;
+        SecretInput = secret;
         Persist();
         ServerChanged?.Invoke(value);
     }

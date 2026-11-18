@@ -16,6 +16,8 @@ const DEVICE_ID = /^[1-9][0-9]{8}$/;
 /** "direct" when the host itself served this page; "server" when the signaling server
  *  did, for a host anywhere: then a device ID is needed, and media goes through TURN. */
 let mode = "direct";
+/** The server asks browsers for a password of its own (`/mode`: `password: true`). */
+let serverKey = false;
 
 // ---- Pairing (WebAssembly from crates/nexa-web-pake) ----
 
@@ -141,6 +143,12 @@ function connect(code, deviceId, method = "code", opts = {}) {
   const finish = (key, { error = true } = {}) => {
     if (s.ended) return;
     s.ended = true;
+    // The server's password for browsers: show the field, wherever the page found out.
+    if (key === "error.key") {
+      $("webkey-row").hidden = false;
+      $("webkey").classList.add("invalid");
+      setTimeout(() => $("webkey").focus(), 0);
+    }
     // A kept password the host no longer takes: drop it and ask for it again.
     if (key === "error.password" && opts.from?.sealed) {
       saved.forgetPassword(opts.from.id);
@@ -195,7 +203,7 @@ function connect(code, deviceId, method = "code", opts = {}) {
   };
   ws.onopen = () => {
     // Through the server: say which host first; the offer follows once routed.
-    if (mode === "server") ws.send(JSON.stringify({ type: "hello", id: deviceId }));
+    if (mode === "server") ws.send(JSON.stringify({ type: "hello", id: deviceId, key: serverKey ? $("webkey").value : undefined }));
     else offer();
   };
   ws.onerror = () => finish(s.started ? "error.network" : "error.webrtc");
@@ -1121,6 +1129,13 @@ function init() {
       $("device-help").textContent = t("error.deviceFormat");
       return;
     }
+    if (mode === "server" && serverKey && $("webkey").value === "") {
+      $("webkey").classList.add("invalid");
+      $("webkey-help").classList.add("invalid");
+      $("webkey-help").textContent = t("error.key");
+      $("webkey").focus();
+      return;
+    }
     // Through the server, an empty code asks the person at the host instead.
     if (mode === "server" && code.value.trim() === "") {
       setConnecting(true);
@@ -1155,9 +1170,16 @@ function init() {
     $("device-help").classList.remove("invalid");
     $("device-help").textContent = t("deviceHelp");
   });
+  $("webkey").addEventListener("input", () => {
+    $("webkey").classList.remove("invalid");
+    $("webkey-help").classList.remove("invalid");
+    $("webkey-help").textContent = t("webKeyHelp");
+  });
   fetch("/mode").then((r) => r.json()).then((m) => {
     if (m?.mode !== "server") return;
     mode = "server";
+    serverKey = m.password === true;
+    $("webkey-row").hidden = !serverKey;
     $("device-row").hidden = false;
     $("code").required = false;
     $("code-help").textContent = t("codeHelpServer");

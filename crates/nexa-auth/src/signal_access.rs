@@ -65,6 +65,15 @@ pub fn verify_access_proof(
         .is_ok()
 }
 
+/// Whether two secrets are the same, in a time that does not depend on how much of
+/// them agrees or on their lengths (both are hashed first).
+pub fn secrets_equal(a: &str, b: &str) -> bool {
+    use sha2::Digest as _;
+    use subtle::ConstantTimeEq as _;
+    let (a, b) = (Sha256::digest(a.as_bytes()), Sha256::digest(b.as_bytes()));
+    a.ct_eq(&b).into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,6 +146,15 @@ mod tests {
             &KEY,
             &proof
         ));
+    }
+
+    #[test]
+    fn secrets_compare_by_value() {
+        assert!(secrets_equal("open sesame", "open sesame"));
+        for other in ["open sesam", "open sesamee", "Open sesame", ""] {
+            assert!(!secrets_equal("open sesame", other), "{other:?}");
+        }
+        assert!(secrets_equal("", ""));
     }
 
     #[test]

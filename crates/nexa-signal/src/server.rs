@@ -130,6 +130,7 @@ pub async fn start(settings: Settings, sockets: Sockets) -> std::io::Result<Serv
                 crate::hub::WebTurn {
                     secret,
                     server: *advertised,
+                    password: w.password.clone(),
                 },
             ))
         }
@@ -185,6 +186,7 @@ pub async fn start(settings: Settings, sockets: Sockets) -> std::io::Result<Serv
         relay: relay.clone(),
         relay_io: relay_io.clone(),
         web: turn.is_some(),
+        web_password: turn.as_ref().is_some_and(|(_, w)| w.password.is_some()),
     };
     tasks.push(tokio::spawn(accept_loop(sockets.ws, acceptor, ends)));
     Ok(Server {
@@ -204,6 +206,8 @@ struct Ends {
     relay_io: Arc<RelayIo>,
     /// Browser access is on: the page and `/web` are served.
     web: bool,
+    /// ...and browsers are asked for a password.
+    web_password: bool,
 }
 
 async fn accept_loop(listener: TcpListener, tls: Option<TlsAcceptor>, ends: Ends) {
@@ -289,7 +293,11 @@ where
                     &mut stream,
                     200,
                     "application/json",
-                    nexa_web_page::MODE_SERVER,
+                    if ends.web_password {
+                        nexa_web_page::MODE_SERVER_PASSWORD
+                    } else {
+                        nexa_web_page::MODE_SERVER
+                    },
                 )
                 .await;
             }

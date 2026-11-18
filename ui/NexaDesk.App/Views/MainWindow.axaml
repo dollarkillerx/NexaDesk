@@ -527,7 +527,14 @@
               <TextBox Name="ServerBox" Text="{Binding ServerInput}" Width="320" PlaceholderText="wss://signal.example.com" />
               <Button Name="SaveServerButton" Classes="small" Content="{l:T Main.Save}" Command="{Binding SaveCommand}" />
             </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <TextBlock Classes="label" Text="{l:T Main.SignalSecret}" VerticalAlignment="Center" />
+              <TextBox Name="SecretBox" Text="{Binding SecretInput}" Width="320" PasswordChar="●"
+                       PlaceholderText="{l:T Main.SecretPlaceholder}" />
+            </StackPanel>
             <TextBlock Classes="errorText" Text="{Binding ServerHint}" IsVisible="{Binding ServerHint, Converter={x:Static ObjectConverters.IsNotNull}}" />
+            <TextBlock Classes="errorText" TextWrapping="Wrap" Text="{Binding SecretHint}" IsVisible="{Binding SecretHint, Converter={x:Static ObjectConverters.IsNotNull}}" />
+            <TextBlock Classes="errorText" TextWrapping="Wrap" Text="{Binding SecretError}" IsVisible="{Binding SecretError, Converter={x:Static ObjectConverters.IsNotNull}}" />
           </StackPanel>
         </Expander>
       </StackPanel>

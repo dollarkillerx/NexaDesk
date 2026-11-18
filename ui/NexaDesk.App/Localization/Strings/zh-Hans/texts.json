@@ -34,7 +34,7 @@
   "Texts.Disconnect.NoPath.Title": "找不到能走通的网络路径",
   "Texts.Disconnect.NoPath.Detail": "直连、打洞和中继都没有成功。可能是防火墙拦截了 UDP，或者信令服务器没有配置中继。",
   "Texts.Disconnect.SignalServer.Title": "无法使用信令服务器",
-  "Texts.Disconnect.SignalServer.Detail": "连不上信令服务器，或服务器拒绝了请求。请检查设置里的服务器地址和网络。",
+  "Texts.Disconnect.SignalServer.Detail": "连不上信令服务器，或服务器拒绝了请求。请检查设置里的服务器地址、访问口令和网络。",
   "Texts.Disconnect.Other.Title": "连接已断开",
   "Texts.Disconnect.Other.Detail": "连接意外中断。",
   "Texts.Perm.View": "查看屏幕",

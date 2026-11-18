@@ -106,10 +106,14 @@ fn check(path: &Path, config: &Config) -> i32 {
 }
 
 fn access(config: &Config) -> String {
-    match config.signal.access_secrets.len() {
-        0 => "open to any device".to_owned(),
-        1 => "access password required".to_owned(),
-        n => format!("access password required ({n} accepted)"),
+    let keys = match config.signal.access_secrets.len() {
+        1 => "signaling key required".to_owned(),
+        n => format!("signaling key required ({n} accepted)"),
+    };
+    match &config.web {
+        None => keys,
+        Some(w) if w.password.is_some() => format!("{keys}, browsers need their password"),
+        Some(_) => format!("{keys}, browsers need no password"),
     }
 }
 
@@ -126,20 +130,9 @@ fn warn(config: &Config, tls: bool) {
     if config.relay.is_none() {
         eprintln!("nexa-signal: no relay configured: peers behind two hard NATs cannot connect");
     }
-    let secrets = &config.signal.access_secrets;
-    if secrets.is_empty() {
+    if config.web.as_ref().is_some_and(|w| w.password.is_none()) {
         eprintln!(
-            "nexa-signal: note: no signal.access_secrets, so any device that knows the address can register and use the relays"
-        );
-    }
-    if secrets.iter().any(|s| s.trim().chars().count() < 10) {
-        eprintln!(
-            "nexa-signal: warning: an access secret is shorter than 10 characters; a server that is shown a proof can try passwords against it offline"
-        );
-    }
-    if !secrets.is_empty() && config.web.is_some() {
-        eprintln!(
-            "nexa-signal: warning: [web] is on, and browsers do not use the access password: the page, /web and TURN stay open to anyone"
+            "nexa-signal: note: [web] has no password, so anyone can open the page and use TURN to reach a device; what lets a browser into a device is still that device's own password, code or consent"
         );
     }
     if config.signal.server_names.is_empty() {

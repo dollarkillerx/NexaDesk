@@ -139,6 +139,7 @@ async fn world_guarded(tls: bool, secrets: &[&str]) -> World {
             limits: relaxed_limits(),
             // TURN shares the first STUN socket: native clients must not notice.
             web: Some(nexa_signal::config::WebSection {
+                password: None,
                 max_allocations: 50,
                 max_per_ip: 8,
             }),
