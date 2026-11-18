@@ -70,6 +70,9 @@ public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
     /// on Chinese Windows): agent.log came out garbled, and a password with letters outside
     /// ASCII reached the agent as bytes that are not UTF-8. No byte order mark on stdin.
     /// </summary>
+    /// <summary>Where the agent finds the signaling server's access key.</summary>
+    internal const string SignalSecretVariable = "NEXA_SIGNAL_SECRET";
+
     internal static ProcessStartInfo StartInfo(string path)
     {
         var utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
@@ -114,11 +117,17 @@ public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
         }
     }
 
-    public string? Start(string listen, string deviceName, string signalServer, bool announceOnLan, string? web = null)
+    public string? Start(string listen, string deviceName, string signalServer, bool announceOnLan, string? web = null,
+        string? signalSecret = null)
     {
         var path = Locate();
         if (path == null) return L.Get("Platform.AgentMissing");
         var info = StartInfo(path);
+        // Not on the command line, where any process could read it; and never one left over
+        // from the environment this app itself was started in.
+        info.Environment.Remove(SignalSecretVariable);
+        if (!string.IsNullOrEmpty(signalServer) && !string.IsNullOrEmpty(signalSecret))
+            info.Environment[SignalSecretVariable] = signalSecret;
         info.ArgumentList.Add("--listen");
         info.ArgumentList.Add(listen);
         info.ArgumentList.Add("--name");
@@ -397,7 +406,8 @@ public sealed class SettingsStore(string path) : ISettingsStore
             var s = JsonSerializer.Deserialize(f, SettingsJson.Default.AppSettings) ?? new AppSettings();
             // Only what the app itself would have written is honoured.
             return new AppSettings(ViewModels.Texts.NormalizeServer(s.SignalServer) ?? "", s.AnnounceOnLan,
-                Localization.L.IsSupported(s.Language ?? "") ? s.Language! : "", s.AllowBrowsers, s.ResumeHosting);
+                Localization.L.IsSupported(s.Language ?? "") ? s.Language! : "", s.AllowBrowsers, s.ResumeHosting,
+                s.UseServerList);
         }
         catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException)
         {

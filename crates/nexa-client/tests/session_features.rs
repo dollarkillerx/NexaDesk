@@ -476,6 +476,7 @@ impl Viewer {
             fps: 0,
             auth: Some(ConnectAuth::Code(h.agent.current_code().to_string())),
             signal_server: String::new(),
+            signal_secret: String::new(),
         }
         .encode_to_vec();
         let mut session = std::ptr::null_mut();

@@ -176,10 +176,14 @@ public sealed class FakeProcess : IAgentProcess
         return Task.FromResult(IdResetResult);
     }
 
-    public string? Start(string listen, string deviceName, string signalServer, bool announceOnLan, string? web = null)
+    public List<string?> Secrets { get; } = new();
+
+    public string? Start(string listen, string deviceName, string signalServer, bool announceOnLan, string? web = null,
+        string? signalSecret = null)
     {
         Starts.Add((listen, deviceName));
         Servers.Add(signalServer);
+        Secrets.Add(signalSecret);
         Announces.Add(announceOnLan);
         Webs.Add(web);
         IsRunning = StartResult == null;

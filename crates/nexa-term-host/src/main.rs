@@ -204,7 +204,9 @@ fn run(args: &[String]) -> Result<(), String> {
     };
 
     nexa_session::rendezvous::signal::parse_url(&opts.signal).map_err(|e| e.to_string())?;
-    let mut server = SignalConfig::new(opts.signal.clone());
+    let mut server = SignalConfig::new(opts.signal.clone()).with_access_secret(
+        &std::env::var("NEXA_SIGNAL_SECRET").unwrap_or_default(),
+    );
     let ca = opts
         .signal_ca
         .clone()

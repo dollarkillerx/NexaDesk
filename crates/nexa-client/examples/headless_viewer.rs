@@ -76,6 +76,7 @@ fn main() {
         fps: 0,
         auth: Some(auth),
         signal_server: std::env::var("NEXA_SIGNAL").unwrap_or_default(),
+        signal_secret: String::new(),
     }
     .encode_to_vec();
     let mut session = std::ptr::null_mut();

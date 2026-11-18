@@ -129,6 +129,8 @@ public sealed record ConnectOption(string Kind, string Address, string Detail = 
 public sealed partial class HostViewModel : ObservableObject
 {
     static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(60);
+    /// <summary>The longest start waits for the Keychain to give the server's key back.</summary>
+    static readonly TimeSpan SecretWait = TimeSpan.FromSeconds(10);
     static readonly TimeSpan RetryEvery = TimeSpan.FromMilliseconds(250);
 
     readonly IAgentLink _link;
@@ -138,6 +140,8 @@ public sealed partial class HostViewModel : ObservableObject
     readonly Func<DateTimeOffset> _now;
     readonly string _deviceName;
     readonly Func<string> _signalServer;
+    readonly Func<string> _signalSecret;
+    readonly Func<Task> _secretReady;
     readonly Func<bool> _announceOnLan;
     readonly Func<bool> _allowBrowsers;
     readonly ILocalAddresses _addresses;
@@ -228,6 +232,11 @@ public sealed partial class HostViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(RestartNeeded))]
     private string? _startedWithServer;
 
+    /// <summary>The access key the running agent was started with; null as for the server.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(RestartNeeded))]
+    private string? _startedWithSecret;
+
     /// <summary>The LAN announcement setting the running agent was started with; null as for the server.</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(RestartNeeded))]
@@ -240,6 +249,7 @@ public sealed partial class HostViewModel : ObservableObject
 
     public bool RestartNeeded => IsHosting &&
         ((StartedWithServer != null && StartedWithServer != _signalServer()) ||
+         (StartedWithSecret != null && StartedWithSecret != _signalSecret()) ||
          (StartedWithAnnounce != null && StartedWithAnnounce != _announceOnLan()) ||
          (StartedWithBrowsers != null && StartedWithBrowsers != _allowBrowsers()));
 
@@ -386,9 +396,11 @@ public sealed partial class HostViewModel : ObservableObject
     public HostViewModel(IAgentLink link, IAgentProcess process, IPermissionProbe permissions, IWindowService windows,
         ILocalAddresses addresses, string deviceName, Func<DateTimeOffset>? now = null, Func<string>? signalServer = null,
         Func<bool>? announceOnLan = null, TailscaleViewModel? tailscale = null, Func<bool>? allowBrowsers = null,
-        Action<bool>? rememberHosting = null)
+        Action<bool>? rememberHosting = null, Func<string>? signalSecret = null, Func<Task>? secretReady = null)
     {
+        _secretReady = secretReady ?? (() => Task.CompletedTask);
         _rememberHosting = rememberHosting ?? (_ => { });
+        _signalSecret = signalSecret ?? (() => "");
         Paired.CollectionChanged += (_, _) => OnPropertyChanged(nameof(NoPairedDevices));
         Tailscale = tailscale ?? new TailscaleViewModel(windows);
         Tailscale.Changed += () =>
@@ -550,13 +562,17 @@ public sealed partial class HostViewModel : ObservableObject
                 Attached();
                 return;
             }
+            // The key comes out of the Keychain at start; do not run ahead of it (but not for ever).
+            await Task.WhenAny(_secretReady(), Task.Delay(SecretWait));
             var server = _signalServer();
+            var secret = _signalSecret();
             var announce = _announceOnLan();
             var browsers = _allowBrowsers();
             StartedWithServer = server;
+            StartedWithSecret = secret;
             StartedWithAnnounce = announce;
             StartedWithBrowsers = browsers;
-            var why = _process.Start(listen, _deviceName, server, announce, browsers ? WebListen(listen) : null);
+            var why = _process.Start(listen, _deviceName, server, announce, browsers ? WebListen(listen) : null, secret);
             if (why != null)
             {
                 State = HostState.Stopped;
@@ -758,6 +774,7 @@ public sealed partial class HostViewModel : ObservableObject
         Code = "";
         ActiveListen = "";
         StartedWithServer = null;
+        StartedWithSecret = null;
         StartedWithAnnounce = null;
         DeviceId = "";
         SignalText = "";
@@ -900,18 +917,20 @@ public sealed partial class MainViewModel : ObservableObject
         IPermissionProbe permissions, IWindowService windows, ILocalAddresses addresses, string deviceName,
         Func<DateTimeOffset>? now = null, ISettingsStore? settings = null, ILoginItem? loginItem = null,
         IKeymapService? keymap = null, IViewerPrefs? viewerPrefs = null, ISavedPasswords? passwords = null,
-        IAppUpdater? updater = null, IServerTrust? serverTrust = null)
+        IAppUpdater? updater = null, IServerTrust? serverTrust = null, IServerDirectory? serverDirectory = null)
     {
         _keymap = keymap;
         _core = core;
         DeviceName = deviceName;
         settings ??= new MemorySettings();
         _settings = settings;
-        Settings = new SettingsViewModel(settings);
+        Settings = new SettingsViewModel(settings, passwords, serverDirectory);
         Tailscale = new TailscaleViewModel(windows);
-        Connect = new ConnectViewModel(core, recent, windows, now, () => Settings.SavedServer, Tailscale, viewerPrefs, passwords);
+        Connect = new ConnectViewModel(core, recent, windows, now, () => Settings.SavedServer, Tailscale, viewerPrefs, passwords,
+            () => Settings.SavedSecret);
         Host = new HostViewModel(link, process, permissions, windows, addresses, deviceName, now, () => Settings.SavedServer,
-            () => Settings.AnnounceOnLan, Tailscale, () => Settings.AllowBrowsers, RememberHosting);
+            () => Settings.AnnounceOnLan, Tailscale, () => Settings.AllowBrowsers, RememberHosting, () => Settings.SavedSecret,
+            () => Settings.SecretLoaded);
         Settings.ServerChanged += _ =>
         {
             Connect.OnServerChanged();

@@ -56,7 +56,10 @@ public interface IAgentProcess
     /// <summary>Null on success, else why it could not start. An empty signalServer means not reachable by ID.</summary>
     /// <param name="announceOnLan">Announce this Mac to viewers on the LAN over mDNS (§4.11).</param>
     /// <param name="web">Where browsers connect (<c>--web</c>), or null to keep browser access off.</param>
-    string? Start(string listen, string deviceName, string signalServer, bool announceOnLan, string? web = null);
+    /// <param name="signalSecret">The server's access key. Goes to the agent in its environment (NEXA_SIGNAL_SECRET),
+    /// never on the command line, where other processes could read it.</param>
+    string? Start(string listen, string deviceName, string signalServer, bool announceOnLan, string? web = null,
+        string? signalSecret = null);
     /// <summary>Sets the fixed password (null clears it) with the agent, which keeps only an
     /// Argon2id verifier in the Keychain. Null on success, else why not. Takes a moment.</summary>
     Task<string?> SetPassword(string? password) => Task.FromResult<string?>(null);
@@ -143,7 +146,7 @@ public interface ILocalAddresses
 /// settings.json from before this field); the person stopping it switches it off until they
 /// start it again, and quitting or restarting to update leaves it as it was.</summary>
 public sealed record AppSettings(string SignalServer = "", bool AnnounceOnLan = true, string Language = "",
-    bool AllowBrowsers = false, bool ResumeHosting = true);
+    bool AllowBrowsers = false, bool ResumeHosting = true, bool UseServerList = false);
 
 /// <summary>The viewer's picture choices, remembered for the next session.</summary>
 public sealed record ViewerPrefs(string Quality = "auto", string Resolution = "auto");

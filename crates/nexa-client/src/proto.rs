@@ -42,6 +42,9 @@ pub struct ConnectRequest {
     /// The nexa-signal server, used when `address` is a device ID.
     #[prost(string, tag = "8")]
     pub signal_server: String,
+    /// The server's access password, when it asks for one. Only a proof of it is sent.
+    #[prost(string, tag = "10")]
+    pub signal_secret: String,
 }
 
 #[derive(Clone, PartialEq, Message)]

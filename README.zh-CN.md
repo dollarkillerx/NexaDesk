@@ -104,7 +104,7 @@
    - 也可以手动输入对方的地址，例如 `192.168.1.20` 或 `studio.tail1234.ts.net`（默认端口 47800）。
 5. 被控端确认后开始控制。配对过的设备下次可以直接连接。
 
-不能用 Tailscale 时，可以自建信令服务器，按 9 位设备 ID 连接：部署方法见 [docs/DEPLOY.md](docs/DEPLOY.md)，然后在主窗口的"高级：自建信令服务器（可选）"里填写地址。
+不能用 Tailscale 时，可以自建信令服务器，按 9 位设备 ID 连接，做法见下面的[自建信令服务器](#自建信令服务器)。
 
 被控端可以设一个**固定密码**：用它连接时直接进入，不弹确认窗口，适合连自己的电脑。
 
@@ -119,6 +119,22 @@ nexa-agent --listen '[::]:47800'
 `nexa-agent --help` 列出全部选项，例如 `--paired-only`、`--relay-only`、`--no-lan-discovery`。
 
 想知道连接为什么断开：NexaDesk.app 把被控端的日志写在 `~/Library/Logs/NexaDesk/agent.log`，里面有每个会话的开始、结束和原因，以及每 5 秒一行的码率统计（帧数、码率、目标、Wi‑Fi 中断）。超过 1 MB 时旧的移到 `agent.log.1`。
+
+## 自建信令服务器
+
+`nexa-signal` 是一个进程：信令（设备 ID）、STUN、不能直连时的 UDP/WebSocket 中继，还可以提供浏览器网页。画面、输入和剪贴板始终是端到端加密的，服务器看不到。你需要一台有公网 IPv4 的 Linux 服务器（x86_64、systemd），以及 root 权限。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dollarkillerx/NexaDesk/main/deploy/install.sh | sudo sh
+```
+
+脚本会下载程序并校验 SHA-256，随机生成一个**信令口令**，做好证书，装好并启动服务，给 ufw / firewalld 放行端口，最后打印服务器地址、口令和证书指纹。再运行一次就是升级，配置保持不变。常用选项（写在 `sh -s --` 后面）：`--host <IP 或域名>`、`--port <端口>`、`--web [密码]`（同时提供浏览器网页，密码可不写）、`--key <口令>`。用 `sh install.sh --show` 可以重新查看结果。
+
+然后在每台要用这台服务器的 Mac 或电脑上，打开主窗口的“高级”，填服务器地址和口令（信令服务器一定要口令），点“保存”；再把“允许别人控制本机”停止后重新开始一次，被控端才会注册上去。第一次连接使用私有证书的服务器时，会让你核对证书指纹并信任。
+
+别忘了在云厂商的安全组里放行 TCP 443（或你选的端口）和 UDP 3478、3480。想用自己的域名和正规证书，用 `--host 你的域名`，并看 [docs/DEPLOY.md](docs/DEPLOY.md)，里面还有手工安装、Docker、换口令和运维。
+
+**把服务器分享给大家。**本仓库的 `servers.json` 列出了服务器和口令。“高级”里的开关“从公开的服务器列表里选”（默认关闭）会读取它，选一项就填好地址和口令。列表里的口令是公开的，只能挡住不知道这个列表的人。
 
 ## 从源码构建
 
@@ -208,7 +224,7 @@ cargo run -p nexa-web --example demo
 
 ## 尚未完成
 
-- **验证**：真实 NAT 环境下的打洞测试（经自建服务器中继已在公网实测，见 docs/DEPLOY.md §6）。
+- **验证**：真实 NAT 环境下的打洞测试（经自建服务器中继已在公网实测，见 docs/DEPLOY.md §7）。
 - **macOS**：登录界面和锁屏前的远程访问。
 - **Windows**：实机测试中发现的不少问题（被控端和控制端都有）；控制端显示对方的指针形状、HEVC、声音、作为服务运行（登录界面和 UAC），见 [docs/WINDOWS.md](docs/WINDOWS.md)。
 - **浏览器端**：iPhone / Safari、Firefox 上的实测（Android 上的 Chrome 已在用）；TURN over TCP/TLS（UDP 被封的网络）；声音和文件传输。

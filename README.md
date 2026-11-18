@@ -104,7 +104,7 @@ Both update themselves ([Velopack](https://velopack.io)): they check GitHub Rele
    - or type its address, e.g. `192.168.1.20` or `studio.tail1234.ts.net` (default port 47800).
 5. Control starts once the host allows it. A paired device connects directly next time.
 
-Without Tailscale, run your own signaling server and connect by 9-digit device ID: see [docs/DEPLOY.md](docs/DEPLOY.md), then enter its address under "Advanced: self-hosted signaling server (optional)".
+Without Tailscale, run your own signaling server and connect by 9-digit device ID. See [Self-hosting a signaling server](#self-hosting-a-signaling-server) below.
 
 Set a **fixed password** on the host to go straight in without a prompt, for your own computers.
 
@@ -119,6 +119,22 @@ nexa-agent --listen '[::]:47800'
 `nexa-agent --help` lists every option, e.g. `--paired-only`, `--relay-only`, `--no-lan-discovery`.
 
 Why did a connection end? NexaDesk.app writes the host's log to `~/Library/Logs/NexaDesk/agent.log`: each session's start, end and reason, and every 5 seconds a line of stream statistics (frames, bitrate, target, Wi-Fi stalls). Past 1 MB the old log moves to `agent.log.1`.
+
+## Self-hosting a signaling server
+
+`nexa-signal` is one process: signaling (device IDs), STUN, a UDP/WebSocket relay for networks that cannot connect directly, and optionally the browser page. Screen, input and clipboard stay end-to-end encrypted; the server never sees them. You need a Linux machine (x86_64, systemd) with a public IPv4 address, and root.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dollarkillerx/NexaDesk/main/deploy/install.sh | sudo sh
+```
+
+The script downloads the program (and checks its SHA-256), picks a random **signaling key**, makes a certificate, installs and starts the service, opens ufw/firewalld, and prints the server address, the key and the certificate fingerprint. Run it again to upgrade; your configuration is kept. Useful options (after `sh -s --`): `--host <ip or domain>`, `--port <n>`, `--web [password]` (also serve the browser page; the password is optional), `--key <key>`. Look at the result again with `sh install.sh --show`.
+
+Then, on every Mac or PC that should use the server, open "Advanced" in the main window, enter the server address and the key (a signaling server always needs its key), and Save. Stop and start "Allow remote control" once so the host registers. The first connection to a server with a private certificate asks you to check its fingerprint and trust it.
+
+Also open TCP 443 (or your port) and UDP 3478 and 3480 in your cloud provider's security group. For a public domain with a normal certificate, use `--host your.domain` and see [docs/DEPLOY.md](docs/DEPLOY.md), which also covers manual and Docker installs, key rotation and operations.
+
+**Offering a server to everyone.** `servers.json` in this repository lists servers with their keys. In "Advanced", the switch "Pick from the published server list" (off by default) loads it, and choosing an entry fills in its address and key. The keys there are public; they only keep out people who do not know the list.
 
 ## Build from Source
 
@@ -210,7 +226,7 @@ The design documents are in Chinese.
 
 ## Not Done Yet
 
-- **Validation**: hole punching on real NATs (relaying through your own server is tested over the public internet, see docs/DEPLOY.md §6).
+- **Validation**: hole punching on real NATs (relaying through your own server is tested over the public internet, see docs/DEPLOY.md §7).
 - **macOS**: remote access at the login window and lock screen.
 - **Windows**: the many problems found on real hardware, in both the host and the viewer; the host's pointer shape on the viewer, HEVC, sound, running as a service (login screen and UAC), see [docs/WINDOWS.md](docs/WINDOWS.md).
 - **Browser**: testing on iPhone / Safari and Firefox (Chrome on Android is in use); TURN over TCP/TLS for networks that block UDP; sound and file transfer.

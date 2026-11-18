@@ -34,7 +34,7 @@
   "Texts.Disconnect.NoPath.Title": "利用できるネットワーク経路が見つかりません",
   "Texts.Disconnect.NoPath.Detail": "直接接続、ホールパンチング、中継のいずれも成功しませんでした。ファイアウォールが UDP をブロックしているか、シグナリングサーバーに中継が設定されていない可能性があります。",
   "Texts.Disconnect.SignalServer.Title": "シグナリングサーバーを使用できません",
-  "Texts.Disconnect.SignalServer.Detail": "シグナリングサーバーに接続できないか、サーバーがリクエストを拒否しました。設定のサーバーアドレスとネットワークを確認してください。",
+  "Texts.Disconnect.SignalServer.Detail": "シグナリングサーバーに接続できないか、サーバーに拒否されました。設定のサーバーアドレス、アクセスキー、ネットワークを確認してください。",
   "Texts.Disconnect.Other.Title": "接続が切断されました",
   "Texts.Disconnect.Other.Detail": "接続が予期せず切断されました。",
   "Texts.Perm.View": "画面の表示",

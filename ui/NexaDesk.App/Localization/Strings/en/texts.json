@@ -34,7 +34,7 @@
   "Texts.Disconnect.NoPath.Title": "No working network path",
   "Texts.Disconnect.NoPath.Detail": "Direct, hole punching and relay all failed. A firewall may be blocking UDP, or the signaling server has no relay configured.",
   "Texts.Disconnect.SignalServer.Title": "Can't use the signaling server",
-  "Texts.Disconnect.SignalServer.Detail": "Couldn't reach the signaling server, or it refused the request. Check the server address in Settings and your network.",
+  "Texts.Disconnect.SignalServer.Detail": "Couldn't reach the signaling server, or it refused the request. Check the server address, its access key and your network in the settings.",
   "Texts.Disconnect.Other.Title": "Connection lost",
   "Texts.Disconnect.Other.Detail": "The connection dropped unexpectedly.",
   "Texts.Perm.View": "view screen",

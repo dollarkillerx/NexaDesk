@@ -3,6 +3,7 @@
         xmlns:vm="using:NexaDesk.ViewModels"
         xmlns:l="using:NexaDesk.Localization"
         xmlns:v="using:NexaDesk.Views"
+        xmlns:svc="using:NexaDesk.Services"
         x:Class="NexaDesk.Views.MainWindow"
         x:DataType="vm:MainViewModel"
         Title="NexaDesk"
@@ -527,7 +528,27 @@
               <TextBox Name="ServerBox" Text="{Binding ServerInput}" Width="320" PlaceholderText="wss://signal.example.com" />
               <Button Name="SaveServerButton" Classes="small" Content="{l:T Main.Save}" Command="{Binding SaveCommand}" />
             </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <TextBlock Classes="label" Text="{l:T Main.SignalSecret}" VerticalAlignment="Center" />
+              <TextBox Name="SecretBox" Text="{Binding SecretInput}" Width="320" PasswordChar="●"
+                       PlaceholderText="{l:T Main.SecretPlaceholder}" />
+            </StackPanel>
+            <CheckBox Name="UseServerListBox" Content="{l:T Main.UseServerList}" IsChecked="{Binding UseServerList}"
+                      IsVisible="{Binding CanUseServerList}" />
+            <StackPanel Orientation="Horizontal" Spacing="10" IsVisible="{Binding UseServerList}">
+              <ComboBox Name="ListedServersBox" ItemsSource="{Binding ListedServers}" SelectedItem="{Binding SelectedListed}"
+                        Width="320" PlaceholderText="{l:T Main.ServerListPick}">
+                <ComboBox.ItemTemplate>
+                  <DataTemplate x:DataType="svc:ServerEntry">
+                    <TextBlock Text="{Binding Endpoint}" />
+                  </DataTemplate>
+                </ComboBox.ItemTemplate>
+              </ComboBox>
+              <TextBlock Classes="muted" Name="ListStatusText" Text="{Binding ListStatus}" VerticalAlignment="Center" />
+            </StackPanel>
             <TextBlock Classes="errorText" Text="{Binding ServerHint}" IsVisible="{Binding ServerHint, Converter={x:Static ObjectConverters.IsNotNull}}" />
+            <TextBlock Classes="errorText" TextWrapping="Wrap" Text="{Binding SecretHint}" IsVisible="{Binding SecretHint, Converter={x:Static ObjectConverters.IsNotNull}}" />
+            <TextBlock Classes="errorText" TextWrapping="Wrap" Text="{Binding SecretError}" IsVisible="{Binding SecretError, Converter={x:Static ObjectConverters.IsNotNull}}" />
           </StackPanel>
         </Expander>
       </StackPanel>

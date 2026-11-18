@@ -86,6 +86,7 @@ pub async fn bind(config: &Config) -> Result<(Settings, Sockets), String> {
         Settings {
             tls,
             server_names: config.signal.server_names.clone(),
+            access_secrets: config.signal.access_secrets.clone(),
             stun_advertise: config.stun_advertised(),
             relay_advertise: config.relay_advertised(),
             relay: relay_limits,

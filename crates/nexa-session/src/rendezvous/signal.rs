@@ -36,12 +36,37 @@ pub enum SignalError {
     Tls(String),
     #[error("the server refused: {0}")]
     Refused(String),
+    /// The server asks for an access password, and there was none or a wrong one.
+    #[error("the server needs its access password: {0}")]
+    AccessDenied(String),
     #[error("the server sent something unexpected")]
     Protocol,
     #[error("timed out talking to the server")]
     Timeout,
     #[error("the server is gone")]
     Closed,
+}
+
+/// A server's access secret. Never shown in a log or a debug print.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AccessSecret(zeroize::Zeroizing<String>);
+
+impl AccessSecret {
+    /// `None` for a secret that is empty once trimmed: no secret at all.
+    pub fn new(secret: &str) -> Option<Self> {
+        let s = secret.trim();
+        (!s.is_empty()).then(|| Self(zeroize::Zeroizing::new(s.to_owned())))
+    }
+
+    pub(crate) fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for AccessSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AccessSecret(..)")
+    }
 }
 
 /// Where the server is and how to trust it.
@@ -55,6 +80,9 @@ pub struct SignalConfig {
     pub only_extra_roots: bool,
     /// Mixed into the device ID the server gives this device; a new seed, a new ID.
     pub id_seed: Vec<u8>,
+    /// The password of a server that asks for one (docs/DEPLOY.md). Only a proof of
+    /// it is sent, at registration; a server that asks for none ignores the proof.
+    pub access_secret: Option<AccessSecret>,
 }
 
 impl SignalConfig {
@@ -64,7 +92,14 @@ impl SignalConfig {
             extra_roots: Vec::new(),
             only_extra_roots: false,
             id_seed: Vec::new(),
+            access_secret: None,
         }
+    }
+
+    /// The server's access password, as a person typed it ("" for none).
+    pub fn with_access_secret(mut self, secret: &str) -> Self {
+        self.access_secret = AccessSecret::new(secret);
+        self
     }
 
     /// Also trusts the certificates in a PEM file (a self-hosted server's CA).
@@ -462,6 +497,15 @@ fn decode(m: Message) -> Result<Option<ServerBody>, SignalError> {
 
 fn refusal(e: &nexa_wire::signal::SignalError) -> SignalError {
     let code = ErrorCode::try_from(e.code).unwrap_or(ErrorCode::Unspecified);
+    if code == ErrorCode::AccessDenied {
+        return SignalError::AccessDenied(
+            e.message
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(120)
+                .collect(),
+        );
+    }
     // The message is the server's text: keep it short and printable.
     let text: String = e
         .message
@@ -517,6 +561,15 @@ impl SignalClient {
             sig: sig.to_vec(),
             server_name: ep.host.clone(),
             id_seed: cfg.id_seed.clone(),
+            access_proof: cfg.access_secret.as_ref().map_or_else(Vec::new, |secret| {
+                nexa_auth::signal_access::access_proof(
+                    secret.expose(),
+                    &nonce,
+                    &ep.host,
+                    keys.public_key().as_bytes(),
+                )
+                .to_vec()
+            }),
         }));
         sink.send(Message::binary(register.encode_to_vec()))
             .await

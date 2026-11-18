@@ -214,6 +214,7 @@ async fn view_only_real_pipeline_on_loopback() {
         fps: 60,
         auth: Some(ConnectAuth::Code(agent.current_code().to_string())),
         signal_server: String::new(),
+        signal_secret: String::new(),
     }
     .encode_to_vec();
     let mut session = std::ptr::null_mut();

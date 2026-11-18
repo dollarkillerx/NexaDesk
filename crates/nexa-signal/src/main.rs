@@ -58,13 +58,14 @@ fn main() {
         warn(&config, settings.tls.is_some());
         let server = start(settings, sockets).await.map_err(|e| e.to_string())?;
         eprintln!(
-            "nexa-signal: signaling on {}{}, STUN {:?}, relay {:?}",
+            "nexa-signal: signaling on {}{}, {}, STUN {:?}, relay {:?}",
             server.ws_addr,
             if config.signal.tls_cert.is_some() {
                 " (TLS)"
             } else {
                 ""
             },
+            access(&config),
             config.stun_advertised(),
             config.relay_advertised()
         );
@@ -93,14 +94,27 @@ fn check(path: &Path, config: &Config) -> i32 {
     };
     warn(config, tls);
     println!(
-        "{}: OK. signaling {}{}, STUN {:?}, relay {:?}",
+        "{}: OK. signaling {}{}, {}, STUN {:?}, relay {:?}",
         path.display(),
         config.signal.listen,
         if tls { " (TLS)" } else { "" },
+        access(config),
         config.stun_advertised(),
         config.relay_advertised()
     );
     0
+}
+
+fn access(config: &Config) -> String {
+    let keys = match config.signal.access_secrets.len() {
+        1 => "signaling key required".to_owned(),
+        n => format!("signaling key required ({n} accepted)"),
+    };
+    match &config.web {
+        None => keys,
+        Some(w) if w.password.is_some() => format!("{keys}, browsers need their password"),
+        Some(_) => format!("{keys}, browsers need no password"),
+    }
 }
 
 fn warn(config: &Config, tls: bool) {
@@ -115,6 +129,11 @@ fn warn(config: &Config, tls: bool) {
     }
     if config.relay.is_none() {
         eprintln!("nexa-signal: no relay configured: peers behind two hard NATs cannot connect");
+    }
+    if config.web.as_ref().is_some_and(|w| w.password.is_none()) {
+        eprintln!(
+            "nexa-signal: note: [web] has no password, so anyone can open the page and use TURN to reach a device; what lets a browser into a device is still that device's own password, code or consent"
+        );
     }
     if config.signal.server_names.is_empty() {
         eprintln!(

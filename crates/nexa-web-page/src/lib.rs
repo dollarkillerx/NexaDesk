@@ -3,7 +3,8 @@
 //! server (`nexa-signal`, for browsers anywhere, through TURN).
 //!
 //! The page asks `GET /mode` which one it came from: `{"mode":"direct"}` from a host,
-//! `{"mode":"server"}` from the signaling server, where it also asks for a device ID.
+//! `{"mode":"server"}` from the signaling server, where it also asks for a device ID
+//! (and a password, when the server has one for browsers: `{"mode":"server","password":true}`).
 
 pub mod assets;
 pub mod http;
@@ -12,3 +13,6 @@ pub mod http;
 pub const MODE_DIRECT: &[u8] = br#"{"mode":"direct"}"#;
 /// What `GET /mode` answers on the signaling server.
 pub const MODE_SERVER: &[u8] = br#"{"mode":"server"}"#;
+/// ...when it asks browsers for a password too (`[web] password`): the page then shows a
+/// field for it and sends it in its `hello`.
+pub const MODE_SERVER_PASSWORD: &[u8] = br#"{"mode":"server","password":true}"#;

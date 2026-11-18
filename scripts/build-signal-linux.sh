@@ -4,6 +4,9 @@
 #
 #   scripts/build-signal-linux.sh   →  target/x86_64-unknown-linux-musl/release/nexa-signal
 #
+# Also leaves dist/signal/nexa-signal-linux-x86_64 and its .sha256: the two files a release
+# carries for deploy/install.sh (it refuses a download without a matching checksum).
+#
 # ring's C and assembly are compiled by Xcode's clang without libc headers (ring's
 # RING_CORE_NOSTDLIBINC mode), archived with rustup's llvm-ar and linked by rust-lld.
 set -eu
@@ -22,4 +25,9 @@ export CFLAGS_x86_64_unknown_linux_musl="--target=x86_64-unknown-linux-gnu -ffre
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld
 
 cargo build --release --locked -p nexa-signal --target "$TARGET" --manifest-path "$ROOT/Cargo.toml"
+OUT="$ROOT/dist/signal"
+mkdir -p "$OUT"
+cp "$ROOT/target/$TARGET/release/nexa-signal" "$OUT/nexa-signal-linux-x86_64"
+(cd "$OUT" && shasum -a 256 nexa-signal-linux-x86_64 >nexa-signal-linux-x86_64.sha256)
 echo "$ROOT/target/$TARGET/release/nexa-signal"
+echo "$OUT/nexa-signal-linux-x86_64 (+ .sha256)"

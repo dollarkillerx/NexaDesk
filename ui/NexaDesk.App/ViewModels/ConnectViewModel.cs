@@ -114,6 +114,7 @@ public sealed partial class ConnectViewModel : ObservableObject
     readonly IWindowService _windows;
     readonly Func<DateTimeOffset> _now;
     readonly Func<string> _signalServer;
+    readonly Func<string> _signalSecret;
 
     /// <summary>A connection by device ID failed on the signaling server's certificate.</summary>
     public event Action<string>? SignalCertificateProblem;
@@ -195,8 +196,9 @@ public sealed partial class ConnectViewModel : ObservableObject
 
     public ConnectViewModel(IClientCore core, IRecentStore store, IWindowService windows, Func<DateTimeOffset>? now = null,
         Func<string>? signalServer = null, TailscaleViewModel? tailscale = null, IViewerPrefs? viewerPrefs = null,
-        ISavedPasswords? passwords = null)
+        ISavedPasswords? passwords = null, Func<string>? signalSecret = null)
     {
+        _signalSecret = signalSecret ?? (() => "");
         _viewerPrefs = viewerPrefs ?? new MemoryViewerPrefs();
         _passwords = passwords ?? new MemorySavedPasswords();
         Tailscale = tailscale ?? new TailscaleViewModel(windows);
@@ -354,7 +356,8 @@ public sealed partial class ConnectViewModel : ObservableObject
         ISession session;
         try
         {
-            session = _core.Connect(new ConnectRequest(address, tag, StreamMode.Balanced, 0, auth, isId ? server : ""));
+            session = _core.Connect(new ConnectRequest(address, tag, StreamMode.Balanced, 0, auth, isId ? server : "",
+                isId ? _signalSecret() : ""));
         }
         catch (NexaException e)
         {

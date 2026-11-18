@@ -106,6 +106,18 @@ public class ProtoTests
     }
 
     [Fact]
+    public void Connect_request_carries_the_signal_secret_in_field_10_only_when_set_and_never_prints_it()
+    {
+        var plain = new ConnectRequest("123456789", 1, StreamMode.Balanced, 0, new ConnectAuth.Code("ABCD2345"), "wss://s.example");
+        var secret = plain with { SignalSecret = "open sesame" };
+        // Field 10, wire type 2: tag byte 0x52.
+        Assert.EndsWith("520b" + Hex(System.Text.Encoding.UTF8.GetBytes("open sesame")), Hex(secret.Encode()));
+        Assert.DoesNotContain(Hex(System.Text.Encoding.UTF8.GetBytes("open sesame")), Hex(plain.Encode()));
+        Assert.Equal(plain.Encode().Length + 2 + 11, secret.Encode().Length);
+        Assert.DoesNotContain("open sesame", secret.ToString());
+    }
+
+    [Fact]
     public void Stats_carry_the_path_and_connecting_the_stage()
     {
         // path = relay (12: 3), detail (13: "r"), path rtt (14: 5000).
