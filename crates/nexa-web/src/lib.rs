@@ -24,6 +24,7 @@
 //! the host's own certificate unless the person provides one; plain HTTP only redirects.
 
 mod cursor;
+mod display;
 mod http;
 mod input;
 mod media;
@@ -92,6 +93,15 @@ pub struct WebScreen {
     pub origin_points: (f64, f64),
     pub size_points: (f64, f64),
     pub size_pixels: (u32, u32),
+}
+
+/// One of the host's displays, as a browser may pick it. Its place in
+/// [`WebHost::displays`] is its id on the wire, as the native viewers' (§3.6).
+#[derive(Clone, Debug, PartialEq)]
+pub struct WebDisplay {
+    /// What the platform calls it ("Built-in Retina Display"); may be empty.
+    pub name: String,
+    pub screen: WebScreen,
 }
 
 /// What the person at the host is asked about a browser.
@@ -213,7 +223,19 @@ pub struct StreamStats {
 
 /// The machine and the person at it, as the agent provides them.
 pub trait WebHost: Send + Sync + 'static {
+    /// The main display: what a session shows first.
     fn screen(&self) -> Result<WebScreen, String>;
+    /// Every display a browser may switch to, the main one first. Read when a session
+    /// starts, as `screen` is, and at every switch, on the capture thread: monitors come
+    /// and go. One display, unless the host says otherwise.
+    fn displays(&self) -> Result<Vec<WebDisplay>, String> {
+        self.screen().map(|screen| {
+            vec![WebDisplay {
+                name: String::new(),
+                screen,
+            }]
+        })
+    }
     fn capturer(&self, config: CaptureConfig) -> nexa_media::Result<Box<dyn Capturer>>;
     /// The host's cursor, read beside the picture so the page can draw it at once.
     /// `None`: it is drawn into the picture instead, and follows the video's delay.

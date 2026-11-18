@@ -19,12 +19,12 @@ use nexa_session::{
     input::InputSink,
 };
 use nexa_web::{
-    BrowserAnswer, BrowserAuth, BrowserRequest, StreamStats, WebClipboard, WebEvent, WebHost,
-    WebScreen,
+    BrowserAnswer, BrowserAuth, BrowserRequest, StreamStats, WebClipboard, WebDisplay, WebEvent,
+    WebHost, WebScreen,
 };
 use nexa_wire::control::Permissions;
 
-use crate::{AgentEvent, AgentUi, Platform, SessionInfo, agent::Shared};
+use crate::{AgentEvent, AgentUi, Platform, ScreenInfo, SessionInfo, agent::Shared};
 
 /// Browser session ids are kept apart from native ones in the UI's events.
 const ID_BASE: u64 = 1 << 48;
@@ -71,15 +71,32 @@ fn browser_name(browser: &str) -> String {
     format!("{browser} (browser)")
 }
 
+fn web_screen(s: &ScreenInfo) -> WebScreen {
+    WebScreen {
+        display: s.display_id,
+        origin_points: s.origin_points,
+        size_points: s.size_points,
+        size_pixels: s.size_pixels,
+    }
+}
+
 impl WebHost for AgentWeb {
     fn screen(&self) -> Result<WebScreen, String> {
-        let s = self.platform.screen()?;
-        Ok(WebScreen {
-            display: s.display_id,
-            origin_points: s.origin_points,
-            size_points: s.size_points,
-            size_pixels: s.size_pixels,
-        })
+        Ok(web_screen(&self.platform.screen()?))
+    }
+
+    /// As native viewers see them (§6.7): the main display first, each one's place in
+    /// the list its id.
+    fn displays(&self) -> Result<Vec<WebDisplay>, String> {
+        Ok(self
+            .platform
+            .displays()?
+            .iter()
+            .map(|s| WebDisplay {
+                name: s.name.clone(),
+                screen: web_screen(s),
+            })
+            .collect())
     }
 
     fn capturer(&self, config: CaptureConfig) -> nexa_media::Result<Box<dyn Capturer>> {
@@ -289,6 +306,27 @@ impl BrowserClipboard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_display_reaches_the_browser_with_its_place_on_the_desktop() {
+        let s = ScreenInfo {
+            display_id: 5,
+            origin_points: (1512.0, -200.0),
+            size_points: (1920.0, 1080.0),
+            size_pixels: (3840, 2160),
+            refresh_hz: 60,
+            name: "DELL U2720Q".into(),
+        };
+        assert_eq!(
+            web_screen(&s),
+            WebScreen {
+                display: 5,
+                origin_points: (1512.0, -200.0),
+                size_points: (1920.0, 1080.0),
+                size_pixels: (3840, 2160),
+            }
+        );
+    }
 
     #[test]
     fn a_browser_stream_is_logged_as_the_apps_are() {

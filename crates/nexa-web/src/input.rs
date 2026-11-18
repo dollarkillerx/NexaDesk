@@ -23,7 +23,7 @@ use data_encoding::BASE64;
 use nexa_session::input::InputSink;
 use serde::Deserialize;
 
-use crate::{WebHost, WebScreen};
+use crate::{WebHost, WebScreen, display::Shown};
 
 /// The HID keyboard page; keys travel to `InputSink` as `(page << 16) | usage`.
 const PAGE_KEYBOARD: u32 = 0x07;
@@ -169,9 +169,10 @@ pub(crate) struct Grants {
 
 impl InputThread {
     /// `to_browser` receives text copied on the host, already encoded for the page.
+    /// Positions land on the display `shown` is when each arrives.
     pub(crate) fn spawn(
         host: Arc<dyn WebHost>,
-        screen: WebScreen,
+        shown: Arc<Shown>,
         grants: Grants,
         to_browser: tokio::sync::mpsc::Sender<String>,
     ) -> Self {
@@ -201,7 +202,7 @@ impl InputThread {
                         }
                         Ok(msg) => {
                             if let Some(sink) = sink.as_mut() {
-                                carry_out(sink.as_mut(), &screen, msg);
+                                carry_out(sink.as_mut(), &shown.screen(), msg);
                             }
                         }
                         Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -564,6 +565,12 @@ mod tests {
 
     /// Input and clipboard granted, as a fixed password grants them.
     fn session(board: Board) -> (InputThread, Log) {
+        let (input, log, _) = session_on(board);
+        (input, log)
+    }
+
+    /// As `session`, with the display it shows.
+    fn session_on(board: Board) -> (InputThread, Log, Arc<Shown>) {
         let log = Log::default();
         let (sinks, boards) = (log.clone(), log.clone());
         let host = Arc::new(
@@ -589,7 +596,32 @@ mod tests {
             input: true,
             clipboard: true,
         };
-        (InputThread::spawn(host, screen, grants, to_browser), log)
+        let shown = Shown::new(0, screen);
+        let input = InputThread::spawn(host, shown.clone(), grants, to_browser);
+        (input, log, shown)
+    }
+
+    #[test]
+    fn after_a_switch_the_pointer_lands_on_the_new_display() {
+        let (input, log, shown) = session_on(Board::Slow(Duration::ZERO));
+        input.send(Msg::Move { x: 0.5, y: 0.25 });
+        assert_eq!(wait_for(&log, 1, Duration::from_secs(1)), ["move 50 25"]);
+        // A display left of and above the main one, as on a Mac.
+        shown.set(
+            1,
+            WebScreen {
+                display: 2,
+                origin_points: (-1920.0, -300.0),
+                size_points: (1920.0, 1080.0),
+                size_pixels: (3840, 2160),
+            },
+        );
+        input.send(Msg::Move { x: 0.5, y: 0.5 });
+        input.send(Msg::Move { x: 1.0, y: 1.0 });
+        assert_eq!(
+            wait_for(&log, 3, Duration::from_secs(1)),
+            ["move 50 25", "move -960 240", "move 0 780"]
+        );
     }
 
     fn wait_for(log: &Log, n: usize, within: Duration) -> Vec<String> {

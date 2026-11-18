@@ -1,5 +1,6 @@
 //! Browser access without a real screen or real input, for trying the page and the
-//! WebRTC path anywhere: a synthetic 1280×800 screen through the real H.264 encoder.
+//! WebRTC path anywhere: a synthetic 1280×800 screen through the real H.264 encoder,
+//! and a second, tinted 1920×1080 display to its right to try switching displays.
 //! The pointer, buttons, keys and wheel the browser sends are drawn into the picture, so
 //! the round trip is visible. Every consent request is accepted with input.
 //!
@@ -43,11 +44,15 @@ mod demo {
     };
     use nexa_session::input::InputSink;
     use nexa_web::{
-        BrowserAnswer, BrowserRequest, WebConfig, WebEvent, WebGateway, WebHost, WebScreen,
+        BrowserAnswer, BrowserRequest, WebConfig, WebDisplay, WebEvent, WebGateway, WebHost,
+        WebScreen,
     };
 
     const W: u32 = 1280;
     const H: u32 = 800;
+    /// The second display, right of the first: points, and twice as many pixels.
+    const SIDE: (f64, f64) = (960.0, 540.0);
+    const SIDE_DISPLAY: u32 = 2;
 
     /// `NEXA_DEMO_SIZE=3072x1920`: the screen's pixels, for trying large pictures.
     fn pixels() -> (u32, u32) {
@@ -85,13 +90,34 @@ mod demo {
                 size_pixels: pixels(),
             })
         }
+        /// `NEXA_DEMO_ONE_DISPLAY`: only the first, as a host with one monitor.
+        fn displays(&self) -> Result<Vec<WebDisplay>, String> {
+            let mut displays = vec![WebDisplay {
+                name: "Demo main".into(),
+                screen: self.screen()?,
+            }];
+            if std::env::var_os("NEXA_DEMO_ONE_DISPLAY").is_none() {
+                displays.push(WebDisplay {
+                    name: "Demo side (tinted)".into(),
+                    screen: WebScreen {
+                        display: SIDE_DISPLAY,
+                        origin_points: (W as f64, 0.0),
+                        size_points: SIDE,
+                        size_pixels: ((SIDE.0 * 2.0) as u32, (SIDE.1 * 2.0) as u32),
+                    },
+                });
+            }
+            Ok(displays)
+        }
         fn capturer(&self, config: CaptureConfig) -> nexa_media::Result<Box<dyn Capturer>> {
             println!(
-                "capture {}x{} @ {} fps",
-                config.width, config.height, config.fps
+                "capture display {} {}x{} @ {} fps",
+                config.display, config.width, config.height, config.fps
             );
+            let side = config.display == SIDE_DISPLAY;
             Ok(Box::new(Synthetic {
                 seen: self.0.clone(),
+                side,
                 width: config.width,
                 height: config.height,
                 interval: Duration::from_secs_f64(1.0 / f64::from(config.fps.max(1))),
@@ -287,8 +313,10 @@ mod demo {
 
     /// NV12 frames: a scrolling grid (the wheel moves it), a sweeping bar, a block per
     /// held key, and the pointer as a square that turns solid while a button is down.
+    /// The side display is tinted orange, and shows the pointer only while it is there.
     struct Synthetic {
         seen: Arc<Mutex<Seen>>,
+        side: bool,
         width: u32,
         height: u32,
         interval: Duration,
@@ -324,11 +352,16 @@ mod demo {
             for (i, _) in seen.keys.iter().enumerate() {
                 fill(&mut y, w, h, 20 + i * 28, 20, 22, 22, 235);
             }
-            let (px, py) = (
-                (seen.pointer.0 / f64::from(W) * w as f64) as usize,
-                (seen.pointer.1 / f64::from(H) * h as f64) as usize,
-            );
-            if seen.buttons.is_empty() {
+            // Where the pointer is on this display, in its pixels.
+            let ((ox, oy), (sw, sh)) = if self.side {
+                ((f64::from(W), 0.0), SIDE)
+            } else {
+                ((0.0, 0.0), (f64::from(W), f64::from(H)))
+            };
+            let (fx, fy) = ((seen.pointer.0 - ox) / sw, (seen.pointer.1 - oy) / sh);
+            let here = (0.0..=1.0).contains(&fx) && (0.0..=1.0).contains(&fy);
+            let (px, py) = ((fx * w as f64) as usize, (fy * h as f64) as usize);
+            if here && seen.buttons.is_empty() {
                 outline(
                     &mut y,
                     w,
@@ -338,7 +371,7 @@ mod demo {
                     20,
                     255,
                 );
-            } else {
+            } else if here {
                 fill(
                     &mut y,
                     w,
@@ -351,8 +384,13 @@ mod demo {
                 );
             }
             drop(seen);
-            // Neutral chroma: a grey picture is enough to see everything above.
-            let uv = vec![128u8; w * h / 2];
+            // Neutral chroma: a grey picture is enough to see everything above. The side
+            // display is orange (Cb low, Cr high), so a switch is plain to see.
+            let uv = if self.side {
+                [90u8, 180].repeat(w * h / 4)
+            } else {
+                vec![128u8; w * h / 2]
+            };
             let frame = CpuFrame {
                 width: self.width,
                 height: self.height,

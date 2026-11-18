@@ -28,7 +28,7 @@ use nexa_media::{CursorImage, CursorSource};
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use crate::WebScreen;
+use crate::{WebScreen, display::Shown};
 
 /// 60 Hz, as the native viewer's cursor thread.
 const POLL: Duration = Duration::from_millis(16);
@@ -42,9 +42,10 @@ pub(crate) struct CursorFeed {
 
 impl CursorFeed {
     /// `resync` is set when the page's channel (re)opens: everything is said again.
+    /// Positions are fractions of the display `shown` is at the time.
     pub(crate) fn spawn(
         mut source: Box<dyn CursorSource>,
-        screen: WebScreen,
+        shown: Arc<Shown>,
         resync: Arc<AtomicBool>,
         out: mpsc::Sender<String>,
     ) -> Self {
@@ -91,6 +92,7 @@ impl CursorFeed {
                         }
                         sent.insert(id.clone());
                     }
+                    let screen = shown.screen();
                     let Some((x, y)) = sample.position.map(|p| fraction(&screen, p)) else {
                         continue;
                     };
@@ -247,21 +249,39 @@ mod tests {
             size_pixels: (200, 200),
         };
         let (tx, mut rx) = mpsc::channel(8);
+        let shown = Shown::new(0, screen);
         let feed = CursorFeed::spawn(
             Box::new(Fixed),
-            screen,
+            shown.clone(),
             Arc::new(AtomicBool::new(false)),
             tx,
         );
         let first: serde_json::Value = serde_json::from_str(&rx.blocking_recv().unwrap()).unwrap();
         let second: serde_json::Value = serde_json::from_str(&rx.blocking_recv().unwrap()).unwrap();
-        drop(feed);
         assert_eq!(first["t"], "cs");
         assert_eq!(second["t"], "cp");
         assert_eq!(second["x"], 0.5);
         assert_eq!(second["y"], 0.25);
         assert_eq!(second["id"], first["id"]);
         // Nothing changed: nothing more was said.
+        thread::sleep(POLL * 3);
         assert!(rx.try_recv().is_err());
+        // Another display shown: the same spot, as a fraction of that one.
+        shown.set(
+            1,
+            WebScreen {
+                display: 2,
+                origin_points: (50.0, 0.0),
+                size_points: (100.0, 50.0),
+                size_pixels: (200, 100),
+            },
+        );
+        let third: serde_json::Value = serde_json::from_str(&rx.blocking_recv().unwrap()).unwrap();
+        drop(feed);
+        assert_eq!(third["t"], "cp");
+        assert_eq!(
+            (third["x"].clone(), third["y"].clone()),
+            (0.0.into(), 0.5.into())
+        );
     }
 }

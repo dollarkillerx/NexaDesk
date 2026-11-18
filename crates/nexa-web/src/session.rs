@@ -7,7 +7,10 @@
 //! host → browser  {type:"answer", sdp, salt, msg}         SPAKE2 offer (no salt, msg for "request")
 //! browser → host  {type:"auth", msg, confirm}             not for "request"
 //! host → browser  {type:"waiting"}                        the person is being asked
-//! host → browser  {type:"accepted", confirm, input, clipboard, terminal, os, name, cursor}   or {type:"denied"}
+//! host → browser  {type:"accepted", confirm, input, clipboard, terminal, os, name, cursor,
+//!                  points, displays, display}       or {type:"denied"}
+//!                                                 displays: [{n, w, h}], display: the
+//!                                                 index shown (display.rs)
 //! host → browser  {type:"candidates", list}       through the server, once let in: this
 //!                                                 host's own addresses, to try directly
 //! host → browser  {type:"ended", reason}
@@ -46,8 +49,9 @@ use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 use crate::{
     BrowserAuth, BrowserRequest, Shared, WebEvent, clean_label,
     cursor::CursorFeed,
+    display::{self, Shown},
     input::{Grants, InputThread},
-    media::MediaThread,
+    media::{MediaThread, Stream},
     rtc::{self, Cmd, Ended},
 };
 
@@ -381,6 +385,18 @@ pub(crate) async fn run(mut ws: Pipe, peer: SocketAddr, path: rtc::Path, shared:
             }
         }
     };
+    // The displays the page may switch between, and which of them this is. A list
+    // without it offers nothing: the page's index would not be this display.
+    let mut displays = match screen {
+        Some(_) => host.displays().unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let shown_index =
+        screen.and_then(|s| displays.iter().position(|d| d.screen.display == s.display));
+    if shown_index.is_none() {
+        displays.clear();
+    }
+    let shown_index = shown_index.unwrap_or(0) as u32;
     let input_allowed = screen.is_some() && answer.input && host.input_available();
     let clipboard_allowed = screen.is_some() && answer.clipboard;
     let terminal_allowed = answer.terminal;
@@ -399,40 +415,48 @@ pub(crate) async fn run(mut ws: Pipe, peer: SocketAddr, path: rtc::Path, shared:
         "cursor": cursor_source.is_some(),
         // The screen in points: the size the cursor is drawn at.
         "points": screen.map(|s| [s.size_points.0, s.size_points.1]),
+        // One at a time; the page offers a choice when there are two or more.
+        "displays": display::list(&displays),
+        "display": shown_index,
     });
     if !send(&mut ws, accepted).await {
         driver.abort();
         return;
     }
 
+    // Clipboard text, the cursor and display switches, to the page.
+    let (out_tx, out_rx) = mpsc::channel(32);
+    // The display shown: capture, input and the cursor all follow a switch.
+    let shown = screen.map(|s| Shown::new(shown_index, s));
     let (frame_tx, frame_rx) = mpsc::channel(2);
-    let media = screen.map(|screen| {
+    let media = shown.as_ref().map(|shown| {
         MediaThread::spawn(
-            host.clone(),
-            id,
-            screen,
+            Stream {
+                host: host.clone(),
+                id,
+                shown: shown.clone(),
+                show_cursor: cursor_source.is_none(),
+                notes: Some(out_tx.clone()),
+            },
             &shared.config,
-            cursor_source.is_none(),
             frame_tx,
         )
     });
-    // Clipboard text and the cursor, to the page.
-    let (out_tx, out_rx) = mpsc::channel(32);
-    let cursor = match (screen, cursor_source, &media) {
-        (Some(screen), Some(source), Some(m)) => Some(CursorFeed::spawn(
+    let cursor = match (&shown, cursor_source, &media) {
+        (Some(shown), Some(source), Some(m)) => Some(CursorFeed::spawn(
             source,
-            screen,
+            shown.clone(),
             m.control.cursor_resync.clone(),
             out_tx.clone(),
         )),
         _ => None,
     };
-    let input = screen
+    let input = shown
         .filter(|_| input_allowed || clipboard_allowed)
-        .map(|screen| {
+        .map(|shown| {
             InputThread::spawn(
                 host.clone(),
-                screen,
+                shown,
                 Grants {
                     input: input_allowed,
                     clipboard: clipboard_allowed,

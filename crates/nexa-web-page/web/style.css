@@ -109,8 +109,8 @@ body {
 }
 .shell-lang:hover { background: #2c2c2c; color: #f4f4f4; }
 .shell-lang option { color: #161616; background: #f4f4f4; }
-/* The connection button also opens the quality choice. */
-.shell-action.net::after { content: " ▾"; color: #8d8d8d; }
+/* The connection button also opens the quality choice; the display button its list. */
+.shell-action.net::after, .shell-action.menu::after { content: " ▾"; color: #8d8d8d; }
 
 /* Connect page */
 .page {
@@ -392,6 +392,32 @@ button { font: inherit; letter-spacing: 0.16px; border-radius: 0; }
 }
 .segmented button + button { border-left: 1px solid #6f6f6f; }
 .segmented button[aria-checked="true"] { background: #f4f4f4; color: #161616; }
+
+/* The host's displays, one shown at a time. */
+.display-list { display: flex; flex-direction: column; border: 1px solid #6f6f6f; }
+.display-list button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  color: #c6c6c6;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.display-list button + button { border-top: 1px solid #6f6f6f; }
+.display-list button:hover { background: #393939; color: #f4f4f4; }
+.display-list button[aria-checked="true"] { background: #f4f4f4; color: #161616; }
+.display-list button:disabled { cursor: progress; }
+.display-list .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.display-list .meta { flex: none; font-family: var(--mono); font-size: 12px; }
+.display-list button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+/* Until the new display's picture arrives, the old one is shown dimmed. */
+.stage.switching #screen { opacity: 0.5; transition: opacity 0.15s; }
 
 /* Connect form: what to open, the screen or the command line. */
 .choice { display: flex; border: 1px solid var(--border-strong, #8d8d8d); margin-bottom: 8px; }

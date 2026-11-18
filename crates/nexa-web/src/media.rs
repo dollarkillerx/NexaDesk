@@ -19,7 +19,10 @@ use nexa_session::host::IDLE_REFRESH_AFTER;
 use nexa_wire::control::{Chroma, Codec, Mode};
 use tokio::sync::mpsc;
 
-use crate::{StreamStats, WebConfig, WebEvent, WebHost, WebScreen};
+use crate::{
+    StreamStats, WebConfig, WebEvent, WebHost, WebScreen,
+    display::{self, Shown},
+};
 
 pub(crate) struct Frame {
     pub data: Vec<u8>,
@@ -198,6 +201,9 @@ pub(crate) struct Control {
     pub sending: std::sync::Mutex<(u32, u32, u32)>,
     /// Set when the page's channel opens: the cursor feed says everything again.
     pub cursor_resync: Arc<AtomicBool>,
+    /// The display the page asked for (`display.rs`), set by the WebRTC loop; the
+    /// thread switches to it, or says why not.
+    pub display: std::sync::Mutex<Option<u32>>,
 }
 
 /// The size sent to the browser: the display's pixels scaled down to fit `max`, even.
@@ -213,16 +219,20 @@ pub(crate) struct MediaThread {
     handle: Option<JoinHandle<()>>,
 }
 
+/// What a stream is of, and where it reports.
+pub(crate) struct Stream {
+    pub host: Arc<dyn WebHost>,
+    /// The session's, for its stream statistics.
+    pub id: u64,
+    /// The display captured; a switch changes it for input and the cursor too.
+    pub shown: Arc<Shown>,
+    pub show_cursor: bool,
+    /// Where the page is told about a display switch (the `input` channel).
+    pub notes: Option<mpsc::Sender<String>>,
+}
+
 impl MediaThread {
-    /// `id` is the session's, for its stream statistics.
-    pub(crate) fn spawn(
-        host: Arc<dyn WebHost>,
-        id: u64,
-        screen: WebScreen,
-        config: &WebConfig,
-        show_cursor: bool,
-        out: mpsc::Sender<Frame>,
-    ) -> Self {
+    pub(crate) fn spawn(stream: Stream, config: &WebConfig, out: mpsc::Sender<Frame>) -> Self {
         let control = Arc::new(Control::default());
         *control.preset.lock().unwrap_or_else(|e| e.into_inner()) =
             Some(preset(Quality::Auto, false, config));
@@ -231,7 +241,7 @@ impl MediaThread {
         let handle = thread::Builder::new()
             .name("web-capture-encode".into())
             .spawn(move || {
-                if let Err(e) = run(host, id, screen, start_bps, show_cursor, &ctl, out) {
+                if let Err(e) = run(stream, start_bps, &ctl, out) {
                     *ctl.failed.lock().unwrap_or_else(|e| e.into_inner()) = Some(e);
                 }
             })
@@ -317,14 +327,21 @@ impl Drop for MediaThread {
 }
 
 fn run(
-    host: Arc<dyn WebHost>,
-    id: u64,
-    screen: WebScreen,
+    stream: Stream,
     start_bps: u32,
-    show_cursor: bool,
     ctl: &Control,
     out: mpsc::Sender<Frame>,
 ) -> Result<(), String> {
+    let Stream {
+        host,
+        id,
+        shown,
+        show_cursor,
+        notes,
+    } = stream;
+    let mut screen = shown.screen();
+    // A note about a switch that did not fit in the queue: tried again each turn.
+    let mut note: Option<String> = None;
     let take_preset = || ctl.preset.lock().unwrap_or_else(|e| e.into_inner()).take();
     let mut current = take_preset().ok_or("no stream settings")?;
     let mut bitrate = start_bps;
@@ -376,6 +393,50 @@ fn run(
             *ctl.sending.lock().unwrap_or_else(|e| e.into_inner()) =
                 (capture.width, capture.height, capture.fps);
             first = true;
+        }
+        // Another display: a new capture and encoder, at the same stream setting.
+        let wanted = ctl.display.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(index) = wanted {
+            // Read again: monitors come and go. Unreadable is the same as not there.
+            let displays = host.displays().unwrap_or_default();
+            let err = match displays.get(index as usize) {
+                None => Some("unavailable"),
+                Some(d) if d.screen == screen => {
+                    shown.set(index, screen);
+                    None
+                }
+                Some(d) => {
+                    let (next_capture, next_encode) =
+                        configs(&d.screen, current, bitrate, show_cursor);
+                    // The old stages go first (see `stages`): one capture at a time.
+                    last = None;
+                    drop((capturer, encoder));
+                    first = true;
+                    match stages(&*host, next_capture, next_encode) {
+                        Ok(s) => {
+                            (capturer, encoder) = s;
+                            (capture, encode) = (next_capture, next_encode);
+                            screen = d.screen;
+                            // Input and the cursor follow from here on.
+                            shown.set(index, screen);
+                            None
+                        }
+                        // As the native session does: stay on what worked.
+                        Err(_) => {
+                            (capturer, encoder) = stages(&*host, capture, encode)?;
+                            Some("failed")
+                        }
+                    }
+                }
+            };
+            *ctl.sending.lock().unwrap_or_else(|e| e.into_inner()) =
+                (capture.width, capture.height, capture.fps);
+            note = Some(display::note(shown.index(), &screen, &displays, err));
+        }
+        if let (Some(n), Some(tx)) = (note.take(), &notes)
+            && let Err(mpsc::error::TrySendError::Full(n)) = tx.try_send(n)
+        {
+            note = Some(n);
         }
         let mut repeat = false;
         let frame = match capturer.next(frame_wait(capture.fps)) {
@@ -488,7 +549,21 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::FakeHost;
+    use crate::testing::{FakeHost, display};
+
+    fn stream(
+        host: Arc<FakeHost>,
+        screen: WebScreen,
+        notes: Option<mpsc::Sender<String>>,
+    ) -> Stream {
+        Stream {
+            host,
+            id: 0,
+            shown: Shown::new(0, screen),
+            show_cursor: false,
+            notes,
+        }
+    }
 
     #[test]
     fn presets_get_smaller_as_the_network_gets_worse() {
@@ -630,7 +705,7 @@ mod tests {
             size_pixels: (1920, 1080),
         };
         let (tx, _rx) = mpsc::channel(4);
-        let media = MediaThread::spawn(host, 0, screen, &c, false, tx);
+        let media = MediaThread::spawn(stream(host, screen, None), &c, tx);
         let wait_for = |n: u32| {
             let deadline = Instant::now() + Duration::from_secs(5);
             while made.load(Relaxed) < n && Instant::now() < deadline {
@@ -644,6 +719,97 @@ mod tests {
         assert_eq!(*media.control.failed.lock().unwrap(), None);
         assert_eq!(made.load(Relaxed), 2);
         drop(media);
+        assert_eq!(alive.load(Relaxed), 0);
+    }
+
+    /// Switching displays: the capture moves to the one asked for, input and the cursor
+    /// with it, never two captures at once; a display that is not there, or cannot be
+    /// captured, leaves the session where it was, and the page is told either way.
+    #[test]
+    fn switching_displays_moves_the_one_capture_and_says_so() {
+        let c = WebConfig::default();
+        let main = display(1, "Built-in", (0.0, 0.0), (3024, 1964));
+        let side = display(2, "DELL", (1512.0, -200.0), (2560, 1440));
+        // Display 3 is listed but its capture fails, as an unplugged one's does.
+        let broken = display(3, "Gone", (-1920.0, 0.0), (1920, 1080));
+        let alive = Arc::<AtomicU32>::default();
+        let most = Arc::<AtomicU32>::default();
+        let captured = Arc::new(std::sync::Mutex::new(Vec::<(u32, u32, u32)>::new()));
+        let (a, m, log) = (alive.clone(), most.clone(), captured.clone());
+        let host = Arc::new(
+            FakeHost::default()
+                .with_displays(vec![main.clone(), side.clone(), broken])
+                .with_capturer_for(move |config| {
+                    let now = a.fetch_add(1, Relaxed) + 1;
+                    m.fetch_max(now, Relaxed);
+                    if now > 1 || config.display == 3 {
+                        a.fetch_sub(1, Relaxed);
+                        return Err(MediaError::Other("cannot capture this display".into()));
+                    }
+                    log.lock()
+                        .unwrap()
+                        .push((config.display, config.width, config.height));
+                    Ok(Box::new(Capture(a.clone())))
+                })
+                .with_encoder(|| Ok(Box::new(NoEncode))),
+        );
+        let (notes_tx, mut notes) = mpsc::channel(4);
+        let s = stream(host, main.screen, Some(notes_tx));
+        let shown = s.shown.clone();
+        let (tx, _rx) = mpsc::channel(4);
+        let media = MediaThread::spawn(s, &c, tx);
+        let note = |notes: &mut mpsc::Receiver<String>| -> serde_json::Value {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if let Ok(n) = notes.try_recv() {
+                    return serde_json::from_str(&n).unwrap();
+                }
+                assert!(Instant::now() < deadline, "no note from the media thread");
+                thread::sleep(Duration::from_millis(5));
+            }
+        };
+        let ask = |index: u32| *media.control.display.lock().unwrap() = Some(index);
+
+        ask(1);
+        let n = note(&mut notes);
+        assert_eq!((n["i"].clone(), n.get("err")), (1.into(), None), "{n}");
+        assert_eq!(n["pts"], serde_json::json!([1280.0, 720.0]));
+        assert_eq!(n["list"].as_array().unwrap().len(), 3);
+        assert_eq!((shown.index(), shown.screen()), (1, side.screen));
+        // The same stream setting, fitted to the new display's shape.
+        assert_eq!(
+            *captured.lock().unwrap(),
+            [(1, 1846, 1200), (2, 1920, 1080)]
+        );
+        assert_eq!(*media.control.sending.lock().unwrap(), (1920, 1080, 60));
+
+        // No such display: nothing changes.
+        ask(7);
+        let n = note(&mut notes);
+        assert_eq!(
+            (n["i"].clone(), n["err"].clone()),
+            (1.into(), "unavailable".into())
+        );
+        assert_eq!(shown.index(), 1);
+        assert_eq!(captured.lock().unwrap().len(), 2);
+
+        // One that cannot be captured: back on the one that worked.
+        ask(2);
+        let n = note(&mut notes);
+        assert_eq!(
+            (n["i"].clone(), n["err"].clone()),
+            (1.into(), "failed".into())
+        );
+        assert_eq!((shown.index(), shown.screen()), (1, side.screen));
+        assert_eq!(captured.lock().unwrap().last(), Some(&(2, 1920, 1080)));
+
+        // And back to the main display.
+        ask(0);
+        assert_eq!(note(&mut notes)["i"], 0);
+        assert_eq!(shown.screen(), main.screen);
+        assert_eq!(*media.control.failed.lock().unwrap(), None);
+        drop(media);
+        assert_eq!(most.load(Relaxed), 1, "two captures were alive at once");
         assert_eq!(alive.load(Relaxed), 0);
     }
 
@@ -744,7 +910,7 @@ mod tests {
             size_pixels: (1920, 1080),
         };
         let (tx, rx) = mpsc::channel(8);
-        let media = MediaThread::spawn(host, 0, screen, &WebConfig::default(), false, tx);
+        let media = MediaThread::spawn(stream(host, screen, None), &WebConfig::default(), tx);
         (media, rx, calls)
     }
 

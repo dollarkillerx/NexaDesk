@@ -31,7 +31,7 @@ use str0m::{
 use tokio::{net::UdpSocket, sync::mpsc, time::sleep_until};
 
 use crate::{
-    WebConfig,
+    WebConfig, display,
     input::{InputThread, Msg},
     media::{Control, Frame, Quality, Resolution, preset, sized},
 };
@@ -695,6 +695,12 @@ async fn run(
                                 tuning.window = window;
                             }
                             tuning.apply(control.as_ref(), &mut rtc, input_channel, &config);
+                        } else if let Some(index) = display::request(&d.data) {
+                            // Another display, for anyone watching too; only with a
+                            // picture. The media thread checks it is there, and answers.
+                            if let Some(c) = &control {
+                                *c.display.lock().unwrap_or_else(|e| e.into_inner()) = Some(index);
+                            }
                         } else if let (Some(input), Some(msg)) = (&input, Msg::parse(&d.data)) {
                             input.send(msg);
                         }

@@ -149,6 +149,7 @@ function connect(code, deviceId, method = "code", opts = {}) {
       setTimeout(() => $("code").focus(), 0);
     }
     s.stopStats?.();
+    clearTimeout(s.switchTimer);
     closeTerminal();
     try { s.dc?.close(); } catch {}
     try { pc.close(); } catch {}
@@ -173,6 +174,7 @@ function connect(code, deviceId, method = "code", opts = {}) {
     if (m && cursor?.message(m)) return;
     if (m?.t === "c" && typeof m.s === "string" && s.clipboard) receiveClip(m.s);
     if (m?.t === "q") showQualityNote(m);
+    if (m?.t === "d") displayShown(m);
   };
   s.dc.onopen = () => {
     sendQuality();
@@ -247,6 +249,11 @@ function connect(code, deviceId, method = "code", opts = {}) {
         // The host sends its cursor beside the picture: the page draws it.
         s.cursor = m.cursor === true;
         s.points = m.points;
+        // The host's displays, one shown at a time; a choice only with two or more.
+        s.displays = displayList(m.displays) ?? [];
+        s.display = Number.isInteger(m.display) ? m.display : 0;
+        s.switching = false;
+        s.displayErr = "";
         s.started = true;
         keep(m, code, deviceId, method, opts);
         showSession(s);
@@ -511,6 +518,9 @@ function showConnect() {
   $("swap").hidden = true;
   $("net").hidden = true;
   $("netpanel").hidden = true;
+  $("display").hidden = true;
+  $("displaypanel").hidden = true;
+  $("session-view").classList.remove("switching");
   $("keybar").hidden = true;
   $("toast").hidden = true;
   touch?.reset();
@@ -552,6 +562,7 @@ function showSession(s) {
     $("keys-hint").hidden = true;
     $("keyboard").hidden = true;
     $("swap").hidden = true;
+    $("display").hidden = true;
     $("net").hidden = false;
     $("net-text").textContent = "…";
     s.stopStats = watch(s.pc, showNet);
@@ -567,6 +578,7 @@ function showSession(s) {
   $("net-text").textContent = "…";
   showQualityChoice();
   showResolutionChoice();
+  showDisplays();
   // Only someone who may type has keys to choose about.
   $("symbols-group").hidden = !s.input;
   showSymbolsChoice();
@@ -713,6 +725,106 @@ function onWindowResized() {
   }, 600);
 }
 
+// ---- Displays ----
+
+/** The host's displays as the page lists them: a name and a size, nothing more. */
+function displayList(list) {
+  if (!Array.isArray(list)) return null;
+  return list.slice(0, 16).map((d) => ({
+    n: typeof d?.n === "string" ? d.n.slice(0, 60) : "",
+    w: Number.isInteger(d?.w) ? d.w : 0,
+    h: Number.isInteger(d?.h) ? d.h : 0,
+  }));
+}
+
+/** How long a switch may take before the page stops waiting for the host's answer. */
+const SWITCH_WAIT_MS = 10000;
+
+const displayName = (i) => t("display.n").replace("{n}", String(i + 1));
+
+/** The display button and its list, only when the host has more than one display. */
+function showDisplays() {
+  const s = session;
+  const list = s?.displays ?? [];
+  const many = !!s?.started && s.video !== false && list.length > 1;
+  $("display").hidden = !many;
+  $("session-view").classList.toggle("switching", many && !!s.switching);
+  if (!many) {
+    $("displaypanel").hidden = true;
+    $("display").setAttribute("aria-expanded", "false");
+    return;
+  }
+  $("display-text").textContent = displayName(s.display);
+  $("display").title = `${t("display")}: ${list[s.display]?.n || displayName(s.display)}`;
+  const box = $("display-list");
+  box.replaceChildren();
+  list.forEach((d, i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.setAttribute("role", "radio");
+    b.setAttribute("aria-checked", String(i === s.display));
+    b.dataset.i = String(i);
+    b.disabled = !!s.switching;
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = d.n ? `${i + 1} · ${d.n}` : displayName(i);
+    const meta = document.createElement("span");
+    meta.className = "meta";
+    meta.textContent = [i === 0 ? t("display.main") : "", d.w && d.h ? `${d.w} × ${d.h}` : ""].filter(Boolean).join(" · ");
+    b.append(name, meta);
+    box.append(b);
+  });
+  const note = s.switching ? "display.switching" : s.displayErr ? "display.err." + s.displayErr : "display.help";
+  $("display-note").textContent = t(note);
+}
+
+/** Asks the host to show display `i` instead. The picture changes when it answers;
+ *  until then the old one stays, dimmed, and the pointer is not sent. */
+function switchDisplay(i) {
+  const s = session;
+  if (!s?.started || s.video === false || s.switching || i === s.display) return;
+  if (s.dc?.readyState !== "open" || !(i >= 0 && i < s.displays.length)) return;
+  // Nothing held over from one display to the other.
+  if (s.input) keyboard.release();
+  s.switching = true;
+  s.displayErr = "";
+  s.dc.send(JSON.stringify({ t: "d", i }));
+  clearTimeout(s.switchTimer);
+  s.switchTimer = setTimeout(() => {
+    if (session !== s || !s.switching) return;
+    s.switching = false;
+    s.displayErr = "failed";
+    showDisplays();
+  }, SWITCH_WAIT_MS);
+  showDisplays();
+}
+
+/** The host says which display it shows now: after a switch, or one it refused. */
+function displayShown(m) {
+  const s = session;
+  if (!s?.started || !Number.isInteger(m.i) || m.i < 0) return;
+  clearTimeout(s.switchTimer);
+  const list = displayList(m.list);
+  if (list) s.displays = list;
+  const changed = m.i !== s.display;
+  s.display = m.i;
+  s.switching = false;
+  s.displayErr = m.err === "unavailable" || m.err === "failed" ? m.err : "";
+  // The cursor is drawn at the size of the display shown.
+  if (Array.isArray(m.pts)) {
+    s.points = m.pts;
+    cursor?.enable(s.cursor && s.video !== false, m.pts);
+  }
+  showDisplays();
+  if (s.displayErr) {
+    toast(t("display.err." + s.displayErr));
+  } else if (changed) {
+    $("displaypanel").hidden = true;
+    $("display").setAttribute("aria-expanded", "false");
+    keyboard.focus();
+  }
+}
+
 function showQualityNote(m) {
   $("quality-note").textContent = m.reduced ? t("q.reduced") : "";
 }
@@ -754,6 +866,8 @@ const heldButtons = new Set();
 function send(msg) {
   const s = session;
   if (!s?.started || !s.input || s.dc?.readyState !== "open") return;
+  // While the host changes displays, a position would land on one the page does not show.
+  if (s.switching && (msg.t === "m" || msg.t === "w" || (msg.t === "b" && msg.d))) return;
   s.dc.send(JSON.stringify(msg));
   if (msg.t === "b") {
     if (msg.d) heldButtons.add(msg.b);
@@ -1016,10 +1130,24 @@ function setupInput() {
   $("keyboard").addEventListener("click", () => {
     setSoftKeyboard($("keyboard").getAttribute("aria-pressed") !== "true");
   });
-  $("net").addEventListener("click", () => {
-    const panel = $("netpanel");
+  // One panel open at a time: they take the same corner.
+  const togglePanel = (button, panel, other, otherButton) => {
     panel.hidden = !panel.hidden;
-    $("net").setAttribute("aria-expanded", String(!panel.hidden));
+    button.setAttribute("aria-expanded", String(!panel.hidden));
+    if (!panel.hidden) {
+      other.hidden = true;
+      otherButton.setAttribute("aria-expanded", "false");
+    }
+  };
+  $("net").addEventListener("click", () => togglePanel($("net"), $("netpanel"), $("displaypanel"), $("display")));
+  $("display").addEventListener("click", () => {
+    togglePanel($("display"), $("displaypanel"), $("netpanel"), $("net"));
+    if (!$("displaypanel").hidden) $("display-list").querySelector('[aria-checked="true"]')?.focus();
+  });
+  $("display-list").addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b?.dataset.i) return;
+    switchDisplay(Number(b.dataset.i));
   });
   $("quality").addEventListener("click", (e) => {
     const b = e.target.closest("button");
@@ -1092,6 +1220,7 @@ function setupLanguage() {
       showSwap();
       showResolutionChoice();
       showSymbolsChoice();
+      showDisplays();
     }
   });
 }
