@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using NexaDesk.Localization;
@@ -20,11 +21,15 @@ public sealed partial class SettingsViewModel : ObservableObject
     readonly ISettingsStore _store;
     readonly ISavedPasswords? _passwords;
 
-    public SettingsViewModel(ISettingsStore store, ISavedPasswords? passwords = null)
+    readonly IServerDirectory? _directory;
+
+    public SettingsViewModel(ISettingsStore store, ISavedPasswords? passwords = null, IServerDirectory? directory = null)
     {
         _store = store;
         _passwords = passwords;
+        _directory = directory;
         var loaded = store.Load();
+        _useServerList = loaded.UseServerList && directory != null;
         _savedServer = loaded.SignalServer;
         // With no server or no Keychain there is nothing to wait for.
         if (_passwords == null || _savedServer.Length == 0) _secretLoaded.TrySetResult();
@@ -57,7 +62,63 @@ public sealed partial class SettingsViewModel : ObservableObject
         AnnounceOnLan = AnnounceOnLan,
         Language = SelectedLanguage?.Code ?? "",
         AllowBrowsers = AllowBrowsers,
+        UseServerList = UseServerList,
     });
+
+    /// <summary>
+    /// Offers the servers published for everyone (servers.json in the project's repository) to pick
+    /// from. Off by default: while it is off the app never asks GitHub for the list. Picking one only
+    /// fills in the two boxes; nothing is saved or used until Save, like a server typed by hand.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanUseServerList))]
+    private bool _useServerList;
+
+    /// <summary>False when this build has no list to read.</summary>
+    public bool CanUseServerList => _directory != null;
+
+    public ObservableCollection<ServerEntry> ListedServers { get; } = [];
+
+    [ObservableProperty]
+    private ServerEntry? _selectedListed;
+
+    /// <summary>Loading, none published, or how many there are; null while the list is off.</summary>
+    [ObservableProperty]
+    private string? _listStatus;
+
+    CancellationTokenSource? _listing;
+
+    partial void OnUseServerListChanged(bool value)
+    {
+        Persist();
+        _ = RefreshListAsync();
+    }
+
+    partial void OnSelectedListedChanged(ServerEntry? value)
+    {
+        if (value == null) return;
+        ServerInput = value.Endpoint;
+        SecretInput = value.Key;
+    }
+
+    /// <summary>Fetches the published list (when it is switched on) and shows it. Never throws.</summary>
+    public async Task RefreshListAsync()
+    {
+        _listing?.Cancel();
+        ListedServers.Clear();
+        SelectedListed = null;
+        if (!UseServerList || _directory == null)
+        {
+            ListStatus = null;
+            return;
+        }
+        var mine = _listing = new CancellationTokenSource();
+        ListStatus = L.Get("Main.ServerListLoading");
+        var found = await _directory.LoadAsync(mine.Token);
+        if (mine.IsCancellationRequested) return;
+        foreach (var e in found) ListedServers.Add(e);
+        ListStatus = found.Count == 0 ? L.Get("Main.ServerListEmpty") : L.Format("Main.ServerListCount", found.Count);
+    }
 
     /// <summary>
     /// Whether web browsers may connect (crates/nexa-web): the agent then also serves a page

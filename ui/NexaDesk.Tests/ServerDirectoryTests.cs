@@ -159,4 +159,75 @@ public class ServerDirectoryTests
         }
         finally { dir.Delete(true); }
     }
+
+    // ---- the settings window's use of the list: off until switched on ----
+
+    sealed class FakeDirectory(params ServerEntry[] entries) : IServerDirectory
+    {
+        public int Loads;
+        public Task<IReadOnlyList<ServerEntry>> LoadAsync(CancellationToken ct = default)
+        {
+            Loads++;
+            return Task.FromResult<IReadOnlyList<ServerEntry>>(entries);
+        }
+    }
+
+    static readonly ServerEntry Listed = new("wss://signal.example.com", "a key for everyone");
+
+    [Fact]
+    public async Task The_list_is_never_fetched_until_it_is_switched_on()
+    {
+        var directory = new FakeDirectory(Listed);
+        var store = new MemorySettings();
+        var s = new NexaDesk.ViewModels.SettingsViewModel(store, new MemorySavedPasswords(), directory);
+        Assert.False(s.UseServerList);
+        await s.RefreshListAsync();
+        Assert.Equal(0, directory.Loads);
+        Assert.Null(s.ListStatus);
+
+        s.UseServerList = true;
+        await s.RefreshListAsync();
+        Assert.True(directory.Loads >= 1);
+        Assert.Equal([Listed], s.ListedServers);
+        Assert.True(store.Current.UseServerList);
+
+        // Off again: the list goes away, and a new settings window starts with it off.
+        s.UseServerList = false;
+        await s.RefreshListAsync();
+        Assert.Empty(s.ListedServers);
+        Assert.False(store.Current.UseServerList);
+    }
+
+    [Fact]
+    public async Task Picking_a_listed_server_fills_the_boxes_and_saves_nothing_until_Save()
+    {
+        var store = new MemorySettings(new AppSettings(UseServerList: true));
+        var keychain = new MemorySavedPasswords();
+        var s = new NexaDesk.ViewModels.SettingsViewModel(store, keychain, new FakeDirectory(Listed));
+        Assert.True(s.UseServerList);
+        await s.RefreshListAsync();
+        s.SelectedListed = s.ListedServers[0];
+        Assert.Equal(("wss://signal.example.com", "a key for everyone"), (s.ServerInput, s.SecretInput));
+        Assert.Equal("", s.SavedServer);
+        Assert.Empty(keychain.Kept);
+        Assert.True(s.SaveCommand.CanExecute(null));
+        s.SaveCommand.Execute(null);
+        Assert.Equal("wss://signal.example.com", s.SavedServer);
+        Assert.Equal("a key for everyone", s.SavedSecret);
+    }
+
+    [Fact]
+    public async Task An_empty_list_says_so_and_a_build_without_a_list_hides_the_switch()
+    {
+        var s = new NexaDesk.ViewModels.SettingsViewModel(
+            new MemorySettings(new AppSettings(UseServerList: true)), null, new FakeDirectory());
+        await s.RefreshListAsync();
+        Assert.Empty(s.ListedServers);
+        Assert.NotNull(s.ListStatus);
+
+        var none = new NexaDesk.ViewModels.SettingsViewModel(
+            new MemorySettings(new AppSettings(UseServerList: true)));
+        Assert.False(none.CanUseServerList);
+        Assert.False(none.UseServerList);
+    }
 }

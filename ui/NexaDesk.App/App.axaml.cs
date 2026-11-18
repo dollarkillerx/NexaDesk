@@ -73,7 +73,8 @@ public partial class App : Application
                 loginItem: OperatingSystem.IsWindows() ? new RunKeyLoginItem() : new SmAppServiceLoginItem(), keymap: new NativeKeymap(dataDir),
                 viewerPrefs: new ViewerPrefsStore(Path.Combine(dataDir, "viewer-prefs.json")),
                 passwords: new NativeSavedPasswords(), updater: new VelopackUpdater(),
-                serverTrust: new NativeServerTrust());
+                serverTrust: new NativeServerTrust(),
+                serverDirectory: new ServerDirectory(ServerDirectory.DefaultUrl, Path.Combine(dataDir, "servers.json")));
             if (startupError != null) vm.Connect.IdentityError = startupError;
             var main = new MainWindow { DataContext = vm };
             if (OperatingSystem.IsWindows())
@@ -139,6 +140,8 @@ public partial class App : Application
                 _ = vm.Settings.LoadSecretAsync();
                 main.Opened += async (_, _) => await vm.Host.TryAttachExistingAsync();
             }
+            // The published server list is fetched only when the person switched it on.
+            if (vm.Settings.UseServerList) _ = vm.Settings.RefreshListAsync();
             _ = vm.Updates.CheckDailyAsync();
         }
         base.OnFrameworkInitializationCompleted();

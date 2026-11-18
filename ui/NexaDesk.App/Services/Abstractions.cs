@@ -146,7 +146,7 @@ public interface ILocalAddresses
 /// settings.json from before this field); the person stopping it switches it off until they
 /// start it again, and quitting or restarting to update leaves it as it was.</summary>
 public sealed record AppSettings(string SignalServer = "", bool AnnounceOnLan = true, string Language = "",
-    bool AllowBrowsers = false, bool ResumeHosting = true);
+    bool AllowBrowsers = false, bool ResumeHosting = true, bool UseServerList = false);
 
 /// <summary>The viewer's picture choices, remembered for the next session.</summary>
 public sealed record ViewerPrefs(string Quality = "auto", string Resolution = "auto");
