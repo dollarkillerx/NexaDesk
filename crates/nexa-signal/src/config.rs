@@ -213,15 +213,20 @@ impl Config {
                 "tls_cert and tls_key go together".into(),
             ));
         }
-        if self
-            .signal
-            .access_secrets
-            .iter()
-            .any(|s| s.trim().is_empty())
-        {
-            return Err(ConfigError::Invalid(
-                "signal.access_secrets: a secret may not be empty".into(),
-            ));
+        // Clients trim what a person typed, so a secret with spaces at either end
+        // could never be matched.
+        for s in &self.signal.access_secrets {
+            if s.trim().is_empty() {
+                return Err(ConfigError::Invalid(
+                    "signal.access_secrets: a secret may not be empty".into(),
+                ));
+            }
+            if s.trim() != s {
+                return Err(ConfigError::Invalid(
+                    "signal.access_secrets: a secret may not start or end with a space or a line break"
+                        .into(),
+                ));
+            }
         }
         if self.stun.listen.len() > 2 {
             return Err(ConfigError::Invalid("at most two STUN addresses".into()));
@@ -328,11 +333,13 @@ lisen = "x"
         );
         let c = Config::from_toml(&with).unwrap();
         assert_eq!(c.signal.access_secrets, ["one", "two"]);
-        let empty = EXAMPLE.replace(
-            "# access_secrets = [\"a long password nobody would guess\"]",
-            "access_secrets = [\"  \"]",
-        );
-        assert!(Config::from_toml(&empty).is_err());
+        for bad in ["  ", " padded", "line\\n"] {
+            let text = EXAMPLE.replace(
+                "# access_secrets = [\"a long password nobody would guess\"]",
+                &format!("access_secrets = [\"{bad}\"]"),
+            );
+            assert!(Config::from_toml(&text).is_err(), "{bad:?}");
+        }
     }
 
     #[test]
