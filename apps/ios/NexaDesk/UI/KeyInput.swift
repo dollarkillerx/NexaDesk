@@ -30,6 +30,18 @@ final class KeyInputUIView: UIView, UIKeyInput {
     var onLatchUsed: (() -> Void)?
 
     override var canBecomeFirstResponder: Bool { true }
+
+    /// The on-screen keyboard is shown only when asked for. The view stays first
+    /// responder either way, so a hardware keyboard always types: an empty input view
+    /// stands in for the on-screen one while it is hidden.
+    var showsSoftKeyboard = false {
+        didSet {
+            guard showsSoftKeyboard != oldValue else { return }
+            reloadInputViews()
+        }
+    }
+    private let noKeyboard = UIView(frame: .zero)
+    override var inputView: UIView? { showsSoftKeyboard ? nil : noKeyboard }
     var hasText: Bool { true }
     var autocorrectionType: UITextAutocorrectionType = .no
     var autocapitalizationType: UITextAutocapitalizationType = .none
@@ -135,13 +147,30 @@ final class KeyInputUIView: UIView, UIKeyInput {
 final class KeyInputController: ObservableObject {
     let view = KeyInputUIView()
     @Published var latched: Set<UInt32> = []
+    @Published private(set) var softKeyboard = false
 
     init() {
         view.onLatchUsed = { [weak self] in self?.latched = [] }
+        // Put away some other way (the iPad's hide-keyboard key): the bar goes too,
+        // and the view takes the hardware keyboard again.
+        NotificationCenter.default.addObserver(forName: UIResponder.keyboardDidHideNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.softKeyboard, !self.view.isFirstResponder else { return }
+                self.softKeyboard = false
+                self.view.showsSoftKeyboard = false
+                self.view.becomeFirstResponder()
+            }
+        }
     }
 
     func toggleKeyboard() {
-        if view.isFirstResponder { view.resignFirstResponder() } else { view.becomeFirstResponder() }
+        softKeyboard.toggle()
+        view.showsSoftKeyboard = softKeyboard
+        if !view.isFirstResponder { view.becomeFirstResponder() }
+        if !softKeyboard, !latched.isEmpty {
+            latched = []
+            view.latched = []
+        }
     }
 
     func toggle(_ modifier: UInt32) {
@@ -167,7 +196,7 @@ struct KeyInputHost: UIViewRepresentable {
     func updateUIView(_ view: KeyInputUIView, context: Context) {}
 }
 
-/// Keys a phone keyboard does not have.
+/// Keys a phone keyboard does not have, shown above it.
 struct KeyboardBar: View {
     @ObservedObject var keys: KeyInputController
 
@@ -184,7 +213,6 @@ struct KeyboardBar: View {
                 key("↓") { keys.tap(HID.down) }
                 key("↑") { keys.tap(HID.up) }
                 key("→") { keys.tap(HID.right) }
-                key("⌨︎") { keys.toggleKeyboard() }
             }
             .padding(.horizontal, 8)
         }

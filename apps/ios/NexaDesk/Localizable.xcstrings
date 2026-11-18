@@ -306,6 +306,22 @@
         }
       }
     },
+    "Disconnect": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "切断"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "断开连接"
+          }
+        }
+      }
+    },
     "Disconnected": {
       "localizations": {
         "ja": {
@@ -366,6 +382,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "隐藏"
+          }
+        }
+      }
+    },
+    "Hide keyboard": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "キーボードを隠す"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隐藏键盘"
           }
         }
       }
@@ -690,6 +722,22 @@
         }
       }
     },
+    "Show keyboard": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "キーボードを表示"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示键盘"
+          }
+        }
+      }
+    },
     "Signaling server": {
       "localizations": {
         "ja": {
@@ -974,6 +1022,70 @@
           "stringUnit": {
             "state": "translated",
             "value": "尝试次数过多"
+          }
+        }
+      }
+    },
+    "Touch mode": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "タッチモード"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "触摸模式"
+          }
+        }
+      }
+    },
+    "Touch: tap to click there, drag to drag, touch and hold for a right click. Two fingers: drag to scroll, pinch to zoom.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "タッチ：タップした場所をクリック、ドラッグでドラッグ、長押しで右クリック。2本指：ドラッグでスクロール、ピンチでズーム。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "触摸：轻点即在该处单击，拖动即拖拽，长按为右键。双指：拖动滚动，捏合缩放。"
+          }
+        }
+      }
+    },
+    "Trackpad mode": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "トラックパッドモード"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "触控板模式"
+          }
+        }
+      }
+    },
+    "Trackpad: drag to move the pointer, tap to click, touch and hold to drag. Two fingers: tap for a right click, drag to scroll, pinch to zoom.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "トラックパッド：ドラッグでポインタを移動、タップでクリック、長押ししてから動かすとドラッグ。2本指：タップで右クリック、ドラッグでスクロール、ピンチでズーム。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "触控板：拖动移动指针，轻点单击，按住后拖动可拖拽。双指：轻点右键，拖动滚动，捏合缩放。"
           }
         }
       }

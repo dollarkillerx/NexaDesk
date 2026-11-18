@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 @main
 struct NexaDeskApp: App {
@@ -187,52 +188,94 @@ struct SessionView: View {
 
     @EnvironmentObject private var core: NexaCore
     @StateObject private var keys = KeyInputController()
+    @AppStorage("pointerMode") private var mode: PointerMode = .trackpad
+    /// What the gestures do now, shown for a moment after switching modes.
+    @State private var hint: String?
+    @State private var hintGeneration = 0
 
     var body: some View {
         VStack(spacing: 0) {
             ZStack(alignment: .top) {
-                VideoView(core: core)
+                VideoView(core: core, mode: mode,
+                          stream: CGSize(width: core.stream.w, height: core.stream.h))
                     .ignoresSafeArea(edges: [.horizontal, .bottom])
                 // Takes the keyboard; it has no size of its own.
                 KeyInputHost(controller: keys, core: core).frame(width: 0, height: 0)
                 if case .reconnecting(let text) = core.phase {
                     Text(text).font(.footnote).padding(8)
                         .background(.thinMaterial, in: Capsule()).padding(.top, 8)
+                } else if let hint {
+                    Text(hint).font(.footnote).multilineTextAlignment(.center)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                        .padding(.top, 8).padding(.horizontal, 16)
+                        .transition(.opacity)
+                        .allowsHitTesting(false)
                 }
             }
-            HStack {
-                Button { core.disconnect() } label: { Image(systemName: "xmark.circle.fill") }
-                    .font(.title2).padding(.leading, 12)
-                Text(core.hostName).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
-                Spacer(minLength: 0)
-                if core.displays.count > 1 {
-                    // One display at a time: picking another replaces the picture.
-                    Menu {
-                        ForEach(core.displays, id: \.id) { d in
-                            Button {
-                                core.selectDisplay(d.id)
-                            } label: {
-                                if d.id == core.display {
-                                    Label(Self.title(of: d), systemImage: "checkmark")
-                                } else {
-                                    Text(Self.title(of: d))
-                                }
-                            }
-                        }
-                    } label: {
-                        Label("Display", systemImage: "display.2")
-                            .labelStyle(.iconOnly)
-                            .font(.title3)
-                    }
-                    .padding(.trailing, 12)
-                }
-            }
-            .padding(.top, 4)
-            if core.inputAllowed {
+            bar
+            if core.inputAllowed && keys.softKeyboard {
                 KeyboardBar(keys: keys)
             }
         }
         .background(Color.black)
         .preferredColorScheme(.dark)
+    }
+
+    private var bar: some View {
+        HStack(spacing: 18) {
+            Button { core.disconnect() } label: { Image(systemName: "xmark.circle.fill") }
+                .font(.title2)
+                .accessibilityLabel("Disconnect")
+            Text(core.hostName).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+            Spacer(minLength: 0)
+            if core.inputAllowed {
+                Button { switchMode() } label: {
+                    Image(systemName: mode == .trackpad ? "rectangle.and.hand.point.up.left" : "hand.tap")
+                }
+                .accessibilityLabel(mode == .trackpad ? "Trackpad mode" : "Touch mode")
+                Button { keys.toggleKeyboard() } label: {
+                    Image(systemName: keys.softKeyboard ? "keyboard.chevron.compact.down" : "keyboard")
+                }
+                .accessibilityLabel(keys.softKeyboard ? "Hide keyboard" : "Show keyboard")
+            }
+            if core.displays.count > 1 {
+                // One display at a time: picking another replaces the picture.
+                Menu {
+                    ForEach(core.displays, id: \.id) { d in
+                        Button {
+                            core.selectDisplay(d.id)
+                        } label: {
+                            if d.id == core.display {
+                                Label(Self.title(of: d), systemImage: "checkmark")
+                            } else {
+                                Text(Self.title(of: d))
+                            }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "display.2")
+                }
+                .accessibilityLabel("Display")
+            }
+        }
+        .font(.title3)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+    }
+
+    private func switchMode() {
+        mode = mode == .trackpad ? .touch : .trackpad
+        UISelectionFeedbackGenerator().selectionChanged()
+        let text = mode == .trackpad
+            ? String(localized: "Trackpad: drag to move the pointer, tap to click, touch and hold to drag. Two fingers: tap for a right click, drag to scroll, pinch to zoom.")
+            : String(localized: "Touch: tap to click there, drag to drag, touch and hold for a right click. Two fingers: drag to scroll, pinch to zoom.")
+        hintGeneration += 1
+        let generation = hintGeneration
+        withAnimation { hint = text }
+        Task {
+            try? await Task.sleep(for: .seconds(4))
+            if generation == hintGeneration { withAnimation { hint = nil } }
+        }
     }
 }

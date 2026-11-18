@@ -70,16 +70,27 @@ the simulator: `xcrun simctl launch booted app.nexadesk.ios -AppleLanguages "(ja
 
 ## Controls
 
-- Tap: click there. Two-finger tap: right click.
-- Drag with one finger: press, move, release (move windows, select text).
-- Drag with two fingers: scroll.
-- The on-screen keyboard types text; the bar above it has Esc, Tab, ⌃ ⌥ ⌘ ⇧ (latched
-  for the next key, for shortcuts such as ⌘C) and the arrows.
-- A hardware keyboard sends its keys as they are, shortcuts included.
+Two ways to drive the pointer, switched with the button in the bar (remembered):
+
+- **Trackpad** (the default): drag one finger to move the pointer drawn on the
+  picture, tap to click where it is, touch and hold then move to drag (select text,
+  move a window). Precise on a small screen.
+- **Touch:** tap to click under the finger, drag to drag, touch and hold for a right
+  click.
+
+In both, a two-finger tap is a right click, a two-finger drag scrolls, and a pinch
+zooms up to 3× (moving the fingers while pinching pans). Zoomed in, the computer
+sends a larger picture, so text stays sharp, and in trackpad mode the picture
+follows the pointer. Clicks give a light tap of haptic feedback.
+
+- The keyboard button shows the on-screen keyboard, with a bar above it: Esc, Tab,
+  ⌃ ⌥ ⌘ ⇧ (latched for the next key, for shortcuts such as ⌘C) and the arrows.
+- A hardware keyboard always types, keyboard shown or not, and sends its keys as
+  they are, shortcuts included.
 - When the computer has more than one display, the display button at the right of
   the bar switches between them, one at a time.
 
 ## Not yet
 
-Sound, the clipboard, file transfer, saved connections and known hosts, zoom, a trackpad-style pointer, and handling the app going to the background
+Sound, the clipboard, file transfer, saved connections and known hosts, the computer's own pointer shape (the app draws an arrow), and handling the app going to the background
 (the session is reconnected when it comes back, as after a network change).
