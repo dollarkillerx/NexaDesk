@@ -115,6 +115,11 @@ const PROBE_ACCEPT_FACTOR: f64 = 0.85;
 /// after every real one).
 const RECOVERY_CUT_BELOW: f64 = 0.66;
 const RECOVERY_DROP_WINDOW: Duration = Duration::from_secs(5);
+/// "What the link carried" is the highest receive rate of this long. Light work
+/// loads a link only now and then (a repaint every few seconds); over five seconds
+/// the highest was often the trickle in between, the link then seemed to carry what
+/// it always had while it was slow, and no recovery was tried.
+const CARRIED_WINDOW: Duration = Duration::from_secs(30);
 /// Below this target, sending under it does not count as app-limited: an encoder
 /// given a tiny budget for a large picture (VideoToolbox, 0.16 Mbit/s for 3072×1920)
 /// drops frames and sends less than it was given, which otherwise read as "nothing to
@@ -758,9 +763,9 @@ pub struct RateController {
     recover_to: Option<f64>,
     /// The highest target of the last [`RECOVERY_DROP_WINDOW`] and when it was set.
     recent_high: Option<(Instant, f64)>,
-    /// The highest receive rate of the last [`RECOVERY_DROP_WINDOW`]: what the link
-    /// carried.
-    carried_high: Option<(Instant, f64)>,
+    /// Receive rates of the last [`CARRIED_WINDOW`], falling from the front (a sliding
+    /// maximum): the front is what the link carried.
+    carried: VecDeque<(Instant, f64)>,
     /// When the running probe began.
     probe_started: Instant,
     /// Of the packets sent during the running probe and reported received: the
@@ -824,7 +829,7 @@ impl RateController {
             last_probe_end: None,
             recover_to: None,
             recent_high: None,
-            carried_high: None,
+            carried: VecDeque::new(),
             probe_started: now,
             probe_rx: None,
             probe_reported: false,
@@ -1040,7 +1045,7 @@ impl RateController {
         self.switched_at = Some(now);
         self.queue_began_at_target = None;
         self.recent_high = None;
-        self.carried_high = None;
+        self.carried.clear();
         self.last_decrease = None;
         self.last_update = Some(now);
     }
@@ -1269,10 +1274,16 @@ impl RateController {
             self.probe_congested = true;
         }
         if let Some(recv) = recv {
-            let stale =
-                |(at, _): (Instant, f64)| now.saturating_duration_since(at) >= RECOVERY_DROP_WINDOW;
-            if self.carried_high.is_none_or(|c| recv >= c.1 || stale(c)) {
-                self.carried_high = Some((now, recv));
+            while self.carried.back().is_some_and(|&(_, r)| r <= recv) {
+                self.carried.pop_back();
+            }
+            self.carried.push_back((now, recv));
+            while self
+                .carried
+                .front()
+                .is_some_and(|&(at, _)| now.saturating_duration_since(at) >= CARRIED_WINDOW)
+            {
+                self.carried.pop_front();
             }
         }
         let carrying = match (recv, measured) {
@@ -1320,8 +1331,8 @@ impl RateController {
                 .last_decrease
                 .filter(|&t| now.saturating_duration_since(t) < RECOVERY_DROP_WINDOW)
                 .and(self.congestion_point);
-            let link_fell = match (cut_at, self.carried_high) {
-                (Some(at_cut), Some((_, carried))) => at_cut < RECOVERY_CUT_BELOW * carried,
+            let link_fell = match (cut_at, self.carried.front()) {
+                (Some(at_cut), Some(&(_, carried))) => at_cut < RECOVERY_CUT_BELOW * carried,
                 _ => true,
             };
             if link_fell {
@@ -1646,6 +1657,8 @@ mod tests {
         delay_shift: Option<(f64, f64, f64)>,
         /// The path changes under the session at these times (s).
         path_switches: &'static [f64],
+        /// From `.0` to `.1` (s) the link carries `.2` bit/s, whatever `capacity` says.
+        slow_spell: Option<(f64, f64, f64)>,
         /// Probe padding as the host sends it: it rides on frames, at most
         /// [`crate::shard::MAX_PROBE_PADDING`] times each frame's own packets.
         padding_rides_on_frames: bool,
@@ -1676,6 +1689,7 @@ mod tests {
                 reorder_jitter_ms: 0.0,
                 delay_shift: None,
                 path_switches: &[],
+                slow_spell: None,
                 padding_rides_on_frames: false,
             }
         }
@@ -1932,7 +1946,12 @@ mod tests {
                         },
                         wall,
                     );
-                    let outcome = link.transit(now, bytes, (s.capacity)(now as f64 / 1e6));
+                    let t = now as f64 / 1e6;
+                    let capacity = s
+                        .slow_spell
+                        .filter(|&(from, to, _)| (from..to).contains(&t))
+                        .map_or((s.capacity)(t), |spell| spell.2);
+                    let outcome = link.transit(now, bytes, capacity);
                     if let Some((arrival, queueing)) = outcome {
                         trace
                             .queue
@@ -2624,6 +2643,122 @@ mod tests {
         // One probe to the old rate, and no more.
         assert!(probing <= 4, "{probing} steps with a probe on");
         assert!(queue < 50.0, "the probe queued {queue:.0} ms");
+    }
+
+    /// Light work whose repaints are six seconds apart, and a slow spell of four
+    /// seconds that the second of them runs into. Whether the link fell was judged
+    /// against the most it had carried in five seconds: by then that was the trickle
+    /// between repaints, the link seemed to carry what it always had, and no
+    /// recovery was tried.
+    #[test]
+    fn a_slow_spell_between_far_apart_repaints_is_recovered_from() {
+        let trace = simulate(Scenario {
+            secs: 60.0,
+            fps: 31.0,
+            initial_bps: 12.5 * MBPS,
+            capacity: |t| {
+                if (23.5..27.5).contains(&t) {
+                    1.0 * MBPS
+                } else {
+                    20.0 * MBPS
+                }
+            },
+            app_demand: Some(|t| {
+                if t % 6.0 < 0.4 {
+                    f64::INFINITY
+                } else {
+                    0.6 * MBPS
+                }
+            }),
+            jitter_ms: 5.0,
+            one_way_ms: 135.0,
+            max_queue_ms: 200.0,
+            padding_rides_on_frames: true,
+            ..Default::default()
+        });
+        let before = trace.target_at(23.4);
+        let lowest = trace
+            .targets
+            .iter()
+            .filter(|s| s.0 >= 23.5)
+            .map(|s| s.1)
+            .fold(f64::INFINITY, f64::min);
+        let back = trace.first_at_or_above(27.5, 0.8 * before);
+        println!(
+            "[far, repaints 6 s apart, 1 Mbit/s from 23.5 to 27.5 s] target before {:.2}, lowest {:.2} Mbps; back at 80% {:?} s after the spell; at 59.9 s {:.2} Mbps",
+            before / MBPS,
+            lowest / MBPS,
+            back.map(|t| t - 27.5),
+            trace.target_at(59.9) / MBPS
+        );
+        assert!(lowest < 0.6 * before, "no cut to recover from: {lowest}");
+        assert!(
+            back.is_some_and(|t| t - 27.5 <= 8.0),
+            "the target stayed down: {back:?}"
+        );
+    }
+
+    /// Light work on a far path (typing, with a repaint every two seconds or every
+    /// six) through a slow spell of two to four seconds, begun at any moment of the
+    /// repaint cycle: the rate comes back once the spell is over. "What the link
+    /// carried" was a highest value that expired after five seconds and was then
+    /// replaced by the receive rate of the moment, so whether the link was seen to
+    /// have fallen depended on which repaint had happened to read highest: in 36 of
+    /// 40 starting moments no recovery was tried and the rate stayed down.
+    #[test]
+    fn a_slow_spell_under_light_work_is_recovered_from_whenever_it_begins() {
+        let mut stuck = Vec::new();
+        for (name, demand) in [
+            (
+                "repaints 2 s apart",
+                (|t| {
+                    if t % 2.0 < 0.3 {
+                        3.0 * MBPS
+                    } else {
+                        0.6 * MBPS
+                    }
+                }) as fn(f64) -> f64,
+            ),
+            ("repaints 6 s apart", |t| {
+                if t % 6.0 < 0.4 {
+                    f64::INFINITY
+                } else {
+                    0.6 * MBPS
+                }
+            }),
+        ] {
+            for len in [2.0, 4.0] {
+                for k in 0..20 {
+                    let from = 20.0 + 0.1 * f64::from(k);
+                    let trace = simulate(Scenario {
+                        secs: from + len + 12.0,
+                        initial_bps: 12.5 * MBPS,
+                        capacity: |_| 1_000.0 * MBPS,
+                        app_demand: Some(demand),
+                        jitter_ms: 5.0,
+                        one_way_ms: 135.0,
+                        max_queue_ms: 200.0,
+                        slow_spell: Some((from, from + len, 1.0 * MBPS)),
+                        padding_rides_on_frames: true,
+                        ..Default::default()
+                    });
+                    let before = trace.target_at(from - 0.1);
+                    let cut = trace
+                        .targets
+                        .iter()
+                        .any(|s| s.0 >= from && s.1 < 0.6 * before);
+                    let back = trace.first_at_or_above(from + len, 0.8 * before);
+                    if cut && back.is_none_or(|t| t - from - len > 10.0) {
+                        stuck.push(format!("{name}, {len} s from {from:.1}: back {back:?}"));
+                    }
+                }
+            }
+        }
+        println!(
+            "[far, light work, 1 Mbit/s for 2 or 4 s from 20 moments] rate not back within 10 s: {} of 80",
+            stuck.len()
+        );
+        assert!(stuck.is_empty(), "{stuck:#?}");
     }
 
     /// A viewer on a LAN whose session moves between two paths of much the same
