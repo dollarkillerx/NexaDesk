@@ -165,6 +165,20 @@ impl Rewriter {
         out
     }
 
+    /// A key already in the remote's terms, sent as it is: no rule, no deferral, no
+    /// paste tag. For combos a viewer spells for the host itself (the iOS shortcut
+    /// panel's ⊞+D, which the Mac→Windows rules would turn into Ctrl+D). It is
+    /// still counted as down on the remote, so `KeyStateSync` and `reset` see it.
+    pub fn on_exact_key(&mut self, ev: PhysKey) -> Out {
+        let mut out = Out::new();
+        match (ev.down, ev.repeat) {
+            (true, false) => self.press(ev.hid, &mut out),
+            (true, true) => {}
+            (false, _) => self.release(ev.hid, &mut out),
+        }
+        out
+    }
+
     pub fn on_button(&mut self, ev: PhysButton) -> Out {
         let mut out = Out::new();
         let source = Source::Button(ev.button);

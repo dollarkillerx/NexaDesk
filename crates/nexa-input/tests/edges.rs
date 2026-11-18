@@ -4,7 +4,7 @@ mod common;
 
 use common::*;
 use nexa_input::hid::key;
-use nexa_input::{Chord, ChordKey, FocusClass, Keymap, ModSet, Os, RewriteMode};
+use nexa_input::{Chord, ChordKey, FocusClass, Keymap, ModSet, Os, PhysKey, RewriteMode};
 
 fn custom(body: &str) -> Harness {
     let text = format!("[[profile]]\nfrom = \"macos\"\nto = \"windows\"\n{body}");
@@ -617,4 +617,57 @@ tag = "nope""#,
 fn unknown_os_pairs_fall_back_to_passthrough() {
     let mut h = Harness::session(Os::Linux, Os::Windows);
     assert_eq!(h.chord(&["Cmd", "C"]), "+LGui +C -C -LGui");
+}
+
+// ---- Exact keys (the iOS shortcut panel) ---------------------------------------------
+
+/// The iOS viewer counts as a Mac, so the panel's Windows shortcuts went through the
+/// Mac→Windows rules: ⊞ is Cmd there, and Cmd+* becomes Ctrl+*. Sent exact they reach
+/// the host as written.
+#[test]
+fn panel_win_combos_reach_a_windows_host_as_win_combos() {
+    let mut h = Harness::mac_to_win();
+    assert_eq!(
+        h.combo(&["Cmd", "D"], false),
+        "+LCtrl +D -D -LCtrl",
+        "the old way"
+    );
+    for (keys, want) in [
+        (&["Cmd", "D"][..], "+LGui +D -D -LGui"),
+        (&["Cmd", "E"], "+LGui +E -E -LGui"),
+        (&["Cmd", "L"], "+LGui +L -L -LGui"),
+        (&["Cmd", "Shift", "S"], "+LGui +LShift +S -S -LShift -LGui"),
+        (&["Cmd"], "+LGui -LGui"),
+    ] {
+        assert_eq!(h.combo(keys, true), want, "{keys:?}");
+    }
+    // A hardware keyboard on the same session keeps the rules.
+    assert_eq!(h.chord(&["Cmd", "D"]), "+LCtrl +D -D -LCtrl");
+}
+
+#[test]
+fn exact_keys_count_as_down_on_the_remote() {
+    let mut h = Harness::mac_to_win();
+    let gui = PhysKey {
+        hid: key::LGUI,
+        down: true,
+        repeat: false,
+    };
+    h.rewriter.on_exact_key(gui);
+    assert_eq!(
+        h.rewriter.pressed_keys().collect::<Vec<_>>(),
+        vec![key::LGUI]
+    );
+    assert_eq!(
+        h.rewriter
+            .on_exact_key(PhysKey {
+                repeat: true,
+                ..gui
+            })
+            .len(),
+        0,
+        "no repeats"
+    );
+    assert_eq!(h.reset(), "-LGui", "a reset releases it");
+    h.assert_idle();
 }

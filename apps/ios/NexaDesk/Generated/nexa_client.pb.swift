@@ -1045,6 +1045,8 @@ nonisolated struct Nexa_Client_KeyPress: Sendable {
 
   var down: Bool = false
 
+  var exact: Bool = false
+
   var unknownFields = SwiftProtobuf.UnknownStorage()
 
   init() {}
@@ -2611,7 +2613,7 @@ nonisolated extension Nexa_Client_SetResolution: SwiftProtobuf.Message, SwiftPro
 
 nonisolated extension Nexa_Client_KeyPress: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".KeyPress"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}usage\0\u{1}down\0")
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}usage\0\u{1}down\0\u{1}exact\0")
 
   mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -2621,6 +2623,7 @@ nonisolated extension Nexa_Client_KeyPress: SwiftProtobuf.Message, SwiftProtobuf
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularUInt32Field(value: &self.usage) }()
       case 2: try { try decoder.decodeSingularBoolField(value: &self.down) }()
+      case 3: try { try decoder.decodeSingularBoolField(value: &self.exact) }()
       default: break
       }
     }
@@ -2633,12 +2636,16 @@ nonisolated extension Nexa_Client_KeyPress: SwiftProtobuf.Message, SwiftProtobuf
     if self.down != false {
       try visitor.visitSingularBoolField(value: self.down, fieldNumber: 2)
     }
+    if self.exact != false {
+      try visitor.visitSingularBoolField(value: self.exact, fieldNumber: 3)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   static func ==(lhs: Nexa_Client_KeyPress, rhs: Nexa_Client_KeyPress) -> Bool {
     if lhs.usage != rhs.usage {return false}
     if lhs.down != rhs.down {return false}
+    if lhs.exact != rhs.exact {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

@@ -503,6 +503,7 @@ impl Viewer {
                 Command::Key(KeyPress {
                     usage: u32::from(u),
                     down: true,
+                    exact: false,
                 }),
             )?;
         }
@@ -512,6 +513,7 @@ impl Viewer {
                 Command::Key(KeyPress {
                     usage: u32::from(u),
                     down: false,
+                    exact: false,
                 }),
             )?;
         }

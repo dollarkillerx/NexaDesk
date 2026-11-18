@@ -15,7 +15,8 @@ use std::{
 };
 
 use common::{
-    FakeClip, FakeDecoder, FakeUi, Host, Injected, NullPresenter, caps, host, lock, perms, until,
+    FakeClip, FakeDecoder, FakeUi, Host, Injected, NullPresenter, caps, host, host_as, lock, perms,
+    until,
 };
 use nexa_auth::{FileKeyStore, KeyStore};
 use nexa_client::{
@@ -24,7 +25,7 @@ use nexa_client::{
     input::InputCmd,
     proto::{
         CaptureState, Command, ConnectAuth, ConnectRequest, DisconnectReason, Event, EventBody,
-        PointerButton, PointerMove, SessionCommand,
+        KeyPress, PointerButton, PointerMove, SessionCommand,
     },
 };
 use nexa_clip::ClipKind;
@@ -551,6 +552,74 @@ async fn keys_reach_the_host_in_order_and_capture_stops_with_the_session() {
         h.platform.injected.all().contains(&Injected::ReleaseAll)
     })
     .await;
+}
+
+/// The iOS viewer counts as a Mac, so its keys follow the Mac→Windows rules. The
+/// shortcut panel spells its Windows shortcuts for the host and sends them exact:
+/// ⊞+D arrived as Ctrl+D before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exact_key_presses_reach_a_windows_host_unrewritten() {
+    let h = host_as(
+        FakeUi::allowing(perms(true, true, false), true),
+        Os::Windows,
+    )
+    .await;
+    let (viewer, session) = connected(&h, 1).await;
+    activate(&viewer, session).await;
+    let send = |usage: nexa_input::Hid, down: bool, exact: bool| {
+        let cmd = Command::Key(KeyPress {
+            usage: u32::from(usage.usage()),
+            down,
+            exact,
+        });
+        let bytes = SessionCommand { cmd: Some(cmd) }.encode_to_vec();
+        // SAFETY: valid buffer and handle.
+        assert_eq!(
+            unsafe { abi::nexa_session_command(session, bytes.as_ptr(), bytes.len()) },
+            abi::NEXA_OK
+        );
+    };
+    // As NexaCore.combo sends them: modifiers down, the key tapped, modifiers up reversed.
+    let combo = |keys: &[nexa_input::Hid], exact: bool| {
+        let (last, mods) = keys.split_last().unwrap();
+        mods.iter().for_each(|&m| send(m, true, exact));
+        send(*last, true, exact);
+        send(*last, false, exact);
+        mods.iter().rev().for_each(|&m| send(m, false, exact));
+    };
+    combo(&[key::LGUI, key::D], true);
+    combo(&[key::LGUI, key::L], true);
+    combo(&[key::LGUI, key::LSHIFT, key::S], true);
+    // The keyboard bar and a hardware keyboard still get the rules: Cmd+D is Ctrl+D.
+    combo(&[key::LGUI, key::D], false);
+
+    let (gui, shift, ctrl) = (key::LGUI.0, key::LSHIFT.0, key::LCTRL.0);
+    let (d, l, s) = (key::D.0, key::L.0, key::S.0);
+    let want = vec![
+        (gui, true),
+        (d, true),
+        (d, false),
+        (gui, false),
+        (gui, true),
+        (l, true),
+        (l, false),
+        (gui, false),
+        (gui, true),
+        (shift, true),
+        (s, true),
+        (s, false),
+        (shift, false),
+        (gui, false),
+        (ctrl, true),
+        (d, true),
+        (d, false),
+        (ctrl, false),
+    ];
+    until("keys injected", WAIT, || {
+        h.platform.injected.keys().len() >= want.len()
+    })
+    .await;
+    assert_eq!(h.platform.injected.keys(), want);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

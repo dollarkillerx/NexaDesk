@@ -609,11 +609,16 @@ impl Session {
             Command::Text(t) => InputCmd::Text(t.utf8),
             Command::Key(k) => {
                 let usage = u16::try_from(k.usage).map_err(|_| "key usage out of range")?;
-                InputCmd::Key(PhysKey {
+                let key = PhysKey {
                     hid: Hid::key(usage),
                     down: k.down,
                     repeat: false,
-                })
+                };
+                if k.exact {
+                    InputCmd::ExactKey(key)
+                } else {
+                    InputCmd::Key(key)
+                }
             }
             Command::Mode(m) => {
                 self.send_stream_request(|r| {
