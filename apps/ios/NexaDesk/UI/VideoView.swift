@@ -54,8 +54,8 @@ final class VideoUIView: UIView {
         guard !attached, window != nil, bounds.width > 0, let core else { return }
         let p = pixelSize
         metalLayer.contentsScale = p.scale
-        core.attach(layer: metalLayer, widthPx: p.w, heightPx: p.h, scale: p.scale)
-        attached = true
+        // A failed attach is tried again at the next layout.
+        attached = core.attach(layer: metalLayer, widthPx: p.w, heightPx: p.h, scale: p.scale)
     }
 
     func detach() {

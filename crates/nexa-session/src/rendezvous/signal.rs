@@ -89,6 +89,37 @@ pub struct Endpoint {
     pub port: u16,
 }
 
+/// What a person typed or pasted for the server, as [`parse_url`] takes it and in one
+/// form: `wss://host:port`, or `ws://host:port` to this machine. A browser's address
+/// works too (the server serves a page on its signaling port): `https://` is taken as
+/// `wss://` and `http://` as `ws://`.
+pub fn canonical_url(input: &str) -> Result<String, SignalError> {
+    let t = input.trim();
+    let lower = t.to_ascii_lowercase();
+    let url = if lower.starts_with("https://") {
+        format!("wss://{}", &t[8..])
+    } else if lower.starts_with("http://") {
+        format!("ws://{}", &t[7..])
+    } else if lower.starts_with("wss://") || lower.starts_with("ws://") {
+        // The scheme in lower case, as parse_url compares it.
+        let (scheme, rest) = t.split_once("://").unwrap_or(("", t));
+        format!("{}://{rest}", scheme.to_ascii_lowercase())
+    } else {
+        t.to_owned()
+    };
+    let e = parse_url(&url)?;
+    let host = if e.host.contains(':') {
+        format!("[{}]", e.host)
+    } else {
+        e.host.to_ascii_lowercase()
+    };
+    Ok(format!(
+        "{}://{host}:{}",
+        if e.tls { "wss" } else { "ws" },
+        e.port
+    ))
+}
+
 /// `wss://host[:port][/path]`, `ws://host:port` (loopback only) or `host[:port]`
 /// (taken as wss). The path is ignored.
 pub fn parse_url(url: &str) -> Result<Endpoint, SignalError> {
@@ -585,6 +616,37 @@ impl SignalClient {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn what_people_paste_becomes_one_server_address() {
+        let ok =
+            |input: &str, want: &str| assert_eq!(canonical_url(input).unwrap(), want, "{input}");
+        ok("signal.example.com", "wss://signal.example.com:443");
+        ok(" Signal.Example.com:8443 ", "wss://signal.example.com:8443");
+        ok(
+            "wss://signal.example.com:8443/",
+            "wss://signal.example.com:8443",
+        );
+        ok("WSS://signal.example.com", "wss://signal.example.com:443");
+        // The page the server serves on its signaling port, pasted from a browser.
+        ok(
+            "https://signal.example.com:8443/",
+            "wss://signal.example.com:8443",
+        );
+        ok("http://127.0.0.1:8080", "ws://127.0.0.1:8080");
+        ok("ws://localhost:47943", "ws://localhost:47943");
+        ok("[2001:db8::1]:8443", "wss://[2001:db8::1]:8443");
+        for bad in [
+            "",
+            "ftp://x",
+            "http://signal.example.com",
+            "user@host",
+            "wss://",
+            "host:0",
+        ] {
+            assert!(canonical_url(bad).is_err(), "{bad}");
+        }
+    }
     use super::*;
 
     /// A TLS server on 127.0.0.1 whose certificate for `name` is signed by its own CA;

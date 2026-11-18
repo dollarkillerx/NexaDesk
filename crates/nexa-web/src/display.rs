@@ -5,11 +5,14 @@
 //! On the `input` data channel:
 //!
 //! ```text
-//! page → host  {t:"d", i}                            show display i: its place in
-//!                                                    WebHost::displays, as §3.6
+//! page → host  {t:"d", i, id?}                       show display i: its place in
+//!                                                    WebHost::displays, as §3.6; id
+//!                                                    (from the list) pins which one,
+//!                                                    so a monitor plugged or unplugged
+//!                                                    meanwhile can not shift it
 //! host → page  {t:"d", i, pts:[w,h], list?, err?}    the display shown now, after a
 //!                                                    switch or a refused one; list is
-//!                                                    [{n, w, h}] (name, pixels), err
+//!                                                    [{n, w, h, id}] (name, pixels), err
 //!                                                    "unavailable" or "failed"
 //! ```
 //!
@@ -51,15 +54,42 @@ impl Shown {
     }
 }
 
-/// `{t:"d", i}` from the page.
-pub(crate) fn request(data: &[u8]) -> Option<u32> {
+/// A display the page asked for: its place in the list it has, and, when the list said,
+/// which display that was.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Wanted {
+    pub index: u32,
+    pub id: Option<u32>,
+}
+
+impl Wanted {
+    /// Where it is in `displays` now: by its id when the page knew it (the list may have
+    /// changed since the page got it), else by its place.
+    pub(crate) fn find(self, displays: &[WebDisplay]) -> Option<(u32, &WebDisplay)> {
+        match self.id {
+            Some(id) => displays
+                .iter()
+                .enumerate()
+                .find(|(_, d)| d.screen.display == id)
+                .map(|(i, d)| (i as u32, d)),
+            None => displays.get(self.index as usize).map(|d| (self.index, d)),
+        }
+    }
+}
+
+/// `{t:"d", i, id?}` from the page.
+pub(crate) fn request(data: &[u8]) -> Option<Wanted> {
     #[derive(serde::Deserialize)]
     struct D {
         t: String,
         i: u32,
+        id: Option<u32>,
     }
     let d: D = serde_json::from_slice(data).ok()?;
-    (d.t == "d").then_some(d.i)
+    (d.t == "d").then_some(Wanted {
+        index: d.i,
+        id: d.id,
+    })
 }
 
 /// The displays as the page lists them: a name and the size in pixels.
@@ -78,6 +108,7 @@ pub(crate) fn list(displays: &[WebDisplay]) -> Value {
                 "n": name.trim(),
                 "w": d.screen.size_pixels.0,
                 "h": d.screen.size_pixels.1,
+                "id": d.screen.display,
             })
         })
         .collect()
@@ -113,7 +144,9 @@ mod tests {
 
     #[test]
     fn switch_requests_parse() {
-        assert_eq!(request(br#"{"t":"d","i":1}"#), Some(1));
+        let w = |index, id| Some(Wanted { index, id });
+        assert_eq!(request(br#"{"t":"d","i":1}"#), w(1, None));
+        assert_eq!(request(br#"{"t":"d","i":1,"id":5}"#), w(1, Some(5)));
         assert_eq!(request(br#"{"t":"d","i":-1}"#), None);
         assert_eq!(request(br#"{"t":"d"}"#), None);
         assert_eq!(request(br#"{"t":"q","m":"auto"}"#), None);
@@ -134,8 +167,8 @@ mod tests {
         assert_eq!(
             m["list"],
             json!([
-                {"n": "Built-in Retina Display", "w": 3024, "h": 1964},
-                {"n": "DELL U2720Q", "w": 3840, "h": 2160},
+                {"n": "Built-in Retina Display", "w": 3024, "h": 1964, "id": 1},
+                {"n": "DELL U2720Q", "w": 3840, "h": 2160, "id": 5},
             ])
         );
         assert!(m.get("err").is_none());
@@ -145,6 +178,32 @@ mod tests {
         assert_eq!(m["i"], 0);
         assert_eq!(m["err"], "unavailable");
         assert!(m.get("list").is_none());
+    }
+
+    /// The page picked the DELL from [Built-in, DELL, LG]; the DELL was unplugged before
+    /// the request arrived. By place, index 1 would now be the LG.
+    #[test]
+    fn a_pick_follows_its_display_not_its_place() {
+        let now = [
+            display(1, "Built-in", (0.0, 0.0), (3024, 1964)),
+            display(7, "LG", (1512.0, 0.0), (2560, 1440)),
+        ];
+        let dell = Wanted {
+            index: 1,
+            id: Some(5),
+        };
+        assert!(dell.find(&now).is_none());
+        let lg = Wanted {
+            index: 2,
+            id: Some(7),
+        };
+        assert_eq!(
+            lg.find(&now).map(|(i, d)| (i, d.screen.display)),
+            Some((1, 7))
+        );
+        // An older page without ids: by place.
+        let by_place = Wanted { index: 1, id: None };
+        assert_eq!(by_place.find(&now).map(|(i, _)| i), Some(1));
     }
 
     #[test]

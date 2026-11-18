@@ -117,8 +117,16 @@ message PasteGate { uint32 waited_ms = 1; bool timed_out = 2; }
 enum ClipboardCode {
   CLIPBOARD_OTHER = 0; CLIPBOARD_SENSITIVE_KEPT_LOCAL = 1; CLIPBOARD_TOO_LARGE = 2; CLIPBOARD_PEER_REJECTED = 3;
   CLIPBOARD_WRITE_FAILED = 4; CLIPBOARD_FETCH_FAILED = 5; CLIPBOARD_UNAVAILABLE = 6;
+  CLIPBOARD_RECEIVING = 7;   // a large copy is coming from the host: done of size bytes
+  CLIPBOARD_SENDING = 8;     // a large copy is going to the host; a paste there waits for it
+  CLIPBOARD_RECEIVED = 9;    // the host's copy is on this clipboard now
+  CLIPBOARD_SENT = 10;       // the host has this side's copy on its clipboard
+  CLIPBOARD_IDLE = 11;       // the copy on its way is not any more: back to the status line
 }
-message ClipboardNotice { string text = 1; ClipboardCode code = 2; string kind = 3; uint64 size = 4; string detail = 5; }
+message ClipboardNotice {
+  string text = 1; ClipboardCode code = 2; string kind = 3; uint64 size = 4; string detail = 5;
+  uint64 done = 6;           // bytes across so far, for RECEIVING and SENDING
+}
 message Stats {
   uint64 complete = 1; uint64 lost = 2; uint64 fec_recovered = 3; uint64 decoded = 4;
   uint64 decode_errors = 5; uint64 presented = 6; uint64 rtt_us = 7; uint32 gate_pastes = 8;
@@ -224,3 +232,26 @@ message Transfer {
   string path = 8;               // where a received file was saved
   bool by_peer = 9;
 }
+
+// Keyboard settings (§11.2): nexa_keymap_rules / _save / _preview. OS numbers as in
+// Connected.host_os: 1 windows, 2 macos, 3 linux.
+message KeymapRule {
+  bool builtin = 1; string ctx = 2; string when = 3; repeated string then = 4;
+  string hold = 5; string tag = 6; bool enabled = 7;
+}
+// For nexa_keymap_rules; also the first fields of the other two requests.
+message KeymapRequest {
+  string data_dir = 1;               // where keymap.toml is; empty: the default data directory
+  uint32 local_os = 2; uint32 remote_os = 3;
+  repeated KeymapRule rules = 4;     // save: the whole list; preview: used instead of the file when edited
+  bool edited = 5;
+  string chord = 6;                  // preview only, e.g. "Cmd+Shift+Z"
+  uint32 ctx = 7;                    // preview only: 0 default, 1 terminal, 2 ide
+}
+message KeymapView {
+  repeated KeymapRule rules = 1;
+  string error = 2;                  // keymap.toml could not be used; the built-in rules are shown
+  string file_error = 3;             // the reason alone
+}
+message KeyOut { string key = 1; bool down = 2; }
+message KeyPreview { repeated KeyOut events = 1; repeated string sent = 2; bool paste = 3; string error = 4; }

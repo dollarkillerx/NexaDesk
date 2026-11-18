@@ -31,6 +31,14 @@ namespace NexaDesk.Native
         public const uint NEXA_TERMINAL_DATA = 0;
         public const uint NEXA_TERMINAL_EXIT = 1;
         public const uint NEXA_TERMINAL_BACKLOG = 2;
+        /// <summary>
+        ///  `kind` for [`nexa_normalize`]: a one-time code, as the host shows it.
+        /// </summary>
+        public const uint NEXA_NORMALIZE_CODE = 1;
+        /// <summary>
+        ///  `kind` for [`nexa_normalize`]: a signaling server's address.
+        /// </summary>
+        public const uint NEXA_NORMALIZE_SERVER = 2;
 
 
 
@@ -228,6 +236,18 @@ namespace NexaDesk.Native
         /// </summary>
         [DllImport(__DllName, EntryPoint = "nexa_keymap_preview", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         public static extern int nexa_keymap_preview(byte* req, nuint len, byte* @out, nuint cap, nuint* written);
+
+        /// <summary>
+        ///  What a person typed, in the one form the core uses, so every app shares one set of
+        ///  rules: a one-time code (8 characters of A–Z and 2–7, any case, spaces and hyphens
+        ///  ignored) or a signaling server (`wss://host:port`; `https://` and a bare host work).
+        ///  `NEXA_E_PARSE` when it is not one: for a code, the secret is then a password.
+        ///
+        ///  # Safety
+        ///  `input` valid for `len` bytes, `out` writable for `cap` bytes, `written` writable.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "nexa_normalize", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int nexa_normalize(uint kind, byte* input, nuint len, byte* @out, nuint cap, nuint* written);
 
         /// <summary>
         ///  Copies this thread's last error message as UTF-8 and reports its full length in

@@ -42,9 +42,21 @@ final class KeyInputUIView: UIView, UIKeyInput {
         guard let core else { return }
         if text == "\n" {
             withLatched { core.tapKey(HID.enter) }
-        } else if !latched.isEmpty, text.count == 1, let usage = Self.usage(of: text) {
-            // ⌘C from the bar: a key with modifiers, not text.
-            withLatched { core.tapKey(usage) }
+        } else if !latched.isEmpty {
+            if text.count == 1, let (usage, shift) = Self.key(for: text) {
+                // ⌘C from the bar: a key with modifiers, not text; ⌘⇧Z keeps its Shift.
+                withLatched {
+                    if shift { core.key(HID.leftShift, down: true) }
+                    core.tapKey(usage)
+                    if shift { core.key(HID.leftShift, down: false) }
+                }
+            } else {
+                // No key types this (é, 中): it goes as text, and the modifiers, meant
+                // for the next key, are let go rather than left waiting for another.
+                latched = []
+                onLatchUsed?()
+                core.text(text)
+            }
         } else {
             core.text(text)
         }
@@ -66,16 +78,27 @@ final class KeyInputUIView: UIView, UIKeyInput {
         }
     }
 
-    /// Letters and digits by HID usage, for shortcuts typed with a latched modifier.
-    static func usage(of text: String) -> UInt32? {
-        guard let c = text.lowercased().unicodeScalars.first, text.unicodeScalars.count == 1 else { return nil }
+    /// The key that types `text` on a US keyboard, and whether it needs Shift: for
+    /// shortcuts typed with a latched modifier. `nil`: no key types it.
+    static func key(for text: String) -> (UInt32, Bool)? {
+        guard text.unicodeScalars.count == 1, let c = text.unicodeScalars.first else { return nil }
         switch c.value {
-        case 0x61...0x7A: return 0x04 + (c.value - 0x61)  // a–z
-        case 0x31...0x39: return 0x1E + (c.value - 0x31)  // 1–9
-        case 0x30: return 0x27                            // 0
-        case 0x20: return 0x2C                            // space
-        default: return nil
+        case 0x61...0x7A: return (0x04 + c.value - 0x61, false)  // a–z
+        case 0x41...0x5A: return (0x04 + c.value - 0x41, true)   // A–Z
+        case 0x31...0x39: return (0x1E + c.value - 0x31, false)  // 1–9
+        case 0x30: return (0x27, false)                          // 0
+        default: break
         }
+        let unshifted: [Character: UInt32] = [" ": 0x2C, "-": 0x2D, "=": 0x2E, "[": 0x2F, "]": 0x30, "\\": 0x31,
+                                              ";": 0x33, "'": 0x34, "`": 0x35, ",": 0x36, ".": 0x37, "/": 0x38]
+        let shifted: [Character: UInt32] = ["!": 0x1E, "@": 0x1F, "#": 0x20, "$": 0x21, "%": 0x22, "^": 0x23,
+                                            "&": 0x24, "*": 0x25, "(": 0x26, ")": 0x27, "_": 0x2D, "+": 0x2E,
+                                            "{": 0x2F, "}": 0x30, "|": 0x31, ":": 0x33, "\"": 0x34, "~": 0x35,
+                                            "<": 0x36, ">": 0x37, "?": 0x38]
+        let ch = Character(c)
+        if let u = unshifted[ch] { return (u, false) }
+        if let u = shifted[ch] { return (u, true) }
+        return nil
     }
 
     // MARK: Hardware keyboard

@@ -203,7 +203,7 @@ pub(crate) struct Control {
     pub cursor_resync: Arc<AtomicBool>,
     /// The display the page asked for (`display.rs`), set by the WebRTC loop; the
     /// thread switches to it, or says why not.
-    pub display: std::sync::Mutex<Option<u32>>,
+    pub display: std::sync::Mutex<Option<display::Wanted>>,
 }
 
 /// The size sent to the browser: the display's pixels scaled down to fit `max`, even.
@@ -396,16 +396,16 @@ fn run(
         }
         // Another display: a new capture and encoder, at the same stream setting.
         let wanted = ctl.display.lock().unwrap_or_else(|e| e.into_inner()).take();
-        if let Some(index) = wanted {
+        if let Some(wanted) = wanted {
             // Read again: monitors come and go. Unreadable is the same as not there.
             let displays = host.displays().unwrap_or_default();
-            let err = match displays.get(index as usize) {
+            let err = match wanted.find(&displays) {
                 None => Some("unavailable"),
-                Some(d) if d.screen == screen => {
+                Some((index, d)) if d.screen == screen => {
                     shown.set(index, screen);
                     None
                 }
-                Some(d) => {
+                Some((index, d)) => {
                     let (next_capture, next_encode) =
                         configs(&d.screen, current, bitrate, show_cursor);
                     // The old stages go first (see `stages`): one capture at a time.
@@ -421,11 +421,27 @@ fn run(
                             shown.set(index, screen);
                             None
                         }
-                        // As the native session does: stay on what worked.
-                        Err(_) => {
-                            (capturer, encoder) = stages(&*host, capture, encode)?;
-                            Some("failed")
-                        }
+                        // As the native session does: stay on what worked. If even that
+                        // will not start again, the page is told before the picture ends,
+                        // rather than left waiting on a frozen frame.
+                        Err(_) => match stages(&*host, capture, encode) {
+                            Ok(s) => {
+                                (capturer, encoder) = s;
+                                Some("failed")
+                            }
+                            Err(e) => {
+                                if let Some(tx) = &notes {
+                                    let n = display::note(
+                                        shown.index(),
+                                        &screen,
+                                        &displays,
+                                        Some("failed"),
+                                    );
+                                    let _ = tx.try_send(n);
+                                }
+                                return Err(e);
+                            }
+                        },
                     }
                 }
             };
@@ -768,7 +784,9 @@ mod tests {
                 thread::sleep(Duration::from_millis(5));
             }
         };
-        let ask = |index: u32| *media.control.display.lock().unwrap() = Some(index);
+        let ask = |index: u32| {
+            *media.control.display.lock().unwrap() = Some(display::Wanted { index, id: None })
+        };
 
         ask(1);
         let n = note(&mut notes);
@@ -811,6 +829,54 @@ mod tests {
         drop(media);
         assert_eq!(most.load(Relaxed), 1, "two captures were alive at once");
         assert_eq!(alive.load(Relaxed), 0);
+    }
+
+    /// Neither the display asked for nor the old one will capture again (a GPU reset,
+    /// both monitors gone): the picture ends, but the page is told first, instead of
+    /// waiting on a frozen frame.
+    #[test]
+    fn a_switch_that_leaves_nothing_to_show_still_answers() {
+        let c = WebConfig::default();
+        let main = display(1, "Built-in", (0.0, 0.0), (1920, 1080));
+        let side = display(2, "DELL", (1920.0, 0.0), (1920, 1080));
+        let made = Arc::<AtomicU32>::default();
+        let m = made.clone();
+        let host = Arc::new(
+            FakeHost::default()
+                .with_displays(vec![main.clone(), side])
+                .with_capturer_for(move |_| {
+                    // The first capture works; nothing after it does.
+                    if m.fetch_add(1, Relaxed) == 0 {
+                        Ok(Box::new(Capture(Arc::default())))
+                    } else {
+                        Err(MediaError::Other("no capture".into()))
+                    }
+                })
+                .with_encoder(|| Ok(Box::new(NoEncode))),
+        );
+        let (notes_tx, mut notes) = mpsc::channel(4);
+        let (tx, _rx) = mpsc::channel(4);
+        let media = MediaThread::spawn(stream(host, main.screen, Some(notes_tx)), &c, tx);
+        *media.control.display.lock().unwrap() = Some(display::Wanted {
+            index: 1,
+            id: Some(2),
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let n = loop {
+            if let Ok(n) = notes.try_recv() {
+                break serde_json::from_str::<serde_json::Value>(&n).unwrap();
+            }
+            assert!(Instant::now() < deadline, "the page was never told");
+            thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(
+            (n["i"].clone(), n["err"].clone()),
+            (0.into(), "failed".into())
+        );
+        while media.control.failed.lock().unwrap().is_none() {
+            assert!(Instant::now() < deadline, "the stream did not end");
+            thread::sleep(Duration::from_millis(5));
+        }
     }
 
     /// A screen that changes once and then stays still (or keeps changing), and an

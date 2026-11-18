@@ -734,6 +734,9 @@ function displayList(list) {
     n: typeof d?.n === "string" ? d.n.slice(0, 60) : "",
     w: Number.isInteger(d?.w) ? d.w : 0,
     h: Number.isInteger(d?.h) ? d.h : 0,
+    // Which display it is: a pick names it, so a monitor plugged or unplugged since
+    // the list came can not turn it into another one.
+    id: Number.isInteger(d?.id) ? d.id : undefined,
   }));
 }
 
@@ -788,7 +791,7 @@ function switchDisplay(i) {
   if (s.input) keyboard.release();
   s.switching = true;
   s.displayErr = "";
-  s.dc.send(JSON.stringify({ t: "d", i }));
+  s.dc.send(JSON.stringify({ t: "d", i, id: s.displays[i].id }));
   clearTimeout(s.switchTimer);
   s.switchTimer = setTimeout(() => {
     if (session !== s || !s.switching) return;

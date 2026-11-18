@@ -157,6 +157,21 @@ nonisolated enum Nexa_Client_ClipboardCode: SwiftProtobuf.Enum, Swift.CaseIterab
   case clipboardWriteFailed // = 4
   case clipboardFetchFailed // = 5
   case clipboardUnavailable // = 6
+
+  /// a large copy is coming from the host: done of size bytes
+  case clipboardReceiving // = 7
+
+  /// a large copy is going to the host; a paste there waits for it
+  case clipboardSending // = 8
+
+  /// the host's copy is on this clipboard now
+  case clipboardReceived // = 9
+
+  /// the host has this side's copy on its clipboard
+  case clipboardSent // = 10
+
+  /// the copy on its way is not any more: back to the status line
+  case clipboardIdle // = 11
   case UNRECOGNIZED(Int)
 
   init() {
@@ -172,6 +187,11 @@ nonisolated enum Nexa_Client_ClipboardCode: SwiftProtobuf.Enum, Swift.CaseIterab
     case 4: self = .clipboardWriteFailed
     case 5: self = .clipboardFetchFailed
     case 6: self = .clipboardUnavailable
+    case 7: self = .clipboardReceiving
+    case 8: self = .clipboardSending
+    case 9: self = .clipboardReceived
+    case 10: self = .clipboardSent
+    case 11: self = .clipboardIdle
     default: self = .UNRECOGNIZED(rawValue)
     }
   }
@@ -185,6 +205,11 @@ nonisolated enum Nexa_Client_ClipboardCode: SwiftProtobuf.Enum, Swift.CaseIterab
     case .clipboardWriteFailed: return 4
     case .clipboardFetchFailed: return 5
     case .clipboardUnavailable: return 6
+    case .clipboardReceiving: return 7
+    case .clipboardSending: return 8
+    case .clipboardReceived: return 9
+    case .clipboardSent: return 10
+    case .clipboardIdle: return 11
     case .UNRECOGNIZED(let i): return i
     }
   }
@@ -198,6 +223,11 @@ nonisolated enum Nexa_Client_ClipboardCode: SwiftProtobuf.Enum, Swift.CaseIterab
     .clipboardWriteFailed,
     .clipboardFetchFailed,
     .clipboardUnavailable,
+    .clipboardReceiving,
+    .clipboardSending,
+    .clipboardReceived,
+    .clipboardSent,
+    .clipboardIdle,
   ]
 
 }
@@ -1409,6 +1439,9 @@ nonisolated struct Nexa_Client_ClipboardNotice: Sendable {
 
   var detail: String = String()
 
+  /// bytes across so far, for RECEIVING and SENDING
+  var done: UInt64 = 0
+
   var unknownFields = SwiftProtobuf.UnknownStorage()
 
   init() {}
@@ -1704,6 +1737,111 @@ nonisolated struct Nexa_Client_Transfer: Sendable {
   init() {}
 }
 
+/// Keyboard settings (§11.2): nexa_keymap_rules / _save / _preview. OS numbers as in
+/// Connected.host_os: 1 windows, 2 macos, 3 linux.
+nonisolated struct Nexa_Client_KeymapRule: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  var builtin: Bool = false
+
+  var ctx: String = String()
+
+  var when: String = String()
+
+  var then: [String] = []
+
+  var hold: String = String()
+
+  var tag: String = String()
+
+  var enabled: Bool = false
+
+  var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  init() {}
+}
+
+/// For nexa_keymap_rules; also the first fields of the other two requests.
+nonisolated struct Nexa_Client_KeymapRequest: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// where keymap.toml is; empty: the default data directory
+  var dataDir: String = String()
+
+  var localOs: UInt32 = 0
+
+  var remoteOs: UInt32 = 0
+
+  /// save: the whole list; preview: used instead of the file when edited
+  var rules: [Nexa_Client_KeymapRule] = []
+
+  var edited: Bool = false
+
+  /// preview only, e.g. "Cmd+Shift+Z"
+  var chord: String = String()
+
+  /// preview only: 0 default, 1 terminal, 2 ide
+  var ctx: UInt32 = 0
+
+  var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  init() {}
+}
+
+nonisolated struct Nexa_Client_KeymapView: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  var rules: [Nexa_Client_KeymapRule] = []
+
+  /// keymap.toml could not be used; the built-in rules are shown
+  var error: String = String()
+
+  /// the reason alone
+  var fileError: String = String()
+
+  var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  init() {}
+}
+
+nonisolated struct Nexa_Client_KeyOut: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  var key: String = String()
+
+  var down: Bool = false
+
+  var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  init() {}
+}
+
+nonisolated struct Nexa_Client_KeyPreview: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  var events: [Nexa_Client_KeyOut] = []
+
+  var sent: [String] = []
+
+  var paste: Bool = false
+
+  var error: String = String()
+
+  var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  init() {}
+}
+
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
 fileprivate nonisolated let _protobuf_package = "nexa.client"
@@ -1721,7 +1859,7 @@ nonisolated extension Nexa_Client_CaptureState: SwiftProtobuf._ProtoNameProvidin
 }
 
 nonisolated extension Nexa_Client_ClipboardCode: SwiftProtobuf._ProtoNameProviding {
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0CLIPBOARD_OTHER\0\u{1}CLIPBOARD_SENSITIVE_KEPT_LOCAL\0\u{1}CLIPBOARD_TOO_LARGE\0\u{1}CLIPBOARD_PEER_REJECTED\0\u{1}CLIPBOARD_WRITE_FAILED\0\u{1}CLIPBOARD_FETCH_FAILED\0\u{1}CLIPBOARD_UNAVAILABLE\0")
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0CLIPBOARD_OTHER\0\u{1}CLIPBOARD_SENSITIVE_KEPT_LOCAL\0\u{1}CLIPBOARD_TOO_LARGE\0\u{1}CLIPBOARD_PEER_REJECTED\0\u{1}CLIPBOARD_WRITE_FAILED\0\u{1}CLIPBOARD_FETCH_FAILED\0\u{1}CLIPBOARD_UNAVAILABLE\0\u{1}CLIPBOARD_RECEIVING\0\u{1}CLIPBOARD_SENDING\0\u{1}CLIPBOARD_RECEIVED\0\u{1}CLIPBOARD_SENT\0\u{1}CLIPBOARD_IDLE\0")
 }
 
 nonisolated extension Nexa_Client_Segment: SwiftProtobuf._ProtoNameProviding {
@@ -3305,7 +3443,7 @@ nonisolated extension Nexa_Client_PasteGate: SwiftProtobuf.Message, SwiftProtobu
 
 nonisolated extension Nexa_Client_ClipboardNotice: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".ClipboardNotice"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}text\0\u{1}code\0\u{1}kind\0\u{1}size\0\u{1}detail\0")
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}text\0\u{1}code\0\u{1}kind\0\u{1}size\0\u{1}detail\0\u{1}done\0")
 
   mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -3318,6 +3456,7 @@ nonisolated extension Nexa_Client_ClipboardNotice: SwiftProtobuf.Message, SwiftP
       case 3: try { try decoder.decodeSingularStringField(value: &self.kind) }()
       case 4: try { try decoder.decodeSingularUInt64Field(value: &self.size) }()
       case 5: try { try decoder.decodeSingularStringField(value: &self.detail) }()
+      case 6: try { try decoder.decodeSingularUInt64Field(value: &self.done) }()
       default: break
       }
     }
@@ -3339,6 +3478,9 @@ nonisolated extension Nexa_Client_ClipboardNotice: SwiftProtobuf.Message, SwiftP
     if !self.detail.isEmpty {
       try visitor.visitSingularStringField(value: self.detail, fieldNumber: 5)
     }
+    if self.done != 0 {
+      try visitor.visitSingularUInt64Field(value: self.done, fieldNumber: 6)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -3348,6 +3490,7 @@ nonisolated extension Nexa_Client_ClipboardNotice: SwiftProtobuf.Message, SwiftP
     if lhs.kind != rhs.kind {return false}
     if lhs.size != rhs.size {return false}
     if lhs.detail != rhs.detail {return false}
+    if lhs.done != rhs.done {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -3952,6 +4095,246 @@ nonisolated extension Nexa_Client_Transfer: SwiftProtobuf.Message, SwiftProtobuf
     if lhs.reason != rhs.reason {return false}
     if lhs.path != rhs.path {return false}
     if lhs.byPeer != rhs.byPeer {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Nexa_Client_KeymapRule: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  static let protoMessageName: String = _protobuf_package + ".KeymapRule"
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}builtin\0\u{1}ctx\0\u{1}when\0\u{1}then\0\u{1}hold\0\u{1}tag\0\u{1}enabled\0")
+
+  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularBoolField(value: &self.builtin) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.ctx) }()
+      case 3: try { try decoder.decodeSingularStringField(value: &self.when) }()
+      case 4: try { try decoder.decodeRepeatedStringField(value: &self.then) }()
+      case 5: try { try decoder.decodeSingularStringField(value: &self.hold) }()
+      case 6: try { try decoder.decodeSingularStringField(value: &self.tag) }()
+      case 7: try { try decoder.decodeSingularBoolField(value: &self.enabled) }()
+      default: break
+      }
+    }
+  }
+
+  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if self.builtin != false {
+      try visitor.visitSingularBoolField(value: self.builtin, fieldNumber: 1)
+    }
+    if !self.ctx.isEmpty {
+      try visitor.visitSingularStringField(value: self.ctx, fieldNumber: 2)
+    }
+    if !self.when.isEmpty {
+      try visitor.visitSingularStringField(value: self.when, fieldNumber: 3)
+    }
+    if !self.then.isEmpty {
+      try visitor.visitRepeatedStringField(value: self.then, fieldNumber: 4)
+    }
+    if !self.hold.isEmpty {
+      try visitor.visitSingularStringField(value: self.hold, fieldNumber: 5)
+    }
+    if !self.tag.isEmpty {
+      try visitor.visitSingularStringField(value: self.tag, fieldNumber: 6)
+    }
+    if self.enabled != false {
+      try visitor.visitSingularBoolField(value: self.enabled, fieldNumber: 7)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  static func ==(lhs: Nexa_Client_KeymapRule, rhs: Nexa_Client_KeymapRule) -> Bool {
+    if lhs.builtin != rhs.builtin {return false}
+    if lhs.ctx != rhs.ctx {return false}
+    if lhs.when != rhs.when {return false}
+    if lhs.then != rhs.then {return false}
+    if lhs.hold != rhs.hold {return false}
+    if lhs.tag != rhs.tag {return false}
+    if lhs.enabled != rhs.enabled {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Nexa_Client_KeymapRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  static let protoMessageName: String = _protobuf_package + ".KeymapRequest"
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}data_dir\0\u{3}local_os\0\u{3}remote_os\0\u{1}rules\0\u{1}edited\0\u{1}chord\0\u{1}ctx\0")
+
+  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.dataDir) }()
+      case 2: try { try decoder.decodeSingularUInt32Field(value: &self.localOs) }()
+      case 3: try { try decoder.decodeSingularUInt32Field(value: &self.remoteOs) }()
+      case 4: try { try decoder.decodeRepeatedMessageField(value: &self.rules) }()
+      case 5: try { try decoder.decodeSingularBoolField(value: &self.edited) }()
+      case 6: try { try decoder.decodeSingularStringField(value: &self.chord) }()
+      case 7: try { try decoder.decodeSingularUInt32Field(value: &self.ctx) }()
+      default: break
+      }
+    }
+  }
+
+  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.dataDir.isEmpty {
+      try visitor.visitSingularStringField(value: self.dataDir, fieldNumber: 1)
+    }
+    if self.localOs != 0 {
+      try visitor.visitSingularUInt32Field(value: self.localOs, fieldNumber: 2)
+    }
+    if self.remoteOs != 0 {
+      try visitor.visitSingularUInt32Field(value: self.remoteOs, fieldNumber: 3)
+    }
+    if !self.rules.isEmpty {
+      try visitor.visitRepeatedMessageField(value: self.rules, fieldNumber: 4)
+    }
+    if self.edited != false {
+      try visitor.visitSingularBoolField(value: self.edited, fieldNumber: 5)
+    }
+    if !self.chord.isEmpty {
+      try visitor.visitSingularStringField(value: self.chord, fieldNumber: 6)
+    }
+    if self.ctx != 0 {
+      try visitor.visitSingularUInt32Field(value: self.ctx, fieldNumber: 7)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  static func ==(lhs: Nexa_Client_KeymapRequest, rhs: Nexa_Client_KeymapRequest) -> Bool {
+    if lhs.dataDir != rhs.dataDir {return false}
+    if lhs.localOs != rhs.localOs {return false}
+    if lhs.remoteOs != rhs.remoteOs {return false}
+    if lhs.rules != rhs.rules {return false}
+    if lhs.edited != rhs.edited {return false}
+    if lhs.chord != rhs.chord {return false}
+    if lhs.ctx != rhs.ctx {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Nexa_Client_KeymapView: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  static let protoMessageName: String = _protobuf_package + ".KeymapView"
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}rules\0\u{1}error\0\u{3}file_error\0")
+
+  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeRepeatedMessageField(value: &self.rules) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.error) }()
+      case 3: try { try decoder.decodeSingularStringField(value: &self.fileError) }()
+      default: break
+      }
+    }
+  }
+
+  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.rules.isEmpty {
+      try visitor.visitRepeatedMessageField(value: self.rules, fieldNumber: 1)
+    }
+    if !self.error.isEmpty {
+      try visitor.visitSingularStringField(value: self.error, fieldNumber: 2)
+    }
+    if !self.fileError.isEmpty {
+      try visitor.visitSingularStringField(value: self.fileError, fieldNumber: 3)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  static func ==(lhs: Nexa_Client_KeymapView, rhs: Nexa_Client_KeymapView) -> Bool {
+    if lhs.rules != rhs.rules {return false}
+    if lhs.error != rhs.error {return false}
+    if lhs.fileError != rhs.fileError {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Nexa_Client_KeyOut: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  static let protoMessageName: String = _protobuf_package + ".KeyOut"
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}key\0\u{1}down\0")
+
+  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.key) }()
+      case 2: try { try decoder.decodeSingularBoolField(value: &self.down) }()
+      default: break
+      }
+    }
+  }
+
+  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.key.isEmpty {
+      try visitor.visitSingularStringField(value: self.key, fieldNumber: 1)
+    }
+    if self.down != false {
+      try visitor.visitSingularBoolField(value: self.down, fieldNumber: 2)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  static func ==(lhs: Nexa_Client_KeyOut, rhs: Nexa_Client_KeyOut) -> Bool {
+    if lhs.key != rhs.key {return false}
+    if lhs.down != rhs.down {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Nexa_Client_KeyPreview: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  static let protoMessageName: String = _protobuf_package + ".KeyPreview"
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}events\0\u{1}sent\0\u{1}paste\0\u{1}error\0")
+
+  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeRepeatedMessageField(value: &self.events) }()
+      case 2: try { try decoder.decodeRepeatedStringField(value: &self.sent) }()
+      case 3: try { try decoder.decodeSingularBoolField(value: &self.paste) }()
+      case 4: try { try decoder.decodeSingularStringField(value: &self.error) }()
+      default: break
+      }
+    }
+  }
+
+  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.events.isEmpty {
+      try visitor.visitRepeatedMessageField(value: self.events, fieldNumber: 1)
+    }
+    if !self.sent.isEmpty {
+      try visitor.visitRepeatedStringField(value: self.sent, fieldNumber: 2)
+    }
+    if self.paste != false {
+      try visitor.visitSingularBoolField(value: self.paste, fieldNumber: 3)
+    }
+    if !self.error.isEmpty {
+      try visitor.visitSingularStringField(value: self.error, fieldNumber: 4)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  static func ==(lhs: Nexa_Client_KeyPreview, rhs: Nexa_Client_KeyPreview) -> Bool {
+    if lhs.events != rhs.events {return false}
+    if lhs.sent != rhs.sent {return false}
+    if lhs.paste != rhs.paste {return false}
+    if lhs.error != rhs.error {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

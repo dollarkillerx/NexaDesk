@@ -695,11 +695,11 @@ async fn run(
                                 tuning.window = window;
                             }
                             tuning.apply(control.as_ref(), &mut rtc, input_channel, &config);
-                        } else if let Some(index) = display::request(&d.data) {
+                        } else if let Some(wanted) = display::request(&d.data) {
                             // Another display, for anyone watching too; only with a
                             // picture. The media thread checks it is there, and answers.
                             if let Some(c) = &control {
-                                *c.display.lock().unwrap_or_else(|e| e.into_inner()) = Some(index);
+                                *c.display.lock().unwrap_or_else(|e| e.into_inner()) = Some(wanted);
                             }
                         } else if let (Some(input), Some(msg)) = (&input, Msg::parse(&d.data)) {
                             input.send(msg);

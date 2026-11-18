@@ -34,6 +34,8 @@ final class NexaCore: ObservableObject {
     /// The port a NexaDesk host listens on unless set otherwise.
     static let defaultPort = 47800
     private var lastConnect: (address: String, server: String, secret: String)?
+    /// Bumped to drop the answer of a server check the person cancelled.
+    private var checkGeneration: UInt64 = 0
 
     private var client: OpaquePointer?
     private var session: OpaquePointer?
@@ -77,21 +79,23 @@ final class NexaCore: ObservableObject {
         }
     }
 
-    /// The one-time code as the host shows it: 8 characters of base32 (A–Z, 2–7), typed in
-    /// any case, with spaces or hyphens (crates/nexa-auth normalize_code). `nil`: not a code.
-    static func normalizedCode(_ s: String) -> String? {
-        let code = s.filter { $0 != " " && $0 != "-" }.uppercased()
-        let alphabet = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567")
-        return code.count == 8 && code.allSatisfy(alphabet.contains) ? code : nil
+    /// `s` in the core's one form (`nexa_normalize`), so this app follows the same rules
+    /// as the others; `nil` if it is not one.
+    nonisolated static func normalized(_ kind: UInt32, _ s: String) -> String? {
+        let input = Array(s.utf8)
+        var out = [UInt8](repeating: 0, count: 512)
+        var written = 0
+        guard nexa_normalize(kind, input, input.count, &out, out.count, &written) == NEXA_OK else { return nil }
+        return String(decoding: out.prefix(written), as: UTF8.self)
     }
 
-    /// wss://host[:port], as the core and the agent take it; "host" alone works too.
-    static func normalizedServer(_ s: String) -> String {
-        let t = s.trimmingCharacters(in: .whitespaces)
-        if t.isEmpty { return t }
-        let rest = t.lowercased().hasPrefix("wss://") ? String(t.dropFirst(6)) : t
-        return "wss://" + rest.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-    }
+    /// The one-time code as the host shows it (8 characters of A–Z and 2–7, any case,
+    /// spaces and hyphens ignored); `nil`: not a code, so a password.
+    static func normalizedCode(_ s: String) -> String? { normalized(NEXA_NORMALIZE_CODE, s) }
+
+    /// wss://host:port; "host", "host:port" and a browser's https:// address work too.
+    /// `nil` if it can not be a server.
+    static func normalizedServer(_ s: String) -> String? { normalized(NEXA_NORMALIZE_SERVER, s) }
 
     /// `address` is host[:port] (the LAN, Tailscale) or a 9-digit device ID, which
     /// goes through `signalServer`. With an ID and no secret, the person at the host is
@@ -103,11 +107,15 @@ final class NexaCore: ObservableObject {
         req.address = Self.normalizedAddress(address)
         let isId = Self.isDeviceId(req.address)
         if isId {
-            req.signalServer = Self.normalizedServer(signalServer)
-            if req.signalServer.isEmpty {
+            if signalServer.trimmingCharacters(in: .whitespaces).isEmpty {
                 notice = String(localized: "A device ID needs a signaling server: enter yours below.")
                 return
             }
+            guard let server = Self.normalizedServer(signalServer) else {
+                notice = String(localized: "That is not a signaling server address. Use signal.example.com, signal.example.com:8443 or wss://signal.example.com:8443.")
+                return
+            }
+            req.signalServer = server
         }
         req.tag = tag
         req.mode = .balanced
@@ -136,6 +144,8 @@ final class NexaCore: ObservableObject {
     }
 
     func disconnect() {
+        // A server check under way is no longer wanted.
+        checkGeneration &+= 1
         if let session { nexa_session_close(session) }
         session = nil
         phase = .idle
@@ -146,11 +156,17 @@ final class NexaCore: ObservableObject {
 
     // MARK: Video
 
-    func attach(layer: CAMetalLayer, widthPx: Int, heightPx: Int, scale: CGFloat) {
-        guard let session else { return }
+    /// Whether the picture now goes to `layer`; on failure the view tries again.
+    @discardableResult
+    func attach(layer: CAMetalLayer, widthPx: Int, heightPx: Int, scale: CGFloat) -> Bool {
+        guard let session else { return false }
         let rc = nexa_session_attach_view(session, Unmanaged.passUnretained(layer).toOpaque(),
                                           NEXA_VIEW_CAMETALLAYER, UInt32(widthPx), UInt32(heightPx), Float(scale))
-        if rc != NEXA_OK { notice = String(localized: "Video: \(Self.lastError())") }
+        if rc != NEXA_OK {
+            notice = String(localized: "Video: \(Self.lastError())")
+            return false
+        }
+        return true
     }
 
     func resize(widthPx: Int, heightPx: Int, scale: CGFloat) {
@@ -232,9 +248,12 @@ final class NexaCore: ObservableObject {
             session = nil
             phase = .idle
             inputAllowed = false
-            if d.reason == .disconnectSignalServer, let last = lastConnect, Self.isDeviceId(last.address) {
+            if d.reason == .disconnectSignalServer, let last = lastConnect, Self.isDeviceId(last.address),
+               let server = Self.normalizedServer(last.server) {
                 // A self-hosted server's own certificate is the usual cause: offer to trust it.
-                checkServer(Self.normalizedServer(last.server), otherwise: Messages.disconnected(d))
+                // Looking can take up to half a minute when the server is down: say so.
+                phase = .connecting(String(localized: "Checking the signaling server…"))
+                checkServer(server, otherwise: Messages.disconnected(d))
             } else if d.reason != .disconnectClosedLocally {
                 notice = Messages.disconnected(d)
             }
@@ -248,9 +267,14 @@ final class NexaCore: ObservableObject {
     // MARK: Signaling server trust (signal-ca.pem in the data directory)
 
     private func checkServer(_ server: String, otherwise message: String) {
+        checkGeneration &+= 1
+        let generation = checkGeneration
         Task.detached {
             let answer = Self.serverCertificate(server)
             await MainActor.run {
+                // Cancelled, or another connection started meanwhile.
+                guard generation == self.checkGeneration, self.session == nil else { return }
+                self.phase = .idle
                 switch answer {
                 case .success(let (trusted, fingerprint)) where !trusted:
                     self.trustPrompt = TrustPrompt(server: server, fingerprint: fingerprint)

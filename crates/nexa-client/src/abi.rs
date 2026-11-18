@@ -849,6 +849,44 @@ pub unsafe extern "C" fn nexa_keymap_preview(
     })
 }
 
+/// `kind` for [`nexa_normalize`]: a one-time code, as the host shows it.
+pub const NEXA_NORMALIZE_CODE: u32 = 1;
+/// `kind` for [`nexa_normalize`]: a signaling server's address.
+pub const NEXA_NORMALIZE_SERVER: u32 = 2;
+
+/// What a person typed, in the one form the core uses, so every app shares one set of
+/// rules: a one-time code (8 characters of A–Z and 2–7, any case, spaces and hyphens
+/// ignored) or a signaling server (`wss://host:port`; `https://` and a bare host work).
+/// `NEXA_E_PARSE` when it is not one: for a code, the secret is then a password.
+///
+/// # Safety
+/// `input` valid for `len` bytes, `out` writable for `cap` bytes, `written` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nexa_normalize(
+    kind: u32,
+    input: *const u8,
+    len: usize,
+    out: *mut u8,
+    cap: usize,
+    written: *mut usize,
+) -> i32 {
+    guarded(|| {
+        // SAFETY: per the contract.
+        let input = std::str::from_utf8(unsafe { bytes_of(input, len)? })
+            .map_err(|_| invalid("not UTF-8"))?;
+        let normal = match kind {
+            NEXA_NORMALIZE_CODE => nexa_auth::normalize_code(input)
+                .map(|c| c.to_string())
+                .map_err(|_| Abi(NEXA_E_PARSE, "not a one-time code".into()))?,
+            NEXA_NORMALIZE_SERVER => nexa_session::rendezvous::signal::canonical_url(input)
+                .map_err(|e| Abi(NEXA_E_PARSE, e.to_string()))?,
+            _ => return Err(invalid("unknown kind")),
+        };
+        // SAFETY: per the contract.
+        unsafe { give(normal.as_bytes(), out, cap, written) }
+    })
+}
+
 /// Copies this thread's last error message as UTF-8 and reports its full length in
 /// `written`. Returns `NEXA_E_BUFFER_TOO_SMALL` if it had to truncate.
 ///
@@ -1000,6 +1038,54 @@ pub unsafe extern "C" fn nexa_signal_trust(
 
 #[cfg(test)]
 mod tests {
+
+    fn normalized(kind: u32, input: &str) -> Result<String, i32> {
+        let mut out = [0u8; 256];
+        let mut written = 0usize;
+        // SAFETY: buffers valid for the lengths passed.
+        let rc = unsafe {
+            nexa_normalize(
+                kind,
+                input.as_ptr(),
+                input.len(),
+                out.as_mut_ptr(),
+                out.len(),
+                &mut written,
+            )
+        };
+        if rc == NEXA_OK {
+            Ok(String::from_utf8(out[..written].to_vec()).unwrap())
+        } else {
+            Err(rc)
+        }
+    }
+
+    /// One set of rules for every app: the iOS app used to take six digits for a code.
+    #[test]
+    fn codes_and_servers_normalize_through_the_abi() {
+        assert_eq!(
+            normalized(NEXA_NORMALIZE_CODE, "abcd-2345").as_deref(),
+            Ok("ABCD2345")
+        );
+        assert_eq!(
+            normalized(NEXA_NORMALIZE_CODE, "ab cd 23 45").as_deref(),
+            Ok("ABCD2345")
+        );
+        assert_eq!(normalized(NEXA_NORMALIZE_CODE, "123456"), Err(NEXA_E_PARSE));
+        assert_eq!(
+            normalized(NEXA_NORMALIZE_CODE, "my password"),
+            Err(NEXA_E_PARSE)
+        );
+        assert_eq!(
+            normalized(NEXA_NORMALIZE_SERVER, "https://signal.example.com:8443/").as_deref(),
+            Ok("wss://signal.example.com:8443")
+        );
+        assert_eq!(
+            normalized(NEXA_NORMALIZE_SERVER, "ftp://x"),
+            Err(NEXA_E_PARSE)
+        );
+        assert_eq!(normalized(9, "x"), Err(NEXA_E_INVALID_ARG));
+    }
     use super::*;
 
     #[test]

@@ -61,14 +61,21 @@ final class LanBrowser: ObservableObject {
         )
     }
 
-    /// The host's IPv4 address and port as "a.b.c.d:port", for `ConnectRequest.address`.
+    /// The host's address and port, for `ConnectRequest.address`: IPv4 if it has one,
+    /// else a routable IPv6 address (a link-local one needs an interface scope the
+    /// core's parser does not take).
+    static func resolve(_ host: LanHost) async -> String? {
+        if let v4 = await resolve(host, version: .v4) { return v4 }
+        guard let any = await resolve(host, version: .any) else { return nil }
+        return any.hasPrefix("[fe80") || any.hasPrefix("[FE80") ? nil : any
+    }
+
     /// Opening a UDP "connection" resolves the service without sending anything.
-    static func resolve(_ host: LanHost, timeout: TimeInterval = 5) async -> String? {
+    private static func resolve(_ host: LanHost, version: NWProtocolIP.Options.Version, timeout: TimeInterval = 5) async -> String? {
         await withCheckedContinuation { (done: CheckedContinuation<String?, Never>) in
             let params = NWParameters.udp
-            // IPv4: an IPv6 link-local address needs a scope the core's parser does not take.
             if let ip = params.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
-                ip.version = .v4
+                ip.version = version
             }
             let connection = NWConnection(to: host.endpoint, using: params)
             let once = Once()
