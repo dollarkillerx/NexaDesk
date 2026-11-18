@@ -917,14 +917,14 @@ public sealed partial class MainViewModel : ObservableObject
         IPermissionProbe permissions, IWindowService windows, ILocalAddresses addresses, string deviceName,
         Func<DateTimeOffset>? now = null, ISettingsStore? settings = null, ILoginItem? loginItem = null,
         IKeymapService? keymap = null, IViewerPrefs? viewerPrefs = null, ISavedPasswords? passwords = null,
-        IAppUpdater? updater = null, IServerTrust? serverTrust = null, IServerDirectory? serverDirectory = null)
+        IAppUpdater? updater = null, IServerTrust? serverTrust = null, IServerDirectory? serverDirectory = null, IServerProbe? serverProbe = null)
     {
         _keymap = keymap;
         _core = core;
         DeviceName = deviceName;
         settings ??= new MemorySettings();
         _settings = settings;
-        Settings = new SettingsViewModel(settings, passwords, serverDirectory);
+        Settings = new SettingsViewModel(settings, passwords, serverDirectory, serverProbe);
         Tailscale = new TailscaleViewModel(windows);
         Connect = new ConnectViewModel(core, recent, windows, now, () => Settings.SavedServer, Tailscale, viewerPrefs, passwords,
             () => Settings.SavedSecret);

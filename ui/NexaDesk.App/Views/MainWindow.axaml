@@ -523,31 +523,41 @@
           <StackPanel Spacing="6">
             <TextBlock Classes="muted" TextWrapping="Wrap"
                        Text="{l:T Main.AdvancedHelp}" />
-            <StackPanel Orientation="Horizontal" Spacing="10">
-              <TextBlock Classes="label" Text="{l:T Main.SignalServer}" VerticalAlignment="Center" />
-              <TextBox Name="ServerBox" Text="{Binding ServerInput}" Width="320" PlaceholderText="wss://signal.example.com" />
-              <Button Name="SaveServerButton" Classes="small" Content="{l:T Main.Save}" Command="{Binding SaveCommand}" />
-            </StackPanel>
-            <StackPanel Orientation="Horizontal" Spacing="10">
-              <TextBlock Classes="label" Text="{l:T Main.SignalSecret}" VerticalAlignment="Center" />
-              <TextBox Name="SecretBox" Text="{Binding SecretInput}" Width="320" PasswordChar="●"
-                       PlaceholderText="{l:T Main.SecretPlaceholder}" />
-            </StackPanel>
-            <CheckBox Name="UseServerListBox" Content="{l:T Main.UseServerList}" IsChecked="{Binding UseServerList}"
-                      IsVisible="{Binding CanUseServerList}" />
-            <StackPanel Orientation="Horizontal" Spacing="10" IsVisible="{Binding UseServerList}">
+            <RadioButton Name="ModeNoneButton" GroupName="ServerMode" Content="{l:T Main.ModeNone}" IsChecked="{Binding IsModeNone}" />
+            <RadioButton Name="ModePublishedButton" GroupName="ServerMode" Content="{l:T Main.ModePublished}"
+                         IsChecked="{Binding IsModePublished}" IsVisible="{Binding CanUseServerList}" />
+            <StackPanel Orientation="Horizontal" Spacing="10" Margin="30,0,0,4" IsVisible="{Binding IsModePublished}">
               <ComboBox Name="ListedServersBox" ItemsSource="{Binding ListedServers}" SelectedItem="{Binding SelectedListed}"
                         Width="320" PlaceholderText="{l:T Main.ServerListPick}">
                 <ComboBox.ItemTemplate>
-                  <DataTemplate x:DataType="svc:ServerEntry">
-                    <TextBlock Text="{Binding Endpoint}" />
+                  <DataTemplate x:DataType="vm:ListedServer">
+                    <StackPanel Orientation="Horizontal" Spacing="12">
+                      <TextBlock Text="{Binding Endpoint}" />
+                      <TextBlock Classes="muted" Text="{Binding Health}" />
+                    </StackPanel>
                   </DataTemplate>
                 </ComboBox.ItemTemplate>
               </ComboBox>
-              <TextBlock Classes="muted" Name="ListStatusText" Text="{Binding ListStatus}" VerticalAlignment="Center" />
+              <TextBlock Classes="muted" Name="ListStatusText" Text="{Binding ListStatus}" VerticalAlignment="Center" TextWrapping="Wrap" />
             </StackPanel>
-            <TextBlock Classes="errorText" Text="{Binding ServerHint}" IsVisible="{Binding ServerHint, Converter={x:Static ObjectConverters.IsNotNull}}" />
-            <TextBlock Classes="errorText" TextWrapping="Wrap" Text="{Binding SecretHint}" IsVisible="{Binding SecretHint, Converter={x:Static ObjectConverters.IsNotNull}}" />
+            <RadioButton Name="ModeOwnButton" GroupName="ServerMode" Content="{l:T Main.ModeOwn}" IsChecked="{Binding IsModeOwn}" />
+            <StackPanel Spacing="6" Margin="30,0,0,4" IsVisible="{Binding IsModeOwn}">
+              <Grid ColumnDefinitions="Auto,320" RowDefinitions="Auto,Auto" ColumnSpacing="10" RowSpacing="6" HorizontalAlignment="Left">
+                <TextBlock Grid.Row="0" Grid.Column="0" Classes="label" Text="{l:T Main.SignalServer}" VerticalAlignment="Center" />
+                <TextBox Grid.Row="0" Grid.Column="1" Name="ServerBox" Text="{Binding ServerInput}" PlaceholderText="wss://signal.example.com" />
+                <TextBlock Grid.Row="1" Grid.Column="0" Classes="label" Text="{l:T Main.SignalSecret}" VerticalAlignment="Center" />
+                <TextBox Grid.Row="1" Grid.Column="1" Name="SecretBox" Text="{Binding SecretInput}" PasswordChar="●"
+                         PlaceholderText="{l:T Main.SecretPlaceholder}" />
+              </Grid>
+              <TextBlock Classes="errorText" Text="{Binding ServerHint}" IsVisible="{Binding ServerHint, Converter={x:Static ObjectConverters.IsNotNull}}" />
+              <TextBlock Classes="errorText" TextWrapping="Wrap" Text="{Binding SecretHint}" IsVisible="{Binding SecretHint, Converter={x:Static ObjectConverters.IsNotNull}}" />
+              <StackPanel Orientation="Horizontal" Spacing="10">
+                <Button Name="SaveServerButton" Classes="small" Content="{l:T Main.Save}" Command="{Binding SaveCommand}" />
+                <Button Name="TestServerButton" Classes="small" Content="{l:T Main.ProbeButton}" Command="{Binding TestCommand}" />
+                <TextBlock Classes="muted" Name="TestResultText" Text="{Binding TestResult}" VerticalAlignment="Center"
+                           IsVisible="{Binding TestResult, Converter={x:Static ObjectConverters.IsNotNull}}" />
+              </StackPanel>
+            </StackPanel>
             <TextBlock Classes="errorText" TextWrapping="Wrap" Text="{Binding SecretError}" IsVisible="{Binding SecretError, Converter={x:Static ObjectConverters.IsNotNull}}" />
           </StackPanel>
         </Expander>

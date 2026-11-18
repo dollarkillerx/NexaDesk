@@ -74,7 +74,8 @@ public partial class App : Application
                 viewerPrefs: new ViewerPrefsStore(Path.Combine(dataDir, "viewer-prefs.json")),
                 passwords: new NativeSavedPasswords(), updater: new VelopackUpdater(),
                 serverTrust: new NativeServerTrust(),
-                serverDirectory: new ServerDirectory(ServerDirectory.DefaultUrl, Path.Combine(dataDir, "servers.json")));
+                serverDirectory: new ServerDirectory(ServerDirectory.DefaultUrl, Path.Combine(dataDir, "servers.json")),
+                serverProbe: new ServerProbe());
             if (startupError != null) vm.Connect.IdentityError = startupError;
             var main = new MainWindow { DataContext = vm };
             if (OperatingSystem.IsWindows())

@@ -22,15 +22,19 @@ public sealed partial class SettingsViewModel : ObservableObject
     readonly ISavedPasswords? _passwords;
 
     readonly IServerDirectory? _directory;
+    readonly IServerProbe _probe;
 
-    public SettingsViewModel(ISettingsStore store, ISavedPasswords? passwords = null, IServerDirectory? directory = null)
+    public SettingsViewModel(ISettingsStore store, ISavedPasswords? passwords = null, IServerDirectory? directory = null,
+        IServerProbe? probe = null)
     {
         _store = store;
         _passwords = passwords;
         _directory = directory;
+        _probe = probe ?? new NoProbe();
         var loaded = store.Load();
-        _useServerList = loaded.UseServerList && directory != null;
         _savedServer = loaded.SignalServer;
+        _mode = loaded.UseServerList && directory != null ? ServerMode.Published
+            : _savedServer.Length > 0 ? ServerMode.Own : ServerMode.None;
         // With no server or no Keychain there is nothing to wait for.
         if (_passwords == null || _savedServer.Length == 0) _secretLoaded.TrySetResult();
         _serverInput = _savedServer;
@@ -66,48 +70,60 @@ public sealed partial class SettingsViewModel : ObservableObject
     });
 
     /// <summary>
-    /// Offers the servers published for everyone (servers.json in the project's repository) to pick
-    /// from. Off by default: while it is off the app never asks GitHub for the list. Picking one only
-    /// fills in the two boxes; nothing is saved or used until Save, like a server typed by hand.
+    /// Which server the person uses: none (addresses, the LAN and Tailscale only), one from the list the
+    /// project publishes, or their own. Choosing the published list is also what asks GitHub for it: in
+    /// any other mode the app never does. The choice is saved at once.
     /// </summary>
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(CanUseServerList))]
-    private bool _useServerList;
+    [NotifyPropertyChangedFor(nameof(IsModeNone), nameof(IsModePublished), nameof(IsModeOwn), nameof(UseServerList))]
+    private ServerMode _mode;
+
+    public bool IsModeNone { get => Mode == ServerMode.None; set { if (value) Mode = ServerMode.None; } }
+    public bool IsModePublished { get => Mode == ServerMode.Published; set { if (value) Mode = ServerMode.Published; } }
+    public bool IsModeOwn { get => Mode == ServerMode.Own; set { if (value) Mode = ServerMode.Own; } }
+
+    /// <summary>Whether the published list is what the person chose (saved in settings).</summary>
+    public bool UseServerList => Mode == ServerMode.Published;
 
     /// <summary>False when this build has no list to read.</summary>
     public bool CanUseServerList => _directory != null;
 
-    public ObservableCollection<ServerEntry> ListedServers { get; } = [];
+    public ObservableCollection<ListedServer> ListedServers { get; } = [];
 
+    /// <summary>The published server in use. Picking one uses it at once, with no Save.</summary>
     [ObservableProperty]
-    private ServerEntry? _selectedListed;
+    private ListedServer? _selectedListed;
 
-    /// <summary>Loading, none published, or how many there are; null while the list is off.</summary>
+    /// <summary>Loading, none published, or how many there are; null outside the published mode.</summary>
     [ObservableProperty]
     private string? _listStatus;
 
     CancellationTokenSource? _listing;
+    bool _preselecting;
 
-    partial void OnUseServerListChanged(bool value)
+    partial void OnModeChanged(ServerMode value) => _ = ApplyModeAsync(value);
+
+    async Task ApplyModeAsync(ServerMode mode)
     {
         Persist();
-        _ = RefreshListAsync();
+        // Giving servers up is final: no server, and its key out of the Keychain.
+        if (mode == ServerMode.None) await ApplyAsync("", "");
+        await RefreshListAsync();
     }
 
-    partial void OnSelectedListedChanged(ServerEntry? value)
+    partial void OnSelectedListedChanged(ListedServer? value)
     {
-        if (value == null) return;
-        ServerInput = value.Endpoint;
-        SecretInput = value.Key;
+        if (value == null || _preselecting || Mode != ServerMode.Published) return;
+        _ = ApplyAsync(value.Entry.Endpoint, value.Entry.Key);
     }
 
-    /// <summary>Fetches the published list (when it is switched on) and shows it. Never throws.</summary>
+    /// <summary>Fetches the published list (in the published mode only) and shows it. Never throws.</summary>
     public async Task RefreshListAsync()
     {
         _listing?.Cancel();
         ListedServers.Clear();
         SelectedListed = null;
-        if (!UseServerList || _directory == null)
+        if (Mode != ServerMode.Published || _directory == null)
         {
             ListStatus = null;
             return;
@@ -116,8 +132,38 @@ public sealed partial class SettingsViewModel : ObservableObject
         ListStatus = L.Get("Main.ServerListLoading");
         var found = await _directory.LoadAsync(mine.Token);
         if (mine.IsCancellationRequested) return;
-        foreach (var e in found) ListedServers.Add(e);
+        foreach (var e in found) ListedServers.Add(new ListedServer(e));
         ListStatus = found.Count == 0 ? L.Get("Main.ServerListEmpty") : L.Format("Main.ServerListCount", found.Count);
+        // The server already in use shows as chosen, without choosing it again.
+        _preselecting = true;
+        SelectedListed = ListedServers.FirstOrDefault(e => e.Entry.Endpoint == SavedServer);
+        _preselecting = false;
+        // How far away each is, and whether it answers; they all load at once.
+        var items = ListedServers.ToList();
+        await Task.WhenAll(items.Select(i => i.TestAsync(_probe, mine.Token)));
+    }
+
+    // ---- "Test" for a server typed by hand ----
+
+    /// <summary>What the last test of the typed server found; null before one.</summary>
+    [ObservableProperty]
+    private string? _testResult;
+
+    bool CanTest() => ServerHint == null && TypedServer is { Length: > 0 };
+
+    [RelayCommand(CanExecute = nameof(CanTest))]
+    private async Task TestAsync()
+    {
+        var server = TypedServer;
+        if (string.IsNullOrEmpty(server)) return;
+        TestResult = L.Get("Main.ProbeTesting");
+        TestResult = ListedServer.Describe(await _probe.ProbeAsync(server));
+    }
+
+    partial void OnServerInputChanged(string value)
+    {
+        TestResult = null;
+        TestCommand.NotifyCanExecuteChanged();
     }
 
     /// <summary>
@@ -234,9 +280,15 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         var value = TypedServer;
         if (value == null) return;
-        var secret = value.Length == 0 ? "" : TypedSecret;
+        await ApplyAsync(value, value.Length == 0 ? "" : TypedSecret);
+    }
+
+    /// <summary>Makes <paramref name="value"/> and its key the server in use: the Keychain first, so a
+    /// server is never kept without the key it needs; then settings, then everything that listens.</summary>
+    async Task ApplyAsync(string value, string secret)
+    {
+        if (value == SavedServer && secret == SavedSecret) return;
         SecretError = null;
-        // The key first: a server is never saved without the key it needs.
         if (value.Length > 0 && _passwords != null)
         {
             var why = await _passwords.SaveAsync(AccountFor(value), secret);
@@ -256,4 +308,40 @@ public sealed partial class SettingsViewModel : ObservableObject
         Persist();
         ServerChanged?.Invoke(value);
     }
+}
+
+/// <summary>How the person gets a signaling server.</summary>
+public enum ServerMode { None, Published, Own }
+
+/// <summary>A server of the published list, and how it tested.</summary>
+public sealed partial class ListedServer(ServerEntry entry) : ObservableObject
+{
+    public ServerEntry Entry { get; } = entry;
+
+    public string Endpoint => Entry.Endpoint;
+
+    /// <summary>"Available, 38 ms", "cannot connect", ...; empty until it has been looked at.</summary>
+    [ObservableProperty]
+    private string _health = "";
+
+    public async Task TestAsync(IServerProbe probe, CancellationToken ct)
+    {
+        Health = L.Get("Main.ProbeTesting");
+        var result = await probe.ProbeAsync(Entry.Endpoint, ct);
+        if (!ct.IsCancellationRequested) Health = Describe(result);
+    }
+
+    public static string Describe(ProbeResult r) => r switch
+    {
+        { Available: true, Milliseconds: { } ms } => L.Format("Main.ProbeOk", ms),
+        { Problem: "notsignal" } => L.Get("Main.ProbeNotSignal"),
+        _ => L.Get("Main.ProbeUnreachable"),
+    };
+}
+
+/// <summary>Where nothing can be tested (tests, a build without it).</summary>
+sealed class NoProbe : IServerProbe
+{
+    public Task<ProbeResult> ProbeAsync(string endpoint, CancellationToken ct = default) =>
+        Task.FromResult(new ProbeResult(false, null, "unreachable"));
 }

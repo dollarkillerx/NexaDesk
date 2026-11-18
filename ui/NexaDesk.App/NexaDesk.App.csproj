@@ -7,7 +7,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RootNamespace>NexaDesk</RootNamespace>
     <AssemblyName>NexaDesk</AssemblyName>
-    <Version>0.1.21</Version>
+    <Version>0.1.22</Version>
     <InvariantGlobalization>true</InvariantGlobalization>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
     <!-- NativeAOT (§10.4): no reflection-based binding, JSON or marshalling anywhere. -->
