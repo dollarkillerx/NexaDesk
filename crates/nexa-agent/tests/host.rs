@@ -4,7 +4,7 @@ mod common;
 
 use std::{
     sync::{Arc, atomic::Ordering::SeqCst},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use bytes::Bytes;
@@ -1241,4 +1241,278 @@ async fn the_fixed_password_does_not_let_an_agent_in_unasked() {
     assert_eq!(ui.prompts(), 1, "an agent is always put to the person");
     let granted = accepted.accept.perms.unwrap();
     assert!(!granted.terminal, "not the owner's everything: {granted:?}");
+}
+
+// ---------------------------------------------------------------------------------
+// An agent's session: no video, looks on request (docs/MCP.md §13)
+// ---------------------------------------------------------------------------------
+
+use nexa_session::{
+    agent::{AgentBody, AgentMsg, ObserveReply, ObserveRequest},
+    proto::InputMark,
+};
+
+async fn agent_session(h: &Host) -> (Endpoint, Connection, ViewerAccepted) {
+    h.agent.set_allow_agents(true);
+    let me = DeviceIdentity::generate();
+    let (ep, conn) = dial(h, &me, PeerPolicy::AcceptUnknown).await;
+    let conn = conn.unwrap();
+    let accepted = viewer_handshake(&conn, agent_config(&me, code_of(h)))
+        .await
+        .unwrap();
+    (ep, conn, accepted)
+}
+
+/// The first `StreamConfig` of the session.
+async fn first_config(accepted: &mut ViewerAccepted) -> StreamConfig {
+    loop {
+        match tokio::time::timeout(WAIT, accepted.control.recv()).await {
+            Ok(Ok(Some(ControlBody::Config(c)))) => return c,
+            Ok(Ok(Some(_))) => {}
+            other => panic!("no stream config: {:?}", other.map(|r| r.map(|_| ()))),
+        }
+    }
+}
+
+enum Answer {
+    Look(ObserveReply, Vec<u8>),
+    Refused(String),
+}
+
+async fn look(conn: &Connection, request: ObserveRequest) -> Answer {
+    let (mut send, mut recv) = open_bi(conn, StreamType::Agent).await.unwrap();
+    send.send(&AgentMsg::from(AgentBody::Observe(request)))
+        .await
+        .unwrap();
+    let first = tokio::time::timeout(WAIT, recv.next::<AgentMsg>())
+        .await
+        .expect("an answer")
+        .unwrap();
+    let reply = match first.and_then(|m| m.body) {
+        Some(AgentBody::Reply(r)) => r,
+        Some(AgentBody::Refused(why)) => return Answer::Refused(why),
+        other => panic!("unexpected {other:?}"),
+    };
+    let mut png = Vec::new();
+    while png.len() < reply.png_len as usize {
+        match recv.next::<AgentMsg>().await.unwrap().and_then(|m| m.body) {
+            Some(AgentBody::Png(p)) => png.extend_from_slice(&p),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    Answer::Look(reply, png)
+}
+
+fn ui_look() -> ObserveRequest {
+    ObserveRequest {
+        ui: true,
+        interactive_only: true,
+        ..Default::default()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_agents_session_has_no_video_and_names_its_pixels() {
+    let ui = FakeUi::allowing(perms(true, true, false), false);
+    let h = host_with(ui.clone()).await;
+    let (_ep, _conn, mut accepted) = agent_session(&h).await;
+    let config = first_config(&mut accepted).await;
+    assert_eq!(config.codec, nexa_wire::control::Codec::Unknown as i32);
+    // The fake's 1920×1080 pixels, scaled to a longer side of 1568.
+    assert_eq!((config.w, config.h, config.fps), (1568, 882, 0));
+    until("the session is shown", WAIT, || {
+        common::lock(&ui.events)
+            .iter()
+            .any(|e| matches!(e, AgentEvent::SessionStarted(s) if s.agent))
+    })
+    .await;
+    assert_eq!(
+        h.platform.state.encoders_created.load(SeqCst),
+        0,
+        "no encoder"
+    );
+    assert_eq!(
+        h.platform.state.capturers_live.load(SeqCst),
+        0,
+        "no capture"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_look_gives_elements_with_refs_and_a_lossless_screenshot() {
+    let h = host_with(FakeUi::allowing(perms(true, true, false), false)).await;
+    let (_ep, conn, mut accepted) = agent_session(&h).await;
+    first_config(&mut accepted).await;
+    let Answer::Look(reply, png) = look(
+        &conn,
+        ObserveRequest {
+            screenshot: true,
+            ..ui_look()
+        },
+    )
+    .await
+    else {
+        panic!("refused")
+    };
+    assert_eq!((reply.w, reply.h), (1568, 882));
+    assert_eq!(reply.app, "Fake app");
+    assert_eq!(reply.focused, "textfield \"Name\"");
+    assert_eq!((reply.pointer_x, reply.pointer_y), (784, 441));
+    // 100,100 100×40 points of 960×540, in 1568×882 pixels.
+    assert_eq!(
+        reply.ui,
+        "window \"Fake window\" (0,0 1568×882)\n\
+         \x20\x20@e1 button \"OK\" (163,163 163×65)\n\
+         \x20\x20@e2 textfield \"Name\" value=\"\" (163,327 327×49)\n"
+    );
+    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    assert_eq!(u32::from_be_bytes(png[16..20].try_into().unwrap()), 1568);
+    assert_eq!(u32::from_be_bytes(png[20..24].try_into().unwrap()), 882);
+
+    h.platform.view.unreadable.store(true, SeqCst);
+    let Answer::Look(reply, png) = look(&conn, ui_look()).await else {
+        panic!("refused")
+    };
+    assert!(reply.ui.is_empty());
+    assert_eq!(reply.ui_error, "this app shows no elements");
+    assert!(png.is_empty(), "no screenshot unless asked");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_look_waits_for_the_agents_last_action() {
+    let h = host_with(FakeUi::allowing(perms(true, true, false), false)).await;
+    let (_ep, conn, mut accepted) = agent_session(&h).await;
+    first_config(&mut accepted).await;
+    let mut input = open_uni(&conn, StreamType::Input).await.unwrap();
+    for body in [
+        InputBody::Key(KeyEvent {
+            hid: 7 << 16 | 4,
+            down: true,
+            repeat: false,
+        }),
+        InputBody::Key(KeyEvent {
+            hid: 7 << 16 | 4,
+            down: false,
+            repeat: false,
+        }),
+        InputBody::Mark(InputMark { id: 1 }),
+    ] {
+        input.send(&InputMsg::from(body)).await.unwrap();
+    }
+    let Answer::Look(reply, _) = look(
+        &conn,
+        ObserveRequest {
+            after_mark: 1,
+            max_ms: 3000,
+            ..Default::default()
+        },
+    )
+    .await
+    else {
+        panic!("refused")
+    };
+    assert_eq!(
+        h.platform.injected.keys().len(),
+        2,
+        "both keys were in before the look answered"
+    );
+    assert!(reply.settled, "nothing asked to settle");
+
+    // A mark that never comes holds the look only as long as it may wait.
+    let started = Instant::now();
+    let Answer::Look(..) = look(
+        &conn,
+        ObserveRequest {
+            after_mark: 99,
+            max_ms: 300,
+            ..Default::default()
+        },
+    )
+    .await
+    else {
+        panic!("refused")
+    };
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_look_waits_for_the_screen_to_settle_and_says_it_changed() {
+    let h = host_with(FakeUi::allowing(perms(true, true, false), false)).await;
+    let (_ep, conn, mut accepted) = agent_session(&h).await;
+    first_config(&mut accepted).await;
+    // A first look, for the next to compare with.
+    let Answer::Look(..) = look(&conn, ObserveRequest::default()).await else {
+        panic!("refused")
+    };
+    let view = h.platform.view.clone();
+    let changer = std::thread::spawn(move || {
+        for i in 0..10u32 {
+            view.shade.store(40 + i * 20, SeqCst);
+            std::thread::sleep(Duration::from_millis(40));
+        }
+    });
+    let started = Instant::now();
+    let Answer::Look(reply, _) = look(
+        &conn,
+        ObserveRequest {
+            quiet_ms: 250,
+            max_ms: 3000,
+            ..Default::default()
+        },
+    )
+    .await
+    else {
+        panic!("refused")
+    };
+    changer.join().unwrap();
+    assert!(reply.settled);
+    assert!(reply.changed);
+    let waited = started.elapsed();
+    assert!(waited >= Duration::from_millis(500), "{waited:?}");
+    assert!(waited < Duration::from_secs(3), "{waited:?}");
+    // Still now: the same picture as the last look.
+    let Answer::Look(again, _) = look(
+        &conn,
+        ObserveRequest {
+            quiet_ms: 100,
+            max_ms: 1000,
+            ..Default::default()
+        },
+    )
+    .await
+    else {
+        panic!("refused")
+    };
+    assert!(again.settled && !again.changed);
+    // Typing into the focused field: the picture is the same, the field's text is not.
+    *h.platform.view.typed.lock().unwrap() = "x".into();
+    let Answer::Look(typed, _) = look(
+        &conn,
+        ObserveRequest {
+            quiet_ms: 100,
+            max_ms: 1000,
+            ..Default::default()
+        },
+    )
+    .await
+    else {
+        panic!("refused")
+    };
+    assert!(typed.settled && typed.changed);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_host_that_cannot_show_an_agent_its_screen_says_so() {
+    let h = host_with(FakeUi::allowing(perms(true, true, false), false)).await;
+    h.platform.view.absent.store(true, SeqCst);
+    let (_ep, conn, mut accepted) = agent_session(&h).await;
+    first_config(&mut accepted).await;
+    match look(&conn, ui_look()).await {
+        Answer::Refused(why) => assert_eq!(why, nexa_session::agent::REFUSED_UNSUPPORTED),
+        Answer::Look(..) => panic!("a host without a view answered a look"),
+    }
 }

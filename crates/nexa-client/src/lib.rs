@@ -4,6 +4,7 @@
 //! tests can run the same code with fake devices through [`deps::Deps`].
 
 pub mod abi;
+pub mod agent;
 pub mod audio;
 pub mod client;
 pub mod cursor;
@@ -27,5 +28,4 @@ mod real;
 mod real_cursor;
 #[cfg(windows)]
 mod real_windows_cursor;
-pub mod snapshot;
 pub mod terminal;

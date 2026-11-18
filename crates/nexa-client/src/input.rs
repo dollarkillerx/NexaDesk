@@ -20,7 +20,7 @@ use nexa_input::{
 };
 use nexa_session::{
     clip::{ClipHandle, PasteNeed},
-    proto::{InputBody, InputMsg},
+    proto::{InputBody, InputMark, InputMsg},
 };
 use nexa_wire::{
     control::{ButtonEvent, KeyEvent, KeyStateSync, TextInput},
@@ -69,6 +69,8 @@ pub enum InputCmd {
     /// The clipboard thread's late answer for the paste with this ticket: what it has
     /// to wait for (`InputGate::on_paste_answered`).
     PasteAnswered(u64, Option<Gen>),
+    /// An agent's mark (`InputBody::Mark`): the host notes when it gets this far.
+    Mark(u64),
     Stop,
 }
 
@@ -559,6 +561,12 @@ impl InputState {
             InputCmd::Wheel(dx, dy) if self.active => {
                 let outputs = self.cfg.rewriter.on_wheel(PhysWheel { dx, dy });
                 self.emit(outputs, now);
+            }
+            // In order with keys and text, and held with them behind the paste gate.
+            InputCmd::Mark(id) => {
+                let mut released = Vec::new();
+                self.ordered(InputBody::Mark(InputMark { id }), now, &mut released);
+                self.flush(&mut released);
             }
             InputCmd::Text(utf8) if self.active => {
                 let mut released = Vec::new();

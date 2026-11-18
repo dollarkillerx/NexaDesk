@@ -21,7 +21,7 @@ use nexa_auth::{
 };
 use nexa_clip::{ClipPolicy, GateStats};
 use nexa_input::{FocusClass, Hid, PhysKey, Rewriter};
-use nexa_media::{PresentMode, Presenter};
+use nexa_media::PresentMode;
 use nexa_net::{
     check::{PathClass, is_tailnet},
     path::CandKind,
@@ -364,6 +364,11 @@ pub enum SessionCtl {
     Control(ControlBody),
     /// A terminal the app opened: its stream, on this connection.
     Terminal(crate::terminal::TermLink),
+    /// An agent's look at the host, answered on `reply`.
+    Look(
+        nexa_session::agent::ObserveRequest,
+        mpsc::Sender<crate::agent::Look>,
+    ),
 }
 
 /// The handle behind `NexaSession*`. All methods return immediately.
@@ -429,6 +434,28 @@ impl Session {
     }
 
     /// Asks the connection for a terminal stream (the page is ready for it).
+    /// An AI agent's session (docs/MCP.md §13): marks that its input so far went
+    /// through, in order with keys and text, so a look can wait for it.
+    pub fn mark(&self, id: u64) {
+        self.to_input(InputCmd::Mark(id));
+    }
+
+    /// An AI agent's session: asks the host for a look and waits up to `timeout`.
+    pub fn observe(
+        &self,
+        request: nexa_session::agent::ObserveRequest,
+        timeout: Duration,
+    ) -> crate::agent::Look {
+        let (tx, rx) = mpsc::channel();
+        let ctl = lock(&self.command)
+            .clone()
+            .ok_or_else(|| "not connected".to_owned())?;
+        ctl.send(SessionCtl::Look(request, tx))
+            .map_err(|_| "the session has ended".to_owned())?;
+        rx.recv_timeout(timeout)
+            .map_err(|_| "the host did not answer in time".to_owned())?
+    }
+
     pub fn open_terminal(&self, link: crate::terminal::TermLink) {
         if let Some(ctl) = lock(&self.command).as_ref() {
             let _ = ctl.send(SessionCtl::Terminal(link));
@@ -543,15 +570,6 @@ impl Session {
         }
         self.repaint();
         Ok(())
-    }
-
-    /// Draws into `presenter` instead of a native view: a viewer without a window
-    /// (`nexa-mcp`, docs/MCP.md §3.2). The view is `w`×`h` pixels at scale 1, the size
-    /// the host fits its picture to, and pointer commands are in its pixels
-    /// ([`Self::view`] maps them). No local cursor or key capture is set up.
-    pub fn attach_presenter(&self, presenter: Box<dyn Presenter>, w: u32, h: u32) {
-        self.presenter.attach(presenter);
-        self.resize_view(w, h, 1.0);
     }
 
     /// Where the picture sits in the view, as pointer commands are mapped.
@@ -1225,6 +1243,34 @@ fn apply_config(
     Ok(())
 }
 
+/// An AI agent's session has no video (docs/MCP.md §13): the host's `StreamConfig`
+/// only says how large its pixels of the display are, which pointer input uses.
+fn apply_agent_config(
+    core: &Arc<Core>,
+    session: &Arc<Session>,
+    running: &mut Running,
+    config: StreamConfig,
+) {
+    session.update_view(|view| {
+        view.stream_w = config.w;
+        view.stream_h = config.h;
+        view.display = config.display;
+    });
+    lock(&session.stream).display = config.display;
+    core.events.send(
+        session.tag,
+        EventBody::Stream(StreamChanged {
+            codec: config.codec as u32,
+            mode: config.mode,
+            w: config.w,
+            h: config.h,
+            fps: 0,
+            display: config.display,
+        }),
+    );
+    running.last_config = Some(config);
+}
+
 fn start_input(
     core: &Arc<Core>,
     session: &Arc<Session>,
@@ -1717,7 +1763,9 @@ async fn stream_session(
                         config.h,
                         config.fps
                     );
-                    if let Err(e) = apply_config(core, session, conn, &mut running, config) {
+                    if config.codec == Codec::Unknown as i32 && core.deps.is_agent() {
+                        apply_agent_config(core, session, &mut running, config);
+                    } else if let Err(e) = apply_config(core, session, conn, &mut running, config) {
                         nexa_media::diag!("stream could not start: {e}");
                         break (DisconnectReason::PipelineFailed, e);
                     }
@@ -1760,6 +1808,12 @@ async fn stream_session(
                 }
                 SessionCtl::Terminal(link) => {
                     tokio::spawn(crate::terminal::run(conn.clone(), link));
+                }
+                SessionCtl::Look(request, reply) => {
+                    let conn = conn.clone();
+                    tokio::spawn(async move {
+                        let _ = reply.send(crate::agent::observe(conn, request).await);
+                    });
                 }
             },
             _ = stats.tick() => {

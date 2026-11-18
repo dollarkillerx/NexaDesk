@@ -12,7 +12,6 @@ nexa-media = { path = "../nexa-media" }
 nexa-session = { path = "../nexa-session" }
 nexa-wire = { path = "../nexa-wire" }
 base64 = "0.22"
-png = "0.18"
 prost = "0.14"
 serde_json = "1"
 

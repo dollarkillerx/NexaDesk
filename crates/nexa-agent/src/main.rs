@@ -8,6 +8,8 @@ fn main() {
 }
 
 #[cfg(target_os = "macos")]
+mod mac_view;
+#[cfg(target_os = "macos")]
 #[path = "os_mac.rs"]
 mod os;
 #[cfg(windows)]

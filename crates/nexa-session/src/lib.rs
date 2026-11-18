@@ -2,6 +2,7 @@
 //! the session protocol on top of QUIC (§3, §9.2). Contains no platform code: every
 //! backend arrives through a trait.
 
+pub mod agent;
 pub mod audio;
 pub mod bulk;
 pub mod clip;

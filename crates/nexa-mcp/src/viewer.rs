@@ -1,5 +1,12 @@
-//! The viewer behind the tools: one `nexa_client::Core` without windows, its sessions,
-//! and the hosts it has paired with (docs/MCP.md §3).
+//! The viewer behind the tools: one `nexa_client::Core` without windows, its agent
+//! sessions, and the hosts it has paired with (docs/MCP.md §3, §13).
+//!
+//! An agent session has no video. After each action the viewer sends a mark on the
+//! input stream; a look asks the host for what the agent wants to see (the frontmost
+//! window's elements, a screenshot), once the host has got to that mark and its
+//! screen has stopped changing. Coordinates are the host's agent pixels of the
+//! display, which its `StreamConfig` gives; the view is made the same size, so they
+//! go through unchanged.
 //!
 //! Every call blocks until it is done (the MCP server handles one request at a time);
 //! the core's own threads keep the sessions running in between.
@@ -25,15 +32,12 @@ use nexa_client::{
         Disconnected, DisplayInfo, Event, EventBody, KeyPress, PointerButton, PointerMove,
         PointerWheel, SelectDisplay, SendText, SessionCommand, StreamChanged,
     },
-    snapshot::{self, Frames},
 };
+use nexa_session::agent::{ObserveReply, ObserveRequest};
 use nexa_wire::control::Mode;
 use prost::Message;
 
-use crate::{
-    image::{self, MAX_SIDE},
-    terminal::{Ran, Shell},
-};
+use crate::terminal::{Ran, Shell};
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -44,9 +48,9 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 pub struct Timeouts {
     /// Until the host answers, which includes the person there deciding.
     pub connect: Duration,
-    /// For the first picture of a session.
-    pub first_frame: Duration,
-    /// After an action, how long the picture must stay unchanged to count as settled.
+    /// For a look's answer, the waits on the host included.
+    pub look: Duration,
+    /// After an action, how long the screen must stay unchanged to count as settled.
     pub quiet: Duration,
     /// After an action, the longest wait for it to settle.
     pub settle_max: Duration,
@@ -56,15 +60,15 @@ impl Default for Timeouts {
     fn default() -> Self {
         Self {
             connect: Duration::from_secs(90),
-            first_frame: Duration::from_secs(10),
-            quiet: Duration::from_millis(500),
+            look: Duration::from_secs(20),
+            quiet: Duration::from_millis(400),
             settle_max: Duration::from_secs(3),
         }
     }
 }
 
-/// Frame rate asked of hosts: an agent looks now and then, it does not watch.
-const FPS: u32 = 10;
+/// For the host to say how large its agent pixels are, once connected.
+const SPACE_WAIT: Duration = Duration::from_secs(10);
 /// Text sent in one `nexa_type`.
 pub const MAX_TEXT: usize = 4000;
 /// Sessions at once.
@@ -142,22 +146,45 @@ impl Events {
     }
 }
 
-/// What a session was asked to show, and the screenshot coordinates refer to.
+/// An agent session.
 pub struct Remote {
     pub id: u64,
     pub address: String,
     pub host: Connected,
     session: Arc<Session>,
-    frames: Arc<Frames>,
-    /// The size of the last screenshot, whose pixels actions are given in.
-    shot: Mutex<Option<(u32, u32)>>,
+    /// The last mark sent after an action.
+    marks: AtomicU64,
+    /// Looks taken, numbered.
+    looks: AtomicU64,
+    /// The refs of the last element tree read: `@e{i+1}` is at `centers[i]`.
+    refs: Mutex<Refs>,
     /// The host's command line, once a command was run.
     shell: Mutex<Option<Shell>>,
+}
+
+#[derive(Default)]
+struct Refs {
+    /// The look they came from; 0: none read yet.
+    look: u64,
+    centers: Vec<(i32, i32)>,
+}
+
+/// Where an action happens: a ref from the last element tree, or a point in the
+/// agent's pixels.
+pub enum Target {
+    Ref(String),
+    Point(f64, f64),
 }
 
 impl Remote {
     pub fn perms(&self) -> nexa_client::proto::Permissions {
         self.host.perms.clone().unwrap_or_default()
+    }
+
+    /// The agent's pixels of the display shown: what coordinates are in.
+    pub fn space(&self) -> (u32, u32) {
+        let v = self.session.view();
+        (v.stream_w, v.stream_h)
     }
 
     pub fn os_name(&self) -> &'static str {
@@ -170,18 +197,13 @@ impl Remote {
     }
 }
 
-/// A screenshot, encoded.
-pub struct Shot {
+/// What a look brought back.
+pub struct Looked {
+    pub reply: ObserveReply,
+    /// The screenshot, if one was asked for.
     pub png: Vec<u8>,
-    pub width: u32,
-    pub height: u32,
-    /// False when the screen was still changing when it was taken.
-    pub settled: bool,
-    /// How long it waited for the screen to settle (zero for a plain screenshot).
-    pub waited: Duration,
-    /// The previous screenshot's size, when this one's differs: older coordinates
-    /// no longer fit.
-    pub resized_from: Option<(u32, u32)>,
+    /// How many refs the element tree has (0 without one).
+    pub refs: usize,
 }
 
 pub enum Button {
@@ -341,12 +363,9 @@ impl Viewer {
             },
             tag: id,
             mode: Mode::Office as i32,
-            fps: FPS,
+            fps: 0,
             auth: Some(auth),
         });
-        let frames = Frames::new();
-        // A first size; once the host's display is known the view takes its shape.
-        session.attach_presenter(frames.presenter(), MAX_SIDE, MAX_SIDE * 10 / 16);
         let outcome = self.events.wait(id, self.timeouts.connect, |s| {
             s.ended
                 .clone()
@@ -382,10 +401,16 @@ impl Viewer {
             known.remember(&address, &host.host_key, &host.host_name);
             known.save(&self.data_dir);
         }
-        if let Some(d) = host.displays.first() {
-            let (w, h) = image::fitted(d.w.max(1), d.h.max(1), MAX_SIDE);
-            session.resize_view(w, h, 1.0);
-        }
+        // The host's agent pixels; the view takes their size, so coordinates pass
+        // through unchanged.
+        let Some(space) = self.events.wait(id, SPACE_WAIT, |s| s.stream.clone()) else {
+            session.close();
+            return Err(format!(
+                "{address} did not say how large its screen is: is it a NexaDesk too old \
+                 for agents?"
+            ));
+        };
+        session.resize_view(space.w, space.h, 1.0);
         if host.perms.as_ref().is_some_and(|p| p.input) {
             let _ = session.set_input_active(true);
         }
@@ -394,8 +419,9 @@ impl Viewer {
             address,
             host,
             session,
-            frames,
-            shot: Mutex::new(None),
+            marks: AtomicU64::new(0),
+            looks: AtomicU64::new(0),
+            refs: Mutex::new(Refs::default()),
             shell: Mutex::new(None),
         });
         lock(&self.remotes).insert(id, remote.clone());
@@ -408,43 +434,44 @@ impl Viewer {
         lock(&self.remotes).remove(&remote.id);
     }
 
-    /// The screen as it is now (waiting for the first picture of a new session).
-    pub fn screenshot(&self, remote: &Remote) -> Result<Shot, String> {
-        let settled = remote
-            .frames
-            .settle(Instant::now(), Duration::ZERO, self.timeouts.first_frame)
-            .ok_or("no picture from the host yet")?;
-        self.encode(remote, &settled.image, true, Duration::ZERO)
-    }
-
-    /// The screen once it has stopped changing after an action sent at `since`.
-    pub fn after(&self, remote: &Remote, since: Instant) -> Result<Shot, String> {
-        let s = remote
-            .frames
-            .settle(since, self.timeouts.quiet, self.timeouts.settle_max)
-            .ok_or("no picture from the host yet")?;
-        self.encode(remote, &s.image, s.settled, since.elapsed())
-    }
-
-    fn encode(
+    /// Asks the host for a look: once it has got to mark `after_mark` (0: at once)
+    /// and, after a mark, once its screen has stopped changing. The element tree's
+    /// refs replace the last ones.
+    pub fn look(
         &self,
         remote: &Remote,
-        image: &nexa_media::NativeImage,
-        settled: bool,
-        waited: Duration,
-    ) -> Result<Shot, String> {
-        let rgb = snapshot::fit(snapshot::to_rgb(image)?, MAX_SIDE);
-        let png = image::png(&rgb)?;
-        let size = (rgb.width, rgb.height);
-        let before = lock(&remote.shot).replace(size);
-        Ok(Shot {
-            png,
-            width: rgb.width,
-            height: rgb.height,
-            settled,
-            waited,
-            resized_from: before.filter(|b| *b != size),
-        })
+        after_mark: u64,
+        ui: bool,
+        screenshot: bool,
+        interactive_only: bool,
+        max_nodes: u32,
+    ) -> Result<Looked, String> {
+        self.remote(Some(remote.id))?;
+        let settle = after_mark != 0;
+        let request = ObserveRequest {
+            after_mark,
+            quiet_ms: if settle {
+                self.timeouts.quiet.as_millis() as u32
+            } else {
+                0
+            },
+            max_ms: self.timeouts.settle_max.as_millis() as u32,
+            ui,
+            interactive_only,
+            max_nodes,
+            screenshot,
+        };
+        let (reply, png) = remote.session.observe(request, self.timeouts.look)?;
+        let mut refs = 0;
+        if ui && reply.ui_error.is_empty() {
+            let centers = ref_centers(&reply.ui);
+            refs = centers.len();
+            *lock(&remote.refs) = Refs {
+                look: remote.looks.fetch_add(1, Relaxed) + 1,
+                centers,
+            };
+        }
+        Ok(Looked { reply, png, refs })
     }
 
     fn can_act(&self, remote: &Remote) -> Result<(), String> {
@@ -455,17 +482,40 @@ impl Viewer {
         Ok(())
     }
 
-    /// A point in the last screenshot to the view pixels commands take.
-    fn point(&self, remote: &Remote, x: f64, y: f64) -> Result<(f64, f64), String> {
+    /// Where `target` is, in the view pixels commands take (the agent's pixels).
+    fn point(&self, remote: &Remote, target: &Target) -> Result<(f64, f64), String> {
         let geo = remote.session.view();
         if geo.stream_w == 0 || geo.stream_h == 0 {
-            return Err("no picture from the host yet: take a screenshot first".into());
+            return Err("the host has not said how large its screen is yet".into());
         }
-        let shot = lock(&remote.shot)
-            .unwrap_or_else(|| image::fitted(geo.stream_w, geo.stream_h, MAX_SIDE));
-        let (sx, sy) = image::to_stream(x, y, shot, (geo.stream_w, geo.stream_h))?;
-        geo.to_view(sx, sy)
-            .ok_or_else(|| "the picture has no size yet".to_owned())
+        let (x, y) = match target {
+            Target::Point(x, y) => (*x, *y),
+            Target::Ref(r) => {
+                let refs = lock(&remote.refs);
+                if refs.look == 0 {
+                    return Err(format!(
+                        "no element tree read yet: call nexa_ui first, then use {r}"
+                    ));
+                }
+                let n = parse_ref(r).ok_or_else(|| format!("\"{r}\" is not a ref like @e3"))?;
+                let (x, y) = *refs.centers.get(n - 1).ok_or_else(|| {
+                    format!(
+                        "there is no {r} in the last element tree ({} refs): call nexa_ui again",
+                        refs.centers.len()
+                    )
+                })?;
+                (f64::from(x), f64::from(y))
+            }
+        };
+        let (w, h) = (f64::from(geo.stream_w), f64::from(geo.stream_h));
+        if !(x.is_finite() && y.is_finite()) || x < 0.0 || y < 0.0 || x >= w || y >= h {
+            return Err(format!(
+                "({x}, {y}) is outside the screen, which is {}×{} pixels",
+                geo.stream_w, geo.stream_h
+            ));
+        }
+        geo.to_view(x.floor() as i32, y.floor() as i32)
+            .ok_or_else(|| "the screen has no size yet".to_owned())
     }
 
     fn send(&self, remote: &Remote, cmd: Command) -> Result<(), String> {
@@ -475,21 +525,32 @@ impl Viewer {
             .map_err(str::to_owned)
     }
 
-    pub fn click(
-        &self,
-        remote: &Remote,
-        x: f64,
-        y: f64,
-        button: Button,
-        count: u32,
-    ) -> Result<Instant, String> {
-        self.can_act(remote)?;
-        let (vx, vy) = self.point(remote, x, y)?;
-        let button = match button {
+    /// Ends an action: a mark after it, which the look that follows waits for.
+    fn marked(&self, remote: &Remote) -> u64 {
+        let id = remote.marks.fetch_add(1, Relaxed) + 1;
+        remote.session.mark(id);
+        id
+    }
+
+    fn button_code(button: Button) -> u32 {
+        match button {
             Button::Left => 0,
             Button::Right => 1,
             Button::Middle => 2,
-        };
+        }
+    }
+
+    /// Clicks `count` times at `target`; returns the mark to look after.
+    pub fn click(
+        &self,
+        remote: &Remote,
+        target: &Target,
+        button: Button,
+        count: u32,
+    ) -> Result<u64, String> {
+        self.can_act(remote)?;
+        let (vx, vy) = self.point(remote, target)?;
+        let button = Self::button_code(button);
         self.send(remote, Command::Move(PointerMove { x: vx, y: vy }))?;
         for _ in 0..count {
             self.send(
@@ -504,20 +565,19 @@ impl Viewer {
                 }),
             )?;
         }
-        Ok(Instant::now())
+        Ok(self.marked(remote))
     }
 
     /// `dx`/`dy` in wheel notches; positive is right and down.
     pub fn scroll(
         &self,
         remote: &Remote,
-        x: f64,
-        y: f64,
+        target: &Target,
         dx: i32,
         dy: i32,
-    ) -> Result<Instant, String> {
+    ) -> Result<u64, String> {
         self.can_act(remote)?;
-        let (vx, vy) = self.point(remote, x, y)?;
+        let (vx, vy) = self.point(remote, target)?;
         self.send(remote, Command::Move(PointerMove { x: vx, y: vy }))?;
         // PointerWheel: 1/120 notch, + is right/up.
         self.send(
@@ -527,10 +587,10 @@ impl Viewer {
                 dy: -dy * 120,
             }),
         )?;
-        Ok(Instant::now())
+        Ok(self.marked(remote))
     }
 
-    pub fn type_text(&self, remote: &Remote, text: &str) -> Result<Instant, String> {
+    pub fn type_text(&self, remote: &Remote, text: &str) -> Result<u64, String> {
         self.can_act(remote)?;
         if text.is_empty() {
             return Err("no text given".into());
@@ -544,33 +604,27 @@ impl Viewer {
                 utf8: text.to_owned(),
             }),
         )?;
-        Ok(Instant::now())
+        Ok(self.marked(remote))
     }
 
     /// Presses `usages` together: down in order, up in reverse.
-    pub fn keys(&self, remote: &Remote, usages: &[u16]) -> Result<Instant, String> {
+    pub fn keys(&self, remote: &Remote, usages: &[u16]) -> Result<u64, String> {
         self.can_act(remote)?;
-        for &u in usages {
+        for (u, down) in usages
+            .iter()
+            .map(|u| (u, true))
+            .chain(usages.iter().rev().map(|u| (u, false)))
+        {
             self.send(
                 remote,
                 Command::Key(KeyPress {
-                    usage: u32::from(u),
-                    down: true,
+                    usage: u32::from(*u),
+                    down,
                     exact: false,
                 }),
             )?;
         }
-        for &u in usages.iter().rev() {
-            self.send(
-                remote,
-                Command::Key(KeyPress {
-                    usage: u32::from(u),
-                    down: false,
-                    exact: false,
-                }),
-            )?;
-        }
-        Ok(Instant::now())
+        Ok(self.marked(remote))
     }
 
     /// Presses at one point, moves to another in steps a program can follow, and
@@ -578,18 +632,14 @@ impl Viewer {
     pub fn drag(
         &self,
         remote: &Remote,
-        from: (f64, f64),
-        to: (f64, f64),
+        from: &Target,
+        to: &Target,
         button: Button,
-    ) -> Result<Instant, String> {
+    ) -> Result<u64, String> {
         self.can_act(remote)?;
-        let a = self.point(remote, from.0, from.1)?;
-        let b = self.point(remote, to.0, to.1)?;
-        let button = match button {
-            Button::Left => 0,
-            Button::Right => 1,
-            Button::Middle => 2,
-        };
+        let a = self.point(remote, from)?;
+        let b = self.point(remote, to)?;
+        let button = Self::button_code(button);
         self.send(remote, Command::Move(PointerMove { x: a.0, y: a.1 }))?;
         thread::sleep(DRAG_STEP);
         self.send(
@@ -615,7 +665,7 @@ impl Viewer {
                 down: false,
             }),
         )?;
-        Ok(Instant::now())
+        Ok(self.marked(remote))
     }
 
     /// The host's displays, and which one is shown now.
@@ -624,10 +674,11 @@ impl Viewer {
         (remote.host.displays.clone(), current)
     }
 
-    /// Shows display `id` instead, and returns once its picture has arrived.
-    pub fn select_display(&self, remote: &Remote, id: u32) -> Result<Instant, String> {
+    /// Shows display `id` instead: the host's agent pixels are that display's from
+    /// now on, and the last element tree's refs no longer hold.
+    pub fn select_display(&self, remote: &Remote, id: u32) -> Result<(u32, u32), String> {
         self.remote(Some(remote.id))?;
-        let Some(d) = remote.host.displays.iter().find(|d| d.id == id) else {
+        if !remote.host.displays.iter().any(|d| d.id == id) {
             let ids: Vec<String> = remote
                 .host
                 .displays
@@ -638,25 +689,17 @@ impl Viewer {
                 "there is no display {id}; the host has {}",
                 ids.join(", ")
             ));
-        };
-        let before = remote.frames.frames();
-        let (w, h) = image::fitted(d.w.max(1), d.h.max(1), MAX_SIDE);
-        remote.session.resize_view(w, h, 1.0);
+        }
         self.send(remote, Command::Display(SelectDisplay { display: id }))?;
-        let switched = self.events.wait(remote.id, SWITCH_WAIT, |s| {
-            s.stream.as_ref().filter(|st| st.display == id).map(|_| ())
-        });
-        if switched.is_none() {
-            return Err(format!("the host did not switch to display {id}"));
-        }
-        // The last screenshot showed the other display; its size is kept so the next
-        // one can say it changed.
-        let since = Instant::now();
-        let deadline = since + self.timeouts.first_frame;
-        while remote.frames.frames() == before && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(20));
-        }
-        Ok(since)
+        let space = self
+            .events
+            .wait(remote.id, SWITCH_WAIT, |s| {
+                s.stream.clone().filter(|st| st.display == id)
+            })
+            .ok_or_else(|| format!("the host did not switch to display {id}"))?;
+        remote.session.resize_view(space.w, space.h, 1.0);
+        *lock(&remote.refs) = Refs::default();
+        Ok((space.w, space.h))
     }
 
     /// Runs `command` on the host's command line and waits up to `timeout` for it.
@@ -729,6 +772,51 @@ impl Drop for Viewer {
         }
         self.core.shut_down();
     }
+}
+
+/// `@e12`, `e12` or `12` → 12.
+fn parse_ref(r: &str) -> Option<usize> {
+    let t = r.trim();
+    let t = t.strip_prefix('@').unwrap_or(t);
+    let t = t.strip_prefix('e').unwrap_or(t);
+    t.parse::<usize>().ok().filter(|n| *n > 0)
+}
+
+/// The centre of each ref in an element tree's text, in order: a line holding
+/// `@e{n} …` ends with its bounds, `(x,y w×h)`.
+fn ref_centers(ui: &str) -> Vec<(i32, i32)> {
+    let mut out = Vec::new();
+    for line in ui.lines() {
+        let t = line.trim_start();
+        let Some(rest) = t.strip_prefix("@e") else {
+            continue;
+        };
+        let n: usize = match rest.split(' ').next().and_then(|n| n.parse().ok()) {
+            Some(n) => n,
+            None => continue,
+        };
+        let Some(open) = line.rfind('(') else {
+            continue;
+        };
+        let inner = line[open + 1..].trim_end().trim_end_matches(')');
+        let parsed = (|| {
+            let (xy, wh) = inner.split_once(' ')?;
+            let (x, y) = xy.split_once(',')?;
+            let (w, h) = wh.split_once('×')?;
+            Some((
+                x.parse::<i32>().ok()?,
+                y.parse::<i32>().ok()?,
+                w.parse::<i32>().ok()?,
+                h.parse::<i32>().ok()?,
+            ))
+        })();
+        if let Some((x, y, w, h)) = parsed
+            && n == out.len() + 1
+        {
+            out.push((x + w / 2, y + h / 2));
+        }
+    }
+    out
 }
 
 fn reason_text(d: &Disconnected) -> String {
@@ -843,6 +931,20 @@ impl KnownHosts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refs_are_read_from_the_element_tree() {
+        let ui = "window \"W\" (0,0 1568×980)\n\
+                  \x20\x20@e1 button \"OK (sure)\" (100,100 40×20)\n\
+                  \x20\x20text \"Ready\" (0,0 10×10)\n\
+                  \x20\x20\x20\x20@e2 textfield value=\"a (b)\" focused (10,50 200×31)\n";
+        assert_eq!(ref_centers(ui), vec![(120, 110), (110, 65)]);
+        assert_eq!(parse_ref("@e12"), Some(12));
+        assert_eq!(parse_ref("e3"), Some(3));
+        assert_eq!(parse_ref(" 7 "), Some(7));
+        assert_eq!(parse_ref("@e0"), None);
+        assert_eq!(parse_ref("button"), None);
+    }
 
     #[test]
     fn device_ids_lose_their_grouping() {

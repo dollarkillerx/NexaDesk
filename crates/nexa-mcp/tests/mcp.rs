@@ -20,14 +20,14 @@ use nexa_client::{
 };
 use nexa_input::Hid;
 use nexa_mcp::{server::Server, viewer::Viewer};
-use nexa_media::{CpuFrame, DecodedFrame, Decoder, FrameMeta, NativeImage, PresentMode, Presenter};
+use nexa_media::{Decoder, PresentMode, Presenter};
 use nexa_session::{clip::ClipPlatform, handshake::Timeouts};
 use nexa_wire::control::{Caps, Codec, Os};
 use serde_json::{Value, json};
 
 const WAIT: Duration = Duration::from_secs(10);
-/// What the fake decoder hands out: the screenshots' size.
-const FRAME: (u32, u32) = (784, 441);
+/// The fake host's 1920×1080 pixels as an agent's: its coordinates and screenshots.
+const SPACE: (u32, u32) = (1568, 882);
 
 struct TestDeps {
     dir: std::path::PathBuf,
@@ -42,24 +42,6 @@ impl KeySource for NoKeys {
     }
 }
 
-/// A mid-gray picture of [`FRAME`], whatever arrives.
-struct GrayDecoder;
-
-impl Decoder for GrayDecoder {
-    fn decode(&mut self, _: &[u8], meta: FrameMeta) -> nexa_media::Result<DecodedFrame> {
-        let (w, h) = FRAME;
-        Ok(DecodedFrame {
-            image: NativeImage::Cpu(Arc::new(CpuFrame {
-                width: w,
-                height: h,
-                y: vec![126; (w * h) as usize],
-                uv: vec![128; (w.div_ceil(2) * 2 * h.div_ceil(2)) as usize],
-            })),
-            meta,
-        })
-    }
-}
-
 impl Deps for TestDeps {
     fn os(&self) -> Os {
         Os::Macos
@@ -71,7 +53,7 @@ impl Deps for TestDeps {
         caps()
     }
     fn decoder(&self, _: Codec) -> Result<Box<dyn Decoder>, String> {
-        Ok(Box::new(GrayDecoder))
+        Err("an agent's session has no video".into())
     }
     fn key_source(&self, _: std::sync::mpsc::Sender<InputCmd>) -> Box<dyn KeySource> {
         Box::new(NoKeys)
@@ -252,16 +234,72 @@ async fn an_agent_connects_looks_and_acts() {
         "displays are numbered as nexa_display takes them: {connected}"
     );
 
-    let shot = agent.call("nexa_screenshot", json!({})).await;
-    assert_eq!(shot["isError"], false, "{shot}");
-    assert_eq!(png_size(&shot), FRAME);
+    assert!(
+        texts(&connected).contains("Coordinates are 1568×882 pixels"),
+        "{connected}"
+    );
 
-    // The middle of the screenshot is the middle of the host's 960×540-point screen.
+    // Refs come from nexa_ui.
+    let early = agent.call("nexa_click", json!({ "ref": "@e1" })).await;
+    assert_eq!(early["isError"], true);
+    assert!(texts(&early).contains("call nexa_ui first"), "{early}");
+
+    let ui = agent.call("nexa_ui", json!({})).await;
+    assert_eq!(ui["isError"], false, "{ui}");
+    let ui_text = texts(&ui);
+    assert!(
+        ui_text.contains("In front: Fake app — \"Fake window\""),
+        "{ui_text}"
+    );
+    assert!(
+        ui_text.contains("Keyboard focus: textfield \"Name\""),
+        "{ui_text}"
+    );
+    assert!(
+        ui_text.contains("@e1 button \"OK\" (163,163 163×65)"),
+        "{ui_text}"
+    );
+    assert!(ui_text.contains("@e2 textfield \"Name\""), "{ui_text}");
+    assert!(ui_text.contains("2 refs"), "{ui_text}");
+    assert!(
+        !ui["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["type"] == "image")
+    );
+
+    // By ref: the middle of the OK button, 100,100 100×40 points.
+    let by_ref = agent.call("nexa_click", json!({ "ref": "@e1" })).await;
+    assert_eq!(by_ref["isError"], false, "{by_ref}");
+    let said = texts(&by_ref);
+    assert!(said.starts_with("Clicked @e1. The screen "), "{said}");
+    assert!(said.contains("In front: Fake app"), "{said}");
+    until("the OK button clicked", WAIT, || {
+        h.platform.injected.all().iter().any(|i| {
+            matches!(i, Injected::Button { button: 0, down: false, at: Some((x, y)) }
+                if (x - 150.0).abs() <= 1.5 && (y - 120.0).abs() <= 1.5)
+        })
+    })
+    .await;
+    let stale = agent.call("nexa_click", json!({ "ref": "@e9" })).await;
+    assert_eq!(stale["isError"], true);
+    assert!(texts(&stale).contains("there is no @e9"), "{stale}");
+
+    // By point: the middle of the agent's pixels is the middle of the 960×540 points,
+    // with the screenshot asked for.
     let clicked = agent
-        .call("nexa_click", json!({ "x": 392, "y": 220.5 }))
+        .call(
+            "nexa_click",
+            json!({ "x": 784, "y": 441, "then": "screenshot" }),
+        )
         .await;
     assert_eq!(clicked["isError"], false, "{clicked}");
-    assert_eq!(png_size(&clicked), FRAME, "an action returns a screenshot");
+    assert_eq!(
+        png_size(&clicked),
+        SPACE,
+        "a lossless picture of the agent's pixels"
+    );
     until("click injected", WAIT, || {
         h.platform.injected.all().iter().any(|i| {
             matches!(i, Injected::Button { button: 0, down: false, at: Some((x, y)) }
@@ -270,11 +308,12 @@ async fn an_agent_connects_looks_and_acts() {
     })
     .await;
 
+    let shot = agent.call("nexa_screenshot", json!({})).await;
+    assert_eq!(shot["isError"], false, "{shot}");
+    assert_eq!(png_size(&shot), SPACE);
+
     let typed = agent
-        .call(
-            "nexa_type",
-            json!({ "text": "héllo 你好", "screenshot": false }),
-        )
+        .call("nexa_type", json!({ "text": "héllo 你好" }))
         .await;
     assert_eq!(typed["isError"], false, "{typed}");
     assert!(
@@ -293,9 +332,7 @@ async fn an_agent_connects_looks_and_acts() {
     .await;
 
     // Keys as named for the host, with no ⌘/Ctrl rules in between.
-    let pressed = agent
-        .call("nexa_key", json!({ "keys": "ctrl+c", "screenshot": false }))
-        .await;
+    let pressed = agent.call("nexa_key", json!({ "keys": "ctrl+c" })).await;
     assert_eq!(pressed["isError"], false, "{pressed}");
     let (ctrl, c) = (Hid::key(0xE0).0, Hid::key(0x06).0);
     until("keys injected", WAIT, || {
@@ -310,7 +347,7 @@ async fn an_agent_connects_looks_and_acts() {
     let outside = agent.call("nexa_click", json!({ "x": 5000, "y": 1 })).await;
     assert_eq!(outside["isError"], true);
     assert!(
-        texts(&outside).contains("outside the screenshot"),
+        texts(&outside).contains("outside the screen, which is 1568×882 pixels"),
         "{outside}"
     );
 
@@ -427,19 +464,17 @@ async fn connected_to(p: nexa_wire::control::Permissions) -> (Host, Agent) {
     let agent = Agent::new();
     let r = connect(&agent, &h).await;
     assert_eq!(r["isError"], false, "{r}");
-    let shot = agent.call("nexa_screenshot", json!({})).await;
-    assert_eq!(shot["isError"], false, "{shot}");
     (h, agent)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_drag_presses_moves_and_lets_go_at_the_other_end() {
     let (h, agent) = connected_to(granted(false, false)).await;
-    // Screenshot (784×441) corners to the host's 960×540-point screen.
+    // The agent's 1568×882 pixels of the host's 960×540 points.
     let r = agent
         .call(
             "nexa_drag",
-            json!({ "from_x": 98, "from_y": 55.1, "to_x": 588, "to_y": 330.7, "screenshot": false }),
+            json!({ "from_x": 196, "from_y": 110.25, "to_x": 1176, "to_y": 661.5 }),
         )
         .await;
     assert_eq!(r["isError"], false, "{r}");
@@ -490,7 +525,10 @@ async fn displays_are_listed_and_a_missing_one_is_named() {
     assert!(texts(&list).contains("(shown now)"), "{list}");
     let same = agent.call("nexa_display", json!({ "display": 0 })).await;
     assert_eq!(same["isError"], false, "{same}");
-    assert_eq!(png_size(&same), FRAME);
+    assert!(
+        texts(&same).contains("its coordinates are 1568×882 pixels"),
+        "{same}"
+    );
     let missing = agent.call("nexa_display", json!({ "display": 7 })).await;
     assert_eq!(missing["isError"], true);
     assert!(texts(&missing).contains("no display 7"), "{missing}");

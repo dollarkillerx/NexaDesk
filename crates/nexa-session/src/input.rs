@@ -6,7 +6,7 @@
 
 use std::{
     sync::{
-        Arc,
+        Arc, Condvar, Mutex,
         atomic::{AtomicU64, Ordering::Relaxed},
         mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError},
     },
@@ -49,6 +49,45 @@ pub trait PointMap: Send + Sync {
 pub enum InjectEvent {
     Input(InputBody),
     Pointer(Pointer),
+}
+
+/// How far the inject thread has got through an agent's marks (`InputBody::Mark`):
+/// everything sent before a mark has been injected once it is reached.
+#[derive(Default)]
+pub struct Marks {
+    reached: Mutex<(u64, Option<Instant>)>,
+    changed: Condvar,
+}
+
+impl Marks {
+    fn reach(&self, id: u64, at: Instant) {
+        let mut r = self.reached.lock().unwrap_or_else(|e| e.into_inner());
+        if id > r.0 {
+            *r = (id, Some(at));
+        }
+        drop(r);
+        self.changed.notify_all();
+    }
+
+    /// When mark `id` (or a later one) was reached, waiting up to `timeout` for it.
+    pub fn wait(&self, id: u64, timeout: Duration) -> Option<Instant> {
+        let deadline = Instant::now() + timeout;
+        let mut r = self.reached.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if r.0 >= id {
+                return r.1;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return None;
+            }
+            r = self
+                .changed
+                .wait_timeout(r, deadline - now)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+    }
 }
 
 #[derive(Default, Debug)]
@@ -150,9 +189,11 @@ fn dispatch(
     state: &mut PointerState,
     map: &dyn PointMap,
     sink: &mut dyn InputSink,
+    marks: &Marks,
     now: Instant,
 ) {
     match event {
+        InjectEvent::Input(InputBody::Mark(m)) => marks.reach(m.id, now),
         InjectEvent::Pointer(p) => state.apply(p, map, sink),
         InjectEvent::Input(InputBody::Key(KeyEvent { hid, down, repeat })) => {
             sink.key(hid, down, repeat, now);
@@ -170,6 +211,7 @@ fn run_inject(
     make_sink: Box<dyn FnOnce() -> Result<Box<dyn InputSink>, String> + Send>,
     map: Arc<dyn PointMap>,
     stats: Arc<InjectStats>,
+    marks: Arc<Marks>,
 ) -> Result<(), String> {
     let mut sink = make_sink()?;
     let mut state = PointerState::default();
@@ -177,7 +219,7 @@ fn run_inject(
         match rx.recv_timeout(INJECT_TICK) {
             Ok(event) => {
                 stats.injected.fetch_add(1, Relaxed);
-                dispatch(event, &mut state, &*map, &mut *sink, Instant::now());
+                dispatch(event, &mut state, &*map, &mut *sink, &marks, Instant::now());
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
@@ -194,6 +236,8 @@ pub struct InjectThread {
     tx: SyncSender<InjectEvent>,
     join: JoinHandle<Result<(), String>>,
     pub stats: Arc<InjectStats>,
+    /// An agent's marks, as this thread reaches them.
+    pub marks: Arc<Marks>,
 }
 
 impl InjectThread {
@@ -204,12 +248,18 @@ impl InjectThread {
     ) -> Self {
         let (tx, rx) = mpsc::sync_channel(INJECT_QUEUE);
         let stats = Arc::new(InjectStats::default());
-        let thread_stats = stats.clone();
+        let marks = Arc::new(Marks::default());
+        let (thread_stats, thread_marks) = (stats.clone(), marks.clone());
         let join = thread::Builder::new()
             .name("input-inject".into())
-            .spawn(move || run_inject(rx, make_sink, map, thread_stats))
+            .spawn(move || run_inject(rx, make_sink, map, thread_stats, thread_marks))
             .expect("spawn thread");
-        Self { tx, join, stats }
+        Self {
+            tx,
+            join,
+            stats,
+            marks,
+        }
     }
 
     pub fn sender(&self) -> SyncSender<InjectEvent> {

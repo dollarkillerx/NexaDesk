@@ -68,8 +68,8 @@ pub(crate) type FileSlot = Arc<Mutex<Option<Transfers>>>;
 
 /// Maps wire pixels to CoreGraphics points (§7.7), following display changes and
 /// switches. The display index is the one being streamed (§3.6: `Display.id`).
-struct Geometry {
-    state: Mutex<(ScreenInfo, (u32, u32), u32)>,
+pub(crate) struct Geometry {
+    pub(crate) state: Mutex<(ScreenInfo, (u32, u32), u32)>,
 }
 
 impl PointMap for Geometry {
@@ -215,7 +215,7 @@ fn media_err(e: String) -> MediaError {
 }
 
 /// Display `index` of the platform's list (§3.6: `Display.id` is the index).
-fn display_at(platform: &dyn Platform, index: u32) -> nexa_media::Result<ScreenInfo> {
+pub(crate) fn display_at(platform: &dyn Platform, index: u32) -> nexa_media::Result<ScreenInfo> {
     let mut displays = platform.displays().map_err(media_err)?;
     if (index as usize) < displays.len() {
         Ok(displays.swap_remove(index as usize))
@@ -351,12 +351,12 @@ impl StreamRebuilder for Rebuilder {
     }
 }
 
-enum Inbound {
+pub(crate) enum Inbound {
     Uni(StreamType, FramedRecv),
     Bi(StreamType, FramedSend, FramedRecv),
 }
 
-fn spawn_acceptors(
+pub(crate) fn spawn_acceptors(
     conn: &Connection,
     tx: mpsc::UnboundedSender<Inbound>,
 ) -> (JoinHandle<()>, JoinHandle<()>) {
@@ -391,7 +391,10 @@ fn spawn_acceptors(
     (uni, bi)
 }
 
-async fn control_writer(mut send: FramedSend, mut rx: mpsc::UnboundedReceiver<ControlBody>) {
+pub(crate) async fn control_writer(
+    mut send: FramedSend,
+    mut rx: mpsc::UnboundedReceiver<ControlBody>,
+) {
     while let Some(body) = rx.recv().await {
         if send.send(&ControlMsg::from(body)).await.is_err() {
             return;
@@ -457,7 +460,7 @@ async fn log_stream(media: Arc<HostMedia>, session: u64, (w, h, fps): (u32, u32,
 
 const STREAM_LOG_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 
-struct AbortOnDrop(Option<tokio::task::JoinHandle<()>>);
+pub(crate) struct AbortOnDrop(pub(crate) Option<tokio::task::JoinHandle<()>>);
 
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
@@ -470,21 +473,21 @@ impl Drop for AbortOnDrop {
 /// §4.5 on the host: follow the viewer's `PathSwitch`, which only ever arrives on
 /// this authenticated stream. Sessions on the listening address have no link and
 /// ignore it.
-struct PathFollower {
-    link: Option<Arc<Link>>,
-    last: Option<u32>,
+pub(crate) struct PathFollower {
+    pub(crate) link: Option<Arc<Link>>,
+    pub(crate) last: Option<u32>,
 }
 
 impl PathFollower {
     /// §4.5: the viewer's candidates after a network change, from this stream.
-    fn candidates(&self, c: &nexa_session::proto::CandidateUpdate) {
+    pub(crate) fn candidates(&self, c: &nexa_session::proto::CandidateUpdate) {
         if let Some(link) = &self.link {
             link.apply_candidate_update(&c.candidates);
         }
     }
 
     /// True when the path really changed (not the initial choice).
-    fn apply(&mut self, path_id: u32) -> bool {
+    pub(crate) fn apply(&mut self, path_id: u32) -> bool {
         let Some(link) = &self.link else { return false };
         link.apply_remote_switch(path_id);
         let changed = self.last.is_some_and(|l| l != path_id);
@@ -534,6 +537,10 @@ pub(crate) async fn run(
     link: Option<Arc<Link>>,
     files: FileSlot,
 ) -> String {
+    // An AI agent's session has no video: it looks when it asks (docs/MCP.md §13).
+    if accepted.agent {
+        return crate::agent_session::run(conn, accepted, env, stop, info, link, files).await;
+    }
     let HostAccepted {
         control,
         perms,
@@ -893,7 +900,7 @@ pub(crate) async fn run(
     message
 }
 
-fn start_clipboard(
+pub(crate) fn start_clipboard(
     env: &Arc<SessionEnv>,
     send: FramedSend,
     recv: FramedRecv,

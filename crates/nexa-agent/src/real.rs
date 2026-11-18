@@ -166,6 +166,10 @@ impl Platform for RealPlatform {
         Some(Box::new(SystemCursorSource::new()))
     }
 
+    fn agent_view(&self) -> Option<std::sync::Arc<dyn nexa_agent::agent_view::AgentView>> {
+        Some(std::sync::Arc::new(crate::mac_view::MacView))
+    }
+
     fn audio_capture(&self, display_id: u32) -> Result<Box<dyn AudioCapture>, String> {
         SystemAudioCapture::start(display_id)
             .map(|c| Box::new(c) as Box<dyn AudioCapture>)

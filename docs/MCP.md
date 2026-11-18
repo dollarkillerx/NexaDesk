@@ -1,6 +1,6 @@
 # NexaDesk MCP 方案
 
-> 状态（2026-11-18）：A0（macOS，§9）、A1（被控端知情，§10）、A2 和 A3（§11）已实现。
+> 状态（2026-11-19）：A0（macOS，§9）、A1（被控端知情，§10）、A2 和 A3（§11）已实现；agent 会话 G0（§13、§14）已实现，未提交，取代 A0 的视频截图。
 > - 已验证：用本机的演示主机（`demo_host`，127.0.0.1:47900，VideoToolbox 真编真解）按 MCP 协议走完一遍：连接、截图、点击、输入、按键、滚动、断开，以及配对后不用码重连。被控端不接受 AI 代理时被拒且不弹窗；接受时确认请求标明是 AI 代理。
 > - A2/A3 已验证：拖动、显示器切换在演示主机上实测；命令行和剪贴板在集成测试里对真实的被控端代码验证（命令行开的是本机真实的 shell）；macOS 安装包里带上了 `nexa-mcp`，Developer ID 签名、hardened runtime 下能正常连接截图。
 > - 尚未测试：真实的被控端（应用里的确认窗口和提示条只看过渲染图）、经信令服务器连接、在 Claude Code 里实际调用，以及 Windows 上的 `nexa-mcp.exe`（只在 Mac 上交叉编译通过，没有在 Windows 上运行过）。
@@ -295,4 +295,163 @@ claude mcp add nexadesk -- /path/to/target/release/nexa-mcp
 - 验证：每次连接、截图后立即点击，修复前 30 次送达 26 次，修复后 30 次全部送达。
 
 **第 3 次**（修复后）：六步全部送达。Claude 认为拖动后的截图和点击后的一样，可能是旧画面。查时间戳：两张截图相隔 6.40 秒，正好是演示画面竖条转一圈的时间，两张 PNG 也不相同，所以截图是新的，判断有误。另一条反馈是“画面还在变化”时有时无：原因是 12 像素宽的竖条有时落在每 16 像素一个的采样点之间。这个演示画面比较极端，暂时不改。
+
+
+## 13. Agent 会话（方案）
+
+> 状态（2026-11-19）：G0 已实现（§14）。取代原先“在视频流里截图”的做法（§3.2）。被控端还没有发布过，所以不考虑兼容旧版。
+
+### 13.1 结论
+
+| 问题 | 决定 |
+|---|---|
+| agent 主要读什么 | **界面元素树**：前台窗口里的可交互元素（按钮、输入框、复选框、链接、菜单……），每个带编号 `@e1`、`@e2`、角色、名字、值、状态和位置。思路参考 [agent-desktop](https://github.com/vercel-labs/agent-desktop)：读树 → 按编号操作 → 再读一次确认。代码自己写（它的 core 和 macOS 两个 crate 约 4.5 MB 源码，内部接口也不稳定，整体引入太重） |
+| 截图 | **按需取**，被控端直接截的无损 PNG，指针由系统画进去。树读不到东西（Electron 关了无障碍、画布、游戏、远程窗口）、要看视觉效果、要确认结果时，agent 自己调 |
+| 视频 | agent 会话**不开视频**：被控端不采集、不编码，空闲时没有任何开销 |
+| 人想在旁边看 | 用 NexaDesk 应用另开一个只看的会话（被控端最多同时 4 个会话）。两个会话各自确认、各自断开，互不影响 |
+| 动作之后 | 默认只回一段文字：画面有没有变、是否已稳定、前台应用和窗口、焦点在哪个元素。也可以让它顺带返回新的元素树或截图（`then: "ui"` / `"screenshot"`） |
+| 动作和观察的先后 | 每个动作之后在输入流上发一个**标记**；观察请求带上这个标记，被控端等它被注入线程处理完，才开始判断画面是否稳定 |
+| 坐标 | 每块显示器一个“agent 坐标系”：原始像素等比缩到长边不超过 1568。截图、元素位置、点击坐标都用它，agent 不用做任何换算 |
+
+### 13.2 协议
+
+- **会话**：`ClientHello.agent = true` 的会话就是 agent 会话（A1 已有）。被控端不建视频管线，`SessionAccept` 之后直接开始。还会发一个 `StreamConfig{codec: Unknown, w, h, display}`，告诉查看端 agent 坐标系的大小。切换显示器沿用 `StreamRequest.display`，被控端再回一个新的 `StreamConfig`。
+- **标记**：`InputBody::Mark{id}`（字段 5）。注入线程按顺序处理到它时，记下 id 和时间。
+- **观察**：新的 QUIC 流类型 `Agent`（6），每次请求开一条双向流：
+
+```
+查看端 → ObserveRequest {
+  after_mark: u64,        // 0 = 不等
+  quiet_ms: u32,          // 多久没变化算稳定（默认 400）；0 = 不等稳定
+  max_ms: u32,            // 最多等多久（默认 3000）
+  ui: bool,               // 要元素树
+  interactive_only: bool, // 只要可交互元素（默认 true；false 时也列出文字）
+  max_nodes: u32,         // 默认 300
+  screenshot: bool,       // 要截图
+}
+被控端 → ObserveReply {
+  display, w, h,          // agent 坐标系
+  settled, changed, waited_ms,
+  app, window, focused,   // 前台应用名、窗口标题、焦点元素的一句描述
+  pointer: Option<(x, y)>,
+  ui: String,             // 元素树（文字，见 13.3）；不可用时为空，并在 ui_error 里说明原因
+  ui_error: String,
+  png_len: u32,           // 之后跟着这么多字节的 PNG（分块发送）
+}
+```
+
+### 13.3 元素树的文字格式
+
+一行一个元素，按层级缩进（只保留有意义的层级）：
+
+```
+window "未命名 — 文本编辑" (0,0 1568×980)
+  @e1 button "关闭" (14,10 16×16)
+  @e2 textarea value="hello" focused (0,52 1568×900)
+  @e3 checkbox "自动换行" checked (1200,20 100×20)
+```
+
+- 编号只在这一次观察里有效。`nexa-mcp` 记下每个编号对应的中心点，agent 用 `nexa_click {ref: "@e1"}` 点击。编号来自旧的观察时直接报错，让 agent 重新读树。
+- 密码框（`AXSecureTextField`）不给出值。
+- 超过 `max_nodes` 就截断，并在末尾注明。
+
+### 13.4 被控端（先做 macOS）
+
+- **元素树**：`ApplicationServices` 的 AX API。
+  - 从系统级元素取焦点应用，再取它的焦点窗口，深度优先遍历 `AXChildren`。
+  - 每个元素读 `AXRole`、`AXSubrole`、`AXTitle`、`AXDescription`、`AXValue`、`AXEnabled`、`AXFocused`、`AXPosition`、`AXSize`，换算成 agent 坐标；不在当前显示器上或大小为 0 的跳过。
+  - 每个应用设 `AXUIElementSetMessagingTimeout`（1 秒），卡住的应用不会拖住被控端。
+  - 被控端注入输入本来就要“辅助功能”权限，读界面树用的是同一项权限，不用另外授权。
+- **截图**：ScreenCaptureKit 的 `SCScreenshotManager`（macOS 14 起，正好是最低版本）。直接按 agent 坐标系的大小输出 BGRA，带系统指针，编码成 PNG。
+- **画面稳定**：先等标记处理完，再每 100 ms 截一张很小的缩略图（长边 160）比较。连续 `quiet_ms` 没有变化就算稳定，最多等 `max_ms`。只在有观察请求时才做，空闲时零开销。
+- **Windows**：元素树改用 UI Automation，截图从 DXGI 读 BGRA，放到下一阶段。在此之前，Windows 被控端的 agent 会话只有输入、剪贴板和命令行，观察请求返回“这台电脑暂不支持”。
+
+### 13.5 nexa-mcp 的工具
+
+| 工具 | 说明 |
+|---|---|
+| `nexa_ui` | 读前台窗口的元素树（默认只列可交互元素） |
+| `nexa_screenshot` | 无损截图，附带前台应用、窗口和焦点信息 |
+| `nexa_click` | `ref` 或 `x`、`y` 二选一 |
+| `nexa_type` | 可以带 `ref`：先点它，再输入 |
+| `nexa_scroll`、`nexa_drag`、`nexa_key`、`nexa_display`、`nexa_run`、`nexa_clipboard_*` | 同前 |
+| 动作后的 `then` | `"none"`（默认，只回文字）、`"ui"`、`"screenshot"` |
+
+视频方式的代码（`nexa_client::snapshot`、无头 Presenter、CPU 解码）在 `nexa-mcp` 改完后就没有用处了，一并删掉。
+
+### 13.6 阶段
+
+| 阶段 | 内容 |
+|---|---|
+| G0 | 协议（agent 会话不开视频、标记、观察流）；macOS 被控端的元素树和截图；`nexa-mcp` 改用新工具。用演示主机和 Claude Code 实测 |
+| G1 | 截图上标出元素编号（set-of-marks），树读不全时用 |
+| G2 | Windows 被控端：UI Automation 和 DXGI 截图 |
+| G3 | 按编号做无头操作（AXPress、直接设值），不移动指针；浏览器网页内容的树裁剪 |
+
+## 14. G0 实现（与方案的差异）
+
+> 状态（2026-11-19）：已实现，未提交。演示主机上全部工具走通，Claude Code 实测通过（见下）。**真实 macOS 的元素树和截图还没跑过**：为了不在这台 Mac 上弹出辅助功能、屏幕录制的授权，只用演示主机和测试里的假实现验证。
+
+### 实现
+
+| 位置 | 内容 |
+|---|---|
+| `nexa-wire` | `StreamType::Agent = 6` |
+| `nexa-session` | `InputBody::Mark`（字段 5）；`agent.rs`：`ObserveRequest`、`ObserveReply`、`AgentMsg{Observe, Reply, Png, Refused}`、`agent_size`（长边 ≤ 1568）；`Marks`（注入线程记下处理到的标记，观察时等它）；Agent 流单帧上限 256 KiB，PNG 按 64 KiB 分块 |
+| `nexa-agent` | `agent_session.rs`：agent 会话单独一套循环，不建视频管线，只开输入、剪贴板、命令行和观察流；`agent_view.rs`：平台接口 `AgentView`（截图、前台信息、元素树、指针位置）、树的文字渲染、缩略图比较、PNG 编码；`mac_view.rs`：macOS 实现（AX 原生 FFI，`AXManualAccessibility` 打开 Electron 的无障碍，1 秒消息超时，最多 6000 个元素、40 层、3 秒） |
+| `nexa-media` | `macos::screenshot_rgba`：`SCScreenshotManager` 单张截图，按 agent 坐标系大小输出，带指针 |
+| `nexa-client` | `Session::mark`、`Session::observe`；agent 会话收到 `codec = Unknown` 的 `StreamConfig` 时把视图大小设成 agent 坐标系，坐标原样通过 |
+| `nexa-mcp` | 工具按 §13.5 重写；说明文字改成“先 `nexa_ui`，按编号操作，看不懂再截图” |
+| 删掉的 | `nexa_client::snapshot`、`nexa-mcp` 的 `image.rs`、`attach_presenter`、`MfDecoder::new_cpu`、`PixelBuffer::with_planes`，以及 `nexa-mcp` 对 `png` 的依赖 |
+
+### 与方案的差异和补充
+
+- **“画面变了没有”不只看像素**。像素比较的门槛（缩略图 160 像素宽，差别超过 24 的像素多于 0.2%）是为了不被闪烁的光标干扰，可这样一来打一两个字也看不出变化。所以还比较前台应用、窗口、焦点元素和**焦点元素的值**（密码框只比字数）。这个值只用来比较，不发给 agent。
+- **标记之后再等 100 ms**：指针移动走的是数据报，不在有序的输入流上，标记到了不代表指针已经移过去。
+- **元素不在当前显示器上**：没有坐标，也不给编号。指针不在当前显示器上时，不报告指针位置。
+- **切换显示器**：清掉 `nexa-mcp` 记下的编号和上一次的画面，下一次观察不会因为换了屏就报“变了”。
+- **上限**：`max_nodes` 默认 300、最多 2000（向平台要 4 倍，渲染时截断，末尾注明还有多少没列出）；`max_ms` 在被控端最多 10 秒。`nexa-mcp` 的默认值是 `quiet_ms` 400、`max_ms` 3000。
+- **Windows 被控端**：还没有 `AgentView`，观察请求返回 `Refused`（“这台电脑暂不支持”）；输入、剪贴板、命令行照常可用。
+- **动作的结果文字**：例如 `Double-clicked (180, 120). The screen changed and settled after 0.4 s. In front: TextEdit — "Untitled". Keyboard focus: textarea. Pointer at (180, 120).`
+- **演示主机**（`--agents`）：画一个假的窗口，有“Click me”按钮、“Name”输入框和点击次数。截图里也画出这些状态：焦点时输入框变黄，每次点击加长绿条，每个字符一个黑块，全选时变蓝。输入框支持退格和 Cmd/Ctrl+A。
+
+### 测试
+
+- `nexa-agent/tests/host.rs`，对真实的被控端代码，平台用假实现：
+  - agent 会话不开编码器、给出 agent 坐标系；
+  - 元素树带编号，截图是无损 PNG；
+  - 观察会等最后一个动作；
+  - 观察会等画面稳定，并报告变化（包括只有输入框的值变了的情况）；
+  - 没有 `AgentView` 的被控端拒绝观察。
+- `nexa-mcp/tests/mcp.rs`：
+  - 读树之前按编号点击会报错；
+  - 按编号点击落在元素中心；
+  - 按坐标点击加 `then: "screenshot"`；
+  - 坐标超出屏幕时报错；
+  - 拖动；
+  - 切换显示器。
+- 整个 workspace 的 `cargo test` 通过。`cargo clippy` 在 macOS、Windows（gnu 交叉）和 iOS 上都没有警告。
+
+### 实测（2026-11-19，演示主机 127.0.0.1:47900）
+
+- 用脚本按 MCP 协议调用全部工具：
+  - 读树、按编号点击、按坐标双击；
+  - 带 `ref` 输入，`then: "ui"` 和 `"screenshot"`；
+  - 按键、滚动、拖动，坐标越界报错；
+  - 切换显示器、断开。
+  - 被控端打印的注入事件和结果文字一致。
+- Claude Code（`claude -p`，只开放 `mcp__nexadesk__*`），任务是“输入框先打 draft，再整个换成 Hello NexaDesk，然后点按钮直到显示 7 次”：
+  - 14 轮、25 秒、0.21 美元，一次截图都没用；
+  - 读树，按编号输入，Cmd+A 后覆盖，点了 7 次，并用 `then: "ui"` 确认。
+  - 上一轮输入框还不能删字，它试了几种办法后如实报告做不到，没有乱点。
+
+### 待做
+
+- **在真实 Mac 上跑一遍**：
+  - 辅助功能树：普通应用、Electron、Safari 网页、系统设置；
+  - 截图；
+  - 稳定判断的门槛（0.2% / 24）。
+  - 需要装了被控端的另一台 Mac，或者先在这台 Mac 上授权。
+- 全选、高亮这类细小的变化，像素和焦点值都看不出来，会报告“没变”。实际中是否误导 agent，要看真实使用。
+- G1–G3 照 §13.6。
 

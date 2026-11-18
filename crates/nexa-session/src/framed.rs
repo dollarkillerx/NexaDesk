@@ -16,6 +16,9 @@ pub const MAX_CLIPBOARD_FRAME: usize = DEFAULT_MAX_FRAME;
 pub const MAX_FILE_FRAME: usize = 128 * 1024;
 /// A terminal chunk ([`crate::terminal::CHUNK`]) and its envelope.
 pub const MAX_TERMINAL_FRAME: usize = 64 * 1024;
+/// A piece of an agent's screenshot ([`crate::agent::CHUNK`]), or the reply with its
+/// element tree, and the envelope.
+pub const MAX_AGENT_FRAME: usize = 256 * 1024;
 
 const READ_CHUNK: usize = 8192;
 
@@ -25,6 +28,8 @@ pub fn priority_of(kind: StreamType) -> i32 {
         StreamType::Control | StreamType::Input => 10,
         // Typing answered at once, above a clipboard or a file going by.
         StreamType::Terminal => 5,
+        // What an agent looks at next, after its action.
+        StreamType::Agent => 5,
         StreamType::Clipboard => 0,
         StreamType::File => -10,
     }
@@ -37,6 +42,7 @@ fn max_frame_of(kind: StreamType) -> usize {
         StreamType::Clipboard => MAX_CLIPBOARD_FRAME,
         StreamType::File => MAX_FILE_FRAME,
         StreamType::Terminal => MAX_TERMINAL_FRAME,
+        StreamType::Agent => MAX_AGENT_FRAME,
     }
 }
 

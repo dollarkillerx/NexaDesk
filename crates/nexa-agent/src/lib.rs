@@ -7,6 +7,8 @@
 //! them, so it adds no way in.
 
 mod agent;
+mod agent_session;
+pub mod agent_view;
 mod host_audio;
 mod host_cursor;
 pub mod ipc;
@@ -75,6 +77,11 @@ pub trait Platform: Send + Sync + 'static {
     fn clipboard(&self) -> Result<Box<dyn ClipPlatform>, String>;
     /// Thread setup for the media threads (§1.1).
     fn thread_init(&self) -> Option<fn()> {
+        None
+    }
+    /// What an AI agent is shown (docs/MCP.md §13). `None`: this host cannot show it
+    /// yet, and an agent's looks are refused.
+    fn agent_view(&self) -> Option<std::sync::Arc<dyn agent_view::AgentView>> {
         None
     }
 }

@@ -14,6 +14,8 @@ pub enum StreamType {
     File = 4,
     /// The host's command line: `nexa_session::terminal`, one shell per stream.
     Terminal = 5,
+    /// An AI agent's look at the host (`nexa_session::agent`), one request per stream.
+    Agent = 6,
 }
 
 impl StreamType {
@@ -24,6 +26,7 @@ impl StreamType {
             3 => Ok(Self::Clipboard),
             4 => Ok(Self::File),
             5 => Ok(Self::Terminal),
+            6 => Ok(Self::Agent),
             _ => Err(WireError::Invalid("stream type")),
         }
     }

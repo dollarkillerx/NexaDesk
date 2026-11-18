@@ -13,7 +13,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nexa_agent::{Agent, AgentConfig, AgentEvent, AgentUi, Platform, ScreenInfo, start};
+use nexa_agent::{
+    Agent, AgentConfig, AgentEvent, AgentUi, Platform, ScreenInfo,
+    agent_view::{AgentView, Frontmost, PointRect, Rgba, UiNode, UiOptions},
+    start,
+};
 use nexa_auth::{DeviceIdentity, PairingStore};
 use nexa_clip::{ClipKind, ClipboardBackend, FakeBackend, FormatInfo, Gen, LocalSnapshot};
 use nexa_media::{
@@ -367,6 +371,92 @@ pub struct FakePlatform {
     pub state: Arc<FakePlatformState>,
     pub injected: InjectLog,
     pub clip: FakeClip,
+    /// What an AI agent is shown.
+    pub view: Arc<FakeView>,
+}
+
+/// A made-up window for an AI agent (docs/MCP.md §13), in points on the 960×540-point
+/// screen: an "OK" button and a "Name" field. Its screenshots are one shade of grey,
+/// which a test changes to make the screen change.
+#[derive(Default)]
+pub struct FakeView {
+    pub shade: AtomicU32,
+    pub screenshots: AtomicU32,
+    pub uis: AtomicU32,
+    /// `None`: the window's elements cannot be read (an app that shows none).
+    pub unreadable: AtomicBool,
+    /// A host that cannot show anything to an agent at all (Windows, for now).
+    pub absent: AtomicBool,
+    /// What the focused "Name" field holds (typing that does not show in the picture).
+    pub typed: Mutex<String>,
+}
+
+pub const FAKE_OK: (f64, f64, f64, f64) = (100.0, 100.0, 100.0, 40.0);
+pub const FAKE_NAME: (f64, f64, f64, f64) = (100.0, 200.0, 200.0, 30.0);
+
+fn point_rect(r: (f64, f64, f64, f64)) -> PointRect {
+    PointRect {
+        x: r.0,
+        y: r.1,
+        w: r.2,
+        h: r.3,
+    }
+}
+
+impl AgentView for FakeView {
+    fn screenshot(&self, _: &ScreenInfo, size: (u32, u32)) -> Result<Rgba, String> {
+        self.screenshots.fetch_add(1, SeqCst);
+        let shade = self.shade.load(SeqCst) as u8;
+        let (w, h) = (size.0.max(1), size.1.max(1));
+        Ok(Rgba {
+            width: w,
+            height: h,
+            data: [shade, shade, shade, 255].repeat((w * h) as usize),
+        })
+    }
+    fn frontmost(&self) -> Frontmost {
+        Frontmost {
+            app: "Fake app".into(),
+            window: "Fake window".into(),
+            focused: "textfield \"Name\"".into(),
+            focused_value: self.typed.lock().unwrap().clone(),
+        }
+    }
+    fn ui(&self, _: &UiOptions) -> Result<Vec<UiNode>, String> {
+        self.uis.fetch_add(1, SeqCst);
+        if self.unreadable.load(SeqCst) {
+            return Err("this app shows no elements".into());
+        }
+        Ok(vec![
+            UiNode {
+                depth: 0,
+                role: "window".into(),
+                name: "Fake window".into(),
+                bounds: Some(point_rect((0.0, 0.0, 960.0, 540.0))),
+                ..UiNode::default()
+            },
+            UiNode {
+                depth: 1,
+                role: "button".into(),
+                name: "OK".into(),
+                bounds: Some(point_rect(FAKE_OK)),
+                interactive: true,
+                ..UiNode::default()
+            },
+            UiNode {
+                depth: 1,
+                role: "textfield".into(),
+                name: "Name".into(),
+                value: Some(String::new()),
+                bounds: Some(point_rect(FAKE_NAME)),
+                interactive: true,
+                ..UiNode::default()
+            },
+        ])
+    }
+    fn pointer(&self) -> Option<(f64, f64)> {
+        Some((480.0, 270.0))
+    }
 }
 
 impl Platform for FakePlatform {
@@ -408,6 +498,9 @@ impl Platform for FakePlatform {
     fn clipboard(&self) -> Result<Box<dyn ClipPlatform>, String> {
         self.state.clipboards_created.fetch_add(1, SeqCst);
         Ok(Box::new(self.clip.clone()))
+    }
+    fn agent_view(&self) -> Option<Arc<dyn AgentView>> {
+        (!self.view.absent.load(SeqCst)).then(|| self.view.clone() as Arc<dyn AgentView>)
     }
 }
 

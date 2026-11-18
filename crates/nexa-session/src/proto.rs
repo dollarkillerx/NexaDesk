@@ -239,11 +239,21 @@ pub enum InputBody {
     Text(TextInput),
     #[prost(message, tag = "4")]
     Sync(KeyStateSync),
+    /// After an agent's action: the host notes when it has got this far, so a look
+    /// it asks for next waits for the action (`nexa_session::agent`).
+    #[prost(message, tag = "5")]
+    Mark(InputMark),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Message)]
+pub struct InputMark {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
 }
 
 #[derive(Clone, PartialEq, Message)]
 pub struct InputMsg {
-    #[prost(oneof = "InputBody", tags = "1, 2, 3, 4")]
+    #[prost(oneof = "InputBody", tags = "1, 2, 3, 4, 5")]
     pub body: Option<InputBody>,
 }
 

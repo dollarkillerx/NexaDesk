@@ -21,6 +21,8 @@ mod audio_output;
 mod cursor;
 mod present;
 #[cfg(target_os = "macos")]
+mod screenshot;
+#[cfg(target_os = "macos")]
 mod power;
 
 #[cfg(target_os = "macos")]
@@ -31,13 +33,15 @@ use objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFRetained, CFStr
 #[cfg(target_os = "macos")]
 use objc2_core_media::CMSampleBuffer;
 use objc2_core_video::{
-    CVPixelBuffer, CVPixelBufferGetBaseAddressOfPlane, CVPixelBufferGetBytesPerRowOfPlane,
+    CVPixelBuffer, CVPixelBufferGetBaseAddress, CVPixelBufferGetBaseAddressOfPlane,
+    CVPixelBufferGetBytesPerRow, CVPixelBufferGetBytesPerRowOfPlane,
     CVPixelBufferGetHeight, CVPixelBufferGetHeightOfPlane, CVPixelBufferGetPixelFormatType,
     CVPixelBufferGetWidth, CVPixelBufferGetWidthOfPlane, CVPixelBufferLockBaseAddress,
     CVPixelBufferLockFlags, CVPixelBufferPool, CVPixelBufferUnlockBaseAddress,
     kCVPixelBufferHeightKey, kCVPixelBufferIOSurfacePropertiesKey,
     kCVPixelBufferMetalCompatibilityKey, kCVPixelBufferPixelFormatTypeKey, kCVPixelBufferWidthKey,
-    kCVPixelFormatType_420YpCbCr8BiPlanarFullRange, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+    kCVPixelFormatType_32BGRA, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+    kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
 };
 
 use crate::{CpuFrame, MediaError, Result};
@@ -60,6 +64,8 @@ pub use audio_output::{AudioOutputUnit, RenderFn};
 #[cfg(target_os = "macos")]
 pub use cursor::SystemCursorSource;
 pub use present::{MetalPresenter, fit_viewport};
+#[cfg(target_os = "macos")]
+pub use screenshot::screenshot_rgba;
 #[cfg(target_os = "macos")]
 pub use power::{DisplayAwake, wake_and_wait, wake_display};
 
@@ -138,37 +144,35 @@ impl PixelBuffer {
         }
     }
 
-    /// Runs `f` with both NV12 planes, read only, as
-    /// `(luma, luma_stride, chroma, chroma_stride)`: a decoded picture read back on the
-    /// CPU (a screenshot). Only for CPU-readable buffers (`DecoderOutput::CpuReadable420v`).
-    pub fn with_planes<R>(&self, f: impl FnOnce(&[u8], usize, &[u8], usize) -> R) -> Result<R> {
-        if !self.is_cpu_readable() {
-            return Err(MediaError::Unsupported("buffer is not CPU readable"));
+    /// A `BGRA` buffer as straight RGBA, top row first, with its size. The screen is
+    /// opaque, so alpha is set to full.
+    pub fn bgra_to_rgba(&self) -> Result<(u32, u32, Vec<u8>)> {
+        if self.pixel_format() != kCVPixelFormatType_32BGRA {
+            return Err(MediaError::Unsupported("buffer is not BGRA"));
         }
         let lock = CVPixelBufferLockFlags::ReadOnly;
-        // SAFETY: format checked above, so plane base addresses and sizes are valid
-        // while the buffer is locked; nothing is written through them.
+        let (w, h) = (self.width() as usize, self.height() as usize);
+        // SAFETY: the format is checked, so the single plane is `h` rows of
+        // `bytes_per_row` bytes while the buffer is locked; nothing is written to it.
         unsafe {
             os("CVPixelBufferLockBaseAddress", CVPixelBufferLockBaseAddress(&self.0, lock))?;
-            let plane = |i| -> (*const u8, usize, usize) {
-                let stride = CVPixelBufferGetBytesPerRowOfPlane(&self.0, i);
-                let base = CVPixelBufferGetBaseAddressOfPlane(&self.0, i) as *const u8;
-                (base, stride, stride * CVPixelBufferGetHeightOfPlane(&self.0, i))
-            };
-            let (y, y_stride, y_len) = plane(0);
-            let (uv, uv_stride, uv_len) = plane(1);
-            let ret = if y.is_null() || uv.is_null() {
+            let base = CVPixelBufferGetBaseAddress(&self.0) as *const u8;
+            let stride = CVPixelBufferGetBytesPerRow(&self.0);
+            let result = if base.is_null() || stride < w * 4 {
                 Err(MediaError::Other("pixel buffer has no CPU mapping".into()))
             } else {
-                Ok(f(
-                    std::slice::from_raw_parts(y, y_len),
-                    y_stride,
-                    std::slice::from_raw_parts(uv, uv_len),
-                    uv_stride,
-                ))
+                let mut out = vec![0u8; w * h * 4];
+                for y in 0..h {
+                    let row = std::slice::from_raw_parts(base.add(y * stride), w * 4);
+                    let dst = out[y * w * 4..(y + 1) * w * 4].as_chunks_mut::<4>().0;
+                    for (o, p) in dst.iter_mut().zip(row.as_chunks::<4>().0) {
+                        *o = [p[2], p[1], p[0], 255];
+                    }
+                }
+                Ok((w as u32, h as u32, out))
             };
             CVPixelBufferUnlockBaseAddress(&self.0, lock);
-            ret
+            result
         }
     }
 

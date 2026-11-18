@@ -1,5 +1,5 @@
 //! The MCP side: JSON-RPC 2.0 over stdio, one JSON message per line (the MCP stdio
-//! transport), and the tools (docs/MCP.md §3.1).
+//! transport), and the tools (docs/MCP.md §3.1, §13.5).
 //!
 //! Requests are handled one at a time, in order. Tool failures come back as results
 //! with `isError` (the agent can read and act on them); protocol mistakes as JSON-RPC
@@ -8,11 +8,12 @@
 use std::io::{BufRead, Write};
 
 use base64::Engine;
+use nexa_session::agent::ObserveReply;
 use serde_json::{Value, json};
 
 use crate::{
     keys,
-    viewer::{Button, MAX_TEXT, Remote, Shot, Viewer},
+    viewer::{Button, Looked, MAX_TEXT, Remote, Target, Viewer},
 };
 
 /// Protocol versions this server speaks; the newest is offered to clients asking for
@@ -20,18 +21,23 @@ use crate::{
 const PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
 const INSTRUCTIONS: &str = "Operate another computer through NexaDesk. Connect with nexa_connect \
-(the person at that computer may have to allow it), then call nexa_screenshot and act with \
-nexa_click, nexa_drag, nexa_scroll, nexa_type and nexa_key. Coordinates are pixels in the \
-latest screenshot (they change when a screenshot's size does). Each action waits for the screen \
-to settle (up to 3 s) and returns a new screenshot; the remote pointer is not drawn in it, but \
-it stays where the last click, drag or scroll put it. Typing and keys go to whatever has the \
-keyboard focus there: check the screenshot to see that they arrived. Calls run one at a time, \
-in the order they are sent. Key names are the remote computer's own: cmd is the Command key on a Mac and the Windows key on \
-Windows. With several displays, nexa_display lists and switches them. Where the person there \
-allowed it, nexa_run runs commands on its command line (often more reliable than clicking), \
-and nexa_clipboard_get / nexa_clipboard_set read and fill its clipboard (then paste with \
-nexa_key). The person at the remote computer sees that an AI agent is connected and can end \
-it at any time.";
+(the person at that computer may have to allow it). Read the screen with nexa_ui first: the \
+frontmost window's elements as text, each one you can act on with a ref like @e3, its role, \
+name, value, state and position. Act by ref (nexa_click {ref: \"@e3\"}, nexa_type {ref, text}) \
+rather than by coordinates where you can. Refs hold until your next nexa_ui: read again after \
+the screen changes. When the elements do not show what you need (pictures, canvases, games, \
+some Electron or custom-drawn apps, or to check how something looks), call nexa_screenshot: \
+a lossless picture, the pointer drawn in, whose pixels are the coordinates actions take. \
+Each action waits until the remote computer has carried it out and its screen has settled \
+(up to 3 s), then says whether the screen changed, what is in front and what has the keyboard \
+focus; pass then: \"ui\" or \"screenshot\" to get the new elements or picture with it. Typing \
+and keys go to whatever has the focus. Calls run one at a time, in order. Key names are the \
+remote computer's own: cmd is the Command key on a Mac and the Windows key on Windows. \
+nexa_display lists and switches displays. Where the person there allowed it, nexa_run runs \
+commands on its command line (often more reliable than clicking), and nexa_clipboard_get / \
+nexa_clipboard_set read and fill its clipboard. The person at the remote computer sees that \
+an AI agent is connected and can end it at any time; someone who wants to watch can connect \
+with the NexaDesk app as well.";
 
 pub struct Server {
     viewer: Viewer,
@@ -107,7 +113,10 @@ impl Server {
                 let address = str_arg(args, "address")?.ok_or("`address` is required")?;
                 let code = str_arg(args, "code")?;
                 let r = v.connect(address, code)?;
-                Ok(vec![text(&describe(v, &r))])
+                Ok(vec![text(&format!(
+                    "{} Read the screen with nexa_ui.",
+                    describe(v, &r)
+                ))])
             }
             "nexa_sessions" => {
                 let list = v.sessions();
@@ -130,30 +139,40 @@ impl Server {
                     r.id, r.host.host_name
                 ))])
             }
+            "nexa_ui" => {
+                let r = v.remote(session_arg(args)?)?;
+                let all = args.get("all").and_then(Value::as_bool).unwrap_or(false);
+                let max = int_arg(args, "max_nodes")?.unwrap_or(0);
+                if !(0..=2000).contains(&max) {
+                    return Err("`max_nodes` is 1 to 2000".into());
+                }
+                let looked = v.look(&r, 0, true, false, !all, max as u32)?;
+                Ok(look_content(&looked, None))
+            }
             "nexa_screenshot" => {
                 let r = v.remote(session_arg(args)?)?;
-                let shot = v.screenshot(&r)?;
-                Ok(shot_content(&shot, "Screenshot"))
+                let looked = v.look(&r, 0, false, true, true, 0)?;
+                Ok(look_content(&looked, None))
             }
             "nexa_click" => {
                 let r = v.remote(session_arg(args)?)?;
-                let (x, y) = point_arg(args)?;
+                let target = target_arg(args, "")?;
                 let button = button_arg(args)?;
                 let count = int_arg(args, "count")?.unwrap_or(1);
                 if !(1..=3).contains(&count) {
                     return Err("`count` is 1, 2 (double click) or 3".into());
                 }
-                let since = v.click(&r, x, y, button, count as u32)?;
-                self.after(
-                    &r,
-                    args,
-                    since,
-                    &format!("Clicked at ({x}, {y}); the pointer stays there"),
-                )
+                let mark = v.click(&r, &target, button, count as u32)?;
+                let verb = match count {
+                    2 => "Double-clicked",
+                    3 => "Triple-clicked",
+                    _ => "Clicked",
+                };
+                self.after(&r, args, mark, &format!("{verb} {}", target_text(&target)))
             }
             "nexa_scroll" => {
                 let r = v.remote(session_arg(args)?)?;
-                let (x, y) = point_arg(args)?;
+                let target = target_arg(args, "")?;
                 let amount = int_arg(args, "amount")?.unwrap_or(3);
                 if !(1..=30).contains(&amount) {
                     return Err("`amount` is 1 to 30 notches".into());
@@ -166,59 +185,54 @@ impl Server {
                     "right" => (amount, 0),
                     other => return Err(format!("unknown direction {other}")),
                 };
-                let since = v.scroll(&r, x, y, dx, dy)?;
+                let mark = v.scroll(&r, &target, dx, dy)?;
                 self.after(
                     &r,
                     args,
-                    since,
-                    &format!("Scrolled at ({x}, {y}); the pointer stays there"),
+                    mark,
+                    &format!("Scrolled at {}", target_text(&target)),
                 )
             }
             "nexa_type" => {
                 let r = v.remote(session_arg(args)?)?;
                 let t = str_arg(args, "text")?.ok_or("`text` is required")?;
-                let since = v.type_text(&r, t)?;
-                self.after(
-                    &r,
-                    args,
-                    since,
-                    &format!(
-                        "Sent {} characters to whatever has the keyboard focus there; the \
-                         screenshot shows whether they arrived",
-                        t.chars().count()
-                    ),
-                )
+                // Into an element: click it first, so it has the focus.
+                let into = str_arg(args, "ref")?.map(|s| Target::Ref(s.to_owned()));
+                if let Some(target) = &into {
+                    v.click(&r, target, Button::Left, 1)?;
+                }
+                let mark = v.type_text(&r, t)?;
+                let typed = match t.chars().count() {
+                    1 => "1 character".to_owned(),
+                    n => format!("{n} characters"),
+                };
+                let done = match &into {
+                    Some(target) => format!("Clicked {} and typed {typed}", target_text(target)),
+                    None => format!("Typed {typed} into whatever has the focus"),
+                };
+                self.after(&r, args, mark, &done)
             }
             "nexa_key" => {
                 let r = v.remote(session_arg(args)?)?;
                 let combo = str_arg(args, "keys")?.ok_or("`keys` is required")?;
                 let usages = keys::parse(combo)?;
-                let since = v.keys(&r, &usages)?;
-                self.after(
-                    &r,
-                    args,
-                    since,
-                    &format!("Pressed {combo} (sent to whatever has the keyboard focus there)"),
-                )
+                let mark = v.keys(&r, &usages)?;
+                self.after(&r, args, mark, &format!("Pressed {combo}"))
             }
             "nexa_drag" => {
                 let r = v.remote(session_arg(args)?)?;
-                let num = |k: &str| {
-                    args.get(k)
-                        .and_then(Value::as_f64)
-                        .ok_or_else(|| format!("`{k}` is required (a number)"))
-                };
-                let from = (num("from_x")?, num("from_y")?);
-                let to = (num("to_x")?, num("to_y")?);
+                let from = target_arg(args, "from_")?;
+                let to = target_arg(args, "to_")?;
                 let button = button_arg(args)?;
-                let since = v.drag(&r, from, to, button)?;
+                let mark = v.drag(&r, &from, &to, button)?;
                 self.after(
                     &r,
                     args,
-                    since,
+                    mark,
                     &format!(
-                        "Dragged from ({}, {}) to ({}, {}); the pointer stays at the end",
-                        from.0, from.1, to.0, to.1
+                        "Dragged from {} to {}",
+                        target_text(&from),
+                        target_text(&to)
                     ),
                 )
             }
@@ -230,6 +244,7 @@ impl Server {
                         if list.is_empty() {
                             return Ok(vec![text("The host did not list its displays.")]);
                         }
+                        let current = current.or_else(|| list.first().map(|d| d.id));
                         let lines: Vec<String> = list
                             .iter()
                             .map(|d| {
@@ -245,18 +260,11 @@ impl Server {
                     }
                     Some(id) => {
                         let id = u32::try_from(id).map_err(|_| "`display` must not be negative")?;
-                        let since = v.select_display(&r, id)?;
-                        match v.after(&r, since) {
-                            Ok(shot) => Ok(shot_content(
-                                &shot,
-                                &format!(
-                                    "Display {id} is shown; coordinates now refer to it. Screenshot"
-                                ),
-                            )),
-                            Err(e) => Ok(vec![text(&format!(
-                                "Display {id} is shown, but no screenshot: {e}"
-                            ))]),
-                        }
+                        let (w, h) = v.select_display(&r, id)?;
+                        Ok(vec![text(&format!(
+                            "Display {id} is shown now; its coordinates are {w}×{h} pixels. Earlier \
+                             refs and coordinates no longer hold: read it with nexa_ui."
+                        ))])
                     }
                 }
             }
@@ -315,21 +323,20 @@ impl Server {
         }
     }
 
-    /// What an action returns: what was done, and the screen after it unless the
-    /// caller said `screenshot: false`.
-    fn after(
-        &self,
-        r: &Remote,
-        args: &Value,
-        since: std::time::Instant,
-        done: &str,
-    ) -> Result<Vec<Value>, String> {
-        if args.get("screenshot").and_then(Value::as_bool) == Some(false) {
-            return Ok(vec![text(&format!("{done}."))]);
-        }
-        match self.viewer.after(r, since) {
-            Ok(shot) => Ok(shot_content(&shot, &format!("{done}. Screenshot"))),
-            Err(e) => Ok(vec![text(&format!("{done}, but no screenshot: {e}"))]),
+    /// What an action returns: what was done and how the screen took it, and the new
+    /// elements or picture if the caller asked (`then`).
+    fn after(&self, r: &Remote, args: &Value, mark: u64, done: &str) -> Result<Vec<Value>, String> {
+        let (ui, screenshot) = match str_arg(args, "then")?.unwrap_or("none") {
+            "none" => (false, false),
+            "ui" => (true, false),
+            "screenshot" => (false, true),
+            other => return Err(format!("`then` is none, ui or screenshot, not {other}")),
+        };
+        match self.viewer.look(r, mark, ui, screenshot, true, 0) {
+            Ok(looked) => Ok(look_content(&looked, Some(done))),
+            Err(e) => Ok(vec![text(&format!(
+                "{done}, but the screen could not be looked at afterwards: {e}"
+            ))]),
         }
     }
 }
@@ -360,8 +367,10 @@ fn describe(v: &Viewer, r: &Remote) -> String {
         })
         .collect::<Vec<_>>()
         .join("; ");
+    let (w, h) = r.space();
     format!(
-        "Session {}: {} ({}) at {}. Allowed: {}. Displays (numbered for nexa_display): {}.",
+        "Session {}: {} ({}) at {}. Allowed: {}. Displays (numbered for nexa_display): {}. \
+         Coordinates are {w}×{h} pixels of the display shown.",
         r.id,
         r.host.host_name,
         r.os_name(),
@@ -379,32 +388,89 @@ fn describe(v: &Viewer, r: &Remote) -> String {
     )
 }
 
-fn shot_content(shot: &Shot, what: &str) -> Vec<Value> {
-    let mut note = String::new();
-    if let Some((w, h)) = shot.resized_from {
-        note.push_str(&format!(
-            " The picture is a different size from the last one ({w}×{h}): coordinates from \
-             earlier screenshots no longer fit."
+/// One line on how the screen is: after an action (`done`), whether it changed and
+/// settled; always, what is in front, what has the focus and where the pointer is.
+fn context(rep: &ObserveReply, done: Option<&str>) -> String {
+    let mut s = String::new();
+    if let Some(done) = done {
+        s.push_str(done);
+        s.push('.');
+        let secs = f64::from(rep.waited_ms) / 1000.0;
+        if rep.settled {
+            s.push_str(&format!(
+                " The screen {} and settled after {secs:.1} s.",
+                if rep.changed {
+                    "changed"
+                } else {
+                    "did not change"
+                }
+            ));
+        } else {
+            s.push_str(&format!(
+                " The screen was still changing after {secs:.1} s (something on it may move all \
+                 the time)."
+            ));
+        }
+        s.push(' ');
+    }
+    if !rep.app.is_empty() {
+        s.push_str(&format!("In front: {}", rep.app));
+        if !rep.window.is_empty() {
+            s.push_str(&format!(" — \"{}\"", rep.window));
+        }
+        s.push_str(". ");
+    }
+    if !rep.focused.is_empty() {
+        s.push_str(&format!("Keyboard focus: {}. ", rep.focused));
+    }
+    if rep.has_pointer {
+        s.push_str(&format!(
+            "Pointer at ({}, {}). ",
+            rep.pointer_x, rep.pointer_y
         ));
     }
-    if !shot.settled {
-        note.push_str(&format!(
-            " Waited {:.1} s and the screen was still changing (something on it may move all \
-             the time); this is the newest picture.",
-            shot.waited.as_secs_f64()
+    s.trim_end().to_owned()
+}
+
+fn look_content(looked: &Looked, done: Option<&str>) -> Vec<Value> {
+    let rep = &looked.reply;
+    let mut parts = vec![context(rep, done)];
+    if !rep.ui.is_empty() {
+        parts.push(rep.ui.trim_end().to_owned());
+        parts.push(if looked.refs == 0 {
+            "Nothing to act on in this window.".to_owned()
+        } else {
+            format!(
+                "{} refs: act with ref, e.g. nexa_click {{ref: \"@e1\"}}. They hold until the next \
+                 nexa_ui. Coordinates are {}×{} pixels.",
+                looked.refs, rep.w, rep.h
+            )
+        });
+    } else if !rep.ui_error.is_empty() {
+        parts.push(format!(
+            "The elements could not be read: {}. Use nexa_screenshot instead.",
+            rep.ui_error
         ));
     }
-    vec![
-        text(&format!(
-            "{what} {}×{} pixels; coordinates for actions are pixels in this image.{note}",
-            shot.width, shot.height
-        )),
-        json!({
+    if !rep.screenshot_error.is_empty() {
+        parts.push(format!("No screenshot: {}.", rep.screenshot_error));
+    }
+    let mut content = Vec::new();
+    if !looked.png.is_empty() {
+        parts.push(format!(
+            "Screenshot {}×{} pixels, the pointer drawn in; coordinates for actions are pixels in it.",
+            rep.w, rep.h
+        ));
+    }
+    content.push(text(&parts.join("\n")));
+    if !looked.png.is_empty() {
+        content.push(json!({
             "type": "image",
-            "data": base64::engine::general_purpose::STANDARD.encode(&shot.png),
+            "data": base64::engine::general_purpose::STANDARD.encode(&looked.png),
             "mimeType": "image/png",
-        }),
-    ]
+        }));
+    }
+    content
 }
 
 /// The host's clipboard limit for text (`nexa_clip`, 192 KiB), with room to spare.
@@ -448,13 +514,27 @@ fn session_arg(args: &Value) -> Result<Option<u64>, String> {
         .transpose()
 }
 
-fn point_arg(args: &Value) -> Result<(f64, f64), String> {
-    let num = |k: &str| {
-        args.get(k)
+/// `ref`, or `x` and `y`: where an action happens. `prefix` is `""`, `"from_"` or `"to_"`.
+fn target_arg(args: &Value, prefix: &str) -> Result<Target, String> {
+    if let Some(r) = str_arg(args, &format!("{prefix}ref"))? {
+        return Ok(Target::Ref(r.to_owned()));
+    }
+    let num = |k: String| {
+        args.get(&k)
             .and_then(Value::as_f64)
-            .ok_or_else(|| format!("`{k}` is required (a number)"))
+            .ok_or_else(|| format!("`{prefix}ref` or `{prefix}x` and `{prefix}y` are required"))
     };
-    Ok((num("x")?, num("y")?))
+    Ok(Target::Point(
+        num(format!("{prefix}x"))?,
+        num(format!("{prefix}y"))?,
+    ))
+}
+
+fn target_text(t: &Target) -> String {
+    match t {
+        Target::Ref(r) => r.clone(),
+        Target::Point(x, y) => format!("({x}, {y})"),
+    }
 }
 
 fn initialize(params: &Value) -> Value {
@@ -483,17 +563,18 @@ fn tools() -> Vec<Value> {
         "type": "integer",
         "description": "Session number from nexa_connect. May be left out while only one session is open; with several, leaving it out is an error that says so.",
     });
-    let screenshot = json!({
-        "type": "boolean",
-        "description": "Return a screenshot once the screen settles (default true).",
+    let then = json!({
+        "type": "string",
+        "enum": ["none", "ui", "screenshot"],
+        "description": "What else to return once the action is done and the screen has settled: none (default: a line on what changed, what is in front and what has focus), ui (the new elements and refs) or screenshot.",
     });
-    let x = json!({ "type": "number", "description": "Pixels from the left of the latest screenshot." });
-    let y =
-        json!({ "type": "number", "description": "Pixels from the top of the latest screenshot." });
+    let r = json!({ "type": "string", "description": "A ref from the last nexa_ui, like @e3: where to act. Or give x and y." });
+    let x = json!({ "type": "number", "description": "Pixels from the left (as nexa_ui positions and nexa_screenshot give them)." });
+    let y = json!({ "type": "number", "description": "Pixels from the top." });
     vec![
         json!({
             "name": "nexa_connect",
-            "description": "Connect to another computer running NexaDesk. The person there is usually asked to allow it, and sees the session while it runs. A computer paired before connects without a code.",
+            "description": "Connect to another computer running NexaDesk. The person there is usually asked to allow it, and sees that an AI agent is connected. A computer paired before connects without a code.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -509,47 +590,45 @@ fn tools() -> Vec<Value> {
             "inputSchema": { "type": "object", "properties": {} },
         }),
         json!({
+            "name": "nexa_ui",
+            "description": "Read the frontmost window: one line per element you can act on, with a ref (@e1, @e2…), its role, name, value, state (focused, checked, disabled…) and position (x,y w×h in pixels); plus what app is in front and what has the keyboard focus. Start here; act by ref. Refs hold until the next nexa_ui.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session": session,
+                    "all": { "type": "boolean", "description": "Also list text and headings, not only what can be acted on (default false)." },
+                    "max_nodes": { "type": "integer", "minimum": 1, "maximum": 2000, "description": "At most this many lines (default 300)." },
+                },
+            },
+        }),
+        json!({
             "name": "nexa_screenshot",
-            "description": "See the remote computer's screen. Coordinates of later actions are pixels in this image.",
+            "description": "A lossless picture of the remote screen, the pointer drawn in. For what the elements do not show: pictures, canvases, games, apps whose elements cannot be read, or to check how something looks. Its pixels are the coordinates actions take.",
             "inputSchema": { "type": "object", "properties": { "session": session } },
         }),
         json!({
             "name": "nexa_click",
-            "description": "Move the pointer to a point and click there.",
+            "description": "Click an element (ref) or a point (x, y). Waits until it is done and the screen has settled.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "session": session, "x": x, "y": y,
+                    "session": session, "ref": r, "x": x, "y": y,
                     "button": { "type": "string", "enum": ["left", "right", "middle"], "description": "Default left." },
                     "count": { "type": "integer", "minimum": 1, "maximum": 3, "description": "2 for a double click. Default 1." },
-                    "screenshot": screenshot,
+                    "then": then,
                 },
-                "required": ["x", "y"],
-            },
-        }),
-        json!({
-            "name": "nexa_scroll",
-            "description": "Scroll with the pointer at a point.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "session": session, "x": x, "y": y,
-                    "direction": { "type": "string", "enum": ["up", "down", "left", "right"] },
-                    "amount": { "type": "integer", "minimum": 1, "maximum": 30, "description": "Wheel notches. Default 3." },
-                    "screenshot": screenshot,
-                },
-                "required": ["x", "y", "direction"],
             },
         }),
         json!({
             "name": "nexa_type",
-            "description": format!("Type text where the keyboard focus is (click a text field first), as characters, independent of the remote keyboard layout. At most {MAX_TEXT} characters. For Enter, Tab or shortcuts use nexa_key; for long text nexa_clipboard_set and a paste is faster."),
+            "description": format!("Type text, as characters (independent of the remote keyboard layout). With ref, click that field first; otherwise it goes to whatever has the focus. At most {MAX_TEXT} characters. For Enter, Tab or shortcuts use nexa_key; for long text nexa_clipboard_set and a paste is faster."),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "session": session,
                     "text": { "type": "string" },
-                    "screenshot": screenshot,
+                    "ref": { "type": "string", "description": "A field's ref from the last nexa_ui, to click before typing." },
+                    "then": then,
                 },
                 "required": ["text"],
             },
@@ -562,31 +641,44 @@ fn tools() -> Vec<Value> {
                 "properties": {
                     "session": session,
                     "keys": { "type": "string" },
-                    "screenshot": screenshot,
+                    "then": then,
                 },
                 "required": ["keys"],
             },
         }),
         json!({
+            "name": "nexa_scroll",
+            "description": "Scroll with the pointer over an element (ref) or a point.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session": session, "ref": r, "x": x, "y": y,
+                    "direction": { "type": "string", "enum": ["up", "down", "left", "right"] },
+                    "amount": { "type": "integer", "minimum": 1, "maximum": 30, "description": "Wheel notches. Default 3." },
+                    "then": then,
+                },
+                "required": ["direction"],
+            },
+        }),
+        json!({
             "name": "nexa_drag",
-            "description": "Press at one point, move to another in small steps (about 0.2 s in all) and let go there: drag and drop, select text, move a window by its title bar.",
+            "description": "Press at one element or point, move to another in small steps (about 0.2 s in all) and let go there: drag and drop, select text, move a window by its title bar.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "session": session,
-                    "from_x": { "type": "number", "description": "Where to press: pixels from the left of the latest screenshot." },
-                    "from_y": { "type": "number", "description": "Where to press: pixels from the top." },
-                    "to_x": { "type": "number", "description": "Where to let go: pixels from the left." },
-                    "to_y": { "type": "number", "description": "Where to let go: pixels from the top." },
+                    "from_ref": { "type": "string", "description": "Where to press: a ref. Or from_x and from_y." },
+                    "from_x": { "type": "number" }, "from_y": { "type": "number" },
+                    "to_ref": { "type": "string", "description": "Where to let go: a ref. Or to_x and to_y." },
+                    "to_x": { "type": "number" }, "to_y": { "type": "number" },
                     "button": { "type": "string", "enum": ["left", "right", "middle"], "description": "Default left." },
-                    "screenshot": screenshot,
+                    "then": then,
                 },
-                "required": ["from_x", "from_y", "to_x", "to_y"],
             },
         }),
         json!({
             "name": "nexa_display",
-            "description": "Without `display`: list the remote computer's displays, numbered from 0, and which is shown. With it: show that display instead (one at a time) and return its screenshot; its size may differ, and later coordinates refer to it.",
+            "description": "Without `display`: list the remote computer's displays, numbered from 0, and which is shown. With it: show that display instead (one at a time); its coordinates may differ, and earlier refs no longer hold.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -634,32 +726,31 @@ fn tools() -> Vec<Value> {
 mod tests {
     use super::*;
 
-    fn shot(settled: bool, resized_from: Option<(u32, u32)>) -> Shot {
-        Shot {
-            png: vec![],
-            width: 1024,
-            height: 768,
-            settled,
-            waited: std::time::Duration::from_millis(3000),
-            resized_from,
-        }
-    }
-
     #[test]
-    fn a_screenshot_says_when_it_changed_size_or_never_settled() {
+    fn the_context_line_says_what_changed_and_what_is_in_front() {
+        let rep = ObserveReply {
+            settled: true,
+            changed: true,
+            waited_ms: 600,
+            app: "TextEdit".into(),
+            window: "Untitled".into(),
+            focused: "textarea".into(),
+            has_pointer: true,
+            pointer_x: 10,
+            pointer_y: 20,
+            ..Default::default()
+        };
         assert_eq!(
-            shot_content(&shot(true, None), "Screenshot")[0]["text"],
-            "Screenshot 1024×768 pixels; coordinates for actions are pixels in this image."
+            context(&rep, Some("Clicked @e2")),
+            "Clicked @e2. The screen changed and settled after 0.6 s. In front: TextEdit — \"Untitled\". \
+             Keyboard focus: textarea. Pointer at (10, 20)."
         );
-        let both = shot_content(&shot(false, Some((1280, 800))), "Screenshot")[0]["text"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        assert!(
-            both.contains("different size from the last one (1280×800)"),
-            "{both}"
-        );
-        assert!(both.contains("Waited 3.0 s"), "{both}");
-        assert!(!both.contains("take another screenshot"), "{both}");
+        let moving = ObserveReply {
+            settled: false,
+            waited_ms: 3000,
+            ..Default::default()
+        };
+        assert!(context(&moving, Some("Pressed enter")).contains("still changing after 3.0 s"));
+        assert_eq!(context(&ObserveReply::default(), None), "");
     }
 }
