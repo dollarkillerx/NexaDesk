@@ -85,5 +85,8 @@
   "Updates.UpToDate": "最新バージョンです",
   "Updates.Downloading": "{0} をダウンロード中… {1}%",
   "Updates.Ready": "{0} の準備ができました：再起動するとリモート接続が切れます",
-  "Updates.Failed": "アップデートを確認できません：{0}"
+  "Updates.Failed": "アップデートを確認できません：{0}",
+  "About.Source": "GitHub のソースコード",
+  "About.Issues": "問題を報告",
+  "About.Website": "Web サイト"
 }

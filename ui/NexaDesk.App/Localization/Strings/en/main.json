@@ -85,5 +85,8 @@
   "Updates.UpToDate": "Up to date",
   "Updates.Downloading": "Downloading {0}… {1}%",
   "Updates.Ready": "Version {0} is ready: restarting ends remote sessions",
-  "Updates.Failed": "Could not check for updates: {0}"
+  "Updates.Failed": "Could not check for updates: {0}",
+  "About.Source": "Source on GitHub",
+  "About.Issues": "Report a problem",
+  "About.Website": "Website"
 }

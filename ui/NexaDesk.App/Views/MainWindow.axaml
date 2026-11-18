@@ -510,6 +510,14 @@
                   IsVisible="{Binding CanCheckNow}" />
           <Button Classes="small" Name="RestartToUpdateButton" Content="{l:T Updates.Restart}" Command="{Binding RestartCommand}"
                   IsVisible="{Binding IsReady}" />
+          <!-- 关于：源代码、反馈、官网（与 iOS 的“关于”一致） -->
+          <StackPanel Orientation="Horizontal" Spacing="2" Margin="6,0,0,0"
+                      DataContext="{Binding $parent[Window].((vm:MainViewModel)DataContext).About}" x:DataType="vm:AboutViewModel">
+            <Button Classes="small link" Name="RepositoryButton" Content="{l:T About.Source}" Command="{Binding OpenRepositoryCommand}"
+                    ToolTip.Tip="github.com/dollarkillerx/NexaDesk" />
+            <Button Classes="small link" Name="IssuesButton" Content="{l:T About.Issues}" Command="{Binding OpenIssuesCommand}" />
+            <Button Classes="small link" Name="WebsiteButton" Content="{l:T About.Website}" Command="{Binding OpenWebsiteCommand}" />
+          </StackPanel>
         </StackPanel>
         <TextBlock Classes="muted" TextWrapping="Wrap" Text="{l:T Main.MenuBarNote}" />
         <Expander Name="AdvancedExpander" Margin="0,2,0,0" HorizontalAlignment="Stretch"

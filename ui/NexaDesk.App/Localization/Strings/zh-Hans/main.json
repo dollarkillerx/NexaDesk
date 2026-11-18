@@ -85,5 +85,8 @@
   "Updates.UpToDate": "已是最新版本",
   "Updates.Downloading": "正在下载 {0}… {1}%",
   "Updates.Ready": "{0} 已下载好：重启会断开远程连接",
-  "Updates.Failed": "无法检查更新：{0}"
+  "Updates.Failed": "无法检查更新：{0}",
+  "About.Source": "GitHub 源代码",
+  "About.Issues": "反馈问题",
+  "About.Website": "官网"
 }

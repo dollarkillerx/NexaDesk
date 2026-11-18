@@ -943,6 +943,7 @@ public sealed partial class MainViewModel : ObservableObject
         LoginItem = new LoginItemViewModel(loginItem ?? new NoLoginItem());
         Tray = new TrayViewModel(Host);
         Updates = new UpdatesViewModel(updater ?? NullAppUpdater.Instance, () => Tray.QuitCommand.Execute(null));
+        About = new AboutViewModel(windows);
         ServerTrust = new ServerTrustFlow(serverTrust ?? new NoServerTrust(), windows);
         // A server saved in settings is checked at once; a failure on its certificate,
         // connecting or hosting, asks too.
@@ -992,6 +993,7 @@ public sealed partial class MainViewModel : ObservableObject
 
     /// <summary>The version and updates from GitHub releases.</summary>
     public UpdatesViewModel Updates { get; }
+    public AboutViewModel About { get; }
 
     readonly IKeymapService? _keymap;
     readonly IPermissionProbe _permissions;
