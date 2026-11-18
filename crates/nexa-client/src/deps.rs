@@ -65,6 +65,12 @@ pub trait Deps: Send + Sync + 'static {
     fn decoder(&self, codec: Codec) -> Result<Box<dyn Decoder>, String>;
     /// Events are pushed into `tx`. Starting real capture is deferred to `set_active`.
     fn key_source(&self, tx: Sender<InputCmd>) -> Box<dyn KeySource>;
+    /// Whether keys go through the keyboard rules between this OS and the host's
+    /// (⌘ for Ctrl and so on, keymap.toml). A viewer without a window says no: its
+    /// caller already names the keys of the host's system (docs/MCP.md §3.1).
+    fn rewrites_keys(&self) -> bool {
+        true
+    }
     /// A capture that works without Accessibility. Called on the main thread.
     fn fallback_key_source(&self, tx: Sender<InputCmd>) -> Option<Box<dyn KeySource>>;
     fn clipboard(&self) -> Result<Box<dyn ClipPlatform>, String>;

@@ -1,0 +1,29 @@
+[package]
+name = "nexa-mcp"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "NexaDesk as an MCP server: an AI agent sees and operates another computer (docs/MCP.md)"
+
+[dependencies]
+nexa-client = { path = "../nexa-client" }
+nexa-media = { path = "../nexa-media" }
+nexa-wire = { path = "../nexa-wire" }
+base64 = "0.22"
+png = "0.18"
+prost = "0.14"
+serde_json = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+bytes.workspace = true
+nexa-agent = { path = "../nexa-agent" }
+nexa-auth = { path = "../nexa-auth" }
+nexa-clip = { path = "../nexa-clip" }
+nexa-input = { path = "../nexa-input" }
+nexa-net = { path = "../nexa-net" }
+nexa-session = { path = "../nexa-session" }
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

@@ -8,6 +8,8 @@ pub mod audio;
 pub mod client;
 pub mod cursor;
 pub mod deps;
+#[cfg(target_os = "macos")]
+pub mod headless;
 pub mod input;
 pub mod keymap;
 pub mod presenter;
@@ -24,4 +26,5 @@ mod real;
 mod real_cursor;
 #[cfg(windows)]
 mod real_windows_cursor;
+pub mod snapshot;
 pub mod terminal;

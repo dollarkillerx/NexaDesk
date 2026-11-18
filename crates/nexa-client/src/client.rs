@@ -18,7 +18,7 @@ use nexa_auth::{
 };
 use nexa_clip::{ClipPolicy, GateStats};
 use nexa_input::{FocusClass, Hid, PhysKey, Rewriter};
-use nexa_media::PresentMode;
+use nexa_media::{PresentMode, Presenter};
 use nexa_net::{
     check::{PathClass, is_tailnet},
     path::CandKind,
@@ -540,6 +540,20 @@ impl Session {
         }
         self.repaint();
         Ok(())
+    }
+
+    /// Draws into `presenter` instead of a native view: a viewer without a window
+    /// (`nexa-mcp`, docs/MCP.md §3.2). The view is `w`×`h` pixels at scale 1, the size
+    /// the host fits its picture to, and pointer commands are in its pixels
+    /// ([`Self::view`] maps them). No local cursor or key capture is set up.
+    pub fn attach_presenter(&self, presenter: Box<dyn Presenter>, w: u32, h: u32) {
+        self.presenter.attach(presenter);
+        self.resize_view(w, h, 1.0);
+    }
+
+    /// Where the picture sits in the view, as pointer commands are mapped.
+    pub fn view(&self) -> ViewGeometry {
+        *lock(&self.view)
     }
 
     pub fn resize_view(&self, w: u32, h: u32, scale: f32) {
@@ -1225,7 +1239,11 @@ fn start_input(
             )),
         );
     }
-    let profile = keymap.for_session(core.deps.os(), host_os);
+    let profile = if core.deps.rewrites_keys() {
+        keymap.for_session(core.deps.os(), host_os)
+    } else {
+        nexa_input::Compiled::passthrough()
+    };
     let handle = input::spawn(
         InputThreadConfig {
             conn: conn.clone(),

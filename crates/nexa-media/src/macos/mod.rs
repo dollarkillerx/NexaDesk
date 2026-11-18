@@ -138,6 +138,40 @@ impl PixelBuffer {
         }
     }
 
+    /// Runs `f` with both NV12 planes, read only, as
+    /// `(luma, luma_stride, chroma, chroma_stride)`: a decoded picture read back on the
+    /// CPU (a screenshot). Only for CPU-readable buffers (`DecoderOutput::CpuReadable420v`).
+    pub fn with_planes<R>(&self, f: impl FnOnce(&[u8], usize, &[u8], usize) -> R) -> Result<R> {
+        if !self.is_cpu_readable() {
+            return Err(MediaError::Unsupported("buffer is not CPU readable"));
+        }
+        let lock = CVPixelBufferLockFlags::ReadOnly;
+        // SAFETY: format checked above, so plane base addresses and sizes are valid
+        // while the buffer is locked; nothing is written through them.
+        unsafe {
+            os("CVPixelBufferLockBaseAddress", CVPixelBufferLockBaseAddress(&self.0, lock))?;
+            let plane = |i| -> (*const u8, usize, usize) {
+                let stride = CVPixelBufferGetBytesPerRowOfPlane(&self.0, i);
+                let base = CVPixelBufferGetBaseAddressOfPlane(&self.0, i) as *const u8;
+                (base, stride, stride * CVPixelBufferGetHeightOfPlane(&self.0, i))
+            };
+            let (y, y_stride, y_len) = plane(0);
+            let (uv, uv_stride, uv_len) = plane(1);
+            let ret = if y.is_null() || uv.is_null() {
+                Err(MediaError::Other("pixel buffer has no CPU mapping".into()))
+            } else {
+                Ok(f(
+                    std::slice::from_raw_parts(y, y_len),
+                    y_stride,
+                    std::slice::from_raw_parts(uv, uv_len),
+                    uv_stride,
+                ))
+            };
+            CVPixelBufferUnlockBaseAddress(&self.0, lock);
+            ret
+        }
+    }
+
     /// Runs `f` with mutable access to both NV12 planes as
     /// `(luma, luma_stride, chroma, chroma_stride)`. For synthetic sources.
     pub fn with_planes_mut<R>(

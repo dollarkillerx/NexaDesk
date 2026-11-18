@@ -35,7 +35,8 @@ pub enum DecoderOutput {
     /// but CPU access to the planes crashes.
     #[default]
     Display,
-    /// `420v` buffers that can be read from the CPU, for tests.
+    /// `420v` buffers that can be read from the CPU: tests, and screenshots of a
+    /// viewer without a window (nexa-client `headless`).
     CpuReadable420v,
 }
 
