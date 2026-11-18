@@ -21,6 +21,12 @@ final class NexaCore: ObservableObject {
     @Published private(set) var displays: [Nexa_Client_DisplayInfo] = []
     /// The display being streamed (`StreamChanged.display`).
     @Published private(set) var display: UInt32 = 0
+    /// The host's system (`Connected.host_os`): 0 unknown, 1 Windows, 2 macOS, 3 Linux.
+    @Published private(set) var hostOs: UInt32 = 0
+    /// Hosts this device is paired with (`Ready.hosts`): they connect with no code.
+    @Published private(set) var pairedKeys: Set<String> = []
+    /// Hosts connected to before, kept for one tap.
+    let recents = RecentHosts()
     @Published var notice: String?
     /// A self-hosted signaling server whose certificate is not trusted yet.
     @Published var trustPrompt: TrustPrompt?
@@ -33,7 +39,7 @@ final class NexaCore: ObservableObject {
 
     /// The port a NexaDesk host listens on unless set otherwise.
     static let defaultPort = 47800
-    private var lastConnect: (address: String, server: String, secret: String)?
+    private var lastConnect: (address: String, server: String, serverPassword: String, secret: String, knownHost: String?)?
     /// Bumped to drop the answer of a server check the person cancelled.
     private var checkGeneration: UInt64 = 0
 
@@ -62,7 +68,7 @@ final class NexaCore: ObservableObject {
 
     // MARK: Sessions
 
-    static func isDeviceId(_ s: String) -> Bool {
+    nonisolated static func isDeviceId(_ s: String) -> Bool {
         let t = s.filter { !$0.isWhitespace }
         return t.count == 9 && t.allSatisfy(\.isNumber)
     }
@@ -98,9 +104,11 @@ final class NexaCore: ObservableObject {
     static func normalizedServer(_ s: String) -> String? { normalized(NEXA_NORMALIZE_SERVER, s) }
 
     /// `address` is host[:port] (the LAN, Tailscale) or a 9-digit device ID, which
-    /// goes through `signalServer`. With an ID and no secret, the person at the host is
-    /// asked to allow the connection.
-    func connect(address: String, signalServer: String, secret: String) {
+    /// goes through `signalServer`, using its key `serverPassword` (every
+    /// server since 0.1.20 asks for one). With an ID and no secret, the person at the
+    /// host is asked to allow the connection.
+    func connect(address: String, signalServer: String, serverPassword: String, secret: String,
+                 knownHost: String? = nil) {
         guard let client, session == nil else { return }
         tag &+= 1
         var req = Nexa_Client_ConnectRequest()
@@ -108,28 +116,38 @@ final class NexaCore: ObservableObject {
         let isId = Self.isDeviceId(req.address)
         if isId {
             if signalServer.trimmingCharacters(in: .whitespaces).isEmpty {
-                notice = String(localized: "A device ID needs a signaling server: enter yours below.")
+                notice = String(localized: "A device ID needs a signaling server: choose one under Signaling server.")
                 return
             }
             guard let server = Self.normalizedServer(signalServer) else {
                 notice = String(localized: "That is not a signaling server address. Use signal.example.com, signal.example.com:8443 or wss://signal.example.com:8443.")
                 return
             }
+            let password = serverPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+            if password.isEmpty {
+                notice = String(localized: "A signaling server always needs its key. Enter the one its owner gave you.")
+                return
+            }
             req.signalServer = server
+            // Only a proof of it goes to the server, never the password itself.
+            req.signalSecret = password
         }
         req.tag = tag
         req.mode = .balanced
         // A one-time code if it can be one (the desktop's rule: a fixed password may not
         // look like a code); anything else is the host's fixed password.
         let s = secret.trimmingCharacters(in: .whitespaces)
-        if let code = Self.normalizedCode(s) {
+        if let knownHost, !knownHost.isEmpty {
+            // Paired before: the saved pairing signs in, nothing to type.
+            req.knownHost = knownHost
+        } else if let code = Self.normalizedCode(s) {
             req.code = code
         } else if !s.isEmpty {
             req.password = s
         } else if isId {
             req.request = true
         }
-        lastConnect = (address, signalServer, secret)
+        lastConnect = (address, signalServer, serverPassword, secret, knownHost)
         let bytes = (try? req.serializedData()) ?? Data()
         var out: OpaquePointer?
         let rc = bytes.withUnsafeBytes { raw in
@@ -208,6 +226,15 @@ final class NexaCore: ObservableObject {
         key(usage, down: false)
     }
 
+    /// A shortcut: the modifiers pressed in order, the last key tapped, all released.
+    func combo(_ keys: [UInt32]) {
+        guard let last = keys.last else { return }
+        let mods = keys.dropLast()
+        mods.forEach { key($0, down: true) }
+        tapKey(last)
+        mods.reversed().forEach { key($0, down: false) }
+    }
+
     /// Streams another of the host's displays instead of this one (never both).
     func selectDisplay(_ id: UInt32) {
         guard id != display else { return }
@@ -230,11 +257,19 @@ final class NexaCore: ObservableObject {
         // Events of an earlier session (tag) are stale.
         if event.tag != 0, event.tag != tag { return }
         switch event.body {
+        case .ready(let r):
+            pairedKeys = Set(r.hosts.map(\.key))
         case .connecting:
             phase = .connecting(String(localized: "Connecting…"))
         case .connected(let c):
             hostName = c.hostName
+            hostOs = c.hostOs
             displays = c.displays
+            if c.pairedNow, !c.hostKey.isEmpty { pairedKeys.insert(c.hostKey) }
+            if let last = lastConnect {
+                recents.remember(address: Self.normalizedAddress(last.address), name: c.hostName,
+                                 hostKey: c.hostKey, os: c.hostOs)
+            }
             phase = .connected
             if let session, c.perms.input {
                 inputAllowed = nexa_session_set_input_active(session, true) == NEXA_OK
@@ -248,7 +283,10 @@ final class NexaCore: ObservableObject {
             session = nil
             phase = .idle
             inputAllowed = false
-            if d.reason == .disconnectSignalServer, let last = lastConnect, Self.isDeviceId(last.address),
+            if d.reason == .disconnectSignalServer, Self.isAccessDenied(d) {
+                // Reached the server, which took the certificate: only the password is wrong.
+                notice = Messages.accessDenied()
+            } else if d.reason == .disconnectSignalServer, let last = lastConnect, Self.isDeviceId(last.address),
                let server = Self.normalizedServer(last.server) {
                 // A self-hosted server's own certificate is the usual cause: offer to trust it.
                 // Looking can take up to half a minute when the server is down: say so.
@@ -262,6 +300,13 @@ final class NexaCore: ObservableObject {
         default:
             break
         }
+    }
+
+    /// The server turned the access password down. The core says so only in its
+    /// message (`SignalError::AccessDenied`, crates/nexa-session/src/rendezvous/signal.rs);
+    /// if that wording changes this is false and the general message is shown.
+    nonisolated static func isAccessDenied(_ d: Nexa_Client_Disconnected) -> Bool {
+        d.message.contains("access password")
     }
 
     // MARK: Signaling server trust (signal-ca.pem in the data directory)
@@ -296,7 +341,8 @@ final class NexaCore: ObservableObject {
                 if let error {
                     self.notice = String(localized: "Could not trust the server: \(error)")
                 } else if let last = self.lastConnect {
-                    self.connect(address: last.address, signalServer: last.server, secret: last.secret)
+                    self.connect(address: last.address, signalServer: last.server,
+                                 serverPassword: last.serverPassword, secret: last.secret, knownHost: last.knownHost)
                 }
             }
         }

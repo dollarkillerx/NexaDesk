@@ -7,9 +7,11 @@
 //! Usage: `cargo run -p nexa-agent --example demo_host --release -- [addr] [--lan]
 //! [--signal wss://server[:port] [--signal-ca <pem>]]` (default `127.0.0.1:47900`).
 //! `--displays 2` adds a second, smaller display tinted blue, to try switching.
+//! `--remember` keeps each viewer's pairing, so it connects again with no code.
 //! `--lan` announces it over mDNS (listen on `0.0.0.0:…` for an address to announce);
-//! `--signal` registers it with a signaling server and prints its device ID. Connect
-//! with the fixed password [`PASSWORD`].
+//! `--signal` registers it with a signaling server and prints its device ID; the
+//! server's access password comes from `NEXA_SIGNAL_SECRET`, as for the real agent.
+//! Connect with the fixed password [`PASSWORD`].
 //! A white square follows the injected pointer and turns green while a button is
 //! held; every key, click and piece of text is printed.
 
@@ -264,7 +266,11 @@ mod demo {
         }
     }
 
-    struct DemoUi;
+    /// `remember`: keep each viewer's pairing, as when the person at the computer ticks
+    /// "remember this device", so the viewer connects again with no code.
+    struct DemoUi {
+        remember: bool,
+    }
 
     impl Consent for DemoUi {
         fn can_present(&self) -> bool {
@@ -279,7 +285,7 @@ mod demo {
                     input: true,
                     ..Default::default()
                 },
-                save: false,
+                save: self.remember,
                 skip_next_time: false,
             }
         }
@@ -310,10 +316,12 @@ mod demo {
         let mut listen: SocketAddr = "127.0.0.1:47900".parse().expect("address");
         let (mut lan, mut signal_url, mut signal_ca) = (false, None::<String>, None::<String>);
         let mut displays = 1usize;
+        let mut remember = false;
         let mut args = std::env::args().skip(1);
         while let Some(a) = args.next() {
             match a.as_str() {
                 "--lan" => lan = true,
+                "--remember" => remember = true,
                 "--displays" => displays = args.next().and_then(|n| n.parse().ok()).unwrap_or(1),
                 "--signal" => signal_url = args.next(),
                 "--signal-ca" => signal_ca = args.next(),
@@ -321,7 +329,9 @@ mod demo {
             }
         }
         let signal = signal_url.map(|url| {
-            let mut server = nexa_session::rendezvous::signal::SignalConfig::new(url);
+            let secret = std::env::var("NEXA_SIGNAL_SECRET").unwrap_or_default();
+            let mut server = nexa_session::rendezvous::signal::SignalConfig::new(url)
+                .with_access_secret(&secret);
             if let Some(ca) = signal_ca {
                 server = server
                     .with_ca_file(std::path::Path::new(&ca))
@@ -371,7 +381,7 @@ mod demo {
                     displays,
                     ..Demo::default()
                 }),
-                Arc::new(DemoUi),
+                Arc::new(DemoUi { remember }),
             )
             .await
             .expect("agent");

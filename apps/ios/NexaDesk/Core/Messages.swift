@@ -59,10 +59,16 @@ enum Messages {
                                String(localized: "Direct, hole punching and relay all failed. A firewall may be blocking UDP, or the signaling server has no relay configured."))
         case .disconnectSignalServer:
             (title, detail) = (String(localized: "Can't use the signaling server"),
-                               String(localized: "Couldn't reach the signaling server, or it refused the request. Check the server address and your network."))
+                               String(localized: "Couldn't reach the signaling server, or it refused the request. Check the server address, its key and your network."))
         default:
             (title, detail) = (String(localized: "Connection lost"), String(localized: "The connection dropped unexpectedly."))
         }
+        return "\(title)\n\n\(detail)"
+    }
+
+    static func accessDenied() -> String {
+        let title = String(localized: "Wrong key for the signaling server")
+        let detail = String(localized: "The server asks for a key and did not accept this one. Check it with the server's owner; it is not the computer's one-time code or password.")
         return "\(title)\n\n\(detail)"
     }
 }

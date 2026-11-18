@@ -199,6 +199,7 @@ struct KeyInputHost: UIViewRepresentable {
 /// Keys a phone keyboard does not have, shown above it.
 struct KeyboardBar: View {
     @ObservedObject var keys: KeyInputController
+    private let feedback = UIImpactFeedbackGenerator(style: .light)
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -220,17 +221,24 @@ struct KeyboardBar: View {
         .background(.ultraThinMaterial)
     }
 
+    // Keys a thumb can hit: 44 points wide, about 44 tall with the button's own padding.
     private func key(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title).font(.system(size: 15, weight: .medium)).frame(minWidth: 38, minHeight: 32)
+        Button {
+            feedback.impactOccurred()
+            action()
+        } label: {
+            Text(title).font(.system(size: 16, weight: .medium)).frame(minWidth: 44, minHeight: 36)
         }
         .buttonStyle(.bordered)
     }
 
     private func modifier(_ title: String, _ usage: UInt32) -> some View {
         let on = keys.latched.contains(usage)
-        return Button { keys.toggle(usage) } label: {
-            Text(title).font(.system(size: 15, weight: .semibold)).frame(minWidth: 38, minHeight: 32)
+        return Button {
+            feedback.impactOccurred()
+            keys.toggle(usage)
+        } label: {
+            Text(title).font(.system(size: 16, weight: .semibold)).frame(minWidth: 44, minHeight: 36)
         }
         .buttonStyle(.bordered)
         .tint(on ? .accentColor : .secondary)

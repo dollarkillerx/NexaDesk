@@ -712,6 +712,9 @@ nonisolated struct Nexa_Client_ConnectRequest: Sendable {
   /// wss://server[:port]; needed when address is an ID
   var signalServer: String = String()
 
+  /// the server's access password, if it asks for one
+  var signalSecret: String = String()
+
   var tag: UInt64 = 0
 
   var mode: Nexa_Client_Mode = .office
@@ -1932,7 +1935,7 @@ nonisolated extension Nexa_Client_ClientConfig: SwiftProtobuf.Message, SwiftProt
 
 nonisolated extension Nexa_Client_ConnectRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".ConnectRequest"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}address\0\u{1}tag\0\u{1}mode\0\u{3}known_host\0\u{1}code\0\u{1}password\0\u{1}fps\0\u{3}signal_server\0\u{1}request\0")
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}address\0\u{1}tag\0\u{1}mode\0\u{3}known_host\0\u{1}code\0\u{1}password\0\u{1}fps\0\u{3}signal_server\0\u{1}request\0\u{3}signal_secret\0")
 
   mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1977,6 +1980,7 @@ nonisolated extension Nexa_Client_ConnectRequest: SwiftProtobuf.Message, SwiftPr
           self.auth = .request(v)
         }
       }()
+      case 10: try { try decoder.decodeSingularStringField(value: &self.signalSecret) }()
       default: break
       }
     }
@@ -2020,12 +2024,16 @@ nonisolated extension Nexa_Client_ConnectRequest: SwiftProtobuf.Message, SwiftPr
     try { if case .request(let v)? = self.auth {
       try visitor.visitSingularBoolField(value: v, fieldNumber: 9)
     } }()
+    if !self.signalSecret.isEmpty {
+      try visitor.visitSingularStringField(value: self.signalSecret, fieldNumber: 10)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   static func ==(lhs: Nexa_Client_ConnectRequest, rhs: Nexa_Client_ConnectRequest) -> Bool {
     if lhs.address != rhs.address {return false}
     if lhs.signalServer != rhs.signalServer {return false}
+    if lhs.signalSecret != rhs.signalSecret {return false}
     if lhs.tag != rhs.tag {return false}
     if lhs.mode != rhs.mode {return false}
     if lhs.fps != rhs.fps {return false}

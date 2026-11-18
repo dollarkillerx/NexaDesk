@@ -34,18 +34,130 @@
         }
       }
     },
-    "A device ID needs a signaling server: enter yours below.": {
+    "%lld published. The one you pick is used at once. The keys in this list are public.": {
       "localizations": {
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "デバイス ID で接続するにはシグナリングサーバーが必要です。下に入力してください。"
+            "value": "%lld 件が公開されています。選んだものがすぐに使われます。この一覧のキーは公開されています。"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "用设备 ID 连接需要信令服务器，请在下方填写。"
+            "value": "共 %lld 个。选中的会马上使用。列表里的口令是公开的。"
+          }
+        }
+      }
+    },
+    "A device ID needs a signaling server: choose one under Signaling server.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "デバイス ID で接続するにはシグナリングサーバーが必要です。「シグナリングサーバー」で選んでください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "按设备 ID 连接需要信令服务器：请在“信令服务器”里选一个。"
+          }
+        }
+      }
+    },
+    "A published server": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "公開サーバー"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "公开服务器"
+          }
+        }
+      }
+    },
+    "A signaling server always needs its key. Enter the one its owner gave you.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "シグナリングサーバーには必ずキーが必要です。サーバーの管理者から受け取ったキーを入力してください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "信令服务器一定要口令，请填写服务器管理者给你的口令。"
+          }
+        }
+      }
+    },
+    "About": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "情報"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关于"
+          }
+        }
+      }
+    },
+    "About NexaDesk": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NexaDesk について"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关于 NexaDesk"
+          }
+        }
+      }
+    },
+    "Address and key": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アドレスとキーを入力"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "填地址和口令"
+          }
+        }
+      }
+    },
+    "Addresses, the LAN and Tailscale only": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アドレス、LAN、Tailscale のみ"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "只用地址、局域网和 Tailscale"
           }
         }
       }
@@ -62,6 +174,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "另一台设备连接了对方的电脑，对方同意了接管。"
+          }
+        }
+      }
+    },
+    "Available · %lld ms": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "利用可能 · %lld ms"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可用 · %lld 毫秒"
           }
         }
       }
@@ -114,6 +242,22 @@
         }
       }
     },
+    "Cannot connect": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接続できません"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连不上"
+          }
+        }
+      }
+    },
     "Check the 8-character code shown on the computer's screen, or its fixed password. After 5 wrong codes in a row, the code changes automatically.": {
       "localizations": {
         "ja": {
@@ -142,6 +286,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在检查信令服务器…"
+          }
+        }
+      }
+    },
+    "Choose a published server": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "公開サーバーを選択"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择一个公开的服务器"
+          }
+        }
+      }
+    },
+    "Close": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "閉じる"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关闭"
           }
         }
       }
@@ -226,6 +402,38 @@
         }
       }
     },
+    "Controls a Mac or Windows PC running NexaDesk. Open source; no account needed.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NexaDesk が動いている Mac や Windows PC を操作します。オープンソースで、アカウントは不要です。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "远程控制运行 NexaDesk 的 Mac 或 Windows 电脑。开源，无需注册账号。"
+          }
+        }
+      }
+    },
+    "Copy": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "コピー"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "复制"
+          }
+        }
+      }
+    },
     "Could not start: %@": {
       "localizations": {
         "ja": {
@@ -258,18 +466,50 @@
         }
       }
     },
-    "Couldn't reach the signaling server, or it refused the request. Check the server address and your network.": {
+    "Couldn't reach the signaling server, or it refused the request. Check the server address, its key and your network.": {
       "localizations": {
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "シグナリングサーバーに接続できないか、サーバーがリクエストを拒否しました。サーバーのアドレスとネットワークを確認してください。"
+            "value": "シグナリングサーバーに接続できないか、要求が拒否されました。サーバーのアドレス、アクセスキー、ネットワークを確認してください。"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "连不上信令服务器，或服务器拒绝了请求。请检查服务器地址和网络。"
+            "value": "连不上信令服务器，或服务器拒绝了请求。请检查服务器地址、访问口令和网络。"
+          }
+        }
+      }
+    },
+    "Cut": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "カット"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "剪切"
+          }
+        }
+      }
+    },
+    "Desktop": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "デスクトップ"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示桌面"
           }
         }
       }
@@ -322,6 +562,22 @@
         }
       }
     },
+    "Disconnect from %@?": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ との接続を切断しますか？"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "要断开与 %@ 的连接吗？"
+          }
+        }
+      }
+    },
     "Disconnected": {
       "localizations": {
         "ja": {
@@ -370,6 +626,150 @@
         }
       }
     },
+    "Done": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完了"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完成"
+          }
+        }
+      }
+    },
+    "Download for Mac and Windows": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mac・Windows 版をダウンロード"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载电脑版（Mac / Windows）"
+          }
+        }
+      }
+    },
+    "Empty uses the computer's own name.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "空欄にするとコンピュータ自身の名前を使います。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "留空则使用电脑自己的名字。"
+          }
+        }
+      }
+    },
+    "Favorite": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "お気に入り"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "收藏"
+          }
+        }
+      }
+    },
+    "Favorites": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "お気に入り"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "收藏"
+          }
+        }
+      }
+    },
+    "Files": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "エクスプローラー"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件资源管理器"
+          }
+        }
+      }
+    },
+    "Find": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "検索"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查找"
+          }
+        }
+      }
+    },
+    "Force Quit": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "強制終了"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "强制退出"
+          }
+        }
+      }
+    },
+    "Function keys": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ファンクションキー"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "功能键"
+          }
+        }
+      }
+    },
     "Hide": {
       "localizations": {
         "ja": {
@@ -382,6 +782,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "隐藏"
+          }
+        }
+      }
+    },
+    "Hide controls": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "コントロールを隠す"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "收起控制按钮"
           }
         }
       }
@@ -450,6 +866,54 @@
         }
       }
     },
+    "Keys": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "キー"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "按键"
+          }
+        }
+      }
+    },
+    "Loading the list…": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一覧を取得しています…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在获取列表…"
+          }
+        }
+      }
+    },
+    "Lock": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ロック"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "锁屏"
+          }
+        }
+      }
+    },
     "Looking for computers sharing NexaDesk on this network…": {
       "localizations": {
         "ja": {
@@ -462,6 +926,70 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在查找本网络中开启了 NexaDesk 的电脑…"
+          }
+        }
+      }
+    },
+    "Mission Control": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mission Control"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "调度中心"
+          }
+        }
+      }
+    },
+    "My own server": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自分のサーバー"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自己的服务器"
+          }
+        }
+      }
+    },
+    "Navigation": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移動キー"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导航键"
+          }
+        }
+      }
+    },
+    "Needed only to connect by 9-digit device ID.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "9 桁のデバイス ID で接続するときだけ必要です。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "只有按 9 位设备 ID 连接时才需要。"
           }
         }
       }
@@ -514,6 +1042,38 @@
         }
       }
     },
+    "No server": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "サーバーを使わない"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不使用服务器"
+          }
+        }
+      }
+    },
+    "No servers are published right now, or the list could not be reached.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "現在公開されているサーバーがないか、一覧を取得できませんでした。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目前没有公开的服务器，或者列表没能获取到。"
+          }
+        }
+      }
+    },
     "No video codec both sides support": {
       "localizations": {
         "ja": {
@@ -546,6 +1106,22 @@
         }
       }
     },
+    "Not a NexaDesk signaling server": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NexaDesk のシグナリングサーバーではありません"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不是 NexaDesk 信令服务器"
+          }
+        }
+      }
+    },
     "Not paired with this device": {
       "localizations": {
         "ja": {
@@ -558,6 +1134,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "尚未与这台设备配对"
+          }
+        }
+      }
+    },
+    "Not used": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未使用"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未使用"
           }
         }
       }
@@ -578,18 +1170,18 @@
         }
       }
     },
-    "On the same network (or Tailscale), an IP address is enough; port %@ is assumed. From anywhere else, use the 9-digit device ID with your signaling server.": {
+    "On the same network (or Tailscale), an IP address is enough; port %@ is assumed. From anywhere else, use the 9-digit device ID with a signaling server.": {
       "localizations": {
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "同じネットワーク（または Tailscale）なら IP アドレスだけで接続できます（ポートは %@ とみなします）。それ以外の場所からは、9 桁のデバイス ID とシグナリングサーバーを使って接続します。"
+            "value": "同じネットワーク（または Tailscale）なら IP アドレスだけで接続できます（ポートは %@ を想定）。それ以外の場所からは、9 桁のデバイス ID とシグナリングサーバーを使います。"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "在同一网络（或 Tailscale）中，填 IP 地址即可，默认端口为 %@。在其他地方，请用 9 位设备 ID 配合你的信令服务器连接。"
+            "value": "在同一网络（或 Tailscale）中，填 IP 地址即可，默认端口为 %@。在其他地方，请用 9 位设备 ID 配合信令服务器连接。"
           }
         }
       }
@@ -642,6 +1234,86 @@
         }
       }
     },
+    "Paired": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ペアリング済み"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已配对"
+          }
+        }
+      }
+    },
+    "Paste": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ペースト"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "粘贴"
+          }
+        }
+      }
+    },
+    "Pick one from the project's list on GitHub": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "プロジェクトの GitHub の一覧から選ぶ"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "从项目在 GitHub 上的列表里选一个"
+          }
+        }
+      }
+    },
+    "Quit": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "終了"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "退出"
+          }
+        }
+      }
+    },
+    "Recent": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "最近の接続"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "最近连接"
+          }
+        }
+      }
+    },
     "Reconnecting: %@": {
       "localizations": {
         "ja": {
@@ -674,6 +1346,86 @@
         }
       }
     },
+    "Refresh": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "再読み込み"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "刷新"
+          }
+        }
+      }
+    },
+    "Remove": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "削除"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除"
+          }
+        }
+      }
+    },
+    "Rename": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "名前を変更"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重命名"
+          }
+        }
+      }
+    },
+    "Report a problem": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "問題を報告"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "反馈问题"
+          }
+        }
+      }
+    },
+    "Save": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存"
+          }
+        }
+      }
+    },
     "Screen capture or video encoding failed on the host. On a Mac, NexaDesk needs the Screen Recording permission.": {
       "localizations": {
         "ja": {
@@ -686,6 +1438,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "被控端的屏幕采集或视频编码出错。如果对方是 Mac，需要授予 NexaDesk “屏幕录制”权限。"
+          }
+        }
+      }
+    },
+    "Screenshot": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "スクリーンショット"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "截图"
+          }
+        }
+      }
+    },
+    "Select all": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "すべて選択"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全选"
           }
         }
       }
@@ -706,6 +1490,22 @@
         }
       }
     },
+    "Shortcuts": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ショートカット"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "快捷键"
+          }
+        }
+      }
+    },
     "Show": {
       "localizations": {
         "ja": {
@@ -718,6 +1518,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "显示"
+          }
+        }
+      }
+    },
+    "Show controls": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "コントロールを表示"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示控制按钮"
           }
         }
       }
@@ -766,6 +1582,134 @@
           "stringUnit": {
             "state": "translated",
             "value": "发生了意外错误。请重试；如果反复出现，请重启 NexaDesk。"
+          }
+        }
+      }
+    },
+    "Source code on GitHub": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GitHub のソースコード"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GitHub 上的源代码"
+          }
+        }
+      }
+    },
+    "Spotlight": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spotlight"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "聚焦搜索"
+          }
+        }
+      }
+    },
+    "Start": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "スタート"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开始菜单"
+          }
+        }
+      }
+    },
+    "Swipe right to add one to Favorites, left to remove it.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "右にスワイプでお気に入りに追加、左にスワイプで削除します。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "向右滑加入收藏，向左滑删除。"
+          }
+        }
+      }
+    },
+    "Switch apps": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アプリ切り替え"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "切换应用"
+          }
+        }
+      }
+    },
+    "Task Manager": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "タスクマネージャー"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "任务管理器"
+          }
+        }
+      }
+    },
+    "Test": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "テスト"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "测试"
+          }
+        }
+      }
+    },
+    "Testing…": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "テスト中…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "测试中…"
           }
         }
       }
@@ -946,6 +1890,22 @@
         }
       }
     },
+    "The key could not be saved in the Keychain (error %lld).": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "キーをキーチェーンに保存できませんでした（エラー %lld）。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "口令没能存进钥匙串（错误 %lld）。"
+          }
+        }
+      }
+    },
     "The person at the computer declined, didn't respond in time, or nobody is there to accept.": {
       "localizations": {
         "ja": {
@@ -958,6 +1918,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "对方拒绝了请求、没有在限定时间内回应，或者对方电脑前当前没有可以确认的人。"
+          }
+        }
+      }
+    },
+    "The server asks for a key and did not accept this one. Check it with the server's owner; it is not the computer's one-time code or password.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "サーバーはアクセスキーを求めていますが、このキーは受け付けられませんでした。サーバーの管理者に確認してください。コンピュータのワンタイムコードやパスワードとは別のものです。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务器要求访问口令，但没有接受这一个。请向服务器的管理者确认。它不是电脑上的一次性码或密码。"
+          }
+        }
+      }
+    },
+    "The server's key (required)": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "サーバーのキー（必須）"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务器要求的口令（必填）"
           }
         }
       }
@@ -1122,6 +2114,38 @@
         }
       }
     },
+    "Undo": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取り消す"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "撤销"
+          }
+        }
+      }
+    },
+    "Unfavorite": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "お気に入りから外す"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消收藏"
+          }
+        }
+      }
+    },
     "Update NexaDesk on both sides to the same version.": {
       "localizations": {
         "ja": {
@@ -1134,6 +2158,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "请把两边的 NexaDesk 更新到同一版本。"
+          }
+        }
+      }
+    },
+    "Use the form wss://server[:port], for example wss://signal.example.com. A signaling server always needs its key: enter the one its owner gave you. A server with its own certificate is trusted on first use, after you compare its fingerprint.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "wss://サーバー[:ポート] の形式で入力してください（例：wss://signal.example.com）。シグナリングサーバーには必ずキーが必要です。サーバーの管理者から受け取ったキーを入力してください。独自の証明書を使うサーバーは、初回にフィンガープリントを確認すれば信頼できます。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "格式应为 wss://服务器[:端口]，例如 wss://signal.example.com。信令服务器一定要口令，请填写服务器管理者给你的口令。使用自签证书的服务器，第一次连接时核对指纹后即可信任。"
+          }
+        }
+      }
+    },
+    "Version %@": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "バージョン %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "版本 %@"
           }
         }
       }
@@ -1154,6 +2210,54 @@
         }
       }
     },
+    "Website": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Web サイト"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "官网"
+          }
+        }
+      }
+    },
+    "Wrong key for the signaling server": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "シグナリングサーバーのアクセスキーが違います"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "信令服务器的访问口令不对"
+          }
+        }
+      }
+    },
+    "You can connect without a server: directly on the same local network, and across networks with Tailscale on both devices. A signaling server is needed only to connect by 9-digit device ID.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "サーバーがなくても接続できます。同じローカルネットワークなら直接、別のネットワークなら両方で Tailscale を使うのがおすすめです。シグナリングサーバーが必要なのは、9 桁のデバイス ID で接続したい場合だけです。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不用服务器也能连接：同一局域网直接连；不在同一网络时，推荐两边都用 Tailscale。只有想按 9 位设备 ID 连接时，才需要信令服务器。"
+          }
+        }
+      }
+    },
     "You ended this session.": {
       "localizations": {
         "ja": {
@@ -1166,22 +2270,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "你结束了这次会话。"
-          }
-        }
-      }
-    },
-    "Your own nexa-signal server, as set on the computer (wss://host[:port]). Needed only for device IDs. A server with its own certificate is trusted on first use, after you compare its fingerprint.": {
-      "localizations": {
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "ご自身の nexa-signal サーバーです。コンピュータ側の設定と同じものを入力します（wss://ホスト[:ポート]）。デバイス ID で接続するときだけ必要です。独自の証明書を使うサーバーは、初回接続時にフィンガープリントを確認してから信頼できます。"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "你自建的 nexa-signal 服务器，与电脑上设置的一致（wss://主机[:端口]）。只有用设备 ID 连接时才需要。使用自签证书的服务器，第一次连接时核对指纹后即可信任。"
           }
         }
       }
