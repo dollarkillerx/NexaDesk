@@ -83,6 +83,11 @@ impl Deps for HeadlessDeps {
         false
     }
 
+    /// Only `nexa-mcp` runs without a window: it is an AI agent.
+    fn is_agent(&self) -> bool {
+        true
+    }
+
     fn fallback_key_source(&self, _: Sender<InputCmd>) -> Option<Box<dyn KeySource>> {
         None
     }

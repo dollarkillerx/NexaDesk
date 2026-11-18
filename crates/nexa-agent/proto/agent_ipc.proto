@@ -28,6 +28,7 @@ message UiToAgent {
     SendFiles send_files = 10;
     CancelTransfer cancel_transfer = 11;
     AnswerTransfer answer_transfer = 12;
+    SetAllowAgents set_allow_agents = 13;
   }
 }
 
@@ -46,6 +47,9 @@ message Shutdown {}                                         // stop hosting; the
 message SendFiles { repeated string paths = 1; }
 message CancelTransfer { uint64 id = 1; }                   // either direction
 message AnswerTransfer { uint64 id = 1; bool accept = 2; }  // to Transfer{state: NEEDS_CONFIRM}
+// Lets AI agents (nexa-mcp, docs/MCP.md §4.2) connect, or not. The agent starts with
+// them refused; the UI sends its setting after Hello and whenever it changes.
+message SetAllowAgents { bool allow = 1; }
 // The answer to IncomingRequest. Every default denies: allow is false unless set,
 // and a grant without `view` is refused.
 message Decide {
@@ -69,6 +73,7 @@ message AgentToUi {
 message SessionInfo {
   uint64 id = 1; string device_name = 2; string device_id = 3; string device_key = 4;
   string remote = 5; Permissions perms = 6;
+  bool agent = 7;                // an AI agent: the banner says so
 }
 
 // Sent after Hello, after GetStatus and whenever any of it changes.
@@ -84,11 +89,15 @@ message Status {
   string short_id = 9;           // this device's ID on the signaling server; empty when not registered
   SignalState signal = 10;
   string signal_detail = 11;     // why the last attempt failed, or why NAT detection is degraded
+  string web_fingerprint = 12;   // SHA-256 of the browsers' certificate; empty without HTTPS
+  bool web_cert_custom = 13;     // the certificate is the person's own
+  bool password_set = 14;        // a fixed password is set
+  bool allow_agents = 15;        // AI agents may connect (SetAllowAgents)
 }
 
 enum SignalState { SIGNAL_OFF = 0; SIGNAL_CONNECTING = 1; SIGNAL_ONLINE = 2; SIGNAL_ERROR = 3; }
 
-enum AuthKind { AUTH_UNSPECIFIED = 0; AUTH_PAIRED = 1; AUTH_CODE = 2; AUTH_PASSWORD = 3; }
+enum AuthKind { AUTH_UNSPECIFIED = 0; AUTH_PAIRED = 1; AUTH_CODE = 2; AUTH_PASSWORD = 3; AUTH_REQUEST = 4; }
 
 // Someone wants a session. Answer with Decide; no answer within timeout_ms denies.
 message IncomingRequest {
@@ -105,6 +114,8 @@ message IncomingRequest {
   bool takeover = 11;            // accepting ends the running session
   uint32 timeout_ms = 12;
   bool input_available = 13;
+  bool browser = 14;             // a web browser: view and control only, never saved
+  bool agent = 15;               // an AI agent says it is asking: the dialog says so
 }
 // The request is over: answered, timed out, or the requester went away.
 message RequestClosed { uint64 req_id = 1; string reason = 2; }

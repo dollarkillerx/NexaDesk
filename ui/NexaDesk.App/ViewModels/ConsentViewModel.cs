@@ -36,7 +36,10 @@ public sealed partial class ConsentViewModel : ObservableObject
     /// <summary>A web browser: it can only view and control, and is never saved.</summary>
     public bool IsBrowser => _req.Browser;
     public bool IsDevice => !_req.Browser;
-    public string Headline => L.Format(IsBrowser ? "Consent.HeadlineBrowser" : "Consent.Headline", DeviceName);
+    /// <summary>An AI agent says it is asking (docs/MCP.md §4.2): not a person at another computer.</summary>
+    public bool IsAgent => _req.Agent && !_req.Browser;
+    public string Headline => L.Format(
+        IsBrowser ? "Consent.HeadlineBrowser" : IsAgent ? "Consent.HeadlineAgent" : "Consent.Headline", DeviceName);
     public string InputNote => InputAvailable ? L.Get("Consent.InputAvailable") : L.Get("Consent.InputUnavailable");
 
     /// <summary>Raised once, when the dialog should close.</summary>

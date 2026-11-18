@@ -17,6 +17,9 @@
     <Border Name="BrowserNote" Classes="tint" IsVisible="{Binding IsBrowser}">
       <TextBlock TextWrapping="Wrap" Text="{l:T Consent.BrowserNote}" />
     </Border>
+    <Border Name="AgentNote" Classes="warn" IsVisible="{Binding IsAgent}">
+      <TextBlock TextWrapping="Wrap" Text="{l:T Consent.AgentNote}" />
+    </Border>
     <Border Name="UnverifiedNote" Classes="warn" IsVisible="{Binding IsUnverified}">
       <TextBlock TextWrapping="Wrap" Text="{l:T Consent.UnverifiedNote}" />
     </Border>

@@ -10,6 +10,13 @@
         Topmost="True" ShowInTaskbar="False" ShowActivated="False"
         WindowDecorations="None" RequestedThemeVariant="Dark"
         Background="{DynamicResource BannerBrush}">
+  <Window.Styles>
+    <!-- Orange 40 marks a session; an AI agent's is Purple 40, so it is never taken for a person's (docs/MCP.md §4.2). -->
+    <Style Selector="Border.row"><Setter Property="BorderBrush" Value="#FF832B" /></Style>
+    <Style Selector="Border.row.agent"><Setter Property="BorderBrush" Value="#BE95FF" /></Style>
+    <Style Selector="Ellipse.dot"><Setter Property="Fill" Value="#FF832B" /></Style>
+    <Style Selector="Ellipse.dot.agent"><Setter Property="Fill" Value="#BE95FF" /></Style>
+  </Window.Styles>
   <StackPanel>
     <!-- Folded: one small tab for everyone, still saying sessions are running and for how long.
          A click unfolds it; dragging moves it (code-behind tells the two apart). -->
@@ -28,12 +35,18 @@
         <ItemsControl.ItemTemplate>
           <DataTemplate x:DataType="vm:BannerViewModel">
             <StackPanel>
-              <Border Padding="16,0,8,0" Height="64" BorderBrush="#FF832B" BorderThickness="4,0,0,1">
+              <Border Classes="row" Classes.agent="{Binding IsAgent}" Padding="16,0,8,0" Height="64" BorderThickness="4,0,0,1">
                 <Grid ColumnDefinitions="Auto,*,Auto,Auto" VerticalAlignment="Center">
-                  <Ellipse Width="10" Height="10" Fill="#FF832B" VerticalAlignment="Center" Margin="0,0,14,0" />
+                  <Ellipse Classes="dot" Classes.agent="{Binding IsAgent}" Width="10" Height="10" VerticalAlignment="Center" Margin="0,0,14,0" />
                   <StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center">
-                    <TextBlock Name="HeadlineText" Text="{Binding Headline}" Foreground="#F4F4F4" FontWeight="SemiBold" FontSize="14"
-                               TextTrimming="CharacterEllipsis" />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                      <Border Name="AgentBadge" IsVisible="{Binding IsAgent}" Background="#BE95FF" CornerRadius="2" Padding="6,0"
+                              VerticalAlignment="Center">
+                        <TextBlock Text="{l:T Banner.AgentBadge}" Foreground="#161616" FontWeight="SemiBold" FontSize="12" />
+                      </Border>
+                      <TextBlock Name="HeadlineText" Text="{Binding Headline}" Foreground="#F4F4F4" FontWeight="SemiBold" FontSize="14"
+                                 TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
                     <TextBlock Foreground="#C6C6C6" FontSize="12" LetterSpacing="0.32" TextTrimming="CharacterEllipsis">
                       <Run Text="{Binding PermsText}" />
                       <Run Text=" · " />

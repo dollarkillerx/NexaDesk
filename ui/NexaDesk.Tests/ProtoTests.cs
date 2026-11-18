@@ -36,6 +36,22 @@ public class ProtoTests
         Assert.True(r.InputAvailable);
     }
 
+    // AI agents (docs/MCP.md §4): the same golden bytes as golden_encodings in Rust.
+    [Fact]
+    public void Agent_messages_match_the_rust_golden_bytes()
+    {
+        Assert.Equal("6a020801", Hex(new UiRequest.SetAllowAgents(true).Encode()));
+        var started = Assert.IsType<AgentMessage.SessionStarted>(AgentMessage.Decode(Bytes("1a06 0a04 0801 3801")));
+        Assert.Equal(1ul, started.Session.Id);
+        Assert.True(started.Session.Agent);
+        // Field 15 of IncomingRequest and of Status.
+        var asked = Assert.IsType<AgentMessage.IncomingRequest>(AgentMessage.Decode(Bytes("1204 0807 7801")));
+        Assert.True(asked.Agent);
+        Assert.False(asked.Browser);
+        var status = Assert.IsType<AgentMessage.Status>(AgentMessage.Decode(Bytes("0a02 7801")));
+        Assert.True(status.AllowAgents);
+    }
+
     [Fact]
     public void A_default_decide_is_a_denial_on_the_wire()
     {

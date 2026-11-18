@@ -95,6 +95,12 @@ pub struct ClientHello {
     pub caps: Option<Caps>,
     #[prost(oneof = "Auth", tags = "5, 6, 7, 8")]
     pub auth: Option<Auth>,
+    /// The viewer is an AI agent (`nexa-mcp`, docs/MCP.md §4.1), not a person's app.
+    /// Self-declared: it lets an honest agent say so, and is no security boundary. A
+    /// host that does not know the field ignores it, so an agent also requires
+    /// [`SessionAccept::agent_ack`].
+    #[prost(bool, tag = "9")]
+    pub agent: bool,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -156,6 +162,10 @@ pub struct SessionAccept {
     /// `displays[0].name` instead, which viewers still fall back to.
     #[prost(string, tag = "5")]
     pub host_name: String,
+    /// The host knew the viewer for an AI agent and let it in as one: its person was
+    /// told so. Never set for other viewers.
+    #[prost(bool, tag = "6")]
+    pub agent_ack: bool,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -277,6 +287,7 @@ mod tests {
                 max_fps: 120,
             }),
             auth: Some(Auth::Password(true)),
+            agent: true,
         };
         assert_eq!(
             ClientHello::decode(m.encode_to_vec().as_slice()).unwrap(),

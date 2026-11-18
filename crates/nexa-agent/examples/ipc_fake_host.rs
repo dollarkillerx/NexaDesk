@@ -109,6 +109,7 @@ async fn main() {
             caps: caps(),
             auth: ViewerAuth::Code(Zeroizing::new(host.agent.current_code().to_string())),
             timeouts,
+            agent: false,
         },
     )
     .await;

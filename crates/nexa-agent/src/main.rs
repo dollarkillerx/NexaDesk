@@ -167,7 +167,7 @@ const SIGNAL_SECRET_ENV: &str = "NEXA_SIGNAL_SECRET";
 #[cfg(any(target_os = "macos", windows))]
 const USAGE: &str = "usage: nexa-agent --listen <ip:port> [--name <device name>] [--data-dir <dir>] [--consent terminal|ui]\n\
                  [--signal <wss://server[:port]>] [--signal-ca <pem>] [--paired-only] [--relay-only]\n\
-                 [--downloads <dir>] [--no-lan-discovery] [--web <ip:port>]\n\
+                 [--downloads <dir>] [--no-lan-discovery] [--web <ip:port>] [--allow-agents]\n\
   --listen    UDP address to listen on; use a LAN or Tailscale address, or 127.0.0.1\n\
   --name      name shown to viewers (default: this Mac's host name)\n\
   --data-dir  where pairings.json and agent.sock live (default: ~/Library/Application Support/NexaDesk)\n\
@@ -186,6 +186,8 @@ const USAGE: &str = "usage: nexa-agent --listen <ip:port> [--name <device name>]
   --web       also let web browsers connect: serve the page and WebRTC on this TCP address\n\
               (e.g. [::]:47801); the same one-time code and consent apply. Off by default.\n\
   --downloads where files sent to this Mac are saved (default: ~/Downloads/NexaDesk)\n\
+  --allow-agents  let AI agents (nexa-mcp) ask to connect; each is still put to the person\n\
+              and shown as an AI. Off by default; the app sets it from its own setting.\n\
 \n\
        nexa-agent set-password      read a fixed password from standard input and keep it\n\
        nexa-agent clear-password    forget it\n\
@@ -212,6 +214,7 @@ struct Args {
     lan_discovery: bool,
     downloads: std::path::PathBuf,
     web: Option<std::net::SocketAddr>,
+    allow_agents: bool,
 }
 
 #[cfg(any(target_os = "macos", windows))]
@@ -226,6 +229,7 @@ fn parse_args() -> Result<Args, String> {
     let mut relay_only = false;
     let mut lan_discovery = true;
     let mut web = None;
+    let mut allow_agents = false;
     let mut downloads = None;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
@@ -253,6 +257,7 @@ fn parse_args() -> Result<Args, String> {
             "--signal" => signal = Some(value()?).filter(|s| !s.trim().is_empty()),
             "--signal-ca" => signal_ca = Some(std::path::PathBuf::from(value()?)),
             "--paired-only" => paired_only = true,
+            "--allow-agents" => allow_agents = true,
             "--relay-only" => relay_only = true,
             "--no-lan-discovery" => lan_discovery = false,
             "--web" => {
@@ -290,6 +295,7 @@ fn parse_args() -> Result<Args, String> {
         downloads,
         // A browser connects directly to an address of this Mac: not with --relay-only.
         web: web.filter(|_| !relay_only),
+        allow_agents,
     })
 }
 
@@ -463,6 +469,7 @@ fn run() -> Result<(), String> {
             agent
         }
     };
+    agent.set_allow_agents(args.allow_agents);
     *commands.lock().unwrap_or_else(|e| e.into_inner()) = Some(agent.clone());
 
     {

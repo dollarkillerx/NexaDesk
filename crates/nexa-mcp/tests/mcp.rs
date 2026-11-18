@@ -78,6 +78,9 @@ impl Deps for TestDeps {
     fn rewrites_keys(&self) -> bool {
         false
     }
+    fn is_agent(&self) -> bool {
+        true
+    }
     fn fallback_key_source(
         &self,
         _: std::sync::mpsc::Sender<InputCmd>,
@@ -200,6 +203,7 @@ async fn an_agent_connects_looks_and_acts() {
         Timeouts::default(),
     )
     .await;
+    h.agent.set_allow_agents(true);
     let agent = Agent::new();
 
     let init = agent
@@ -313,6 +317,7 @@ async fn a_paired_host_connects_again_without_a_code() {
         Timeouts::default(),
     )
     .await;
+    h.agent.set_allow_agents(true);
     let agent = Agent::new();
     let first = connect(&agent, &h).await;
     assert_eq!(first["isError"], false, "{first}");
@@ -332,6 +337,7 @@ async fn an_unpaired_address_without_a_code_is_explained() {
         Timeouts::default(),
     )
     .await;
+    h.agent.set_allow_agents(true);
     let agent = Agent::new();
     let r = agent
         .call("nexa_connect", json!({ "address": h.addr.to_string() }))
@@ -347,6 +353,7 @@ async fn a_view_only_session_refuses_actions() {
         Timeouts::default(),
     )
     .await;
+    h.agent.set_allow_agents(true);
     let agent = Agent::new();
     let connected = connect(&agent, &h).await;
     assert_eq!(connected["isError"], false, "{connected}");
@@ -379,4 +386,17 @@ async fn protocol_mistakes_get_json_rpc_errors() {
     // A notification gets no reply at all.
     let note = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
     assert!(lock(&agent.server).handle(&note).is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_host_that_does_not_accept_agents_says_so() {
+    let h = host(
+        FakeUi::allowing(perms(true, true, false), false),
+        Timeouts::default(),
+    )
+    .await;
+    let agent = Agent::new();
+    let r = connect(&agent, &h).await;
+    assert_eq!(r["isError"], true);
+    assert!(texts(&r).contains("does not accept AI agents"), "{r}");
 }

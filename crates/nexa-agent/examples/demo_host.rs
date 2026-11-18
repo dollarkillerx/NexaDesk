@@ -8,6 +8,7 @@
 //! [--signal wss://server[:port] [--signal-ca <pem>]]` (default `127.0.0.1:47900`).
 //! `--displays 2` adds a second, smaller display tinted blue, to try switching.
 //! `--remember` keeps each viewer's pairing, so it connects again with no code.
+//! `--agents` lets AI agents (`nexa-mcp`) connect; without it they are refused.
 //! `--lan` announces it over mDNS (listen on `0.0.0.0:…` for an address to announce);
 //! `--signal` registers it with a signaling server and prints its device ID; the
 //! server's access password comes from `NEXA_SIGNAL_SECRET`, as for the real agent.
@@ -277,7 +278,11 @@ mod demo {
             true
         }
         fn ask(&self, request: &ConsentRequest, _: Duration) -> ConsentAnswer {
-            println!("CONSENT allowing {:?}", request.device_name);
+            println!(
+                "CONSENT allowing {:?}{}",
+                request.device_name,
+                if request.agent { " (an AI agent)" } else { "" }
+            );
             ConsentAnswer {
                 allow: true,
                 perms: Permissions {
@@ -317,11 +322,13 @@ mod demo {
         let (mut lan, mut signal_url, mut signal_ca) = (false, None::<String>, None::<String>);
         let mut displays = 1usize;
         let mut remember = false;
+        let mut agents = false;
         let mut args = std::env::args().skip(1);
         while let Some(a) = args.next() {
             match a.as_str() {
                 "--lan" => lan = true,
                 "--remember" => remember = true,
+                "--agents" => agents = true,
                 "--displays" => displays = args.next().and_then(|n| n.parse().ok()).unwrap_or(1),
                 "--signal" => signal_url = args.next(),
                 "--signal-ca" => signal_ca = args.next(),
@@ -385,6 +392,7 @@ mod demo {
             )
             .await
             .expect("agent");
+            agent.set_allow_agents(agents);
             println!("READY {}", agent.local_addr());
             tokio::signal::ctrl_c().await.ok();
         });

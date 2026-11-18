@@ -475,7 +475,10 @@ public class HostViewModelTests
         await vm.StartCommand.ExecuteAsync(null);
         Assert.Empty(_process.Starts);
         Assert.True(vm.IsHosting);
-        Assert.IsType<UiRequest.ListPairings>(Assert.Single(_link.Sent));
+        // The pairings, and this app's AI agent setting: the agent left running may have another.
+        Assert.Collection(_link.Sent,
+            r => Assert.IsType<UiRequest.ListPairings>(r),
+            r => Assert.Equal(new UiRequest.SetAllowAgents(false), r));
     }
 
     [Fact]

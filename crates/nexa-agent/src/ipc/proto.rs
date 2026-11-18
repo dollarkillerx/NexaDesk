@@ -107,6 +107,14 @@ pub struct AnswerTransfer {
     pub accept: bool,
 }
 
+/// Lets AI agents connect, or not (docs/MCP.md §4.2). The agent starts with them
+/// refused; the UI sends its setting after `Hello` and whenever it changes.
+#[derive(Clone, PartialEq, Message)]
+pub struct SetAllowAgents {
+    #[prost(bool, tag = "1")]
+    pub allow: bool,
+}
+
 #[derive(Clone, PartialEq, Oneof)]
 pub enum UiBody {
     #[prost(message, tag = "1")]
@@ -134,6 +142,8 @@ pub enum UiBody {
     CancelTransfer(CancelTransfer),
     #[prost(message, tag = "12")]
     AnswerTransfer(AnswerTransfer),
+    #[prost(message, tag = "13")]
+    SetAllowAgents(SetAllowAgents),
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -144,7 +154,7 @@ pub struct SessionRef {
 
 #[derive(Clone, PartialEq, Message)]
 pub struct UiToAgent {
-    #[prost(oneof = "UiBody", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
+    #[prost(oneof = "UiBody", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13")]
     pub body: Option<UiBody>,
 }
 
@@ -168,6 +178,9 @@ pub struct SessionInfo {
     pub remote: String,
     #[prost(message, optional, tag = "6")]
     pub perms: Option<Permissions>,
+    /// An AI agent (docs/MCP.md §4): the banner says so.
+    #[prost(bool, tag = "7")]
+    pub agent: bool,
 }
 
 impl From<&crate::SessionInfo> for SessionInfo {
@@ -179,6 +192,7 @@ impl From<&crate::SessionInfo> for SessionInfo {
             device_key: s.device_key.clone(),
             remote: s.remote.to_string(),
             perms: Some((&s.perms).into()),
+            agent: s.agent,
         }
     }
 }
@@ -218,6 +232,9 @@ pub struct Status {
     /// A fixed password is set: viewers may type it instead of the code.
     #[prost(bool, tag = "14")]
     pub password_set: bool,
+    /// AI agents may connect (`SetAllowAgents`, docs/MCP.md §4.2).
+    #[prost(bool, tag = "15")]
+    pub allow_agents: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Enumeration)]
@@ -271,6 +288,9 @@ pub struct IncomingRequest {
     /// A web browser (`nexa-web`): it can only view and control, and is never saved.
     #[prost(bool, tag = "14")]
     pub browser: bool,
+    /// An AI agent says it is asking (docs/MCP.md §4): the dialog says so.
+    #[prost(bool, tag = "15")]
+    pub agent: bool,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -578,6 +598,7 @@ mod tests {
             timeout_ms: 60_000,
             input_available: true,
             browser: false,
+            agent: false,
         }));
         let status = AgentToUi::from(AgentBody::Status(Status {
             version: 1,
@@ -594,6 +615,7 @@ mod tests {
             web_fingerprint: String::new(),
             web_cert_custom: false,
             password_set: false,
+            allow_agents: false,
         }));
         assert_eq!(
             hex(&status.encode_to_vec()),
@@ -631,6 +653,19 @@ mod tests {
             hex(&incoming.encode_to_vec()),
             "12290807 1203e78e8b 1a0164 22026162 2a09312e322e332e343a35 3002 3a020801 4001 5801 60e0d403 6801"
                 .replace(' ', "")
+        );
+        let allow = UiToAgent::from(UiBody::SetAllowAgents(SetAllowAgents { allow: true }));
+        assert_eq!(hex(&allow.encode_to_vec()), "6a02 0801".replace(' ', ""));
+        let started = AgentToUi::from(AgentBody::SessionStarted(SessionStarted {
+            session: Some(SessionInfo {
+                id: 1,
+                agent: true,
+                ..Default::default()
+            }),
+        }));
+        assert_eq!(
+            hex(&started.encode_to_vec()),
+            "1a06 0a04 0801 3801".replace(' ', "")
         );
     }
 }

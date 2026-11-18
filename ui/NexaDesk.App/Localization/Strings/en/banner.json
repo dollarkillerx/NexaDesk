@@ -4,5 +4,6 @@
   "Banner.Collapse": "Fold",
   "Banner.Expand": "Show the banner",
   "Banner.Folded": "{0} people · {1}",
-  "Banner.ExpandOrMove": "Click to show who is connected; drag to move"
+  "Banner.ExpandOrMove": "Click to show who is connected; drag to move",
+  "Banner.AgentBadge": "AI"
 }

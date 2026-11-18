@@ -4,7 +4,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering::Relaxed},
+        atomic::{AtomicBool, AtomicU64, Ordering::Relaxed},
     },
     time::Duration,
 };
@@ -115,6 +115,9 @@ pub(crate) struct Shared {
     lan: Mutex<Option<nexa_net::discovery::Advertiser>>,
     /// Browser access, when on.
     web: Mutex<Option<nexa_web::WebGateway>>,
+    /// Whether AI agents may connect (docs/MCP.md §4.2): off until the UI or
+    /// `--allow-agents` says otherwise.
+    allow_agents: Arc<AtomicBool>,
 }
 
 impl Shared {
@@ -293,6 +296,16 @@ impl Agent {
     /// Whether input could be granted right now (macOS: Accessibility).
     pub fn input_available(&self) -> bool {
         self.shared.env.platform.input_available()
+    }
+
+    /// Lets AI agents connect, or not (docs/MCP.md §4.2). Off when the agent starts.
+    /// Sessions already running are not ended by turning it off.
+    pub fn set_allow_agents(&self, allow: bool) {
+        self.shared.allow_agents.store(allow, Relaxed);
+    }
+
+    pub fn allow_agents(&self) -> bool {
+        self.shared.allow_agents.load(Relaxed)
     }
 
     pub fn pairings(&self) -> Vec<PairingRecord> {
@@ -538,6 +551,7 @@ pub async fn start(
     let password_guard = nexa_auth::PasswordGuard::default();
     let (focus_tx, focus_rx) = watch::channel(None);
     let code = OneTimeCode::generate();
+    let allow_agents = Arc::new(AtomicBool::new(false));
     let (shutdown, _) = watch::channel(false);
     let env = Arc::new(SessionEnv {
         platform: platform.clone(),
@@ -568,6 +582,10 @@ pub async fn start(
                 let platform = platform.clone();
                 Arc::new(move || platform.input_available())
             },
+            allow_agents: {
+                let allow = allow_agents.clone();
+                Arc::new(move || allow.load(Relaxed))
+            },
             caps: config.caps,
             os: config.os,
             host_name: config.device_name.clone(),
@@ -586,6 +604,7 @@ pub async fn start(
         shutdown,
         lan: Mutex::new(None),
         web: Mutex::new(None),
+        allow_agents,
     });
 
     ui.event(AgentEvent::Listening(local));
@@ -790,6 +809,7 @@ async fn run_session(
         device_key: accepted.peer.to_hex(),
         remote,
         perms: accepted.perms.clone(),
+        agent: accepted.agent,
     };
     let files = session::FileSlot::default();
     let done = shared.take_slot(info.clone(), stop_tx, files.clone()).await;

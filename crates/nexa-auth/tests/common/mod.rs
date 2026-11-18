@@ -173,6 +173,7 @@ pub fn hello(auth: Auth) -> ClientHello {
         os: 0,
         caps: None,
         auth: Some(auth),
+        agent: false,
     }
 }
 

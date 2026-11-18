@@ -262,6 +262,7 @@ fn viewer(
                 caps: caps(),
                 auth: ViewerAuth::Code(Zeroizing::new(code)),
                 timeouts: timeouts(),
+                agent: false,
             },
         )
         .await;

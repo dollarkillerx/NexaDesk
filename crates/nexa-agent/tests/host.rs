@@ -74,6 +74,7 @@ fn viewer_config(me: &DeviceIdentity, auth: ViewerAuth) -> ViewerConfig {
         caps: caps(),
         auth,
         timeouts: timeouts(),
+        agent: false,
     }
 }
 
@@ -1149,4 +1150,95 @@ async fn without_the_file_permission_nothing_is_written_either_way() {
     assert!(h.agent.send_files(vec![src]).is_err());
     assert!(!ui.saw(|e| matches!(e, AgentEvent::Transfer { .. })));
     conn.close(3u32.into(), b"bye");
+}
+
+// ---------------------------------------------------------------------------------
+// AI agents (docs/MCP.md §4)
+// ---------------------------------------------------------------------------------
+
+fn agent_config(me: &DeviceIdentity, auth: ViewerAuth) -> ViewerConfig {
+    ViewerConfig {
+        agent: true,
+        ..viewer_config(me, auth)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agents_are_refused_unless_the_host_allows_them() {
+    let ui = FakeUi::allowing(perms(true, true, false), false);
+    let h = host_with(ui.clone()).await;
+    assert!(!h.agent.allow_agents(), "off when the agent starts");
+    let me = DeviceIdentity::generate();
+    let (_ep, conn) = dial(&h, &me, PeerPolicy::AcceptUnknown).await;
+    let result = viewer_handshake(&conn.unwrap(), agent_config(&me, code_of(&h))).await;
+    match result {
+        Err(SessionError::Rejected { reason, message }) => {
+            assert_eq!(reason, RejectReason::ConsentDenied);
+            assert!(message.contains("AI agents"), "{message}");
+        }
+        Err(e) => panic!("expected a refusal, got {e}"),
+        Ok(_) => panic!("an agent got in while agents are off"),
+    }
+    assert_eq!(
+        ui.prompts(),
+        0,
+        "nobody is asked about an agent that may not come"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_allowed_agent_is_put_to_the_person_as_one_and_acknowledged() {
+    let ui = FakeUi::allowing(perms(true, true, false), true);
+    let h = host_with(ui.clone()).await;
+    h.agent.set_allow_agents(true);
+    let me = DeviceIdentity::generate();
+    let (_ep, conn) = dial(&h, &me, PeerPolicy::AcceptUnknown).await;
+    let mut accepted = viewer_handshake(&conn.unwrap(), agent_config(&me, code_of(&h)))
+        .await
+        .unwrap();
+    assert!(accepted.accept.agent_ack);
+    let asked = common::lock(&ui.asked)[0].clone();
+    assert!(asked.agent);
+    let proposed = &asked.prompt.perms;
+    assert!(proposed.view && proposed.input, "{proposed:?}");
+    assert!(
+        !proposed.clipboard && !proposed.file && !proposed.audio && !proposed.terminal,
+        "{proposed:?}"
+    );
+    assert!(!asked.prompt.offer_skip_next_time);
+    begin_stream(&mut accepted).await;
+    until("the session is shown as an agent's", WAIT, || {
+        common::lock(&ui.events)
+            .iter()
+            .any(|e| matches!(e, AgentEvent::SessionStarted(s) if s.agent))
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_persons_app_is_not_acknowledged_as_an_agent() {
+    let ui = FakeUi::allowing(perms(true, true, false), false);
+    let h = host_with(ui.clone()).await;
+    h.agent.set_allow_agents(true);
+    let me = DeviceIdentity::generate();
+    let (_ep, _conn, result) = connect_with_code(&h, &me).await;
+    let accepted = result.unwrap();
+    assert!(!accepted.accept.agent_ack);
+    assert!(!common::lock(&ui.asked)[0].agent);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_fixed_password_does_not_let_an_agent_in_unasked() {
+    let ui = FakeUi::allowing(perms(true, true, false), false);
+    let h = common::host_with_password(ui.clone(), timeouts(), "correct horse battery").await;
+    h.agent.set_allow_agents(true);
+    let me = DeviceIdentity::generate();
+    let (_ep, conn) = dial(&h, &me, PeerPolicy::AcceptUnknown).await;
+    let auth = ViewerAuth::Password(Zeroizing::new("correct horse battery".to_owned()));
+    let accepted = viewer_handshake(&conn.unwrap(), agent_config(&me, auth))
+        .await
+        .unwrap();
+    assert_eq!(ui.prompts(), 1, "an agent is always put to the person");
+    let granted = accepted.accept.perms.unwrap();
+    assert!(!granted.terminal, "not the owner's everything: {granted:?}");
 }

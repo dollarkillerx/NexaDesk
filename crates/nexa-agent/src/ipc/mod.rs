@@ -263,6 +263,7 @@ fn status_of(agent: &Agent) -> AgentToUi {
         web_fingerprint: web.as_ref().map(|w| w.0.clone()).unwrap_or_default(),
         web_cert_custom: web.is_some_and(|w| w.1),
         password_set: agent.has_password(),
+        allow_agents: agent.allow_agents(),
     })
     .into()
 }
@@ -413,6 +414,10 @@ fn handle(ctx: &Ctx, conn: u64, msg: UiToAgent) -> Option<AgentToUi> {
         Some(UiBody::CancelTransfer(c)) => {
             agent.cancel_transfer(c.id);
             None
+        }
+        Some(UiBody::SetAllowAgents(a)) => {
+            agent.set_allow_agents(a.allow);
+            Some(status_of(agent))
         }
         Some(UiBody::AnswerTransfer(a)) => {
             if agent.answer_transfer(a.id, a.accept) {

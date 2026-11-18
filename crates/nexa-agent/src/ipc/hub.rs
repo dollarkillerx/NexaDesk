@@ -272,6 +272,7 @@ impl Consent for IpcHub {
             timeout_ms: timeout.as_millis().min(u128::from(u32::MAX)) as u32,
             input_available: self.input_available(),
             browser: request.peer.is_browser(),
+            agent: request.agent,
         };
         {
             let mut state = lock(&self.state);

@@ -95,6 +95,13 @@ public abstract record UiRequest
     {
         protected override void Write(ProtoWriter w) => w.Message(12, m => m.UInt64(1, Id).Bool(2, Accept));
     }
+
+    /// <summary>Lets AI agents connect, or not (docs/MCP.md §4.2). The agent starts with them refused:
+    /// sent after Hello and whenever the setting changes.</summary>
+    public sealed record SetAllowAgents(bool Allow) : UiRequest
+    {
+        protected override void Write(ProtoWriter w) => w.Message(13, m => m.Bool(1, Allow));
+    }
 }
 
 /// <summary>Request: only the device ID, nothing proves who is asking.</summary>
@@ -102,7 +109,9 @@ public enum AuthKind { Unspecified = 0, Paired = 1, Code = 2, Password = 3, Requ
 
 public enum NoticeKind { Warning = 0, ConnectionFailed = 1, Clipboard = 2 }
 
-public sealed record HostSession(ulong Id, string DeviceName, string DeviceId, string DeviceKey, string Remote, Permissions Perms);
+/// <summary><paramref name="Agent"/>: an AI agent (docs/MCP.md §4), shown as one.</summary>
+public sealed record HostSession(ulong Id, string DeviceName, string DeviceId, string DeviceKey, string Remote, Permissions Perms,
+    bool Agent = false);
 
 public sealed record PairedDevice(string DeviceKey, string DeviceId, string Name, Permissions Perms, ulong AddedAt, ulong LastSeen, bool Unattended);
 
@@ -115,11 +124,12 @@ public abstract record AgentMessage
     public sealed record Status(uint Version, string Listen, string Code, string DeviceName, string DeviceId,
         string DeviceKey, HostSession? Session, bool InputAvailable,
         string ShortId = "", SignalState Signal = SignalState.Off, string SignalDetail = "",
-        string WebFingerprint = "", bool WebCertCustom = false, bool PasswordSet = false) : AgentMessage;
+        string WebFingerprint = "", bool WebCertCustom = false, bool PasswordSet = false,
+        bool AllowAgents = false) : AgentMessage;
 
     public sealed record IncomingRequest(ulong ReqId, string DeviceName, string DeviceId, string DeviceKey,
         string Remote, AuthKind Auth, Permissions Perms, bool OfferSave, bool SaveDefault, bool OfferSkipNextTime,
-        bool Takeover, uint TimeoutMs, bool InputAvailable, bool Browser = false) : AgentMessage;
+        bool Takeover, uint TimeoutMs, bool InputAvailable, bool Browser = false, bool Agent = false) : AgentMessage;
 
     public sealed record SessionStarted(HostSession Session) : AgentMessage;
     public sealed record SessionEnded(ulong Id, string DeviceName, string Reason) : AgentMessage;
@@ -174,6 +184,7 @@ public abstract record AgentMessage
         ulong id = 0;
         string name = "", did = "", key = "", remote = "";
         var perms = Permissions.None;
+        var agent = false;
         var r = new ProtoReader(data);
         while (r.Next(out var f))
         {
@@ -185,10 +196,11 @@ public abstract record AgentMessage
                 case 4: key = r.String(); break;
                 case 5: remote = r.String(); break;
                 case 6: perms = Permissions.Read(r.Bytes()); break;
+                case 7: agent = r.Bool(); break;
                 default: r.Skip(); break;
             }
         }
-        return new HostSession(id, name, did, key, remote, perms);
+        return new HostSession(id, name, did, key, remote, perms, agent);
     }
 
     static Status DecodeStatus(ReadOnlySpan<byte> data)
@@ -200,6 +212,7 @@ public abstract record AgentMessage
         string shortId = "", detail = "", webFp = "";
         var webCustom = false;
         var passwordSet = false;
+        var allowAgents = false;
         var signal = SignalState.Off;
         var r = new ProtoReader(data);
         while (r.Next(out var f))
@@ -220,11 +233,13 @@ public abstract record AgentMessage
                 case 12: webFp = r.String(); break;
                 case 13: webCustom = r.Bool(); break;
                 case 14: passwordSet = r.Bool(); break;
+                case 15: allowAgents = r.Bool(); break;
                 default: r.Skip(); break;
             }
         }
         if (!Enum.IsDefined(signal)) signal = SignalState.Off;
-        return new Status(version, listen, code, name, did, key, session, input, shortId, signal, detail, webFp, webCustom, passwordSet);
+        return new Status(version, listen, code, name, did, key, session, input, shortId, signal, detail, webFp, webCustom, passwordSet,
+            allowAgents);
     }
 
     static IncomingRequest DecodeIncoming(ReadOnlySpan<byte> data)
@@ -233,7 +248,8 @@ public abstract record AgentMessage
         string name = "", did = "", key = "", remote = "";
         var auth = AuthKind.Unspecified;
         var perms = Permissions.None;
-        bool offerSave = false, saveDefault = false, offerSkip = false, takeover = false, input = false, browser = false;
+        bool offerSave = false, saveDefault = false, offerSkip = false, takeover = false, input = false, browser = false,
+            agent = false;
         uint timeout = 0;
         var r = new ProtoReader(data);
         while (r.Next(out var f))
@@ -254,10 +270,12 @@ public abstract record AgentMessage
                 case 12: timeout = r.UInt32(); break;
                 case 13: input = r.Bool(); break;
                 case 14: browser = r.Bool(); break;
+                case 15: agent = r.Bool(); break;
                 default: r.Skip(); break;
             }
         }
-        return new IncomingRequest(id, name, did, key, remote, auth, perms, offerSave, saveDefault, offerSkip, takeover, timeout, input, browser);
+        return new IncomingRequest(id, name, did, key, remote, auth, perms, offerSave, saveDefault, offerSkip, takeover, timeout, input, browser,
+            agent);
     }
 
     static SessionEnded DecodeEnded(ReadOnlySpan<byte> data)

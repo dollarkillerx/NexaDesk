@@ -590,6 +590,7 @@ mod tests {
             os: 0,
             caps: None,
             auth,
+            agent: false,
         };
         assert_eq!(
             hello_auth(&hello(1, Some(Auth::Known(true)))),

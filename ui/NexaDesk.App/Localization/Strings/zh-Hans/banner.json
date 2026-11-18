@@ -4,5 +4,6 @@
   "Banner.Collapse": "收起",
   "Banner.Expand": "展开提示条",
   "Banner.Folded": "{0} 人 · {1}",
-  "Banner.ExpandOrMove": "点击展开查看连接者；拖动可移动位置"
+  "Banner.ExpandOrMove": "点击展开查看连接者；拖动可移动位置",
+  "Banner.AgentBadge": "AI"
 }

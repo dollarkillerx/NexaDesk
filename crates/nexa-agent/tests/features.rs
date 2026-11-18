@@ -188,6 +188,7 @@ async fn viewer(h: &Host, mode: Mode) -> (Endpoint, Connection, ViewerAccepted) 
             caps: caps(),
             auth: ViewerAuth::Code(Zeroizing::new(h.agent.current_code().to_string())),
             timeouts: Timeouts::default(),
+            agent: false,
         },
     )
     .await

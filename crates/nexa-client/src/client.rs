@@ -1070,6 +1070,7 @@ async fn establish(
             caps,
             auth,
             timeouts: Timeouts::default(),
+            agent: core.deps.is_agent(),
         },
     );
     let mut close = session.close.subscribe();

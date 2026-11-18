@@ -362,6 +362,43 @@ public class RenderTests
     }
 
     [AvaloniaFact]
+    public void Consent_dialog_for_an_ai_agent()
+    {
+        foreach (var theme in Themes())
+            WithTheme(theme, () =>
+            {
+                var req = Samples.Request(input: true) with { Agent = true, DeviceName = "Mac mini (AI agent)", Perms = new Permissions(true, true, false) };
+                var vm = new ConsentViewModel(req, new FakeLink(), DateTimeOffset.Now);
+                var w = new ConsentDialog { DataContext = vm };
+                w.Show();
+                Save(w, "consent-agent", theme);
+                w.Close();
+            });
+    }
+
+    [AvaloniaFact]
+    public void Banner_for_an_ai_agent()
+    {
+        foreach (var theme in Themes())
+            WithTheme(theme, () =>
+            {
+                // The banner shows a stack: an AI agent's session above a person's, as they would look together.
+                var agent = new BannerViewModel(Samples.Session() with { Agent = true, DeviceName = "Mac mini (AI agent)" }, new FakeLink(), Samples.T0);
+                agent.Tick(Samples.T0.AddMinutes(1).AddSeconds(40));
+                var person = new BannerViewModel(Samples.Session(id: 8), new FakeLink(), Samples.T0);
+                person.Tick(Samples.T0.AddMinutes(12));
+                var vm = new BannerStackViewModel();
+                vm.Sessions.Add(agent);
+                vm.Sessions.Add(person);
+                var w = new ControlBanner { DataContext = vm };
+                w.Show();
+                Save(w, "banner-agent", theme);
+                w.MayClose = true;
+                w.Close();
+            });
+    }
+
+    [AvaloniaFact]
     public void Consent_dialog_with_the_file_box()
     {
         foreach (var theme in Themes())

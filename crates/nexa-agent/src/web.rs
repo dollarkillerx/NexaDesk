@@ -167,6 +167,7 @@ impl WebHost for AgentWeb {
             peer: ConsentPeer::Browser(r.fingerprint.0),
             device_name: r.browser.clone(),
             remote: r.remote,
+            agent: false,
             auth: match r.auth {
                 BrowserAuth::Request => AuthKind::Request,
                 _ => AuthKind::Code,
@@ -223,6 +224,7 @@ impl WebHost for AgentWeb {
                     audio: false,
                     terminal,
                 },
+                agent: false,
             }),
             WebEvent::SessionEnded { id, reason } => AgentEvent::SessionEnded {
                 id: ID_BASE + id,

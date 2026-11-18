@@ -71,6 +71,11 @@ pub trait Deps: Send + Sync + 'static {
     fn rewrites_keys(&self) -> bool {
         true
     }
+    /// Whether this viewer is an AI agent (`nexa-mcp`): it says so in its hello and
+    /// connects only to hosts that acknowledge it (docs/MCP.md §4.1).
+    fn is_agent(&self) -> bool {
+        false
+    }
     /// A capture that works without Accessibility. Called on the main thread.
     fn fallback_key_source(&self, tx: Sender<InputCmd>) -> Option<Box<dyn KeySource>>;
     fn clipboard(&self) -> Result<Box<dyn ClipPlatform>, String>;

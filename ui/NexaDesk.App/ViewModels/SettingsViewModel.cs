@@ -40,6 +40,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         _serverInput = _savedServer;
         _announceOnLan = loaded.AnnounceOnLan;
         _allowBrowsers = loaded.AllowBrowsers;
+        _allowAgents = loaded.AllowAgents;
         _startupLanguage = loaded.Language;
         LanguageOptions = [new LanguageOption("", L.Get("Settings.LanguageSystem")), .. L.Languages.Select(l => new LanguageOption(l.Code, l.Name))];
         _selectedLanguage = LanguageOptions.FirstOrDefault(o => o.Code == loaded.Language) ?? LanguageOptions[0];
@@ -67,6 +68,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         Language = SelectedLanguage?.Code ?? "",
         AllowBrowsers = AllowBrowsers,
         UseServerList = UseServerList,
+        AllowAgents = AllowAgents,
     });
 
     /// <summary>
@@ -181,6 +183,23 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         Persist();
         BrowsersChanged?.Invoke(value);
+    }
+
+    /// <summary>
+    /// Whether AI agents (nexa-mcp, docs/MCP.md §4.2) may ask to connect. Each one is still put to the
+    /// person, and the banner says it is an AI. Off by default. Saved at once and applies at once: the
+    /// running agent is told, no restart needed.
+    /// </summary>
+    [ObservableProperty]
+    private bool _allowAgents;
+
+    /// <summary>Raised after AllowAgents is saved.</summary>
+    public event Action<bool>? AgentsChanged;
+
+    partial void OnAllowAgentsChanged(bool value)
+    {
+        Persist();
+        AgentsChanged?.Invoke(value);
     }
 
     /// <summary>Whether this Mac's host is announced on the LAN (§4.11). Saved at once; applies on the next start.</summary>

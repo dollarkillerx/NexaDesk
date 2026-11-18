@@ -1,9 +1,8 @@
 # NexaDesk MCP 方案
 
-> 状态（2026-11-18）：A0 已实现（macOS），见 §9。
-> - 已验证：用本机的演示主机（`demo_host`，127.0.0.1:47900，VideoToolbox 真编真解）按 MCP 协议走完一遍：连接、截图、点击、输入、按键、滚动、断开，以及配对后不用码重连。
-> - 被控端的改动（A1）还没做：被控端目前把 `nexa-mcp` 当成普通的应用连接，确认窗口和提示条都不会写“AI 代理”。
-> - 尚未测试：真实的被控端、经信令服务器连接，以及在 Claude Code 里实际调用。
+> 状态（2026-11-18）：A0（macOS，§9）和 A1（被控端知情，§10）已实现。
+> - 已验证：用本机的演示主机（`demo_host`，127.0.0.1:47900，VideoToolbox 真编真解）按 MCP 协议走完一遍：连接、截图、点击、输入、按键、滚动、断开，以及配对后不用码重连。被控端不接受 AI 代理时被拒且不弹窗；接受时确认请求标明是 AI 代理。
+> - 尚未测试：真实的被控端（应用里的确认窗口和提示条只看过渲染图）、经信令服务器连接，以及在 Claude Code 里实际调用。
 
 目标：让 AI agent（Claude Code、Claude Desktop 等支持 MCP 的程序）经 NexaDesk 看到并操作**另一台**电脑。连接方式和人用的一样：局域网、Tailscale、设备 ID 经信令服务器、TURN 中转，端到端加密，被控端照常确认、照常显示会话提示。
 
@@ -104,11 +103,11 @@ Claude Code 等 ─ MCP（stdio，JSON-RPC）─▶ nexa-mcp
 
 ### 4.1 声明“我是 AI 代理”
 
-- `ClientHello` 加一个字段 `kind`（`0` 人用的应用，`1` AI 代理），`nexa-mcp` 填 `1`。
+- `ClientHello` 加一个字段 `agent`（bool，字段 9），`nexa-mcp` 填 true。（原方案是枚举 `kind`；目前只有两种，用 bool 更简单，以后真有第三种再换。）
 - 被控端把它带进 `IncomingRequest`（加 `agent: bool`，和现有的 `browser` 一样）和 `SessionInfo`。
 - `SessionAccept` 加 `agent_ack: bool`：被控端明确表示“我知道这是 AI 代理，并且允许”。
 
-**`nexa-mcp` 收不到 `agent_ack` 就断开**。旧版被控端不认识 `kind`，会把它当普通应用放进来，但不会回 `agent_ack`。这样 AI 不会在一台不能如实显示“AI 在操作”的电脑上动手。
+**`nexa-mcp` 收不到 `agent_ack` 就断开**。旧版被控端不认识 `agent`，会把它当普通应用放进来，但不会回 `agent_ack`。这样 AI 不会在一台不能如实显示“AI 在操作”的电脑上动手。
 
 这个字段是控制端**自己声明**的。恶意的程序完全可以不声明，冒充人用的应用。所以它的作用是让诚实的工具如实告知，**不是**安全边界。安全边界仍是现有的配对、一次性码、确认窗口和权限。
 
@@ -116,7 +115,7 @@ Claude Code 等 ─ MCP（stdio，JSON-RPC）─▶ nexa-mcp
 
 | 地方 | 改动 |
 |---|---|
-| 设置 | 主窗口“允许别人控制本机”下加“允许 AI 代理连接”，**默认关闭**。关闭时 `kind = 1` 的请求直接拒绝（`SessionReject`，原因“这台电脑不接受 AI 代理”），不弹窗 |
+| 设置 | 主窗口“允许别人控制本机”下加“允许 AI 代理连接”，**默认关闭**。关闭时 `agent` 的请求直接拒绝（`SessionReject`，原因“这台电脑不接受 AI 代理”），不弹窗 |
 | 确认窗口 | 标题写明“AI 代理请求控制”，图标区别于普通设备。权限默认只勾“查看”和“键盘鼠标”，剪贴板、文件、命令行都不勾 |
 | 配对 | 可以保存配对，但“下次无需确认”（无人值守）对 AI 代理**默认不提供**，要在配对列表里对这台设备单独打开 |
 | 提示条 | 会话期间的提示条写明“AI 代理正在操作”，颜色和普通会话不同，照常一键断开（§9.3 规定提示不可关闭，这里同样不可关） |
@@ -155,7 +154,7 @@ Claude Code 等 ─ MCP（stdio，JSON-RPC）─▶ nexa-mcp
 | 阶段 | 内容 | 退出标准 |
 |---|---|---|
 | A0 | `attach_presenter`、`SnapshotPresenter`（macOS），`nexa-mcp` 外壳：`connect` / `screenshot` / `click` / `type` / `key` | 用 demo_host 在 Claude Code 里完成一次点击和输入 |
-| A1 | 被控端：`kind` / `agent_ack`、设置开关、确认窗口和提示条 | 旧版被控端被拒；新版能看到“AI 代理正在操作” |
+| A1 | 被控端：`agent` / `agent_ack`、设置开关、确认窗口和提示条 | 旧版被控端被拒；新版能看到“AI 代理正在操作” |
 | A2 | 终端、剪贴板、显示器、动作后自动截图、等画面稳定 | 真机上让 agent 完成一个小任务 |
 | A3 | Windows 控制端（staging 纹理读回）、随应用发布、应用里的配置说明 | 两个平台的安装包都带 `nexa-mcp` |
 | B | 无障碍树 | 另写方案 |
@@ -183,7 +182,7 @@ Claude Code 等 ─ MCP（stdio，JSON-RPC）─▶ nexa-mcp
 | 本机隔离 | `HeadlessDeps` 不捕获本机键盘，不读写本机剪贴板（`clipboard()` 返回错误，所以剪贴板不同步），没有本机光标和声音输出 |
 | 身份 | 设备密钥是数据目录里的 `device.key`（0600 文件，`FileKeyStore`），没有用钥匙串：命令行程序每次重新编译、签名变了，钥匙串都会弹窗要求授权，而 MCP 进程没有人能点。配对记在 `known_hosts.json`（和应用同一格式）；`hosts.json` 只记“哪个地址对应哪把主机公钥”，用来第二次不带码连接。只有被控端确认时选了保存（`paired_now`），才记进 `hosts.json` |
 | 信令服务器 | 写在 `config.json`：`signal_server`、`signal_secret`。文件里有口令而别人能读（权限不是 600）时拒绝使用。按方案应存进钥匙串，留到 A3 |
-| 设备名 | 默认“<主机名> (AI agent)”，可以用 `--name` 改。在 A1 的 `kind` 字段之前，被控端只能靠这个名字看出是 AI |
+| 设备名 | 默认“<主机名> (AI agent)”，可以用 `--name` 改。在 A1 的 `agent` 字段之前，被控端只能靠这个名字看出是 AI |
 | 日志 | 标准输出只走协议；诊断写 `mcp.log`。不记录输入的文字和按键 |
 | 帧率 | 请求 10 fps。演示主机不理这个请求，照样按 30 fps 发 |
 
@@ -197,3 +196,34 @@ Claude Code 等 ─ MCP（stdio，JSON-RPC）─▶ nexa-mcp
 cargo build -p nexa-mcp --release
 claude mcp add nexadesk -- /path/to/target/release/nexa-mcp
 ```
+
+## 10. A1 实现（与方案的差异）
+
+| 方面 | 实现 |
+|---|---|
+| 协议 | `ClientHello.agent`（字段 9）、`SessionAccept.agent_ack`（字段 6）。查看端（`nexa-session` 的 `viewer_handshake`）在 `ViewerConfig.agent` 为真而对方没回 `agent_ack` 时，关闭连接并报 `VersionMismatch`：“这台电脑的 NexaDesk 太旧，无法显示 AI 代理正在连接，需要更新”。`nexa-client` 通过新的 `Deps::is_agent()` 决定，只有 `HeadlessDeps` 返回 true |
+| 被控端判定 | 在 `host_handshake` 里，紧接着验证之后：不接受 AI 代理时以 `ConsentDenied`、“this computer does not accept AI agents” 拒绝，不弹窗，也不计入别的东西。接受时：固定密码不再免确认（AI 代理总要问人）；确认窗口里建议的权限只有“查看”和“键盘鼠标”；不提供“下次无需确认”。配对列表里已经设成无人值守的设备照旧直接放行，那是机主自己的选择 |
+| 开关 | 被控端进程启动时一律不接受（`Agent::set_allow_agents`）。应用连上被控端后发 `SetAllowAgents`（IPC 新消息，字段 13），设置改动时也立即发，**不用重启**；`Status.allow_agents`（字段 15）回报当前值。命令行：`nexa-agent --allow-agents`；演示主机：`--agents` |
+| 设置 | 主窗口底部“允许 AI 代理连接”，存在 settings.json 的 `allowAgents`，默认关闭 |
+| 确认窗口 | 标题“AI 代理「…」请求连接本机”，下面一段黄色说明（是程序不是人；会自己操作；提示条会一直标明；只在自己启动或正在等它时允许）。指纹照常显示 |
+| 提示条 | AI 代理的那一行用紫色（Carbon Purple 40，`#BE95FF`）的左边线和圆点，标题前加“AI”标签，文字是“AI 代理「…」正在控制本机 / 正在查看本机屏幕”。普通会话仍是橙色 |
+| IPC | `IncomingRequest.agent`（字段 15）、`SessionInfo.agent`（字段 7）；`agent_ipc.proto` 同时补上了此前漏写的 `browser`、`web_fingerprint`、`web_cert_custom`、`password_set` 和 `AUTH_REQUEST` |
+| 浏览器 | 网页端没有 AI 代理的说法，`agent` 恒为 false |
+| 配对列表 | 还不能看出哪台配对设备是 AI 代理（配对记录里没存）。设备名默认带 “(AI agent)”，暂时靠它分辨 |
+
+**测试**：
+- `nexa-agent/tests/host.rs`：
+  - 默认拒绝 AI 代理，且不问人；
+  - 允许后，确认请求标明是 AI 代理，建议的权限只有查看和键盘鼠标，并回 `agent_ack`；
+  - 普通应用不会收到 `agent_ack`；
+  - 固定密码不能让 AI 代理免确认。
+- `nexa-session` 单元测试：没有 `agent_ack` 时查看端不继续。
+- `nexa-mcp/tests/mcp.rs`：被控端不接受时，返回的错误写明原因。
+- 桌面端（`AgentAccessTests`、`ProtoTests`）：
+  - 设置默认关闭并会保存；
+  - 连上被控端时、改设置时都会发 `SetAllowAgents`，且不需要重启；
+  - 确认窗口和提示条的文字正确；
+  - 和 Rust 共用的 golden 字节一致。
+- 渲染图：`ui/out/consent-agent-*.png`、`banner-agent-*.png`。
+- 实测：新版演示主机不带 `--agents` 时被拒；带 `--agents` 时确认请求标明“an AI agent”，会话正常。
+

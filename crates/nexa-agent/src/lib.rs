@@ -90,6 +90,8 @@ pub struct SessionInfo {
     /// The real network peer: the viewer's address, or the relay's when relayed.
     pub remote: SocketAddr,
     pub perms: Permissions,
+    /// An AI agent (docs/MCP.md §4): the person is shown that it is not a person.
+    pub agent: bool,
 }
 
 /// The agent's API events (§5.3), consumed by the terminal and the IPC UI.

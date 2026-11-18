@@ -113,6 +113,9 @@ pub struct ConsentRequest {
     pub remote: SocketAddr,
     pub auth: AuthKind,
     pub prompt: ConsentPrompt,
+    /// The viewer says it is an AI agent (`ClientHello.agent`, docs/MCP.md §4): the
+    /// person should be told so.
+    pub agent: bool,
     /// Accepting ends the session that is running now.
     pub takeover: bool,
     /// Set if the connection goes away; stop asking when it does.
@@ -201,6 +204,10 @@ pub struct HostConfig {
     /// Whether injected input would actually work here. If not, the input permission
     /// is withheld so the viewer is not told it has control when it does not.
     pub input_available: Arc<dyn Fn() -> bool + Send + Sync>,
+    /// Whether viewers that say they are AI agents may connect at all (docs/MCP.md
+    /// §4.2); off by default. Read for every connection, so it can change while the
+    /// host runs.
+    pub allow_agents: Arc<dyn Fn() -> bool + Send + Sync>,
     pub caps: Caps,
     pub os: Os,
     /// Shown to the viewer.
@@ -238,6 +245,8 @@ pub struct HostAccepted {
     pub peer: DevicePublicKey,
     pub device_name: String,
     pub perms: Permissions,
+    /// The viewer is an AI agent, let in as one.
+    pub agent: bool,
     pub viewer_caps: Caps,
     /// Remembering this device failed; the session itself is fine.
     pub warning: Option<String>,
@@ -549,6 +558,18 @@ pub async fn host_handshake_from(
         decision,
     } = authenticated;
     let device_name = sanitize_name(&hello.device_name);
+    let agent = hello.agent;
+    if agent && !(cfg.allow_agents)() {
+        return Err(refuse(
+            conn,
+            control,
+            (
+                RejectReason::ConsentDenied,
+                "this computer does not accept AI agents",
+            ),
+        )
+        .await);
+    }
 
     // Nothing may run unseen: with no one to tell, even a paired device is refused.
     if !cfg.consent.can_present() {
@@ -567,7 +588,9 @@ pub async fn host_handshake_from(
     // The fixed password is the owner's own way in, so nobody has to be at the host to
     // click Allow. The banner still shows the session, and a running session is never
     // taken over without asking.
+    // An AI agent is always put to the person, whatever secret it holds (§4.2).
     let by_password = auth == AuthKind::Password
+        && !agent
         && !takeover
         && matches!(decision, AccessDecision::NeedsConsent(_));
     let prompt = match (&decision, takeover) {
@@ -584,6 +607,10 @@ pub async fn host_handshake_from(
         }),
         (AccessDecision::Allow { .. }, false) => None,
     };
+    // For an agent the dialog proposes seeing and using the keyboard and mouse, and
+    // nothing more; "don't ask again" is not offered (it can be set for the device in
+    // the list of paired devices).
+    let prompt = prompt.map(|p| if agent { agent_prompt(p) } else { p });
 
     let mut answer = None;
     if let Some(prompt) = prompt {
@@ -596,6 +623,7 @@ pub async fn host_handshake_from(
                 remote,
                 auth,
                 prompt,
+                agent,
                 takeover,
                 cancelled: Arc::new(AtomicBool::new(false)),
             },
@@ -647,6 +675,7 @@ pub async fn host_handshake_from(
         caps: Some(cfg.caps.clone()),
         os: cfg.os as i32,
         host_name: cfg.host_name.clone(),
+        agent_ack: agent,
     };
     control.send(ControlBody::Accept(accepted)).await?;
     Ok(HostAccepted {
@@ -654,6 +683,7 @@ pub async fn host_handshake_from(
         peer,
         device_name,
         perms,
+        agent,
         viewer_caps: hello.caps.unwrap_or(Caps {
             encode: Vec::new(),
             decode: Vec::new(),
@@ -663,6 +693,22 @@ pub async fn host_handshake_from(
         }),
         warning,
     })
+}
+
+/// What the dialog proposes to an AI agent: view and control, nothing else.
+fn agent_prompt(p: ConsentPrompt) -> ConsentPrompt {
+    ConsentPrompt {
+        perms: Permissions {
+            view: true,
+            input: true,
+            clipboard: false,
+            file: false,
+            audio: false,
+            terminal: false,
+        },
+        offer_skip_next_time: false,
+        ..p
+    }
 }
 
 /// What the fixed password grants: it is the owner's own way in.
@@ -736,6 +782,9 @@ pub struct ViewerConfig {
     pub caps: Caps,
     pub auth: ViewerAuth,
     pub timeouts: Timeouts,
+    /// This viewer is an AI agent (`nexa-mcp`): say so, and accept only a host that
+    /// acknowledges it (`SessionAccept.agent_ack`).
+    pub agent: bool,
 }
 
 pub struct ViewerAccepted {
@@ -807,6 +856,7 @@ async fn viewer_inner(
             os: cfg.os as i32,
             caps: Some(cfg.caps.clone()),
             auth: Some(auth),
+            agent: cfg.agent,
         }))
         .await?;
 
@@ -839,6 +889,17 @@ async fn viewer_inner(
                         "SessionAccept before pairing finished",
                     ));
                 }
+                // A host too old to know agents let it in as a person's app: its
+                // person was not told an AI is connecting, so do not go on.
+                if !agent_acknowledged(cfg.agent, &accept) {
+                    conn.close(close::VIEWER_ENDED.into(), b"host does not know agents");
+                    return Err(SessionError::Rejected {
+                        reason: RejectReason::VersionMismatch,
+                        message: "this computer's NexaDesk is too old to show that an AI \
+                                  agent is connecting; it needs an update"
+                            .into(),
+                    });
+                }
                 return Ok(ViewerAccepted {
                     control,
                     accept,
@@ -859,9 +920,27 @@ async fn viewer_inner(
     }
 }
 
+/// Whether an agent may go on with this host: only one that let it in as an agent,
+/// so its person was told (docs/MCP.md §4.1). Other viewers always may.
+fn agent_acknowledged(agent: bool, accept: &SessionAccept) -> bool {
+    !agent || accept.agent_ack
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_agent_needs_the_hosts_acknowledgement() {
+        let mut accept = SessionAccept::default();
+        assert!(agent_acknowledged(false, &accept), "an app needs none");
+        assert!(
+            !agent_acknowledged(true, &accept),
+            "an old host never sends it"
+        );
+        accept.agent_ack = true;
+        assert!(agent_acknowledged(true, &accept));
+    }
 
     #[test]
     fn names_lose_escapes_and_invisibles() {

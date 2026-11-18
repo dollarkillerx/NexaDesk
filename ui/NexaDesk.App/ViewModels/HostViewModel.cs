@@ -76,8 +76,11 @@ public sealed partial class BannerViewModel : ObservableObject
     }
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(Headline), nameof(PermsText), nameof(Detail), nameof(HasInput), nameof(CanSendFiles), nameof(DropHint), nameof(IsTerminalOnly))]
+    [NotifyPropertyChangedFor(nameof(Headline), nameof(PermsText), nameof(Detail), nameof(HasInput), nameof(CanSendFiles), nameof(DropHint), nameof(IsTerminalOnly), nameof(IsAgent))]
     private HostSession _session;
+
+    /// <summary>An AI agent, not a person: said in the headline and marked apart (docs/MCP.md §4.2).</summary>
+    public bool IsAgent => Session.Agent;
 
     /// <summary>Files dropped here go to the viewer; files from it are listed here too.</summary>
     public TransferListViewModel Transfers { get; }
@@ -96,6 +99,7 @@ public sealed partial class BannerViewModel : ObservableObject
     public bool IsTerminalOnly => !Session.Perms.View && Session.Perms.Terminal;
     public string Headline =>
         IsTerminalOnly ? L.Format("Host.UsingTerminal", Session.DeviceName)
+        : IsAgent ? L.Format(HasInput ? "Host.AgentControlling" : "Host.AgentViewing", Session.DeviceName)
         : HasInput ? L.Format("Host.Controlling", Session.DeviceName)
         : L.Format("Host.Viewing", Session.DeviceName);
     public string PermsText => L.Format("Host.Perms", Texts.Permissions(Session.Perms));
@@ -144,6 +148,7 @@ public sealed partial class HostViewModel : ObservableObject
     readonly Func<Task> _secretReady;
     readonly Func<bool> _announceOnLan;
     readonly Func<bool> _allowBrowsers;
+    readonly Func<bool> _allowAgents;
     readonly ILocalAddresses _addresses;
     /// <summary>Keeps whether hosting should come back at the next start (AppSettings.ResumeHosting).</summary>
     readonly Action<bool> _rememberHosting;
@@ -264,6 +269,12 @@ public sealed partial class HostViewModel : ObservableObject
     }
 
     public void OnServerChanged() => OnPropertyChanged(nameof(RestartNeeded));
+
+    /// <summary>The AI agent setting changed: the running agent takes it at once.</summary>
+    public void OnAgentsChanged()
+    {
+        if (IsHosting) _link.Send(new UiRequest.SetAllowAgents(_allowAgents()));
+    }
     [ObservableProperty] private string _hostFingerprint = "—";
     [ObservableProperty] private bool _inputAvailable = true;
 
@@ -396,8 +407,10 @@ public sealed partial class HostViewModel : ObservableObject
     public HostViewModel(IAgentLink link, IAgentProcess process, IPermissionProbe permissions, IWindowService windows,
         ILocalAddresses addresses, string deviceName, Func<DateTimeOffset>? now = null, Func<string>? signalServer = null,
         Func<bool>? announceOnLan = null, TailscaleViewModel? tailscale = null, Func<bool>? allowBrowsers = null,
-        Action<bool>? rememberHosting = null, Func<string>? signalSecret = null, Func<Task>? secretReady = null)
+        Action<bool>? rememberHosting = null, Func<string>? signalSecret = null, Func<Task>? secretReady = null,
+        Func<bool>? allowAgents = null)
     {
+        _allowAgents = allowAgents ?? (() => false);
         _secretReady = secretReady ?? (() => Task.CompletedTask);
         _rememberHosting = rememberHosting ?? (_ => { });
         _signalSecret = signalSecret ?? (() => "");
@@ -630,6 +643,8 @@ public sealed partial class HostViewModel : ObservableObject
         Error = null;
         _rememberHosting(true);
         _link.Send(new UiRequest.ListPairings());
+        // The agent starts with agents refused; this is the person's setting.
+        _link.Send(new UiRequest.SetAllowAgents(_allowAgents()));
     }
 
     /// <summary>The person stops remote control (here or in the menu bar): it stays off at the next
@@ -930,7 +945,7 @@ public sealed partial class MainViewModel : ObservableObject
             () => Settings.SavedSecret);
         Host = new HostViewModel(link, process, permissions, windows, addresses, deviceName, now, () => Settings.SavedServer,
             () => Settings.AnnounceOnLan, Tailscale, () => Settings.AllowBrowsers, RememberHosting, () => Settings.SavedSecret,
-            () => Settings.SecretLoaded);
+            () => Settings.SecretLoaded, () => Settings.AllowAgents);
         Settings.ServerChanged += _ =>
         {
             Connect.OnServerChanged();
@@ -938,6 +953,7 @@ public sealed partial class MainViewModel : ObservableObject
         };
         Settings.AnnounceChanged += _ => Host.OnServerChanged();
         Settings.BrowsersChanged += _ => Host.OnServerChanged();
+        Settings.AgentsChanged += _ => Host.OnAgentsChanged();
         _permissions = permissions;
         _windows = windows;
         LoginItem = new LoginItemViewModel(loginItem ?? new NoLoginItem());

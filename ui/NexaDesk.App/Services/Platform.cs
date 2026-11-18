@@ -407,7 +407,7 @@ public sealed class SettingsStore(string path) : ISettingsStore
             // Only what the app itself would have written is honoured.
             return new AppSettings(ViewModels.Texts.NormalizeServer(s.SignalServer) ?? "", s.AnnounceOnLan,
                 Localization.L.IsSupported(s.Language ?? "") ? s.Language! : "", s.AllowBrowsers, s.ResumeHosting,
-                s.UseServerList);
+                s.UseServerList, s.AllowAgents);
         }
         catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException)
         {
