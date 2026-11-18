@@ -411,6 +411,11 @@ async fn log_stream(media: Arc<HostMedia>, session: u64, (w, h, fps): (u32, u32,
             s.skipped_no_room.load(Relaxed),
             s.encode_us.load(Relaxed),
             s.bytes_sent.load(Relaxed),
+            // What the viewer had to ask for: a frame lost beyond FEC, repaired from
+            // the next frame on, and a key frame when that did not arrive either.
+            // Each is a round trip or more of standing picture at the viewer.
+            s.recoveries.load(Relaxed),
+            s.idrs.load(Relaxed),
         )
     };
     let mut last = read();
@@ -433,7 +438,7 @@ async fn log_stream(media: Arc<HostMedia>, session: u64, (w, h, fps): (u32, u32,
             format!("{:.1} Mbit/s", l as f64 / 1e6)
         });
         eprintln!(
-            "nexa-agent: session {session} stream {w}x{h}@{fps}: {:.1} frames/s, {:.1} skipped/s, encode {encode_ms:.1} ms, sent {sent:.2} Mbit/s, target {:.2} Mbit/s, encoder {:.2} Mbit/s, link {link}, queue {:.0} ms, loss {:.1}%, {} radio stalls",
+            "nexa-agent: session {session} stream {w}x{h}@{fps}: {:.1} frames/s, {:.1} skipped/s, encode {encode_ms:.1} ms, sent {sent:.2} Mbit/s, target {:.2} Mbit/s, encoder {:.2} Mbit/s, link {link}, queue {:.0} ms, loss {:.1}%, {} radio stalls, {} repairs, {} key frames asked, round trip {} ms",
             frames as f64 / secs,
             skipped as f64 / secs,
             rate.target_bps as f64 / 1e6,
@@ -441,6 +446,9 @@ async fn log_stream(media: Arc<HostMedia>, session: u64, (w, h, fps): (u32, u32,
             rate.queue_ms,
             rate.loss * 100.0,
             rate.stalls - last_stalls,
+            now.4 - last.4,
+            now.5 - last.5,
+            media.round_trip().as_millis(),
         );
         last = now;
         last_stalls = rate.stalls;

@@ -370,6 +370,11 @@ impl HostMedia {
         }
     }
 
+    /// QUIC's estimate of the round trip to the viewer, for the stream log.
+    pub fn round_trip(&self) -> Duration {
+        self.tx.conn.rtt()
+    }
+
     pub fn set_max_bps(&self, max_bps: u64) {
         self.rate
             .lock()
@@ -755,16 +760,6 @@ fn run_tx(
             capture_ts_us: f.capture_ts_us,
         };
         let interval = frame_interval(fps.load(Relaxed));
-        // §4.9 recovery probes: this frame's share of the padding the controller asks for.
-        let padding = (rate.lock().unwrap().recovery_padding_bps(now) as f64 / 8.0
-            * interval.as_secs_f64()) as usize;
-        let Ok(packets) =
-            packetizer.packetize_padded(&f.data, info, alloc.fec_ratio, padding, max_dg)
-        else {
-            depth.fetch_sub(1, Relaxed);
-            continue;
-        };
-        let bytes: u64 = packets.iter().map(|x| x.len() as u64).sum();
         // The time this frame covers: since the one before it, by capture time. The
         // session's first frame follows nothing, like one after a still screen.
         let covers = last_capture_us.map_or(Duration::MAX, |last| {
@@ -773,7 +768,23 @@ fn run_tx(
             Duration::from_micros(since.max(0) as u64)
         });
         last_capture_us = Some(f.capture_ts_us);
-        let window = rate.lock().unwrap().pacing_window(bytes, interval, covers);
+        // §4.9 recovery probes: what fills this frame up to the probe's rate.
+        let wire = (f.data.len() as f64 * (1.0 + alloc.fec_ratio)) as u64;
+        let padding = rate
+            .lock()
+            .unwrap()
+            .recovery_fill_bytes(wire, covers, interval, now) as usize;
+        let Ok(packets) =
+            packetizer.packetize_padded(&f.data, info, alloc.fec_ratio, padding, max_dg)
+        else {
+            depth.fetch_sub(1, Relaxed);
+            continue;
+        };
+        let bytes: u64 = packets.iter().map(|x| x.len() as u64).sum();
+        let window = rate
+            .lock()
+            .unwrap()
+            .pacing_window(bytes, interval, covers, now);
         let start = Instant::now();
         let n = packets.len();
         for (i, pkt) in packets.into_iter().enumerate() {

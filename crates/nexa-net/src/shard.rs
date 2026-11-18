@@ -35,8 +35,12 @@ pub struct FrameInfo {
     pub capture_ts_us: u32,
 }
 
-/// Probe padding is at most this many times the frame's own shards.
+/// Probe padding is at most this many times the frame's own shards...
 pub const MAX_PROBE_PADDING: usize = 3;
+/// ...or this many shards, for a small frame: three times a frame of typing (two or
+/// three shards) is too little to carry a probe. A probe for 35 Mbit/s at 30 frames
+/// a second fills each frame to 146 kB, some 130 shards.
+pub const MIN_PROBE_PADDING_SHARDS: usize = 512;
 
 #[derive(Debug, Default)]
 pub struct Packetizer {
@@ -81,7 +85,7 @@ impl Packetizer {
         }
         let extra = padding_bytes
             .div_ceil(shard_len)
-            .min(k * MAX_PROBE_PADDING)
+            .min((k * MAX_PROBE_PADDING).max(MIN_PROBE_PADDING_SHARDS))
             .min(usize::from(MAX_SHARDS));
         let m = (parity_count(k, fec) + extra).min(usize::from(MAX_SHARDS));
 
@@ -446,12 +450,22 @@ mod tests {
             wire(&padded) >= wire(&plain) + 50_000,
             "padding adds its bytes"
         );
-        // Capped at three times the frame.
+        // Capped at three times the frame, for a frame that large.
+        let large: Vec<u8> = (0..300_000u32).map(|i| (i * 7) as u8).collect();
         let capped = Packetizer::default()
-            .packetize_padded(&frame, info, 0.1, 10_000_000, 1200)
+            .packetize_padded(&large, info, 0.1, 10_000_000, 1200)
             .unwrap();
         let (h, _) = VideoShardHeader::parse(&capped[0]).unwrap();
+        assert!(usize::from(h.k) * MAX_PROBE_PADDING > MIN_PROBE_PADDING_SHARDS);
         assert!(usize::from(h.m) <= usize::from(h.k) * (MAX_PROBE_PADDING + 1));
+        // A small frame (typing) still carries a probe's worth.
+        let small = Packetizer::default()
+            .packetize_padded(&frame[..3000], info, 0.1, 10_000_000, 1200)
+            .unwrap();
+        let (h, _) = VideoShardHeader::parse(&small[0]).unwrap();
+        assert_eq!(h.k, 3);
+        assert_eq!(usize::from(h.m), 1 + MIN_PROBE_PADDING_SHARDS);
+        assert!(wire(&small) > MIN_PROBE_PADDING_SHARDS * 1100);
         // A receiver rebuilds the frame from the parity alone.
         let (h, _) = VideoShardHeader::parse(&padded[0]).unwrap();
         let mut asm = Assembler::new(Duration::from_millis(12), Duration::from_millis(2));
