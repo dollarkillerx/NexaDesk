@@ -6,6 +6,7 @@
 //!
 //! Usage: `cargo run -p nexa-agent --example demo_host --release -- [addr] [--lan]
 //! [--signal wss://server[:port] [--signal-ca <pem>]]` (default `127.0.0.1:47900`).
+//! `--displays 2` adds a second, smaller display tinted blue, to try switching.
 //! `--lan` announces it over mDNS (listen on `0.0.0.0:…` for an address to announce);
 //! `--signal` registers it with a signaling server and prints its device ID. Connect
 //! with the fixed password [`PASSWORD`].
@@ -57,8 +58,51 @@ mod demo {
         down: bool,
     }
 
+    /// One of the demo's displays: where it sits in global points, its size, and a tint
+    /// (NV12 chroma) so a switch is plain to see.
+    #[derive(Clone, Copy)]
+    struct Display {
+        id: u32,
+        origin: (f64, f64),
+        size: (u32, u32),
+        tint: (u8, u8),
+        name: &'static str,
+    }
+
+    /// The main display, and with `--displays 2` a smaller blue one to its right.
+    const DISPLAYS: [Display; 2] = [
+        Display {
+            id: 1,
+            origin: (0.0, 0.0),
+            size: SIZE,
+            tint: (128, 128),
+            name: "Demo",
+        },
+        Display {
+            id: 2,
+            origin: (1280.0, 0.0),
+            size: (1024, 768),
+            tint: (170, 100),
+            name: "Demo (blue)",
+        },
+    ];
+
     #[derive(Clone, Default)]
-    struct Demo(Arc<Mutex<Pointer>>);
+    struct Demo {
+        pointer: Arc<Mutex<Pointer>>,
+        displays: usize,
+    }
+
+    fn info(d: &Display) -> ScreenInfo {
+        ScreenInfo {
+            display_id: d.id,
+            origin_points: d.origin,
+            size_points: (f64::from(d.size.0), f64::from(d.size.1)),
+            size_pixels: d.size,
+            refresh_hz: 60,
+            name: d.name.into(),
+        }
+    }
 
     fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         m.lock().unwrap_or_else(|e| e.into_inner())
@@ -66,21 +110,29 @@ mod demo {
 
     impl Platform for Demo {
         fn screen(&self) -> Result<ScreenInfo, String> {
-            Ok(ScreenInfo {
-                display_id: 1,
-                origin_points: (0.0, 0.0),
-                size_points: (f64::from(SIZE.0), f64::from(SIZE.1)),
-                size_pixels: SIZE,
-                refresh_hz: 60,
-                name: "Demo".into(),
-            })
+            Ok(info(&DISPLAYS[0]))
         }
-        fn capturer(&self, _: CaptureConfig) -> nexa_media::Result<Box<dyn Capturer>> {
+        fn displays(&self) -> Result<Vec<ScreenInfo>, String> {
+            Ok(DISPLAYS[..self.displays.clamp(1, 2)]
+                .iter()
+                .map(info)
+                .collect())
+        }
+        fn capturer(&self, config: CaptureConfig) -> nexa_media::Result<Box<dyn Capturer>> {
+            let display = *DISPLAYS
+                .iter()
+                .find(|d| d.id == config.display)
+                .unwrap_or(&DISPLAYS[0]);
+            println!(
+                "CAPTURE display {} ({}x{})",
+                display.id, display.size.0, display.size.1
+            );
             Ok(Box::new(DemoCapture {
-                pool: Nv12Pool::new(SIZE.0, SIZE.1)?,
+                pool: Nv12Pool::new(display.size.0, display.size.1)?,
+                display,
                 started: Instant::now(),
                 next: Instant::now(),
-                pointer: self.0.clone(),
+                pointer: self.pointer.clone(),
             }))
         }
         fn encoder(&self, config: EncoderConfig) -> nexa_media::Result<Box<dyn Encoder>> {
@@ -90,7 +142,7 @@ mod demo {
             true
         }
         fn input_sink(&self) -> Result<Box<dyn InputSink>, String> {
-            Ok(Box::new(DemoInput(self.0.clone())))
+            Ok(Box::new(DemoInput(self.pointer.clone())))
         }
         fn clipboard(&self) -> Result<Box<dyn ClipPlatform>, String> {
             Err("no clipboard in the demo".into())
@@ -99,6 +151,7 @@ mod demo {
 
     struct DemoCapture {
         pool: Nv12Pool,
+        display: Display,
         started: Instant,
         next: Instant,
         pointer: Arc<Mutex<Pointer>>,
@@ -112,13 +165,20 @@ mod demo {
             }
             self.next += Duration::from_millis(1000 / FPS);
             let t = self.started.elapsed().as_secs_f64();
+            // The pointer in this display's pixels (points are pixels here).
             let (px, py, down) = {
                 let p = lock(&self.pointer);
-                (p.x as i64, p.y as i64, p.down)
+                (
+                    (p.x - self.display.origin.0) as i64,
+                    (p.y - self.display.origin.1) as i64,
+                    p.down,
+                )
             };
+            let (tint_cb, tint_cr) = self.display.tint;
+            let size = self.display.size;
             let pb = self.pool.get()?;
             pb.with_planes_mut(|y, ys, uv, uvs| {
-                let (w, h) = (SIZE.0 as usize, SIZE.1 as usize);
+                let (w, h) = (size.0 as usize, size.1 as usize);
                 // A slow diagonal gradient with a moving bar: something to see change.
                 let bar = ((t * 200.0) as usize) % w;
                 for row in 0..h {
@@ -142,7 +202,7 @@ mod demo {
                         let (cb, cr) = if near && down {
                             (60u8, 60u8)
                         } else {
-                            (128u8, 128u8)
+                            (tint_cb, tint_cr)
                         };
                         uv[row * uvs + col * 2] = cb;
                         uv[row * uvs + col * 2 + 1] = cr;
@@ -249,10 +309,12 @@ mod demo {
     pub fn main() {
         let mut listen: SocketAddr = "127.0.0.1:47900".parse().expect("address");
         let (mut lan, mut signal_url, mut signal_ca) = (false, None::<String>, None::<String>);
+        let mut displays = 1usize;
         let mut args = std::env::args().skip(1);
         while let Some(a) = args.next() {
             match a.as_str() {
                 "--lan" => lan = true,
+                "--displays" => displays = args.next().and_then(|n| n.parse().ok()).unwrap_or(1),
                 "--signal" => signal_url = args.next(),
                 "--signal-ca" => signal_ca = args.next(),
                 addr => listen = addr.parse().expect("an address such as 127.0.0.1:47900"),
@@ -305,7 +367,10 @@ mod demo {
                 },
                 identity,
                 store,
-                Arc::new(Demo::default()),
+                Arc::new(Demo {
+                    displays,
+                    ..Demo::default()
+                }),
                 Arc::new(DemoUi),
             )
             .await

@@ -17,6 +17,10 @@ final class NexaCore: ObservableObject {
     @Published private(set) var hostName = ""
     @Published private(set) var stream: (w: Int, h: Int) = (0, 0)
     @Published private(set) var inputAllowed = false
+    /// The host's displays, from `Connected`; one is streamed at a time.
+    @Published private(set) var displays: [Nexa_Client_DisplayInfo] = []
+    /// The display being streamed (`StreamChanged.display`).
+    @Published private(set) var display: UInt32 = 0
     @Published var notice: String?
     /// A self-hosted signaling server whose certificate is not trusted yet.
     @Published var trustPrompt: TrustPrompt?
@@ -137,6 +141,7 @@ final class NexaCore: ObservableObject {
         phase = .idle
         inputAllowed = false
         stream = (0, 0)
+        displays = []
     }
 
     // MARK: Video
@@ -187,8 +192,14 @@ final class NexaCore: ObservableObject {
         key(usage, down: false)
     }
 
-    private func send(_ fill: (inout Nexa_Client_SessionCommand) -> Void) {
-        guard let session, inputAllowed else { return }
+    /// Streams another of the host's displays instead of this one (never both).
+    func selectDisplay(_ id: UInt32) {
+        guard id != display else { return }
+        send(evenWithoutInput: true) { $0.display = .with { $0.display = id } }
+    }
+
+    private func send(evenWithoutInput: Bool = false, _ fill: (inout Nexa_Client_SessionCommand) -> Void) {
+        guard let session, inputAllowed || evenWithoutInput else { return }
         var cmd = Nexa_Client_SessionCommand()
         fill(&cmd)
         guard let bytes = try? cmd.serializedData() else { return }
@@ -207,12 +218,14 @@ final class NexaCore: ObservableObject {
             phase = .connecting(String(localized: "Connecting…"))
         case .connected(let c):
             hostName = c.hostName
+            displays = c.displays
             phase = .connected
             if let session, c.perms.input {
                 inputAllowed = nexa_session_set_input_active(session, true) == NEXA_OK
             }
         case .stream(let s):
             stream = (Int(s.w), Int(s.h))
+            display = s.display
         case .reconnecting(let r):
             phase = .reconnecting(r.reason.isEmpty ? String(localized: "Reconnecting…") : String(localized: "Reconnecting: \(r.reason)"))
         case .disconnected(let d):

@@ -179,6 +179,12 @@ struct ConnectView: View {
 }
 
 struct SessionView: View {
+    /// "Studio Display (3840×2160)", or "Display 2 (…)" when the host gives no name.
+    static func title(of d: Nexa_Client_DisplayInfo) -> String {
+        let name = d.name.isEmpty ? String(localized: "Display \(Int(d.id) + 1)") : d.name
+        return "\(name) (\(d.w)×\(d.h))"
+    }
+
     @EnvironmentObject private var core: NexaCore
     @StateObject private var keys = KeyInputController()
 
@@ -199,6 +205,27 @@ struct SessionView: View {
                     .font(.title2).padding(.leading, 12)
                 Text(core.hostName).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
                 Spacer(minLength: 0)
+                if core.displays.count > 1 {
+                    // One display at a time: picking another replaces the picture.
+                    Menu {
+                        ForEach(core.displays, id: \.id) { d in
+                            Button {
+                                core.selectDisplay(d.id)
+                            } label: {
+                                if d.id == core.display {
+                                    Label(Self.title(of: d), systemImage: "checkmark")
+                                } else {
+                                    Text(Self.title(of: d))
+                                }
+                            }
+                        }
+                    } label: {
+                        Label("Display", systemImage: "display.2")
+                            .labelStyle(.iconOnly)
+                            .font(.title3)
+                    }
+                    .padding(.trailing, 12)
+                }
             }
             .padding(.top, 4)
             if core.inputAllowed {

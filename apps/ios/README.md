@@ -76,9 +76,10 @@ the simulator: `xcrun simctl launch booted app.nexadesk.ios -AppleLanguages "(ja
 - The on-screen keyboard types text; the bar above it has Esc, Tab, ⌃ ⌥ ⌘ ⇧ (latched
   for the next key, for shortcuts such as ⌘C) and the arrows.
 - A hardware keyboard sends its keys as they are, shortcuts included.
+- When the computer has more than one display, the display button at the right of
+  the bar switches between them, one at a time.
 
 ## Not yet
 
-Sound, the clipboard, file transfer, saved connections and known hosts, choosing the
-display, zoom, a trackpad-style pointer, and handling the app going to the background
+Sound, the clipboard, file transfer, saved connections and known hosts, zoom, a trackpad-style pointer, and handling the app going to the background
 (the session is reconnected when it comes back, as after a network change).
