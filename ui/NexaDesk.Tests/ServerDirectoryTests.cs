@@ -1,5 +1,6 @@
 using System.Text;
 using NexaDesk.Services;
+using NexaDesk.ViewModels;
 using Xunit;
 
 namespace NexaDesk.Tests;
@@ -174,60 +175,216 @@ public class ServerDirectoryTests
 
     static readonly ServerEntry Listed = new("wss://signal.example.com", "a key for everyone");
 
+    static SettingsViewModel Settings(FakeDirectory directory, MemorySettings? store = null, MemorySavedPasswords? keychain = null,
+        IServerProbe? probe = null) =>
+        new(store ?? new MemorySettings(), keychain ?? new MemorySavedPasswords(), directory, probe);
+
+    sealed class FakeProbe(Func<string, ProbeResult> answer) : IServerProbe
+    {
+        public readonly List<string> Asked = [];
+        public Task<ProbeResult> ProbeAsync(string endpoint, CancellationToken ct = default)
+        {
+            lock (Asked) Asked.Add(endpoint);
+            return Task.FromResult(answer(endpoint));
+        }
+    }
+
     [Fact]
-    public async Task The_list_is_never_fetched_until_it_is_switched_on()
+    public async Task Each_listed_server_shows_whether_it_answers_and_how_far_away_it_is()
+    {
+        var other = new ServerEntry("wss://down.example.com", "another key for it");
+        var probe = new FakeProbe(e => e.Contains("down") ? new ProbeResult(false, null, "unreachable") : new ProbeResult(true, 38, null));
+        var s = Settings(new FakeDirectory(Listed, other), probe: probe, store: new MemorySettings(new AppSettings(UseServerList: true)));
+        await s.RefreshListAsync();
+        var health = s.ListedServers.ToDictionary(x => x.Endpoint, x => x.Health);
+        Assert.Contains("38", health["wss://signal.example.com"]);
+        Assert.DoesNotContain("38", health["wss://down.example.com"]);
+        Assert.NotEqual("", health["wss://down.example.com"]);
+        // Nothing is looked at outside the published mode.
+        var quiet = new FakeProbe(_ => new ProbeResult(true, 1, null));
+        var own = Settings(new FakeDirectory(Listed), probe: quiet);
+        await own.RefreshListAsync();
+        Assert.Empty(quiet.Asked);
+    }
+
+    [Fact]
+    public async Task A_server_typed_by_hand_can_be_tested_before_it_is_saved()
+    {
+        var probe = new FakeProbe(_ => new ProbeResult(true, 120, null));
+        var s = Settings(new FakeDirectory(), probe: probe);
+        Assert.False(s.TestCommand.CanExecute(null));
+        s.ServerInput = "signal.example.com";
+        Assert.True(s.TestCommand.CanExecute(null));
+        await s.TestCommand.ExecuteAsync(null);
+        Assert.Equal(["wss://signal.example.com"], probe.Asked);
+        Assert.Contains("120", s.TestResult);
+        Assert.Equal("", s.SavedServer);
+        // Typing again clears the old answer.
+        s.ServerInput = "other.example.com";
+        Assert.Null(s.TestResult);
+    }
+
+    // ---- the probe itself, against servers on this machine ----
+
+    static int FreePort()
+    {
+        var l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        l.Start();
+        var port = ((System.Net.IPEndPoint)l.LocalEndpoint).Port;
+        l.Stop();
+        return port;
+    }
+
+    [Fact]
+    public async Task Nothing_listening_is_unreachable()
+    {
+        var r = await new ServerProbe().ProbeAsync($"ws://127.0.0.1:{FreePort()}", TestContext.Current.CancellationToken);
+        Assert.Equal(new ProbeResult(false, null, "unreachable"), r);
+        Assert.False((await new ServerProbe().ProbeAsync("not a url", TestContext.Current.CancellationToken)).Available);
+    }
+
+    [Fact]
+    public async Task Something_that_is_not_a_signaling_server_is_told_apart()
+    {
+        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+        var accepting = Task.Run(async () =>
+        {
+            for (var i = 0; i < 4; i++)
+            {
+                using var c = await listener.AcceptTcpClientAsync();
+                await c.GetStream().WriteAsync("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"u8.ToArray());
+            }
+        }, TestContext.Current.CancellationToken);
+        try
+        {
+            var r = await new ServerProbe().ProbeAsync($"ws://127.0.0.1:{port}", TestContext.Current.CancellationToken);
+            Assert.False(r.Available);
+            Assert.Equal("notsignal", r.Problem);
+            Assert.NotNull(r.Milliseconds);
+        }
+        finally { listener.Stop(); }
+    }
+
+    [Fact]
+    public async Task A_server_that_sends_a_challenge_is_available_with_a_delay()
+    {
+        var port = FreePort();
+        using var http = new System.Net.HttpListener();
+        http.Prefixes.Add($"http://127.0.0.1:{port}/");
+        http.Start();
+        var serving = Task.Run(async () =>
+        {
+            while (http.IsListening)
+            {
+                System.Net.HttpListenerContext ctx;
+                try { ctx = await http.GetContextAsync(); } catch (Exception) { return; }
+                if (!ctx.Request.IsWebSocketRequest) { ctx.Response.StatusCode = 400; ctx.Response.Close(); continue; }
+                var ws = (await ctx.AcceptWebSocketAsync(null)).WebSocket;
+                await ws.SendAsync(new byte[34], System.Net.WebSockets.WebSocketMessageType.Binary, true, CancellationToken.None);
+                await Task.Delay(200);
+                ws.Abort();
+            }
+        }, TestContext.Current.CancellationToken);
+        var r = await new ServerProbe().ProbeAsync($"ws://127.0.0.1:{port}", TestContext.Current.CancellationToken);
+        http.Stop();
+        Assert.True(r.Available, r.Problem);
+        Assert.InRange(r.Milliseconds ?? -1, 1, 1000);
+        Assert.Null(r.Problem);
+    }
+
+    [Fact]
+    public async Task The_list_is_never_fetched_unless_the_published_mode_is_chosen()
     {
         var directory = new FakeDirectory(Listed);
         var store = new MemorySettings();
-        var s = new NexaDesk.ViewModels.SettingsViewModel(store, new MemorySavedPasswords(), directory);
-        Assert.False(s.UseServerList);
+        var s = Settings(directory, store);
+        Assert.True(s.IsModeNone);
+        await s.RefreshListAsync();
+        s.IsModeOwn = true;
         await s.RefreshListAsync();
         Assert.Equal(0, directory.Loads);
         Assert.Null(s.ListStatus);
 
-        s.UseServerList = true;
+        s.IsModePublished = true;
         await s.RefreshListAsync();
         Assert.True(directory.Loads >= 1);
-        Assert.Equal([Listed], s.ListedServers);
+        Assert.Equal([Listed], s.ListedServers.Select(x => x.Entry));
         Assert.True(store.Current.UseServerList);
 
-        // Off again: the list goes away, and a new settings window starts with it off.
-        s.UseServerList = false;
+        // Another mode: the list goes away, and a new window starts in that mode.
+        s.IsModeOwn = true;
         await s.RefreshListAsync();
         Assert.Empty(s.ListedServers);
         Assert.False(store.Current.UseServerList);
     }
 
     [Fact]
-    public async Task Picking_a_listed_server_fills_the_boxes_and_saves_nothing_until_Save()
+    public async Task Picking_a_published_server_uses_it_at_once_with_no_Save()
     {
         var store = new MemorySettings(new AppSettings(UseServerList: true));
         var keychain = new MemorySavedPasswords();
-        var s = new NexaDesk.ViewModels.SettingsViewModel(store, keychain, new FakeDirectory(Listed));
-        Assert.True(s.UseServerList);
+        var s = Settings(new FakeDirectory(Listed), store, keychain);
+        Assert.True(s.IsModePublished);
         await s.RefreshListAsync();
+        var changed = new List<string>();
+        s.ServerChanged += changed.Add;
+
         s.SelectedListed = s.ListedServers[0];
-        Assert.Equal(("wss://signal.example.com", "a key for everyone"), (s.ServerInput, s.SecretInput));
-        Assert.Equal("", s.SavedServer);
-        Assert.Empty(keychain.Kept);
-        Assert.True(s.SaveCommand.CanExecute(null));
-        s.SaveCommand.Execute(null);
+        await WaitFor(() => changed.Count == 1);
         Assert.Equal("wss://signal.example.com", s.SavedServer);
         Assert.Equal("a key for everyone", s.SavedSecret);
+        Assert.Equal("wss://signal.example.com", store.Current.SignalServer);
+        Assert.Equal("a key for everyone", keychain.Kept["signal-access:wss://signal.example.com"]);
+        Assert.False(s.IsDirty);
     }
 
     [Fact]
-    public async Task An_empty_list_says_so_and_a_build_without_a_list_hides_the_switch()
+    public async Task The_server_in_use_shows_as_chosen_in_the_list_without_being_chosen_again()
     {
-        var s = new NexaDesk.ViewModels.SettingsViewModel(
-            new MemorySettings(new AppSettings(UseServerList: true)), null, new FakeDirectory());
+        var store = new MemorySettings(new AppSettings("wss://signal.example.com", UseServerList: true));
+        var s = Settings(new FakeDirectory(Listed), store);
+        var changed = 0;
+        s.ServerChanged += _ => changed++;
+        await s.RefreshListAsync();
+        Assert.Equal(Listed, s.SelectedListed?.Entry);
+        await Task.Delay(50, TestContext.Current.CancellationToken);
+        Assert.Equal(0, changed);
+    }
+
+    [Fact]
+    public async Task Choosing_no_server_gives_the_server_and_its_key_up_at_once()
+    {
+        var store = new MemorySettings(new AppSettings("wss://signal.example.com"));
+        var keychain = new MemorySavedPasswords();
+        keychain.Kept["signal-access:wss://signal.example.com"] = "a key for everyone";
+        var s = Settings(new FakeDirectory(Listed), store, keychain);
+        Assert.True(s.IsModeOwn);
+        s.IsModeNone = true;
+        await WaitFor(() => s.SavedServer == "");
+        Assert.Equal("", store.Current.SignalServer);
+        Assert.Empty(keychain.Kept);
+    }
+
+    [Fact]
+    public async Task A_server_set_up_before_the_list_starts_as_my_own_and_an_empty_list_says_so()
+    {
+        Assert.True(Settings(new FakeDirectory(), new MemorySettings(new AppSettings("wss://mine.example"))).IsModeOwn);
+        var s = Settings(new FakeDirectory(), new MemorySettings(new AppSettings(UseServerList: true)));
         await s.RefreshListAsync();
         Assert.Empty(s.ListedServers);
         Assert.NotNull(s.ListStatus);
 
-        var none = new NexaDesk.ViewModels.SettingsViewModel(
-            new MemorySettings(new AppSettings(UseServerList: true)));
+        // A build without a list hides the choice and never starts in it.
+        var none = new SettingsViewModel(new MemorySettings(new AppSettings(UseServerList: true)));
         Assert.False(none.CanUseServerList);
-        Assert.False(none.UseServerList);
+        Assert.False(none.IsModePublished);
+    }
+
+    static async Task WaitFor(Func<bool> done)
+    {
+        for (var i = 0; i < 100 && !done(); i++) await Task.Delay(20, TestContext.Current.CancellationToken);
+        Assert.True(done());
     }
 }
