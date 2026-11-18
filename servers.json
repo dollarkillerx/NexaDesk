@@ -1,3 +1,5 @@
 {
-  "endpoints": []
+  "endpoints": [
+    { "endpoint": "wss://150.251.158.58:8443", "key": "oZVyM6nHCJb5uzuVemDqiOCX" }
+  ]
 }
