@@ -13,6 +13,7 @@
 # Result: <output dir>/NexaDesk.app
 #   Contents/MacOS/NexaDesk               the UI (NativeAOT)
 #   Contents/MacOS/nexa-agent             the host side, started by the UI with --consent ui
+#   Contents/MacOS/nexa-mcp               the MCP server an AI agent starts (docs/MCP.md)
 #   Contents/MacOS/libnexa_client.dylib   the viewer library
 #   Contents/MacOS/lib*.dylib             Avalonia's native parts (AvaloniaNative, Skia, HarfBuzz)
 #   Contents/Resources/AppIcon.icns       the app icon (assets/icon, from scripts/make-app-icon.sh)
@@ -47,11 +48,13 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 step() { printf '\n==> %s\n' "$*"; }
 
-step "Rust: nexa-agent and libnexa_client (release)"
-cargo build --release --manifest-path "$ROOT/Cargo.toml" -p nexa-agent -p nexa-client
+step "Rust: nexa-agent, libnexa_client and nexa-mcp (release)"
+cargo build --release --manifest-path "$ROOT/Cargo.toml" -p nexa-agent -p nexa-client -p nexa-mcp
 AGENT="$ROOT/target/release/nexa-agent"
+MCP="$ROOT/target/release/nexa-mcp"
 CLIENT="$ROOT/target/release/libnexa_client.dylib"
 [ -x "$AGENT" ] || { echo "missing $AGENT" >&2; exit 1; }
+[ -x "$MCP" ] || { echo "missing $MCP" >&2; exit 1; }
 [ -f "$CLIENT" ] || { echo "missing $CLIENT" >&2; exit 1; }
 
 step "UI: NativeAOT publish ($RID)"
@@ -69,6 +72,7 @@ for lib in "$PUBLISH"/*.dylib; do
 done
 cp "$CLIENT" "$APP/Contents/MacOS/libnexa_client.dylib"
 cp "$AGENT" "$APP/Contents/MacOS/nexa-agent"
+cp "$MCP" "$APP/Contents/MacOS/nexa-mcp"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -157,6 +161,7 @@ for lib in "$APP/Contents/MacOS"/*.dylib; do
   codesign --force "${SIGN[@]}" "$lib"
 done
 codesign --force "${SIGN[@]}" --identifier app.nexadesk.agent "$APP/Contents/MacOS/nexa-agent"
+codesign --force "${SIGN[@]}" --identifier app.nexadesk.mcp "$APP/Contents/MacOS/nexa-mcp"
 codesign --force "${SIGN[@]}" "$APP"
 codesign --verify --strict --deep "$APP"
 codesign -dr - "$APP" 2>&1 | sed -n 's/^designated => /identity: /p'

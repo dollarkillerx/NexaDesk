@@ -85,4 +85,30 @@ public class AgentAccessTests
         Assert.DoesNotContain("AI", person.Headline);
     }
 
+
+    [Fact]
+    public void An_agent_is_offered_the_command_line_unticked_and_gets_it_only_when_ticked()
+    {
+        var req = Samples.Request(input: true) with { Agent = true, Perms = new Permissions(true, true, false) };
+        var link = new FakeLink();
+        var vm = new ConsentViewModel(req, link, Samples.T0);
+        Assert.True(vm.OfferTerminal);
+        Assert.False(vm.AllowTerminal);
+        vm.Tick(Samples.T0.AddSeconds(2));
+        vm.AllowCommand.Execute(null);
+        Assert.False(Assert.IsType<UiRequest.Decide>(link.Sent[^1]).Perms.Terminal);
+
+        var ticked = new ConsentViewModel(req, link, Samples.T0) { AllowTerminal = true };
+        ticked.Tick(Samples.T0.AddSeconds(2));
+        ticked.AllowCommand.Execute(null);
+        Assert.True(Assert.IsType<UiRequest.Decide>(link.Sent[^1]).Perms.Terminal);
+
+        // A person's app is not offered it, and never gets it from the dialog.
+        var app = new ConsentViewModel(Samples.Request(input: true), link, Samples.T0) { AllowTerminal = true };
+        Assert.False(app.OfferTerminal);
+        app.Tick(Samples.T0.AddSeconds(2));
+        app.AllowCommand.Execute(null);
+        Assert.False(Assert.IsType<UiRequest.Decide>(link.Sent[^1]).Perms.Terminal);
+    }
+
 }

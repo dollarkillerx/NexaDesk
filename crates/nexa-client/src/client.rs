@@ -426,7 +426,7 @@ impl Session {
     }
 
     /// Asks the connection for a terminal stream (the page is ready for it).
-    pub(crate) fn open_terminal(&self, link: crate::terminal::TermLink) {
+    pub fn open_terminal(&self, link: crate::terminal::TermLink) {
         if let Some(ctl) = lock(&self.command).as_ref() {
             let _ = ctl.send(SessionCtl::Terminal(link));
         }

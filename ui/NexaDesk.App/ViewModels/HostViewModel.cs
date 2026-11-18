@@ -960,6 +960,7 @@ public sealed partial class MainViewModel : ObservableObject
         Tray = new TrayViewModel(Host);
         Updates = new UpdatesViewModel(updater ?? NullAppUpdater.Instance, () => Tray.QuitCommand.Execute(null));
         About = new AboutViewModel(windows);
+        Mcp = McpViewModel.ForThisApp(windows);
         ServerTrust = new ServerTrustFlow(serverTrust ?? new NoServerTrust(), windows);
         // A server saved in settings is checked at once; a failure on its certificate,
         // connecting or hosting, asks too.
@@ -1010,6 +1011,8 @@ public sealed partial class MainViewModel : ObservableObject
     /// <summary>The version and updates from GitHub releases.</summary>
     public UpdatesViewModel Updates { get; }
     public AboutViewModel About { get; }
+    /// <summary>How to give an AI on this computer NexaDesk's MCP server.</summary>
+    public McpViewModel Mcp { get; }
 
     readonly IKeymapService? _keymap;
     readonly IPermissionProbe _permissions;

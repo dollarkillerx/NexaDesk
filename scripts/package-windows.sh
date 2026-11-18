@@ -38,12 +38,12 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 PUB="$WORK/publish"
 
-step "Rust: nexa-agent.exe and nexa_client.dll ($TARGET, release)"
+step "Rust: nexa-agent.exe, nexa_client.dll and nexa-mcp.exe ($TARGET, release)"
 rustup target add "$TARGET" >/dev/null
 export CC_x86_64_pc_windows_gnu=x86_64-w64-mingw32-gcc
 export AR_x86_64_pc_windows_gnu=x86_64-w64-mingw32-ar
 export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc
-cargo build --release --manifest-path "$ROOT/Cargo.toml" -p nexa-agent -p nexa-client --target "$TARGET"
+cargo build --release --manifest-path "$ROOT/Cargo.toml" -p nexa-agent -p nexa-client -p nexa-mcp --target "$TARGET"
 BIN="$ROOT/target/$TARGET/release"
 
 step "UI: publish $VERSION (win-x64, self-contained, ReadyToRun)"
@@ -51,9 +51,9 @@ dotnet publish "$ROOT/ui/NexaDesk.App/NexaDesk.App.csproj" -c Release -r win-x64
   -p:PublishAot=false -p:PublishReadyToRun=true -p:Version="$VERSION" \
   -o "$PUB" --artifacts-path "$WORK/artifacts" -nologo
 rm -f "$PUB"/*.pdb
-cp "$BIN/nexa-agent.exe" "$BIN/nexa_client.dll" "$PUB/"
+cp "$BIN/nexa-agent.exe" "$BIN/nexa_client.dll" "$BIN/nexa-mcp.exe" "$PUB/"
 # Symbols only (half the size); exports and code are untouched.
-x86_64-w64-mingw32-strip --strip-all "$PUB/nexa-agent.exe" "$PUB/nexa_client.dll"
+x86_64-w64-mingw32-strip --strip-all "$PUB/nexa-agent.exe" "$PUB/nexa_client.dll" "$PUB/nexa-mcp.exe"
 test -f "$PUB/NexaDesk.exe"
 
 rm -rf "$OUT"

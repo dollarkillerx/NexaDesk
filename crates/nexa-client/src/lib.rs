@@ -8,10 +8,11 @@ pub mod audio;
 pub mod client;
 pub mod cursor;
 pub mod deps;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 pub mod headless;
 pub mod input;
 pub mod keymap;
+pub mod memclip;
 pub mod presenter;
 pub mod proto;
 #[cfg(target_os = "macos")]

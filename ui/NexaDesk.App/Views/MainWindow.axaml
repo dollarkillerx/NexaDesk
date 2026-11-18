@@ -523,6 +523,44 @@
           </StackPanel>
         </StackPanel>
         <TextBlock Classes="muted" TextWrapping="Wrap" Text="{l:T Main.MenuBarNote}" />
+        <!-- AI 代理：把本应用旁边的 nexa-mcp 交给本机的 AI（docs/MCP.md） -->
+        <Expander Name="McpExpander" Margin="0,2,0,0" HorizontalAlignment="Stretch"
+                  DataContext="{Binding Mcp}" x:DataType="vm:McpViewModel">
+          <Expander.Header>
+            <TextBlock Classes="label" Text="{l:T Main.Mcp}" VerticalAlignment="Center" />
+          </Expander.Header>
+          <StackPanel Spacing="8">
+            <TextBlock Classes="muted" TextWrapping="Wrap" Text="{l:T Main.McpHelp}" />
+            <Border Classes="warn" IsVisible="{Binding IsMissing}">
+              <TextBlock Name="McpMissingText" TextWrapping="Wrap" Text="{l:T Main.McpMissing}" />
+            </Border>
+            <TextBlock Classes="label" Text="{l:T Main.McpClaude}" />
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+              <TextBox Name="McpCommandBox" IsReadOnly="True" Text="{Binding ClaudeCommand, Mode=OneWay}"
+                       FontFamily="{DynamicResource MonoFont}" FontSize="12" TextWrapping="Wrap" />
+              <Button Grid.Column="1" Classes="small" Name="McpCopyCommandButton" VerticalAlignment="Top"
+                      Command="{Binding CopyCommand}" CommandParameter="{Binding ClaudeCommand}">
+                <Panel>
+                  <TextBlock Text="{l:T Main.McpCopy}" IsVisible="{Binding !ClaudeCopied}" />
+                  <TextBlock Text="{l:T Main.McpCopied}" IsVisible="{Binding ClaudeCopied}" />
+                </Panel>
+              </Button>
+            </Grid>
+            <TextBlock Classes="label" Text="{l:T Main.McpJson}" />
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+              <TextBox Name="McpJsonBox" IsReadOnly="True" Text="{Binding JsonConfig, Mode=OneWay}"
+                       FontFamily="{DynamicResource MonoFont}" FontSize="12" TextWrapping="Wrap" />
+              <Button Grid.Column="1" Classes="small" Name="McpCopyJsonButton" VerticalAlignment="Top"
+                      Command="{Binding CopyCommand}" CommandParameter="{Binding JsonConfig}">
+                <Panel>
+                  <TextBlock Text="{l:T Main.McpCopy}" IsVisible="{Binding !JsonCopied}" />
+                  <TextBlock Text="{l:T Main.McpCopied}" IsVisible="{Binding JsonCopied}" />
+                </Panel>
+              </Button>
+            </Grid>
+            <TextBlock Classes="muted" TextWrapping="Wrap" Text="{l:T Main.McpOtherWay}" />
+          </StackPanel>
+        </Expander>
         <Expander Name="AdvancedExpander" Margin="0,2,0,0" HorizontalAlignment="Stretch"
                   DataContext="{Binding Settings}" x:DataType="vm:SettingsViewModel">
           <Expander.Header>

@@ -86,6 +86,21 @@ public class RenderTests
     }
 
     [AvaloniaFact]
+    public void Main_window_with_the_mcp_section_open()
+    {
+        foreach (var theme in Themes())
+            WithTheme(theme, () =>
+            {
+                var vm = SampleMain(new FakeClient(), new FakeLink(), new RecordingWindows());
+                var w = new MainWindow { DataContext = vm };
+                w.Show();
+                w.FindControl<Expander>("McpExpander")!.IsExpanded = true;
+                Save(w, "main-mcp", theme);
+                w.Close();
+            });
+    }
+
+    [AvaloniaFact]
     public async Task Main_window_hosting_with_an_error()
     {
         foreach (var theme in Themes())

@@ -31,6 +31,7 @@ const FRAME: (u32, u32) = (784, 441);
 
 struct TestDeps {
     dir: std::path::PathBuf,
+    clipboard: Arc<nexa_client::memclip::MemoryClipboard>,
 }
 
 struct NoKeys;
@@ -88,7 +89,7 @@ impl Deps for TestDeps {
         None
     }
     fn clipboard(&self) -> Result<Box<dyn ClipPlatform>, String> {
-        Err("none".into())
+        Ok(self.clipboard.platform())
     }
     unsafe fn attach_view(
         &self,
@@ -122,10 +123,18 @@ struct Agent {
 impl Agent {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
+        let clipboard = nexa_client::memclip::MemoryClipboard::new();
         let deps = Arc::new(TestDeps {
             dir: dir.path().to_path_buf(),
+            clipboard: clipboard.clone(),
         });
-        let viewer = Viewer::new(deps, dir.path().to_path_buf(), "test agent".into()).unwrap();
+        let viewer = Viewer::new(
+            deps,
+            clipboard,
+            dir.path().to_path_buf(),
+            "test agent".into(),
+        )
+        .unwrap();
         Self {
             server: Arc::new(Mutex::new(Server::new(viewer))),
             next: Mutex::new(1),
@@ -399,4 +408,170 @@ async fn a_host_that_does_not_accept_agents_says_so() {
     let r = connect(&agent, &h).await;
     assert_eq!(r["isError"], true);
     assert!(texts(&r).contains("does not accept AI agents"), "{r}");
+}
+
+fn granted(terminal: bool, clipboard: bool) -> nexa_wire::control::Permissions {
+    nexa_wire::control::Permissions {
+        terminal,
+        ..perms(true, true, clipboard)
+    }
+}
+
+async fn connected_to(p: nexa_wire::control::Permissions) -> (Host, Agent) {
+    let h = host(FakeUi::allowing(p, false), Timeouts::default()).await;
+    h.agent.set_allow_agents(true);
+    let agent = Agent::new();
+    let r = connect(&agent, &h).await;
+    assert_eq!(r["isError"], false, "{r}");
+    let shot = agent.call("nexa_screenshot", json!({})).await;
+    assert_eq!(shot["isError"], false, "{shot}");
+    (h, agent)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_drag_presses_moves_and_lets_go_at_the_other_end() {
+    let (h, agent) = connected_to(granted(false, false)).await;
+    // Screenshot (784×441) corners to the host's 960×540-point screen.
+    let r = agent
+        .call(
+            "nexa_drag",
+            json!({ "from_x": 98, "from_y": 55.1, "to_x": 588, "to_y": 330.7, "screenshot": false }),
+        )
+        .await;
+    assert_eq!(r["isError"], false, "{r}");
+    until("drag injected", WAIT, || {
+        h.platform
+            .injected
+            .all()
+            .iter()
+            .any(|i| matches!(i, Injected::Button { down: false, .. }))
+    })
+    .await;
+    let all = h.platform.injected.all();
+    let at = |down: bool| {
+        all.iter()
+            .find_map(|i| match i {
+                Injected::Button {
+                    button: 0,
+                    down: d,
+                    at: Some(p),
+                } if *d == down => Some(*p),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let (start, end) = (at(true), at(false));
+    assert!(
+        (start.0 - 120.0).abs() <= 1.5 && (start.1 - 67.5).abs() <= 1.5,
+        "{start:?}"
+    );
+    assert!(
+        (end.0 - 720.0).abs() <= 1.5 && (end.1 - 405.0).abs() <= 1.5,
+        "{end:?}"
+    );
+    let moves_between = all
+        .iter()
+        .skip_while(|i| !matches!(i, Injected::Button { down: true, .. }))
+        .take_while(|i| !matches!(i, Injected::Button { down: false, .. }))
+        .filter(|i| matches!(i, Injected::Move(..)))
+        .count();
+    assert!(moves_between >= 3, "the pointer moves while held: {all:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn displays_are_listed_and_a_missing_one_is_named() {
+    let (_h, agent) = connected_to(granted(false, false)).await;
+    let list = agent.call("nexa_display", json!({})).await;
+    assert_eq!(list["isError"], false, "{list}");
+    assert!(texts(&list).contains("(shown now)"), "{list}");
+    let same = agent.call("nexa_display", json!({ "display": 0 })).await;
+    assert_eq!(same["isError"], false, "{same}");
+    assert_eq!(png_size(&same), FRAME);
+    let missing = agent.call("nexa_display", json!({ "display": 7 })).await;
+    assert_eq!(missing["isError"], true);
+    assert!(texts(&missing).contains("no display 7"), "{missing}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn commands_run_in_one_shell_with_their_status() {
+    let (_h, agent) = connected_to(granted(true, false)).await;
+    let r = agent
+        .call("nexa_run", json!({ "command": "echo $((6*7))nexa" }))
+        .await;
+    assert_eq!(r["isError"], false, "{r}");
+    let t = texts(&r);
+    assert!(t.starts_with("Exit status 0."), "{t}");
+    assert!(t.contains("42nexa"), "{t}");
+    assert!(!t.contains("__NEXA_END"), "no marker in the output: {t}");
+    assert!(!t.contains("echo"), "no echo of the command: {t}");
+    // The directory carries over to the next command.
+    agent.call("nexa_run", json!({ "command": "cd /" })).await;
+    let pwd = agent.call("nexa_run", json!({ "command": "pwd" })).await;
+    assert!(texts(&pwd).ends_with("\n/"), "{pwd}");
+    let failed = agent.call("nexa_run", json!({ "command": "false" })).await;
+    assert!(texts(&failed).starts_with("Exit status 1."), "{failed}");
+    // Something waiting for typing gets nothing and ends.
+    let read = agent
+        .call(
+            "nexa_run",
+            json!({ "command": "read x; echo got-$x", "timeout": 5 }),
+        )
+        .await;
+    assert!(texts(&read).contains("got-"), "{read}");
+    // Too slow: interrupted, and the shell is still usable after.
+    let slow = agent
+        .call("nexa_run", json!({ "command": "sleep 30", "timeout": 1 }))
+        .await;
+    assert!(texts(&slow).contains("interrupted"), "{slow}");
+    let after = agent
+        .call("nexa_run", json!({ "command": "echo still-here" }))
+        .await;
+    assert!(texts(&after).contains("still-here"), "{after}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_command_line_not_allowed_is_explained() {
+    let (_h, agent) = connected_to(granted(false, false)).await;
+    let r = agent
+        .call("nexa_run", json!({ "command": "echo hi" }))
+        .await;
+    assert_eq!(r["isError"], true);
+    assert!(texts(&r).contains("did not allow its command line"), "{r}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_clipboard_goes_both_ways_without_this_machines_own() {
+    let (h, agent) = connected_to(granted(false, true)).await;
+    let set = agent
+        .call("nexa_clipboard_set", json!({ "text": "来自 AI 的文字" }))
+        .await;
+    assert_eq!(set["isError"], false, "{set}");
+    until("host has it", WAIT, || {
+        h.platform
+            .clip
+            .content(nexa_clip::ClipKind::Text)
+            .as_deref()
+            == Some("来自 AI 的文字".as_bytes())
+    })
+    .await;
+    h.platform
+        .clip
+        .user_copy(&[(nexa_clip::ClipKind::Text, b"copied on the host")]);
+    let mut got = String::new();
+    for _ in 0..200 {
+        got = texts(&agent.call("nexa_clipboard_get", json!({})).await);
+        if got == "copied on the host" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(got, "copied on the host");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_clipboard_not_allowed_is_explained() {
+    let (_h, agent) = connected_to(granted(false, false)).await;
+    let r = agent.call("nexa_clipboard_get", json!({})).await;
+    assert_eq!(r["isError"], true);
+    assert!(texts(&r).contains("did not allow the clipboard"), "{r}");
 }

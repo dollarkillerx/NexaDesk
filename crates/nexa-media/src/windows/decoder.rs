@@ -115,6 +115,18 @@ impl MfDecoder {
         Ok(d)
     }
 
+    /// Always on the CPU: pictures read back rather than shown (screenshots of a viewer
+    /// without a window, nexa-mcp). Small pictures at a low frame rate, so the GPU's
+    /// copy-back is not worth it.
+    pub fn new_cpu(codec: Codec) -> Result<Self> {
+        if codec != Codec::H264 {
+            return Err(MediaError::Unsupported("only H.264 is decoded on Windows"));
+        }
+        let d = Self::open(None)?;
+        diag!("decoder: H.264 on the CPU, for reading back");
+        Ok(d)
+    }
+
     fn open(device: Option<ID3D11Device>) -> Result<Self> {
         // SAFETY: COM and Media Foundation start-up for this thread (repeat calls are
         // harmless), then the decoder MFT and its types, all with documented arguments.

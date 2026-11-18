@@ -51,9 +51,10 @@ public sealed partial class ConsentViewModel : ObservableObject
     [ObservableProperty] private bool _allowAudio;
     /// <summary>Always starts unticked, even for a device saved with it: files are opt-in each time.</summary>
     [ObservableProperty] private bool _allowFile;
-    /// <summary>A shell on this Mac. Always starts unticked; only browsers can open one so far.</summary>
+    /// <summary>A shell on this Mac. Always starts unticked; offered to browsers and to AI agents (nexa-mcp's
+    /// nexa_run), the viewers that can open one.</summary>
     [ObservableProperty] private bool _allowTerminal;
-    public bool OfferTerminal => IsBrowser;
+    public bool OfferTerminal => IsBrowser || IsAgent;
     public string FileNote => L.Format("Consent.FileNote", Texts.DownloadsFolder);
     [ObservableProperty] private bool _saveDevice;
     [ObservableProperty] private bool _skipNextTime;
@@ -116,7 +117,7 @@ public sealed partial class ConsentViewModel : ObservableObject
             ? new Permissions(View: true, Input: AllowInput && InputAvailable, Clipboard: AllowClipboard, File: false, Audio: false,
                 Terminal: AllowTerminal)
             : new Permissions(View: true, Input: AllowInput && InputAvailable, Clipboard: AllowClipboard,
-                File: AllowFile, Audio: AllowAudio);
+                File: AllowFile, Audio: AllowAudio, Terminal: IsAgent && AllowTerminal);
         Finish(new UiRequest.Decide(ReqId, true, perms, OfferSave && SaveDevice, OfferSkipNextTime && SkipNextTime), L.Get("Consent.Allowed"));
     }
 

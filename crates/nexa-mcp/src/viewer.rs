@@ -19,16 +19,21 @@ use std::{
 use nexa_client::{
     client::{Core, EventTx, Session},
     deps::Deps,
+    memclip::MemoryClipboard,
     proto::{
-        Command, ConnectAuth, ConnectRequest, Connected, DisconnectReason, Disconnected, Event,
-        EventBody, KeyPress, PointerButton, PointerMove, PointerWheel, SendText, SessionCommand,
+        ClipboardCode, Command, ConnectAuth, ConnectRequest, Connected, DisconnectReason,
+        Disconnected, DisplayInfo, Event, EventBody, KeyPress, PointerButton, PointerMove,
+        PointerWheel, SelectDisplay, SendText, SessionCommand, StreamChanged,
     },
     snapshot::{self, Frames},
 };
 use nexa_wire::control::Mode;
 use prost::Message;
 
-use crate::image::{self, MAX_SIDE};
+use crate::{
+    image::{self, MAX_SIDE},
+    terminal::{Ran, Shell},
+};
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -69,6 +74,10 @@ pub const MAX_SESSIONS: usize = 4;
 struct TagState {
     connected: Option<Connected>,
     ended: Option<Disconnected>,
+    /// The stream as the host last configured it: which display, what size.
+    stream: Option<StreamChanged>,
+    /// Copies the host confirmed it has on its clipboard (`CLIPBOARD_SENT`).
+    clips_sent: u64,
 }
 
 #[derive(Default)]
@@ -85,6 +94,10 @@ impl Events {
         match body {
             EventBody::Connected(c) => state.connected = Some(c),
             EventBody::Disconnected(d) => state.ended = Some(d),
+            EventBody::Stream(s) => state.stream = Some(s),
+            EventBody::Clipboard(n) if n.code == ClipboardCode::Sent as i32 => {
+                state.clips_sent += 1
+            }
             _ => return,
         }
         drop(tags);
@@ -119,6 +132,14 @@ impl Events {
     fn ended(&self, tag: u64) -> Option<Disconnected> {
         lock(&self.tags).get(&tag).and_then(|s| s.ended.clone())
     }
+
+    fn stream(&self, tag: u64) -> Option<StreamChanged> {
+        lock(&self.tags).get(&tag).and_then(|s| s.stream.clone())
+    }
+
+    fn clips_sent(&self, tag: u64) -> u64 {
+        lock(&self.tags).get(&tag).map_or(0, |s| s.clips_sent)
+    }
 }
 
 /// What a session was asked to show, and the screenshot coordinates refer to.
@@ -130,9 +151,15 @@ pub struct Remote {
     frames: Arc<Frames>,
     /// The size of the last screenshot, whose pixels actions are given in.
     shot: Mutex<Option<(u32, u32)>>,
+    /// The host's command line, once a command was run.
+    shell: Mutex<Option<Shell>>,
 }
 
 impl Remote {
+    pub fn perms(&self) -> nexa_client::proto::Permissions {
+        self.host.perms.clone().unwrap_or_default()
+    }
+
     pub fn os_name(&self) -> &'static str {
         match self.host.host_os {
             1 => "Windows",
@@ -161,15 +188,21 @@ pub enum Button {
 pub struct Viewer {
     core: Arc<Core>,
     events: Arc<Events>,
+    /// The clipboard every session shares, in memory (`HeadlessDeps` hands it out).
+    clipboard: Arc<MemoryClipboard>,
     data_dir: PathBuf,
     remotes: Mutex<BTreeMap<u64, Arc<Remote>>>,
     next_id: AtomicU64,
     pub timeouts: Timeouts,
+    /// The signaling server's access key, read when a device ID is connected to.
+    signal_secret: Box<dyn Fn() -> String + Send + Sync>,
 }
 
 impl Viewer {
+    /// `clipboard` must be the one `deps` hands to sessions.
     pub fn new(
         deps: Arc<dyn Deps>,
+        clipboard: Arc<MemoryClipboard>,
         data_dir: PathBuf,
         device_name: String,
     ) -> Result<Self, String> {
@@ -198,11 +231,19 @@ impl Viewer {
         Ok(Self {
             core,
             events,
+            clipboard,
             data_dir,
             remotes: Mutex::new(BTreeMap::new()),
             next_id: AtomicU64::new(1),
             timeouts: Timeouts::default(),
+            signal_secret: Box::new(String::new),
         })
+    }
+
+    /// Where the signaling server's access key comes from (the system's secret store).
+    pub fn with_signal_secret(mut self, f: impl Fn() -> String + Send + Sync + 'static) -> Self {
+        self.signal_secret = Box::new(f);
+        self
     }
 
     pub fn sessions(&self) -> Vec<Arc<Remote>> {
@@ -214,6 +255,7 @@ impl Viewer {
         lock(&self.remotes).retain(|id, r| {
             let ended = self.events.ended(*id).is_some();
             if ended {
+                drop(lock(&r.shell).take());
                 r.session.close();
             }
             !ended
@@ -288,7 +330,7 @@ impl Viewer {
                 String::new()
             },
             signal_secret: if by_id {
-                config.signal_secret
+                (self.signal_secret)()
             } else {
                 String::new()
             },
@@ -349,12 +391,14 @@ impl Viewer {
             session,
             frames,
             shot: Mutex::new(None),
+            shell: Mutex::new(None),
         });
         lock(&self.remotes).insert(id, remote.clone());
         Ok(remote)
     }
 
     pub fn disconnect(&self, remote: &Remote) {
+        drop(lock(&remote.shell).take());
         remote.session.close();
         lock(&self.remotes).remove(&remote.id);
     }
@@ -519,7 +563,155 @@ impl Viewer {
         }
         Ok(Instant::now())
     }
+
+    /// Presses at one point, moves to another in steps a program can follow, and
+    /// lets go there.
+    pub fn drag(
+        &self,
+        remote: &Remote,
+        from: (f64, f64),
+        to: (f64, f64),
+        button: Button,
+    ) -> Result<Instant, String> {
+        self.can_act(remote)?;
+        let a = self.point(remote, from.0, from.1)?;
+        let b = self.point(remote, to.0, to.1)?;
+        let button = match button {
+            Button::Left => 0,
+            Button::Right => 1,
+            Button::Middle => 2,
+        };
+        self.send(remote, Command::Move(PointerMove { x: a.0, y: a.1 }))?;
+        thread::sleep(DRAG_STEP);
+        self.send(
+            remote,
+            Command::Button(PointerButton { button, down: true }),
+        )?;
+        for i in 1..=DRAG_STEPS {
+            let t = f64::from(i) / f64::from(DRAG_STEPS);
+            thread::sleep(DRAG_STEP);
+            self.send(
+                remote,
+                Command::Move(PointerMove {
+                    x: a.0 + (b.0 - a.0) * t,
+                    y: a.1 + (b.1 - a.1) * t,
+                }),
+            )?;
+        }
+        thread::sleep(DRAG_STEP);
+        self.send(
+            remote,
+            Command::Button(PointerButton {
+                button,
+                down: false,
+            }),
+        )?;
+        Ok(Instant::now())
+    }
+
+    /// The host's displays, and which one is shown now.
+    pub fn displays(&self, remote: &Remote) -> (Vec<DisplayInfo>, Option<u32>) {
+        let current = self.events.stream(remote.id).map(|s| s.display);
+        (remote.host.displays.clone(), current)
+    }
+
+    /// Shows display `id` instead, and returns once its picture has arrived.
+    pub fn select_display(&self, remote: &Remote, id: u32) -> Result<Instant, String> {
+        self.remote(Some(remote.id))?;
+        let Some(d) = remote.host.displays.iter().find(|d| d.id == id) else {
+            let ids: Vec<String> = remote
+                .host
+                .displays
+                .iter()
+                .map(|d| d.id.to_string())
+                .collect();
+            return Err(format!(
+                "there is no display {id}; the host has {}",
+                ids.join(", ")
+            ));
+        };
+        let before = remote.frames.frames();
+        let (w, h) = image::fitted(d.w.max(1), d.h.max(1), MAX_SIDE);
+        remote.session.resize_view(w, h, 1.0);
+        self.send(remote, Command::Display(SelectDisplay { display: id }))?;
+        let switched = self.events.wait(remote.id, SWITCH_WAIT, |s| {
+            s.stream.as_ref().filter(|st| st.display == id).map(|_| ())
+        });
+        if switched.is_none() {
+            return Err(format!("the host did not switch to display {id}"));
+        }
+        // The last screenshot showed the other display.
+        *lock(&remote.shot) = None;
+        let since = Instant::now();
+        let deadline = since + self.timeouts.first_frame;
+        while remote.frames.frames() == before && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        Ok(since)
+    }
+
+    /// Runs `command` on the host's command line and waits up to `timeout` for it.
+    pub fn run(&self, remote: &Remote, command: &str, timeout: Duration) -> Result<Ran, String> {
+        // The viewer is not told whether the command line was granted: opening it
+        // says (a refused one ends at once with "denied").
+        self.remote(Some(remote.id))?;
+        if command.trim().is_empty() {
+            return Err("no command given".into());
+        }
+        let mut shell = lock(&remote.shell);
+        if shell.as_ref().is_some_and(Shell::exited) {
+            *shell = None;
+        }
+        if shell.is_none() {
+            *shell = Some(Shell::open(
+                &remote.session,
+                remote.host.host_os == 1,
+                SHELL_READY,
+            )?);
+        }
+        let result = shell.as_ref().unwrap().run(command, timeout);
+        if result.is_err() {
+            *shell = None;
+        }
+        result
+    }
+
+    /// The text on the shared clipboard: what a host copied last, or what was set.
+    pub fn clipboard_text(&self, remote: &Remote) -> Result<Option<String>, String> {
+        self.remote(Some(remote.id))?;
+        if !remote.perms().clipboard {
+            return Err("the host did not allow the clipboard".into());
+        }
+        Ok(self.clipboard.text())
+    }
+
+    /// Puts `text` on the clipboard and waits for the host to have it, so a paste
+    /// there right after gets it. False if the host did not confirm in time.
+    pub fn set_clipboard(&self, remote: &Remote, text: &str) -> Result<bool, String> {
+        self.remote(Some(remote.id))?;
+        if !remote.perms().clipboard {
+            return Err("the host did not allow the clipboard".into());
+        }
+        let before = self.events.clips_sent(remote.id);
+        self.clipboard.set_text(text);
+        Ok(self
+            .events
+            .wait(remote.id, CLIP_WAIT, |s| {
+                (s.clips_sent > before).then_some(())
+            })
+            .is_some())
+    }
 }
+
+/// A drag moves in this many steps, this far apart.
+const DRAG_STEPS: u32 = 12;
+const DRAG_STEP: Duration = Duration::from_millis(16);
+/// For the host to switch displays.
+const SWITCH_WAIT: Duration = Duration::from_secs(10);
+/// For a new shell to answer.
+const SHELL_READY: Duration = Duration::from_secs(15);
+/// For the host to confirm a copy.
+const CLIP_WAIT: Duration = Duration::from_secs(3);
 
 impl Drop for Viewer {
     fn drop(&mut self) {
@@ -558,11 +750,12 @@ fn normalize(address: &str) -> Result<String, String> {
     Ok(a.to_owned())
 }
 
-/// `config.json` in the data directory: where device IDs are looked up.
-#[derive(Default)]
+/// `config.json` in the data directory: where device IDs are looked up. The server's
+/// access key is not kept here but in the system's secret store
+/// (`nexa-mcp set-signal-secret`, [`crate::secret`]).
+#[derive(Debug, Default)]
 struct Config {
     signal_server: String,
-    signal_secret: String,
 }
 
 impl Config {
@@ -580,24 +773,16 @@ impl Config {
                 .trim()
                 .to_owned()
         };
-        let config = Self {
-            signal_server: field("signal_server"),
-            signal_secret: field("signal_secret"),
-        };
-        #[cfg(unix)]
-        if !config.signal_secret.is_empty() {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&path)
-                .map(|m| m.permissions().mode())
-                .unwrap_or(0);
-            if mode & 0o077 != 0 {
-                return Err(format!(
-                    "{} holds a key but others can read it: chmod 600 it",
-                    path.display()
-                ));
-            }
+        if !field("signal_secret").is_empty() {
+            return Err(format!(
+                "{} holds the server's access key, which belongs in the system's secret store: \
+                 run `nexa-mcp set-signal-secret` and take it out of the file",
+                path.display()
+            ));
         }
-        Ok(config)
+        Ok(Self {
+            signal_server: field("signal_server"),
+        })
     }
 }
 
@@ -675,30 +860,21 @@ mod tests {
         assert!(KnownHosts::load(dir.path()).key("a:1").is_none());
     }
 
-    #[cfg(unix)]
     #[test]
-    fn a_readable_config_with_a_key_is_refused() {
-        use std::os::unix::fs::PermissionsExt;
+    fn the_config_names_the_server_and_never_holds_its_key() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
+        std::fs::write(&path, r#"{"signal_server":" wss://s:8443 "}"#).unwrap();
+        assert_eq!(
+            Config::load(dir.path()).unwrap().signal_server,
+            "wss://s:8443"
+        );
         std::fs::write(
             &path,
             r#"{"signal_server":"wss://s:8443","signal_secret":"k"}"#,
         )
         .unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        // No Debug on Config: it holds the key.
-        match Config::load(dir.path()) {
-            Err(e) => assert!(e.contains("chmod 600"), "{e}"),
-            Ok(_) => panic!("a readable key was accepted"),
-        }
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let Ok(c) = Config::load(dir.path()) else {
-            panic!("refused")
-        };
-        assert_eq!(
-            (c.signal_server.as_str(), c.signal_secret.as_str()),
-            ("wss://s:8443", "k")
-        );
+        let e = Config::load(dir.path()).unwrap_err();
+        assert!(e.contains("set-signal-secret"), "{e}");
     }
 }

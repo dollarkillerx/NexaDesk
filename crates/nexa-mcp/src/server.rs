@@ -21,11 +21,14 @@ const PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", 
 
 const INSTRUCTIONS: &str = "Operate another computer through NexaDesk. Connect with nexa_connect \
 (the person at that computer may have to allow it), then call nexa_screenshot and act with \
-nexa_click, nexa_scroll, nexa_type and nexa_key. Coordinates are pixels in the latest \
-screenshot. Each action waits for the screen to settle and returns a new screenshot. Key \
+nexa_click, nexa_drag, nexa_scroll, nexa_type and nexa_key. Coordinates are pixels in the \
+latest screenshot. Each action waits for the screen to settle and returns a new screenshot. Key \
 names are the remote computer's own: cmd is the Command key on a Mac and the Windows key on \
-Windows. The person at the remote computer sees that a session is running and can end it at \
-any time.";
+Windows. With several displays, nexa_display lists and switches them. Where the person there \
+allowed it, nexa_run runs commands on its command line (often more reliable than clicking), \
+and nexa_clipboard_get / nexa_clipboard_set read and fill its clipboard (then paste with \
+nexa_key). The person at the remote computer sees that an AI agent is connected and can end \
+it at any time.";
 
 pub struct Server {
     viewer: Viewer,
@@ -132,12 +135,7 @@ impl Server {
             "nexa_click" => {
                 let r = v.remote(session_arg(args)?)?;
                 let (x, y) = point_arg(args)?;
-                let button = match str_arg(args, "button")?.unwrap_or("left") {
-                    "left" => Button::Left,
-                    "right" => Button::Right,
-                    "middle" => Button::Middle,
-                    other => return Err(format!("unknown button {other}: left, right or middle")),
-                };
+                let button = button_arg(args)?;
                 let count = int_arg(args, "count")?.unwrap_or(1);
                 if !(1..=3).contains(&count) {
                     return Err("`count` is 1, 2 (double click) or 3".into());
@@ -181,6 +179,114 @@ impl Server {
                 let since = v.keys(&r, &usages)?;
                 self.after(&r, args, since, &format!("Pressed {combo}"))
             }
+            "nexa_drag" => {
+                let r = v.remote(session_arg(args)?)?;
+                let num = |k: &str| {
+                    args.get(k)
+                        .and_then(Value::as_f64)
+                        .ok_or_else(|| format!("`{k}` is required (a number)"))
+                };
+                let from = (num("from_x")?, num("from_y")?);
+                let to = (num("to_x")?, num("to_y")?);
+                let button = button_arg(args)?;
+                let since = v.drag(&r, from, to, button)?;
+                self.after(
+                    &r,
+                    args,
+                    since,
+                    &format!(
+                        "Dragged from ({}, {}) to ({}, {})",
+                        from.0, from.1, to.0, to.1
+                    ),
+                )
+            }
+            "nexa_display" => {
+                let r = v.remote(session_arg(args)?)?;
+                match int_arg(args, "display")? {
+                    None => {
+                        let (list, current) = v.displays(&r);
+                        if list.is_empty() {
+                            return Ok(vec![text("The host did not list its displays.")]);
+                        }
+                        let lines: Vec<String> = list
+                            .iter()
+                            .map(|d| {
+                                let shown = if Some(d.id) == current {
+                                    " (shown now)"
+                                } else {
+                                    ""
+                                };
+                                format!("Display {}: {} {}×{}{shown}", d.id, d.name, d.w, d.h)
+                            })
+                            .collect();
+                        Ok(vec![text(&lines.join("\n"))])
+                    }
+                    Some(id) => {
+                        let id = u32::try_from(id).map_err(|_| "`display` must not be negative")?;
+                        let since = v.select_display(&r, id)?;
+                        match v.after(&r, since) {
+                            Ok(shot) => Ok(shot_content(
+                                &shot,
+                                &format!("Display {id} is shown. Screenshot"),
+                            )),
+                            Err(e) => Ok(vec![text(&format!(
+                                "Display {id} is shown, but no screenshot: {e}"
+                            ))]),
+                        }
+                    }
+                }
+            }
+            "nexa_run" => {
+                let r = v.remote(session_arg(args)?)?;
+                let command = str_arg(args, "command")?.ok_or("`command` is required")?;
+                let secs = int_arg(args, "timeout")?.unwrap_or(30);
+                if !(1..=600).contains(&secs) {
+                    return Err("`timeout` is 1 to 600 seconds".into());
+                }
+                let ran = v.run(&r, command, std::time::Duration::from_secs(secs as u64))?;
+                let head = match (ran.timed_out, ran.status) {
+                    (true, _) => {
+                        format!("Still running after {secs} s, so it was interrupted (Ctrl+C).")
+                    }
+                    (false, Some(0)) => "Exit status 0.".to_owned(),
+                    (false, Some(s)) => format!("Exit status {s}."),
+                    (false, None) => "Finished.".to_owned(),
+                };
+                let cut = if ran.truncated {
+                    format!(
+                        " Output was long: only its last {} KB is shown.",
+                        crate::terminal::MAX_OUTPUT >> 10
+                    )
+                } else {
+                    String::new()
+                };
+                let body = if ran.output.is_empty() {
+                    "(no output)".to_owned()
+                } else {
+                    ran.output
+                };
+                Ok(vec![text(&format!("{head}{cut}\n{body}"))])
+            }
+            "nexa_clipboard_get" => {
+                let r = v.remote(session_arg(args)?)?;
+                Ok(vec![text(&match v.clipboard_text(&r)? {
+                    Some(t) => t,
+                    None => "(the clipboard has no text)".to_owned(),
+                })])
+            }
+            "nexa_clipboard_set" => {
+                let r = v.remote(session_arg(args)?)?;
+                let t = str_arg(args, "text")?.ok_or("`text` is required")?;
+                if t.len() > MAX_CLIPBOARD {
+                    return Err(format!("at most {} KB at a time", MAX_CLIPBOARD >> 10));
+                }
+                let confirmed = v.set_clipboard(&r, t)?;
+                Ok(vec![text(if confirmed {
+                    "The remote computer has it on its clipboard: paste with nexa_key (cmd+v on a Mac, ctrl+v on Windows)."
+                } else {
+                    "Put on the clipboard; the remote computer did not confirm it yet. Paste with nexa_key in a moment."
+                })])
+            }
             _ => Err(format!("unknown tool {name}")),
         }
     }
@@ -212,6 +318,9 @@ fn describe(r: &Remote) -> String {
     }
     if perms.input {
         allowed.push("keyboard and mouse");
+    }
+    if perms.clipboard {
+        allowed.push("clipboard");
     }
     let displays = r
         .host
@@ -256,6 +365,18 @@ fn shot_content(shot: &Shot, what: &str) -> Vec<Value> {
             "mimeType": "image/png",
         }),
     ]
+}
+
+/// The host's clipboard limit for text (`nexa_clip`, 192 KiB), with room to spare.
+const MAX_CLIPBOARD: usize = 128 << 10;
+
+fn button_arg(args: &Value) -> Result<Button, String> {
+    match str_arg(args, "button")?.unwrap_or("left") {
+        "left" => Ok(Button::Left),
+        "right" => Ok(Button::Right),
+        "middle" => Ok(Button::Middle),
+        other => Err(format!("unknown button {other}: left, right or middle")),
+    }
 }
 
 fn text(s: &str) -> Value {
@@ -404,6 +525,59 @@ fn tools() -> Vec<Value> {
                     "screenshot": screenshot,
                 },
                 "required": ["keys"],
+            },
+        }),
+        json!({
+            "name": "nexa_drag",
+            "description": "Press at one point, move to another and let go there: drag and drop, select text, move a window by its title bar.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session": session,
+                    "from_x": { "type": "number" }, "from_y": { "type": "number" },
+                    "to_x": { "type": "number" }, "to_y": { "type": "number" },
+                    "button": { "type": "string", "enum": ["left", "right", "middle"], "description": "Default left." },
+                    "screenshot": screenshot,
+                },
+                "required": ["from_x", "from_y", "to_x", "to_y"],
+            },
+        }),
+        json!({
+            "name": "nexa_display",
+            "description": "Without `display`: list the remote computer's displays. With it: show that display instead (one at a time); returns its screenshot.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session": session,
+                    "display": { "type": "integer", "description": "A display number from the list." },
+                },
+            },
+        }),
+        json!({
+            "name": "nexa_run",
+            "description": "Run a command on the remote computer's command line and return its output and exit status: the user's login shell on a Mac or Linux, PowerShell on Windows. One shell per session, so the directory and variables carry over. Standard input is empty, so commands that would wait for typing end instead. Needs the person there to have allowed the command line.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session": session,
+                    "command": { "type": "string" },
+                    "timeout": { "type": "integer", "minimum": 1, "maximum": 600, "description": "Seconds before it is interrupted. Default 30." },
+                },
+                "required": ["command"],
+            },
+        }),
+        json!({
+            "name": "nexa_clipboard_get",
+            "description": "The text on the remote computer's clipboard (what was copied there last). Needs the clipboard to have been allowed.",
+            "inputSchema": { "type": "object", "properties": { "session": session } },
+        }),
+        json!({
+            "name": "nexa_clipboard_set",
+            "description": "Put text on the remote computer's clipboard; then paste it with nexa_key (cmd+v on a Mac, ctrl+v on Windows). Faster than nexa_type for long text. Needs the clipboard to have been allowed.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "session": session, "text": { "type": "string" } },
+                "required": ["text"],
             },
         }),
         json!({

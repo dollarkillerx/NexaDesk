@@ -1,8 +1,9 @@
 # NexaDesk MCP 方案
 
-> 状态（2026-11-18）：A0（macOS，§9）和 A1（被控端知情，§10）已实现。
+> 状态（2026-11-18）：A0（macOS，§9）、A1（被控端知情，§10）、A2 和 A3（§11）已实现。
 > - 已验证：用本机的演示主机（`demo_host`，127.0.0.1:47900，VideoToolbox 真编真解）按 MCP 协议走完一遍：连接、截图、点击、输入、按键、滚动、断开，以及配对后不用码重连。被控端不接受 AI 代理时被拒且不弹窗；接受时确认请求标明是 AI 代理。
-> - 尚未测试：真实的被控端（应用里的确认窗口和提示条只看过渲染图）、经信令服务器连接，以及在 Claude Code 里实际调用。
+> - A2/A3 已验证：拖动、显示器切换在演示主机上实测；命令行和剪贴板在集成测试里对真实的被控端代码验证（命令行开的是本机真实的 shell）；macOS 安装包里带上了 `nexa-mcp`，Developer ID 签名、hardened runtime 下能正常连接截图。
+> - 尚未测试：真实的被控端（应用里的确认窗口和提示条只看过渲染图）、经信令服务器连接、在 Claude Code 里实际调用，以及 Windows 上的 `nexa-mcp.exe`（只在 Mac 上交叉编译通过，没有在 Windows 上运行过）。
 
 目标：让 AI agent（Claude Code、Claude Desktop 等支持 MCP 的程序）经 NexaDesk 看到并操作**另一台**电脑。连接方式和人用的一样：局域网、Tailscale、设备 ID 经信令服务器、TURN 中转，端到端加密，被控端照常确认、照常显示会话提示。
 
@@ -226,4 +227,49 @@ claude mcp add nexadesk -- /path/to/target/release/nexa-mcp
   - 和 Rust 共用的 golden 字节一致。
 - 渲染图：`ui/out/consent-agent-*.png`、`banner-agent-*.png`。
 - 实测：新版演示主机不带 `--agents` 时被拒；带 `--agents` 时确认请求标明“an AI agent”，会话正常。
+
+## 11. A2、A3 实现（与方案的差异）
+
+### A2：命令行、剪贴板、显示器、拖动
+
+| 工具 | 实现 |
+|---|---|
+| `nexa_drag` | 先移到起点、按下，再分 12 步移到终点（每步间隔 16 ms，让程序看得到拖动过程），最后松开 |
+| `nexa_display` | 不带参数时列出显示器并标出当前显示的那块；带编号时切过去：视图先按新显示器的比例调整，等被控端回报新的流配置和第一帧，再返回新显示器的截图。切换后之前的截图坐标作废 |
+| `nexa_run` | 方案里叫 `nexa_terminal_run`。每个会话保留一个 shell（Mac/Linux 是用户的登录 shell，Windows 是 PowerShell），工作目录和环境变量在命令之间保留。规则如下 |
+| `nexa_clipboard_get` / `_set` | 剪贴板放在 `nexa-mcp` 进程的内存里（`nexa_client::memclip`），从不读写本机系统剪贴板。被控端复制的内容同步到这里，`set` 的内容同步到被控端。`set` 会等被控端回报“已放到剪贴板”（`CLIPBOARD_SENT`，最多 3 秒）再返回，这样紧接着按 ⌘V/Ctrl+V 粘贴的一定是新内容。原因是无窗口客户端不经过改键规则，粘贴键也就不会触发粘贴闸门（§8.3）。多个会话共用这一个剪贴板，和真实的剪贴板一样 |
+
+`nexa_run` 的细节：
+
+- **结束标记**：每条命令后面跟一行，打印“结束标记 + 退出码”。标记由几段拼成（`printf '%s_%s' __NEXA_END <随机数>`），完整的标记只会出现在输出里，不会出现在回显里。
+- **Mac/Linux 被控端**：先关掉回显和行编辑器（`stty -echo`、`set +o emacs`、`unsetopt zle`），清空提示符，设 `TERM=dumb`。命令用 `{ …; } </dev/null` 包起来，`cd` 和变量留在同一个 shell 里；标准输入为空，等着输入的命令会直接结束，不会卡住。
+- **Windows 被控端（PowerShell）**：PowerShell 会回显，所以按行去掉回显出来的命令和 `PS …>` 提示符。这一路径只有单元测试，没在 Windows 上运行过。
+- **输出清理**：去掉终端控制序列和回车。超过 64 KB 时只保留结尾，并注明被截断。
+- **超时**：默认 30 秒，最多 600 秒。超时就发 Ctrl+C，再等 3 秒让 shell 回来；shell 继续可用。
+- **权限**：客户端协议里的权限没有 `terminal` 这一项（桌面端也是打开终端时才知道），所以这里不事先检查：被控端没给，shell 会立刻以 `denied` 结束，工具返回“对方没有允许命令行”。
+- **确认窗口**：AI 代理的确认窗口现在也提供“命令行”选项，和浏览器一样默认不勾。人的应用照旧不提供。
+
+### A3：Windows、发布、应用里的说明、口令存放
+
+| 方面 | 实现 |
+|---|---|
+| Windows | `HeadlessDeps` 改为 macOS 和 Windows 共用，平台差异只有系统类型、解码能力和解码器三处。Windows 用新增的 `MfDecoder::new_cpu`：始终在 CPU 上解码，帧直接在内存里，截图不需要从显卡读回（原方案是拷到 staging 纹理）。截图的画面小、帧率低，CPU 解码足够。`nexa-mcp.exe` 在 Mac 上用 mingw 交叉编译通过，只依赖系统 DLL，clippy 无警告；**没有在 Windows 上运行过** |
+| 发布 | `scripts/package-macos.sh` 把 `nexa-mcp` 放进 `NexaDesk.app/Contents/MacOS/`，单独签名（标识 `app.nexadesk.mcp`，hardened runtime）。`scripts/package-windows.sh` 把 `nexa-mcp.exe` 放在 `NexaDesk.exe` 旁边并去掉符号 |
+| 应用里的说明 | 主窗口设置卡片里新增可展开的“AI 代理（MCP）”，里面有 Claude Code 的 `claude mcp add nexadesk -- "<路径>"` 命令和 JSON 配置，各带复制按钮，路径就是应用旁边的 `nexa-mcp`。没找到这个文件（开发版）时给出提示。最后一行提醒：要让 AI 控制本机，勾选“允许 AI 代理连接” |
+| 访问口令 | 信令服务器的访问口令不再写在 `config.json` 里，写了会报错并提示改用 `nexa-mcp set-signal-secret`：从标准输入读，所以不会出现在命令行和 shell 历史里。macOS 存进钥匙串（`app.nexadesk` / `mcp-signal-secret`），Windows 用 DPAPI 加密存在数据目录的 `signal-secret` 文件里。`clear-signal-secret` 删除。`config.json` 只剩 `signal_server` |
+
+**测试**：
+- `nexa-mcp` 单元测试 15 个：结束标记、PowerShell 回显清理、控制序列、截断、口令存取等。
+- `nexa-mcp` 集成测试 12 个，新增：
+  - 拖动的按下、移动、松开位置；
+  - 显示器列表和不存在的编号；
+  - 命令行：输出、退出码、`cd` 保留、等待输入的命令会结束、超时中断后 shell 仍可用、未授权时的提示；
+  - 剪贴板：双向同步、未授权时的提示。
+- `nexa-client`：内存剪贴板只察觉会话开始后的变化，被控端写入的内容不会被发回去。
+- 桌面端：MCP 区块的命令、JSON、复制，以及 AI 代理“命令行”选项默认不勾、勾了才给。渲染图 `ui/out/main-mcp-*.png`。
+- 实测：
+  - 演示主机两块屏，切换后截图是 1024×768 的第二块屏；拖动落在第二块屏的全局坐标上（原点 1280）。
+  - 打包出的 `.app` 里的 `nexa-mcp` 能连接、截图、点击。
+
+**还没做的**：配对列表里标出 AI 代理设备（§10）；第二阶段的无障碍树（§5）；在 Windows 上实际运行 `nexa-mcp.exe`。
 

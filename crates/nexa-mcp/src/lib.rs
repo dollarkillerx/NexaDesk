@@ -6,5 +6,7 @@
 
 pub mod image;
 pub mod keys;
+pub mod secret;
 pub mod server;
+pub mod terminal;
 pub mod viewer;
