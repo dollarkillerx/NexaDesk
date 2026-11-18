@@ -11,7 +11,7 @@ enum SecretStore {
         case published = "published-key"
     }
 
-    private static let service = "app.nexadesk.ios.signal"
+    private static let service = "cc.nyxnet.nexadesk.signal"
 
     private static func query(_ account: Account) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,

@@ -39,7 +39,7 @@ targets:
         basedOnDependencyAnalysis: false
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: app.nexadesk.ios
+        PRODUCT_BUNDLE_IDENTIFIER: cc.nyxnet.nexadesk
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"

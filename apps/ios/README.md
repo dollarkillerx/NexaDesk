@@ -44,7 +44,7 @@ environment and connect at once:
 
 ```sh
 SIMCTL_CHILD_NEXA_TEST_ADDRESS=127.0.0.1:47900 SIMCTL_CHILD_NEXA_TEST_SECRET=nexademohost \
-  xcrun simctl launch booted app.nexadesk.ios
+  xcrun simctl launch booted cc.nyxnet.nexadesk
 ```
 
 ## Connecting
@@ -80,7 +80,7 @@ English, Simplified Chinese and Japanese, following the system language (the des
 app's three). The strings are in `NexaDesk/Localizable.xcstrings` (English keys) and
 the permission text in `NexaDesk/InfoPlist.xcstrings`. The messages for why a session
 ended follow the desktop app's wording (`ui/NexaDesk.App/Localization`). To try one in
-the simulator: `xcrun simctl launch booted app.nexadesk.ios -AppleLanguages "(ja)"`.
+the simulator: `xcrun simctl launch booted cc.nyxnet.nexadesk -AppleLanguages "(ja)"`.
 
 ## Controls
 
