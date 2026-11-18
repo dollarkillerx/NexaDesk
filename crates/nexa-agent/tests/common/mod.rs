@@ -521,6 +521,31 @@ pub async fn host_full(
     listen: std::net::SocketAddr,
     password: Option<Arc<nexa_auth::HostPassword>>,
 ) -> Host {
+    host_built(ui, timeouts, signal, listen, password, Os::Macos).await
+}
+
+/// An agent that tells viewers it runs `os`: the viewer picks its keymap by it.
+#[allow(dead_code)]
+pub async fn host_as(ui: Arc<FakeUi>, os: Os) -> Host {
+    host_built(
+        ui,
+        Timeouts::default(),
+        None,
+        "127.0.0.1:0".parse().unwrap(),
+        None,
+        os,
+    )
+    .await
+}
+
+async fn host_built(
+    ui: Arc<FakeUi>,
+    timeouts: Timeouts,
+    signal: Option<nexa_agent::SignalSetup>,
+    listen: std::net::SocketAddr,
+    password: Option<Arc<nexa_auth::HostPassword>>,
+    os: Os,
+) -> Host {
     let dir = tempfile::tempdir().unwrap();
     let identity = DeviceIdentity::generate();
     let store =
@@ -534,7 +559,7 @@ pub async fn host_full(
             password,
             listen,
             device_name: "fake host".into(),
-            os: Os::Macos,
+            os,
             caps: caps(),
             timeouts,
             signal,

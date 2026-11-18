@@ -109,13 +109,18 @@ pub struct SetResolution {
 
 /// One key, as a USB HID usage on the keyboard page (0x07): the iOS keyboard bar and
 /// a hardware keyboard through UIKit. Desktop viewers capture keys themselves and do
-/// not use it. Keys go through the same rewriting as captured ones.
+/// not use it. Keys go through the same rewriting as captured ones, unless `exact`.
 #[derive(Clone, PartialEq, Message)]
 pub struct KeyPress {
     #[prost(uint32, tag = "1")]
     pub usage: u32,
     #[prost(bool, tag = "2")]
     pub down: bool,
+    /// Already in the host's terms (the shortcut panel's ⊞+D for a Windows host):
+    /// sent as it is, past the keymap rules. The keyboard bar and a hardware keyboard
+    /// leave it false.
+    #[prost(bool, tag = "3")]
+    pub exact: bool,
 }
 
 /// Stream another of the host's displays (`Connected.displays[i].id`).

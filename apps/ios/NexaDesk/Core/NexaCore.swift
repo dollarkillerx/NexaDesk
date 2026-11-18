@@ -216,9 +216,10 @@ final class NexaCore: ObservableObject {
         send { $0.text = .with { $0.utf8 = utf8 } }
     }
 
-    /// A USB HID usage on the keyboard page (0x07).
-    func key(_ usage: UInt32, down: Bool) {
-        send { $0.key = .with { $0.usage = usage; $0.down = down } }
+    /// A USB HID usage on the keyboard page (0x07). `exact`: already in the host's
+    /// terms, so the core sends it past the keymap rules (which treat this device as a Mac).
+    func key(_ usage: UInt32, down: Bool, exact: Bool = false) {
+        send { $0.key = .with { $0.usage = usage; $0.down = down; $0.exact = exact } }
     }
 
     func tapKey(_ usage: UInt32) {
@@ -227,12 +228,13 @@ final class NexaCore: ObservableObject {
     }
 
     /// A shortcut: the modifiers pressed in order, the last key tapped, all released.
-    func combo(_ keys: [UInt32]) {
+    func combo(_ keys: [UInt32], exact: Bool = false) {
         guard let last = keys.last else { return }
         let mods = keys.dropLast()
-        mods.forEach { key($0, down: true) }
-        tapKey(last)
-        mods.reversed().forEach { key($0, down: false) }
+        mods.forEach { key($0, down: true, exact: exact) }
+        key(last, down: true, exact: exact)
+        key(last, down: false, exact: exact)
+        mods.reversed().forEach { key($0, down: false, exact: exact) }
     }
 
     /// Streams another of the host's displays instead of this one (never both).

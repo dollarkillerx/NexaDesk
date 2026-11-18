@@ -46,6 +46,8 @@ const IDLE_WAIT: Duration = Duration::from_millis(100);
 /// Everything the input thread reacts to.
 pub enum InputCmd {
     Key(PhysKey),
+    /// A key already in the host's terms, past the keymap rules (`KeyPress.exact`).
+    ExactKey(PhysKey),
     HostKey,
     Interrupted,
     Focus(FocusClass),
@@ -515,6 +517,10 @@ impl InputState {
                 let outputs = self.cfg.rewriter.on_key(key, self.focus);
                 self.emit(outputs, now);
             }
+            InputCmd::ExactKey(key) if self.active => {
+                let outputs = self.cfg.rewriter.on_exact_key(key);
+                self.emit(outputs, now);
+            }
             InputCmd::Interrupted => {
                 // The tap was switched off under us: give the mouse back too.
                 self.suspend_lock(now);
@@ -573,6 +579,7 @@ impl InputState {
             }
             // Input arriving while inactive is ignored.
             InputCmd::Key(_)
+            | InputCmd::ExactKey(_)
             | InputCmd::Move(..)
             | InputCmd::Relative(..)
             | InputCmd::Warped(..)

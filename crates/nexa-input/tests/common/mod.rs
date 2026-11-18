@@ -118,6 +118,34 @@ impl Harness {
         joined
     }
 
+    /// What the iOS app's `NexaCore.combo` sends: the modifiers down in order, the last
+    /// key tapped, the modifiers up in reverse. `exact` sends them past the rules.
+    pub fn combo(&mut self, keys: &[&str], exact: bool) -> String {
+        let (last, mods) = keys.split_last().expect("a key");
+        let mut events: Vec<(&str, bool)> = mods.iter().map(|m| (*m, true)).collect();
+        events.extend([(*last, true), (*last, false)]);
+        events.extend(mods.iter().rev().map(|m| (*m, false)));
+        let mut stream = Vec::new();
+        for (name, down) in events {
+            let ev = PhysKey {
+                hid: hid(name),
+                down,
+                repeat: false,
+            };
+            stream.push(if exact {
+                render(&self.rewriter.on_exact_key(ev))
+            } else {
+                render(&self.rewriter.on_key(ev, self.ctx))
+            });
+        }
+        self.assert_idle();
+        stream
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     pub fn assert_idle(&self) {
         assert_eq!(
             self.rewriter.pressed_keys().count(),

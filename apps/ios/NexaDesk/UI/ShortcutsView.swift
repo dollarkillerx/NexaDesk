@@ -15,6 +15,11 @@ struct ShortcutsView: View {
         let title: String
         let detail: LocalizedStringKey?
         let keys: [UInt32]
+        /// Sent as written, past the keymap rules. This device counts as a Mac, so the
+        /// Mac→Windows rules would turn ⊞ (the gui key, ⌘ to them) plus a letter into
+        /// Ctrl plus the letter. The others stay on the rules: Ctrl+V needs the paste
+        /// tag, which makes it wait for the clipboard.
+        var exact = false
         var id: String { title }
     }
 
@@ -47,7 +52,7 @@ struct ShortcutsView: View {
                 ForEach(items) { item in
                     Button {
                         feedback.impactOccurred()
-                        core.combo(item.keys)
+                        core.combo(item.keys, exact: item.exact)
                     } label: {
                         VStack(spacing: 2) {
                             Text(item.title).font(.system(size: 16, weight: .medium)).lineLimit(1).minimumScaleFactor(0.7)
@@ -71,12 +76,12 @@ struct ShortcutsView: View {
     static let windows: [Shortcut] = [
         Shortcut(title: "⊞", detail: "Start", keys: [gui]),
         Shortcut(title: "Alt+Tab", detail: "Switch apps", keys: [alt, HID.tab]),
-        Shortcut(title: "⊞+D", detail: "Desktop", keys: [gui, letter("d")]),
-        Shortcut(title: "⊞+E", detail: "Files", keys: [gui, letter("e")]),
-        Shortcut(title: "⊞+L", detail: "Lock", keys: [gui, letter("l")]),
+        Shortcut(title: "⊞+D", detail: "Desktop", keys: [gui, letter("d")], exact: true),
+        Shortcut(title: "⊞+E", detail: "Files", keys: [gui, letter("e")], exact: true),
+        Shortcut(title: "⊞+L", detail: "Lock", keys: [gui, letter("l")], exact: true),
         Shortcut(title: "Ctrl+Shift+Esc", detail: "Task Manager", keys: [ctrl, shift, HID.escape]),
         Shortcut(title: "Alt+F4", detail: "Close", keys: [alt, 0x3D]),
-        Shortcut(title: "⊞+Shift+S", detail: "Screenshot", keys: [gui, shift, letter("s")]),
+        Shortcut(title: "⊞+Shift+S", detail: "Screenshot", keys: [gui, shift, letter("s")], exact: true),
         Shortcut(title: "Ctrl+C", detail: "Copy", keys: [ctrl, letter("c")]),
         Shortcut(title: "Ctrl+V", detail: "Paste", keys: [ctrl, letter("v")]),
         Shortcut(title: "Ctrl+X", detail: "Cut", keys: [ctrl, letter("x")]),
