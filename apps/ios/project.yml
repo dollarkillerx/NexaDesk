@@ -2,6 +2,9 @@
 name: NexaDesk
 options:
   bundleIdPrefix: app.nexadesk
+  # English is the source; Localizable.xcstrings and InfoPlist.xcstrings carry
+  # Simplified Chinese and Japanese, the desktop app's languages.
+  developmentLanguage: en
   deploymentTarget:
     iOS: "17.0"
 packages:

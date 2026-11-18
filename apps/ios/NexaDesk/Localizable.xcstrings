@@ -1,0 +1,1014 @@
+{
+  "sourceLanguage": "en",
+  "version": "1.0",
+  "strings": {
+    "%@ could not be reached on this network.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このネットワークでは %@ に接続できませんでした。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在本网络中无法连到 %@。"
+          }
+        }
+      }
+    },
+    "%@ uses a certificate this device does not know. Trust it only if this fingerprint matches the server's certificate (on the server: openssl x509 -noout -fingerprint -sha256 -in <certificate>):\n\n%@": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ は、このデバイスが知らない証明書を使っています。下のフィンガープリントがサーバーの証明書と一致する場合にだけ信頼してください（サーバーで openssl x509 -noout -fingerprint -sha256 -in <証明書> を実行）：\n\n%@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 使用的证书不是公开机构签发的。请先核对下面的指纹与服务器证书一致再信任（在服务器上运行 openssl x509 -noout -fingerprint -sha256 -in <证书>）：\n\n%@"
+          }
+        }
+      }
+    },
+    "A device ID needs a signaling server: enter yours below.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "デバイス ID で接続するにはシグナリングサーバーが必要です。下に入力してください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用设备 ID 连接需要信令服务器，请在下方填写。"
+          }
+        }
+      }
+    },
+    "Another device connected to the computer, and the person there agreed to the takeover.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "別のデバイスが相手のコンピュータに接続し、相手が引き継ぎを承認しました。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "另一台设备连接了对方的电脑，对方同意了接管。"
+          }
+        }
+      }
+    },
+    "Can't reach the computer. Check the address and port, that it has “Allow remote control” turned on, and the firewalls on both sides.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相手に接続できません。アドレスとポート、相手が「操作を許可」をオンにしているか、および双方のファイアウォールを確認してください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法连到对方。请检查地址和端口、对方是否已开启“允许别人控制本机”，以及两边的防火墙。"
+          }
+        }
+      }
+    },
+    "Can't use the signaling server": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "シグナリングサーバーを使用できません"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法使用信令服务器"
+          }
+        }
+      }
+    },
+    "Cancel": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "キャンセル"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消"
+          }
+        }
+      }
+    },
+    "Check the 8-character code shown on the computer's screen, or its fixed password. After 5 wrong codes in a row, the code changes automatically.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相手の画面に表示されている 8 桁のコード、または固定パスワードを確認してください。コードを 5 回続けて間違えると、コードは自動的に変更されます。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请核对对方屏幕上显示的 8 位代码，或对方设置的固定密码。一次性码连续输错 5 次后会自动更换。"
+          }
+        }
+      }
+    },
+    "Computer": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "コンピュータ"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑"
+          }
+        }
+      }
+    },
+    "Connect": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接続"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接"
+          }
+        }
+      }
+    },
+    "Connecting…": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接続しています…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在连接…"
+          }
+        }
+      }
+    },
+    "Connection lost": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接続が切断されました"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接已断开"
+          }
+        }
+      }
+    },
+    "Connection timed out": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接続がタイムアウトしました"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接超时"
+          }
+        }
+      }
+    },
+    "Could not start: %@": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "起動できませんでした：%@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法启动：%@"
+          }
+        }
+      }
+    },
+    "Could not trust the server: %@": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "サーバーを信頼できませんでした：%@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法信任这台服务器：%@"
+          }
+        }
+      }
+    },
+    "Couldn't reach the signaling server, or it refused the request. Check the server address and your network.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "シグナリングサーバーに接続できないか、サーバーがリクエストを拒否しました。サーバーのアドレスとネットワークを確認してください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连不上信令服务器，或服务器拒绝了请求。请检查服务器地址和网络。"
+          }
+        }
+      }
+    },
+    "Device ID, IP or host:port": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "デバイス ID、IP、またはホスト:ポート"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设备 ID、IP 或 主机:端口"
+          }
+        }
+      }
+    },
+    "Direct, hole punching and relay all failed. A firewall may be blocking UDP, or the signaling server has no relay configured.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "直接接続、ホールパンチング、中継のいずれも成功しませんでした。ファイアウォールが UDP をブロックしているか、シグナリングサーバーに中継が設定されていない可能性があります。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "直连、打洞和中继都没有成功。可能是防火墙拦截了 UDP，或者信令服务器没有配置中继。"
+          }
+        }
+      }
+    },
+    "Disconnected": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "切断しました"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已断开连接"
+          }
+        }
+      }
+    },
+    "Hide": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隠す"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隐藏"
+          }
+        }
+      }
+    },
+    "Incompatible NexaDesk versions": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NexaDesk のバージョンに互換性がありません"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NexaDesk 版本不兼容"
+          }
+        }
+      }
+    },
+    "Incorrect one-time code or password": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ワンタイムコードまたはパスワードが正しくありません"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一次性码或密码不正确"
+          }
+        }
+      }
+    },
+    "Invalid connection request": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接続リクエストが無効です"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接请求无效"
+          }
+        }
+      }
+    },
+    "Looking for computers sharing NexaDesk on this network…": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このネットワークで NexaDesk を共有しているコンピュータを探しています…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在查找本网络中开启了 NexaDesk 的电脑…"
+          }
+        }
+      }
+    },
+    "Network connection failed": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ネットワーク接続に失敗しました"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "网络连接失败"
+          }
+        }
+      }
+    },
+    "NexaDesk internal error": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NexaDesk の内部エラー"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NexaDesk 内部错误"
+          }
+        }
+      }
+    },
+    "NexaDesk may have been reinstalled there, or someone may be impersonating it. Check first, then pair again with a one-time code.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相手が NexaDesk を再インストールしたか、誰かがなりすましている可能性があります。まず相手に確認してから、ワンタイムコードで再度ペアリングしてください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可能是对方重装了 NexaDesk，也可能有人冒充。请先与对方核实，再用一次性码重新配对。"
+          }
+        }
+      }
+    },
+    "No video codec both sides support": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "双方が対応しているビデオコーデックがありません"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有双方都支持的视频编码"
+          }
+        }
+      }
+    },
+    "No working network path": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "利用できるネットワーク経路が見つかりません"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "找不到能走通的网络路径"
+          }
+        }
+      }
+    },
+    "Not paired with this device": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このデバイスとはペアリングされていません"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚未与这台设备配对"
+          }
+        }
+      }
+    },
+    "OK": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OK"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "好"
+          }
+        }
+      }
+    },
+    "On the same network (or Tailscale), an IP address is enough; port %@ is assumed. From anywhere else, use the 9-digit device ID with your signaling server.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "同じネットワーク（または Tailscale）なら IP アドレスだけで接続できます（ポートは %@ とみなします）。それ以外の場所からは、9 桁のデバイス ID とシグナリングサーバーを使って接続します。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在同一网络（或 Tailscale）中，填 IP 地址即可，默认端口为 %@。在其他地方，请用 9 位设备 ID 配合你的信令服务器连接。"
+          }
+        }
+      }
+    },
+    "On this network": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このネットワーク上のコンピュータ"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本网络中的电脑"
+          }
+        }
+      }
+    },
+    "One-time code or password": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ワンタイムコードまたはパスワード"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一次性码或密码"
+          }
+        }
+      }
+    },
+    "One-time code, password, or empty to ask": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ワンタイムコード、パスワード、または空欄で相手に確認"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一次性码、密码，或留空请对方确认"
+          }
+        }
+      }
+    },
+    "Reconnecting: %@": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "再接続しています：%@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在重新连接：%@"
+          }
+        }
+      }
+    },
+    "Reconnecting…": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "再接続しています…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在重新连接…"
+          }
+        }
+      }
+    },
+    "Screen capture or video encoding failed on the host. On a Mac, NexaDesk needs the Screen Recording permission.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "操作される側で画面のキャプチャまたはビデオのエンコードに失敗しました。Mac の場合、NexaDesk に「画面収録」の権限が必要です。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "被控端的屏幕采集或视频编码出错。如果对方是 Mac，需要授予 NexaDesk “屏幕录制”权限。"
+          }
+        }
+      }
+    },
+    "Session taken over": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "セッションが引き継がれました"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "会话已被接管"
+          }
+        }
+      }
+    },
+    "Show": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "表示"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示"
+          }
+        }
+      }
+    },
+    "Signaling server": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "シグナリングサーバー"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "信令服务器"
+          }
+        }
+      }
+    },
+    "Something unexpected went wrong. Try again; if it keeps happening, restart NexaDesk.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "予期しないエラーが発生しました。もう一度お試しください。繰り返し発生する場合は、NexaDesk を再起動してください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发生了意外错误。请重试；如果反复出现，请重启 NexaDesk。"
+          }
+        }
+      }
+    },
+    "The address or one-time code isn't in the right format.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アドレスまたはワンタイムコードの形式が正しくありません。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "地址或一次性码的格式不对。"
+          }
+        }
+      }
+    },
+    "The computer can't share its screen": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相手のコンピュータが画面を共有できません"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "对方无法共享屏幕"
+          }
+        }
+      }
+    },
+    "The computer didn't respond in time. Make sure the address is right and the computer is online, then try again.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相手のコンピュータが時間内に応答しませんでした。アドレスが正しく、相手がオンラインであることを確認してから、もう一度お試しください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "对方没有及时响应。请确认地址正确、对方在线，然后重试。"
+          }
+        }
+      }
+    },
+    "The computer ended the session": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相手のコンピュータがセッションを終了しました"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "对方结束了会话"
+          }
+        }
+      }
+    },
+    "The computer has no saved pairing with this device. Enter the one-time code shown on its screen.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相手のコンピュータにこのデバイスとのペアリングが保存されていません。相手の画面に表示されているワンタイムコードを入力してください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "对方没有保存与本机的配对。请输入对方屏幕上显示的一次性码。"
+          }
+        }
+      }
+    },
+    "The computer is offline": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相手がオフラインです"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "对方不在线"
+          }
+        }
+      }
+    },
+    "The computer's identity doesn't match the saved pairing": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相手のコンピュータの識別情報が保存済みのペアリングと一致しません"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "对方的身份与已保存的配对不一致"
+          }
+        }
+      }
+    },
+    "The connection dropped unexpectedly.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接続が予期せず切断されました。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接意外中断。"
+          }
+        }
+      }
+    },
+    "The connection was not accepted": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相手が接続を承認しませんでした"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "对方没有同意连接"
+          }
+        }
+      }
+    },
+    "The host disconnected or stopped allowing control.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "操作される側が接続を切断したか、操作の許可を停止しました。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "被控端断开了连接，或停止了允许控制。"
+          }
+        }
+      }
+    },
+    "The person at the computer declined, didn't respond in time, or nobody is there to accept.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相手がリクエストを拒否したか、時間内に応答しなかったか、相手のコンピュータの前に承認できる人がいません。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "对方拒绝了请求、没有在限定时间内回应，或者对方电脑前当前没有可以确认的人。"
+          }
+        }
+      }
+    },
+    "The two devices' hardware codecs don't match, so no video stream can be set up.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2台のデバイスのハードウェアコーデックが一致しないため、ビデオストリームを確立できません。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "两台设备的硬件编解码能力不匹配，无法建立视频流。"
+          }
+        }
+      }
+    },
+    "This device ID isn't connected to the signaling server right now. Make sure the computer has “Allow remote control” turned on and both sides use the same signaling server.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このデバイス ID は現在シグナリングサーバーに接続されていません。相手が「操作を許可」をオンにしていること、および双方が同じシグナリングサーバーを使っていることを確認してください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个设备 ID 现在没有连到信令服务器。请确认对方已开启“允许别人控制本机”，并且两边设置的是同一台信令服务器。"
+          }
+        }
+      }
+    },
+    "To prevent guessing, the computer is refusing new attempts for now. Wait a minute and try again.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "推測を防ぐため、相手のコンピュータは新しい試行を一時的に拒否しています。1 分ほど待ってから、もう一度お試しください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "为防止猜码，对方暂时拒绝了新的尝试。请稍等一分钟再试。"
+          }
+        }
+      }
+    },
+    "Too many attempts": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "試行回数が多すぎます"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尝试次数过多"
+          }
+        }
+      }
+    },
+    "Trust and connect": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "信頼して接続"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "信任并连接"
+          }
+        }
+      }
+    },
+    "Trust this signaling server?": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このシグナリングサーバーを信頼しますか？"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "信任这台信令服务器吗？"
+          }
+        }
+      }
+    },
+    "Update NexaDesk on both sides to the same version.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "両方の NexaDesk を同じバージョンにアップデートしてください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请把两边的 NexaDesk 更新到同一版本。"
+          }
+        }
+      }
+    },
+    "Video: %@": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ビデオ：%@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "视频：%@"
+          }
+        }
+      }
+    },
+    "You ended this session.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このセッションを終了しました。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你结束了这次会话。"
+          }
+        }
+      }
+    },
+    "Your own nexa-signal server, as set on the computer (wss://host[:port]). Needed only for device IDs. A server with its own certificate is trusted on first use, after you compare its fingerprint.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ご自身の nexa-signal サーバーです。コンピュータ側の設定と同じものを入力します（wss://ホスト[:ポート]）。デバイス ID で接続するときだけ必要です。独自の証明書を使うサーバーは、初回接続時にフィンガープリントを確認してから信頼できます。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你自建的 nexa-signal 服务器，与电脑上设置的一致（wss://主机[:端口]）。只有用设备 ID 连接时才需要。使用自签证书的服务器，第一次连接时核对指纹后即可信任。"
+          }
+        }
+      }
+    }
+  }
+}

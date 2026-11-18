@@ -229,6 +229,7 @@ mod demo {
         fn event(&self, event: AgentEvent) {
             match event {
                 AgentEvent::Listening(addr) => println!("LISTENING {addr} password {PASSWORD}"),
+                AgentEvent::CodeChanged(code) => println!("CODE {code}"),
                 AgentEvent::SessionStarted(s) => println!("SESSION started: {}", s.device_name),
                 AgentEvent::SessionEnded { reason, .. } => println!("SESSION ended: {reason}"),
                 AgentEvent::ConnectionFailed { remote, reason } => {

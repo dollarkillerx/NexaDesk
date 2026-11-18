@@ -43,6 +43,8 @@ struct ConnectView: View {
     @FocusState private var secretFocused: Bool
 
     private var isDeviceId: Bool { NexaCore.isDeviceId(address) }
+    /// An example address, the same in every language.
+    private static let serverPlaceholder: String = "signal.example.com"
 
     var body: some View {
         NavigationStack {
@@ -104,7 +106,7 @@ struct ConnectView: View {
                 }
 
                 Section {
-                    TextField("signal.example.com", text: $signalServer)
+                    TextField(Self.serverPlaceholder, text: $signalServer)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
@@ -121,7 +123,7 @@ struct ConnectView: View {
                     .disabled(address.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
-            .navigationTitle("NexaDesk")
+            .navigationTitle(Text(verbatim: "NexaDesk"))
             .onAppear {
                 lan.start()
                 #if DEBUG
@@ -142,7 +144,7 @@ struct ConnectView: View {
                 #endif
             }
             .onDisappear { lan.stop() }
-            .alert("NexaDesk", isPresented: Binding(get: { core.notice != nil }, set: { if !$0 { core.notice = nil } })) {
+            .alert(Text(verbatim: "NexaDesk"), isPresented: Binding(get: { core.notice != nil }, set: { if !$0 { core.notice = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(core.notice ?? "")
@@ -155,7 +157,7 @@ struct ConnectView: View {
                 Button("Trust and connect") { core.trust(prompt) }
                 Button("Cancel", role: .cancel) {}
             } message: { prompt in
-                Text("\(prompt.server) uses a certificate this iPhone does not know. Trust it only if this fingerprint matches the server's certificate (on the server: openssl x509 -noout -fingerprint -sha256 -in <certificate>):\n\n\(prompt.fingerprint)")
+                Text("\(prompt.server) uses a certificate this device does not know. Trust it only if this fingerprint matches the server's certificate (on the server: openssl x509 -noout -fingerprint -sha256 -in <certificate>):\n\n\(prompt.fingerprint)")
             }
         }
     }
@@ -170,7 +172,7 @@ struct ConnectView: View {
                 address = resolved
                 secretFocused = true
             } else {
-                core.notice = "\(host.name) could not be reached on this network."
+                core.notice = String(localized: "\(host.name) could not be reached on this network.")
             }
         }
     }

@@ -60,6 +60,14 @@ SIMCTL_CHILD_NEXA_TEST_ADDRESS=127.0.0.1:47900 SIMCTL_CHILD_NEXA_TEST_SECRET=nex
   `openssl x509 -noout -fingerprint -sha256 -in <certificate>` on the server, and keeps
   it in `signal-ca.pem` in the app's data (docs/DEPLOY.md §5).
 
+## Languages
+
+English, Simplified Chinese and Japanese, following the system language (the desktop
+app's three). The strings are in `NexaDesk/Localizable.xcstrings` (English keys) and
+the permission text in `NexaDesk/InfoPlist.xcstrings`. The messages for why a session
+ended follow the desktop app's wording (`ui/NexaDesk.App/Localization`). To try one in
+the simulator: `xcrun simctl launch booted app.nexadesk.ios -AppleLanguages "(ja)"`.
+
 ## Controls
 
 - Tap: click there. Two-finger tap: right click.

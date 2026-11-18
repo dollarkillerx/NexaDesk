@@ -50,7 +50,7 @@ final class NexaCore: ObservableObject {
         if rc == NEXA_OK {
             client = out
         } else {
-            notice = "Could not start: \(Self.lastError())"
+            notice = String(localized: "Could not start: \(Self.lastError())")
         }
     }
 
@@ -73,6 +73,14 @@ final class NexaCore: ObservableObject {
         }
     }
 
+    /// The one-time code as the host shows it: 8 characters of base32 (A–Z, 2–7), typed in
+    /// any case, with spaces or hyphens (crates/nexa-auth normalize_code). `nil`: not a code.
+    static func normalizedCode(_ s: String) -> String? {
+        let code = s.filter { $0 != " " && $0 != "-" }.uppercased()
+        let alphabet = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567")
+        return code.count == 8 && code.allSatisfy(alphabet.contains) ? code : nil
+    }
+
     /// wss://host[:port], as the core and the agent take it; "host" alone works too.
     static func normalizedServer(_ s: String) -> String {
         let t = s.trimmingCharacters(in: .whitespaces)
@@ -93,16 +101,17 @@ final class NexaCore: ObservableObject {
         if isId {
             req.signalServer = Self.normalizedServer(signalServer)
             if req.signalServer.isEmpty {
-                notice = "A device ID needs a signaling server: enter yours below."
+                notice = String(localized: "A device ID needs a signaling server: enter yours below.")
                 return
             }
         }
         req.tag = tag
         req.mode = .balanced
-        // A one-time code is six digits; anything else is the host's fixed password.
+        // A one-time code if it can be one (the desktop's rule: a fixed password may not
+        // look like a code); anything else is the host's fixed password.
         let s = secret.trimmingCharacters(in: .whitespaces)
-        if s.count == 6, s.allSatisfy(\.isNumber) {
-            req.code = s
+        if let code = Self.normalizedCode(s) {
+            req.code = code
         } else if !s.isEmpty {
             req.password = s
         } else if isId {
@@ -116,7 +125,7 @@ final class NexaCore: ObservableObject {
         }
         if rc == NEXA_OK {
             session = out
-            phase = .connecting("Connecting…")
+            phase = .connecting(String(localized: "Connecting…"))
         } else {
             notice = Self.lastError()
         }
@@ -136,7 +145,7 @@ final class NexaCore: ObservableObject {
         guard let session else { return }
         let rc = nexa_session_attach_view(session, Unmanaged.passUnretained(layer).toOpaque(),
                                           NEXA_VIEW_CAMETALLAYER, UInt32(widthPx), UInt32(heightPx), Float(scale))
-        if rc != NEXA_OK { notice = "Video: \(Self.lastError())" }
+        if rc != NEXA_OK { notice = String(localized: "Video: \(Self.lastError())") }
     }
 
     func resize(widthPx: Int, heightPx: Int, scale: CGFloat) {
@@ -195,7 +204,7 @@ final class NexaCore: ObservableObject {
         if event.tag != 0, event.tag != tag { return }
         switch event.body {
         case .connecting:
-            phase = .connecting("Connecting…")
+            phase = .connecting(String(localized: "Connecting…"))
         case .connected(let c):
             hostName = c.hostName
             phase = .connected
@@ -205,16 +214,16 @@ final class NexaCore: ObservableObject {
         case .stream(let s):
             stream = (Int(s.w), Int(s.h))
         case .reconnecting(let r):
-            phase = .reconnecting(r.reason.isEmpty ? "Reconnecting…" : "Reconnecting: \(r.reason)")
+            phase = .reconnecting(r.reason.isEmpty ? String(localized: "Reconnecting…") : String(localized: "Reconnecting: \(r.reason)"))
         case .disconnected(let d):
             session = nil
             phase = .idle
             inputAllowed = false
             if d.reason == .disconnectSignalServer, let last = lastConnect, Self.isDeviceId(last.address) {
                 // A self-hosted server's own certificate is the usual cause: offer to trust it.
-                checkServer(Self.normalizedServer(last.server), otherwise: d.message)
-            } else {
-                notice = d.message.isEmpty ? "Disconnected" : d.message
+                checkServer(Self.normalizedServer(last.server), otherwise: Messages.disconnected(d))
+            } else if d.reason != .disconnectClosedLocally {
+                notice = Messages.disconnected(d)
             }
         case .warning(let w):
             notice = w.text
@@ -233,9 +242,9 @@ final class NexaCore: ObservableObject {
                 case .success(let (trusted, fingerprint)) where !trusted:
                     self.trustPrompt = TrustPrompt(server: server, fingerprint: fingerprint)
                 case .success:
-                    self.notice = message.isEmpty ? "The signaling server refused" : message
+                    self.notice = message
                 case .failure(let e):
-                    self.notice = "\(message.isEmpty ? "Signaling server" : message) (\(e.text))"
+                    self.notice = "\(message)\n\n(\(e.text))"
                 }
             }
         }
@@ -248,7 +257,7 @@ final class NexaCore: ObservableObject {
             let error = Self.trustServer(prompt.server, fingerprint: prompt.fingerprint)
             await MainActor.run {
                 if let error {
-                    self.notice = "Could not trust the server: \(error)"
+                    self.notice = String(localized: "Could not trust the server: \(error)")
                 } else if let last = self.lastConnect {
                     self.connect(address: last.address, signalServer: last.server, secret: last.secret)
                 }
