@@ -242,12 +242,22 @@ fn run_render(
     stats: Arc<ViewerStats>,
     latency: Arc<LatencyStats>,
 ) {
+    let mut failures = 0u64;
     while !stop.load(Relaxed) {
         if let Some(f) = mailbox.take(Duration::from_millis(50)) {
             let call = Instant::now();
-            if presenter.present(&f).is_ok() {
-                latency.on_presented(f.meta.frame_id, call, Instant::now());
-                stats.presented.fetch_add(1, Relaxed);
+            match presenter.present(&f) {
+                Ok(_) => {
+                    latency.on_presented(f.meta.frame_id, call, Instant::now());
+                    stats.presented.fetch_add(1, Relaxed);
+                }
+                // The first failure, then one in 300: a picture that never shows says why.
+                Err(e) => {
+                    if failures.is_multiple_of(300) {
+                        nexa_media::diag!("present failed ({} so far): {e}", failures + 1);
+                    }
+                    failures += 1;
+                }
             }
             *last.lock().unwrap() = Some(f);
         }

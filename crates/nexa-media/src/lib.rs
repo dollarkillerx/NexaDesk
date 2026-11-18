@@ -16,7 +16,8 @@ pub mod convert;
 pub mod diag;
 pub mod fanout;
 pub mod layout;
-#[cfg(target_os = "macos")]
+/// VideoToolbox and Metal; the capture and host parts only on macOS.
+#[cfg(target_vendor = "apple")]
 pub mod macos;
 #[cfg(any(windows, test))]
 mod resample;
@@ -44,7 +45,7 @@ pub type FrameId = u32;
 /// A platform image handle. Cheap to clone: it only retains the underlying surface.
 #[derive(Clone)]
 pub enum NativeImage {
-    #[cfg(target_os = "macos")]
+    #[cfg(target_vendor = "apple")]
     PixelBuffer(macos::PixelBuffer),
     /// NV12 in video memory, for a hardware encoder on the same device.
     #[cfg(windows)]

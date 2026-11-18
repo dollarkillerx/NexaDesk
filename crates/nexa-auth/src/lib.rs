@@ -41,5 +41,5 @@ pub use tls::{
     ALPN, PeerPolicy, TlsError, client_config, pair_exporter, peer_public_key, server_config,
 };
 
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 pub use keystore::KeychainStore;

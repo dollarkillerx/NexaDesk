@@ -41,6 +41,9 @@ message SessionCommand {
     SendFiles send_files = 22;
     CancelTransfer cancel_transfer = 23;
     AnswerTransfer answer_transfer = 24;
+    SetQuality quality = 25;
+    SetResolution resolution = 26;
+    KeyPress key = 27;
   }
 }
 message PointerMove { double x = 1; double y = 2; }
@@ -50,6 +53,9 @@ message SendText { string utf8 = 1; }
 message SetMode { Mode mode = 1; uint32 fps = 2; }
 message SetClipboardPolicy { bool outbound = 1; bool inbound = 2; }
 message SetAudio { bool enabled = 1; }                         // mute is false; needs Permissions.audio
+message SetQuality { uint32 quality = 1; }                     // StreamQuality: 0 auto, 1 clear, 2 balanced, 3 weak
+message SetResolution { uint32 lines = 1; }                    // 0 fits the view, 1 the host's own pixels, more a cap
+message KeyPress { uint32 usage = 1; bool down = 2; }          // USB HID usage, keyboard page 0x07 (iOS)
 message SelectDisplay { uint32 display = 1; }                  // a DisplayInfo.id from Connected
 // §3.1 stream 4. Needs Permissions.file; only this side's own files can be sent.
 message SendFiles { repeated string paths = 1; }               // absolute paths, at most 100

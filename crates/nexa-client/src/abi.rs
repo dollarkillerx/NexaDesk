@@ -45,6 +45,9 @@ pub const NEXA_E_VIEW: i32 = -8;
 pub const NEXA_VIEW_NSVIEW: u32 = 1;
 /// A Windows `HWND` (a child window the picture fills).
 pub const NEXA_VIEW_HWND: u32 = 2;
+/// An iOS `CAMetalLayer*`: the layer of the app's video view (`layerClass`), which
+/// the picture is drawn into.
+pub const NEXA_VIEW_CAMETALLAYER: u32 = 3;
 
 /// Opaque client handle.
 #[repr(C)]
@@ -318,7 +321,7 @@ pub unsafe extern "C" fn nexa_init(
     user: *mut c_void,
     out: *mut *mut NexaClient,
 ) -> i32 {
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", target_os = "ios", windows))]
     {
         nexa_media::diag::set_file(&viewer_log());
         nexa_media::diag!("viewer started");
@@ -356,7 +359,7 @@ pub unsafe extern "C" fn nexa_init(
             )
         }
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(not(any(target_os = "macos", target_os = "ios", windows)))]
     {
         let _ = (cfg, len, cb, user, out);
         remember("this platform is not supported yet".to_owned());
@@ -711,7 +714,7 @@ pub extern "C" fn nexa_terminal_close(id: u64) -> i32 {
 }
 
 /// The Keychain service under which saved connections keep a host's fixed password.
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 const SAVED_PASSWORD_SERVICE: &str = "NexaDesk saved connection";
 
 /// A saved connection's password item: `account` names the connection (its host key,
@@ -721,9 +724,9 @@ fn saved_password(account: &[u8]) -> Result<impl nexa_auth::keystore::KeyStore, 
     if account.is_empty() || account.len() > 256 {
         return Err(invalid("bad account"));
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(target_vendor = "apple")]
     let store = nexa_auth::keystore::KeychainStore::new(SAVED_PASSWORD_SERVICE, account);
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(target_vendor = "apple"))]
     let store = nexa_auth::keystore::FileKeyStore::new(
         default_data_dir().join("saved-passwords").join(account),
     );

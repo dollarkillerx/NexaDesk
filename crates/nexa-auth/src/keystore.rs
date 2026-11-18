@@ -29,7 +29,7 @@ pub enum KeyStoreError {
     UnsupportedPlatform,
     #[error("key file i/o: {0}")]
     Io(#[from] io::Error),
-    #[cfg(target_os = "macos")]
+    #[cfg(target_vendor = "apple")]
     #[error("keychain: {0}")]
     Keychain(#[from] security_framework::base::Error),
 }
@@ -243,14 +243,14 @@ impl KeyStore for FileKeyStore {
 }
 
 /// A generic-password item in the user's login Keychain.
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 #[derive(Debug, Clone)]
 pub struct KeychainStore {
     service: String,
     account: String,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 impl KeychainStore {
     /// `errSecItemNotFound`.
     const NOT_FOUND: i32 = -25300;
@@ -263,7 +263,7 @@ impl KeychainStore {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 impl KeyStore for KeychainStore {
     fn load(&self) -> Result<Option<Zeroizing<Vec<u8>>>, KeyStoreError> {
         use security_framework::passwords::get_generic_password;

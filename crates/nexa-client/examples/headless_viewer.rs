@@ -4,6 +4,7 @@
 //!
 //! `cargo run -p nexa-client --example headless_viewer -- <ip:port> <one-time-code>`
 //! `cargo run -p nexa-client --example headless_viewer -- <ip:port> known <host-key-hex>`
+//! `cargo run -p nexa-client --example headless_viewer -- <ip:port> password <password>`
 //!
 //! `<ip:port>` may instead be a 9-digit device ID when `NEXA_SIGNAL` names the server
 //! (`wss://server[:port]`). `NEXA_DATA_DIR` replaces the app's data directory, which is
@@ -43,6 +44,7 @@ fn main() {
     let auth = match args.as_slice() {
         [_, code] => ConnectAuth::Code(code.clone()),
         [_, kind, key] if kind == "known" => ConnectAuth::KnownHost(key.clone()),
+        [_, kind, password] if kind == "password" => ConnectAuth::Password(password.clone()),
         _ => {
             eprintln!(
                 "usage: headless_viewer <ip:port> <one-time-code> | <ip:port> known <host-key>"

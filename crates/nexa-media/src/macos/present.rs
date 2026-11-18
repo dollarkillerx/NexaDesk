@@ -12,6 +12,7 @@ use block2::RcBlock;
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::ProtocolObject;
 use objc2::MainThreadMarker;
+#[cfg(target_os = "macos")]
 use objc2_app_kit::NSView;
 use objc2_core_foundation::{CFRetained, CGSize};
 use objc2_core_graphics::{CGColorSpace, kCGColorSpaceSRGB};
@@ -118,12 +119,13 @@ impl MetalPresenter {
     ///
     /// # Safety
     /// `view` must be a valid `NSView*`, and must outlive the presenter.
+    #[cfg(target_os = "macos")]
     pub unsafe fn attach(view: *mut c_void, width_px: u32, height_px: u32, scale: f32, mode: PresentMode) -> Result<Self> {
         if MainThreadMarker::new().is_none() {
             return Err(MediaError::Other("MetalPresenter::attach must run on the main thread".into()));
         }
         let view = NonNull::new(view as *mut NSView).ok_or(MediaError::Other("null NSView".into()))?;
-        let presenter = Self::create(width_px, height_px, scale, mode)?;
+        let presenter = Self::create(CAMetalLayer::new(), width_px, height_px, scale, mode)?;
         // SAFETY: the caller guarantees `view` is a live NSView.
         unsafe {
             let view = view.as_ref();
@@ -133,22 +135,37 @@ impl MetalPresenter {
         Ok(presenter)
     }
 
-    /// A presenter whose layer is in no view, so nothing appears on screen.
-    pub fn offscreen(width_px: u32, height_px: u32) -> Result<Self> {
-        Self::create(width_px, height_px, 1.0, PresentMode::Immediate)
+    /// Draws into a `CAMetalLayer` the app owns: on iOS a view's own layer can not be
+    /// replaced, so the app's view is backed by one (`layerClass`) and hands it over.
+    /// Must run on the main thread.
+    ///
+    /// # Safety
+    /// `layer` must be a valid `CAMetalLayer*`, and must outlive the presenter.
+    pub unsafe fn attach_layer(layer: *mut c_void, width_px: u32, height_px: u32, scale: f32, mode: PresentMode) -> Result<Self> {
+        if MainThreadMarker::new().is_none() {
+            return Err(MediaError::Other("MetalPresenter::attach_layer must run on the main thread".into()));
+        }
+        let layer = NonNull::new(layer as *mut CAMetalLayer).ok_or(MediaError::Other("null CAMetalLayer".into()))?;
+        // SAFETY: the caller guarantees a live CAMetalLayer; this retains it.
+        let layer = unsafe { Retained::retain(layer.as_ptr()) }.ok_or(MediaError::Other("null CAMetalLayer".into()))?;
+        Self::create(layer, width_px, height_px, scale, mode)
     }
 
-    fn create(width_px: u32, height_px: u32, scale: f32, mode: PresentMode) -> Result<Self> {
+    /// A presenter whose layer is in no view, so nothing appears on screen.
+    pub fn offscreen(width_px: u32, height_px: u32) -> Result<Self> {
+        Self::create(CAMetalLayer::new(), width_px, height_px, 1.0, PresentMode::Immediate)
+    }
+
+    fn create(layer: Retained<CAMetalLayer>, width_px: u32, height_px: u32, scale: f32, mode: PresentMode) -> Result<Self> {
         let device = MTLCreateSystemDefaultDevice().ok_or(MediaError::Unsupported("no Metal device"))?;
         // SAFETY: documented setters with valid values on fresh objects; the
         // layer is not yet visible to anything else.
         unsafe {
-            let layer = CAMetalLayer::new();
             layer.setDevice(Some(&device));
             layer.setPixelFormat(PIXEL_FORMAT);
             layer.setFramebufferOnly(true);
             layer.setMaximumDrawableCount(2);
-            layer.setDisplaySyncEnabled(mode == PresentMode::Vsync);
+            set_display_sync(&layer, mode);
             layer.setContentsScale(f64::from(scale));
             layer.setDrawableSize(CGSize::new(f64::from(width_px.max(1)), f64::from(height_px.max(1))));
             if let Some(space) = CGColorSpace::with_name(Some(kCGColorSpaceSRGB)) {
@@ -339,7 +356,7 @@ impl Presenter for MetalPresenter {
     }
 
     fn set_mode(&mut self, mode: PresentMode) -> Result<()> {
-        self.layer.setDisplaySyncEnabled(mode == PresentMode::Vsync);
+        set_display_sync(&self.layer, mode);
         Ok(())
     }
 
@@ -384,4 +401,14 @@ impl Presenter for MetalPresenter {
             Ok(PresentStat { present_call_us: started.elapsed().as_micros().min(u128::from(u32::MAX)) as u32 })
         })
     }
+}
+
+/// Whether drawables wait for the display. `displaySyncEnabled` exists only on macOS;
+/// an iOS layer always syncs to the display, so game mode's immediate presentation is
+/// not available there.
+fn set_display_sync(layer: &CAMetalLayer, mode: PresentMode) {
+    #[cfg(target_os = "macos")]
+    layer.setDisplaySyncEnabled(mode == PresentMode::Vsync);
+    #[cfg(not(target_os = "macos"))]
+    let _ = (layer, mode);
 }

@@ -104,6 +104,17 @@ pub struct SetResolution {
     pub lines: u32,
 }
 
+/// One key, as a USB HID usage on the keyboard page (0x07): the iOS keyboard bar and
+/// a hardware keyboard through UIKit. Desktop viewers capture keys themselves and do
+/// not use it. Keys go through the same rewriting as captured ones.
+#[derive(Clone, PartialEq, Message)]
+pub struct KeyPress {
+    #[prost(uint32, tag = "1")]
+    pub usage: u32,
+    #[prost(bool, tag = "2")]
+    pub down: bool,
+}
+
 /// Stream another of the host's displays (`Connected.displays[i].id`).
 #[derive(Clone, PartialEq, Message)]
 pub struct SelectDisplay {
@@ -169,13 +180,15 @@ pub enum Command {
     Quality(SetQuality),
     #[prost(message, tag = "26")]
     Resolution(SetResolution),
+    #[prost(message, tag = "27")]
+    Key(KeyPress),
 }
 
 #[derive(Clone, PartialEq, Message)]
 pub struct SessionCommand {
     #[prost(
         oneof = "Command",
-        tags = "1, 2, 3, 4, 5, 6, 20, 21, 22, 23, 24, 25, 26"
+        tags = "1, 2, 3, 4, 5, 6, 20, 21, 22, 23, 24, 25, 26, 27"
     )]
     pub cmd: Option<Command>,
 }

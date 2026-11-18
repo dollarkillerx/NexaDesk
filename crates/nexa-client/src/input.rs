@@ -115,13 +115,10 @@ impl ViewGeometry {
     }
 }
 
-#[cfg(target_os = "macos")]
-use nexa_media::macos::fit_viewport;
-
-#[cfg(not(target_os = "macos"))]
-fn fit_viewport(_: (u32, u32), frame: (u32, u32)) -> (f64, f64, f64, f64) {
-    (0.0, 0.0, f64::from(frame.0), f64::from(frame.1))
-}
+// Every presenter (Metal on macOS and iOS, Direct3D on Windows) letterboxes the
+// picture with this; a pointer is mapped through the same rectangle. Only macOS used
+// it here before, so on iOS a tap landed off by the letterbox.
+use nexa_media::layout::fit_viewport;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())

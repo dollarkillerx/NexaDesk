@@ -229,9 +229,12 @@ unsafe fn create_session(
     // SAFETY: the record and attributes live across the call, which copies
     // them, and `slot` outlives the session per the caller.
     unsafe {
+        // On macOS the hardware decoder's own buffers are IOSurfaces Metal can use.
+        // On iOS they are asked for, as for the CPU: the Simulator's software decoder
+        // otherwise hands out buffers CVMetalTextureCache can not map (-6660).
         let attrs = match output {
-            DecoderOutput::Display => None,
-            DecoderOutput::CpuReadable420v => Some(cf_dict(&[
+            DecoderOutput::Display if cfg!(target_os = "macos") => None,
+            DecoderOutput::Display | DecoderOutput::CpuReadable420v => Some(cf_dict(&[
                 (
                     kCVPixelBufferPixelFormatTypeKey,
                     &number_i64(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange as i64),

@@ -1,21 +1,34 @@
-//! macOS backends: ScreenCaptureKit, VideoToolbox, Metal.
+//! Apple backends: VideoToolbox and Metal on macOS and iOS; ScreenCaptureKit, the
+//! encoder, audio and the cursor on macOS only (the iOS app is a viewer).
 
 pub mod bitstream;
+#[cfg(target_os = "macos")]
 mod capture;
+#[cfg(target_os = "macos")]
 mod caps;
 mod decoder;
+#[cfg(not(target_os = "macos"))]
+mod decode_caps;
+#[cfg(target_os = "macos")]
 mod encoder;
+#[cfg(target_os = "macos")]
 mod opus;
+#[cfg(target_os = "macos")]
 mod audio_capture;
+#[cfg(target_os = "macos")]
 mod audio_output;
+#[cfg(target_os = "macos")]
 mod cursor;
 mod present;
+#[cfg(target_os = "macos")]
 mod power;
 
+#[cfg(target_os = "macos")]
 use std::ffi::c_void;
 use std::ptr::{self, NonNull};
 
 use objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType};
+#[cfg(target_os = "macos")]
 use objc2_core_media::CMSampleBuffer;
 use objc2_core_video::{
     CVPixelBuffer, CVPixelBufferGetBaseAddressOfPlane, CVPixelBufferGetBytesPerRowOfPlane,
@@ -29,15 +42,25 @@ use objc2_core_video::{
 
 use crate::{CpuFrame, MediaError, Result};
 
+#[cfg(target_os = "macos")]
 pub use capture::{ScreenCapturer, has_screen_capture_permission};
+#[cfg(target_os = "macos")]
 pub use caps::{cached_caps, probe_caps, system_key};
 pub use decoder::{DecoderOutput, VtDecoder};
+#[cfg(not(target_os = "macos"))]
+pub use decode_caps::decode_caps;
+#[cfg(target_os = "macos")]
 pub use encoder::VtEncoder;
+#[cfg(target_os = "macos")]
 pub use opus::{OpusDecoder, OpusEncoder};
+#[cfg(target_os = "macos")]
 pub use audio_capture::SystemAudioCapture;
+#[cfg(target_os = "macos")]
 pub use audio_output::{AudioOutputUnit, RenderFn};
+#[cfg(target_os = "macos")]
 pub use cursor::SystemCursorSource;
 pub use present::{MetalPresenter, fit_viewport};
+#[cfg(target_os = "macos")]
 pub use power::{DisplayAwake, wake_and_wait, wake_display};
 
 /// A retained CVPixelBuffer.
@@ -251,6 +274,7 @@ pub(crate) fn cf_dict(pairs: &[(&CFString, &CFType)]) -> CFRetained<CFDictionary
     unsafe { CFRetained::cast_unchecked(CFDictionary::<CFString, CFType>::from_slices(&keys, &values)) }
 }
 
+#[cfg(target_os = "macos")]
 /// Looks up `key` in the attachments of the first sample. Returns null when
 /// absent. `key` must be a pointer to a CFString-compatible object.
 ///

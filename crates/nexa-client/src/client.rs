@@ -17,7 +17,7 @@ use nexa_auth::{
     peer_public_key, store::unix_now, tls::SERVER_NAME,
 };
 use nexa_clip::{ClipPolicy, GateStats};
-use nexa_input::{FocusClass, Rewriter};
+use nexa_input::{FocusClass, Hid, PhysKey, Rewriter};
 use nexa_media::PresentMode;
 use nexa_net::{
     check::{PathClass, is_tailnet},
@@ -593,6 +593,14 @@ impl Session {
             Command::Button(b) => InputCmd::Button(b.button, b.down),
             Command::Wheel(w) => InputCmd::Wheel(w.dx, w.dy),
             Command::Text(t) => InputCmd::Text(t.utf8),
+            Command::Key(k) => {
+                let usage = u16::try_from(k.usage).map_err(|_| "key usage out of range")?;
+                InputCmd::Key(PhysKey {
+                    hid: Hid::key(usage),
+                    down: k.down,
+                    repeat: false,
+                })
+            }
             Command::Mode(m) => {
                 self.send_stream_request(|r| {
                     r.mode = m.mode;

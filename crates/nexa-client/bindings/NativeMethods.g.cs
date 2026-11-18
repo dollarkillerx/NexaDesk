@@ -23,6 +23,11 @@ namespace NexaDesk.Native
         ///  A Windows `HWND` (a child window the picture fills).
         /// </summary>
         public const uint NEXA_VIEW_HWND = 2;
+        /// <summary>
+        ///  An iOS `CAMetalLayer*`: the layer of the app's video view (`layerClass`), which
+        ///  the picture is drawn into.
+        /// </summary>
+        public const uint NEXA_VIEW_CAMETALLAYER = 3;
         public const uint NEXA_TERMINAL_DATA = 0;
         public const uint NEXA_TERMINAL_EXIT = 1;
         public const uint NEXA_TERMINAL_BACKLOG = 2;
