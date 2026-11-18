@@ -17,6 +17,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     sync::{
         Arc, Condvar, Mutex,
+        atomic::{AtomicBool, Ordering::Relaxed},
         mpsc::{self, Receiver, RecvTimeoutError, SyncSender},
     },
     thread::{self, JoinHandle},
@@ -31,7 +32,7 @@ use nexa_clip::{
 use tokio::{sync::mpsc as async_mpsc, task::JoinHandle as TaskHandle};
 
 use crate::{
-    bulk::BulkLimiter,
+    bulk::{BULK_FLOOR_BPS, BulkLimiter, PASTE_FLOOR_BPS},
     framed::{FramedRecv, FramedSend},
 };
 
@@ -55,6 +56,12 @@ pub trait ClipPlatform: ClipboardBackend {
     /// The clipboard as it is now, changed or not: what was copied before the session
     /// began, for its first paste. `None` where that cannot be told.
     fn current(&mut self) -> nexa_clip::Result<Option<LocalSnapshot>> {
+        Ok(None)
+    }
+    /// A change [`ClipPlatform::poll`] noticed and left unread because reading it is
+    /// slow and shows on screen (on a Mac, another Apple device's clipboard, fetched
+    /// from that device behind a system panel), read now: a paste asks for it.
+    fn held_back(&mut self) -> nexa_clip::Result<Option<LocalSnapshot>> {
         Ok(None)
     }
 }
@@ -204,7 +211,15 @@ impl ClipChannel {
         let (control_tx, control_rx) = async_mpsc::unbounded_channel();
         let (data_tx, data_rx) = async_mpsc::unbounded_channel();
         let ClipChannel { tx, rx } = self;
-        let writer = tokio::spawn(write_loop(send, control_rx, data_rx, bulk, tx.clone()));
+        let paste_waiting = Arc::new(AtomicBool::new(false));
+        let writer = tokio::spawn(write_loop(
+            send,
+            control_rx,
+            data_rx,
+            bulk,
+            tx.clone(),
+            paste_waiting.clone(),
+        ));
         let reader = tokio::spawn(read_loop(recv, tx.clone()));
         let config = ClipConfig {
             // §8.6: a restart must not start below values the peer already saw.
@@ -232,7 +247,7 @@ impl ClipChannel {
             .spawn(move || driver.run(rx))
             .expect("spawn thread");
         ClipSession {
-            handle: ClipHandle { tx },
+            handle: ClipHandle { tx, paste_waiting },
             thread,
             writer,
             reader,
@@ -259,6 +274,8 @@ fn wall_clock_millis() -> u64 {
 #[derive(Clone)]
 pub struct ClipHandle {
     tx: SyncSender<DriverMsg>,
+    /// A paste is held for a copy from this side, see [`ClipHandle::set_paste_waiting`].
+    paste_waiting: Arc<AtomicBool>,
 }
 
 impl ClipHandle {
@@ -286,6 +303,12 @@ impl ClipHandle {
             return PasteNeed::Known(None);
         }
         reply.wait(limit, Box::new(late))
+    }
+
+    /// Whether the paste gate is holding a paste for a copy from this side. While it
+    /// is, that copy's chunks are written at no less than [`PASTE_FLOOR_BPS`].
+    pub fn set_paste_waiting(&self, waiting: bool) {
+        self.paste_waiting.store(waiting, Relaxed);
     }
 
     pub fn set_policy(&self, policy: ClipPolicy) {
@@ -374,6 +397,7 @@ async fn write_loop(
     mut data: async_mpsc::UnboundedReceiver<ClipMessage>,
     bulk: Arc<BulkLimiter>,
     driver: SyncSender<DriverMsg>,
+    paste_waiting: Arc<AtomicBool>,
 ) {
     let mut told = Instant::now();
     while let Some((message, is_data)) = next_message(&mut control, &mut data).await {
@@ -386,7 +410,12 @@ async fn write_loop(
         };
         let body = message.encode();
         if is_data && body.len() >= BULK_MIN_FRAME {
-            bulk.acquire(body.len()).await;
+            let floor = if paste_waiting.load(Relaxed) {
+                PASTE_FLOOR_BPS
+            } else {
+                BULK_FLOOR_BPS
+            };
+            bulk.acquire_at_least(body.len(), floor).await;
         }
         if send.send_body(&body).await.is_err() {
             return;
@@ -507,8 +536,7 @@ impl Driver {
                 }) => self.on_data_sent(generation, kind, end),
                 Ok(DriverMsg::StreamEnded) => self.feed(ClipEvent::Disconnected),
                 Ok(DriverMsg::PasteQuery(reply)) => {
-                    self.poll_backend();
-                    self.offer_current();
+                    self.before_paste();
                     reply.give(self.sync.paste_requirement());
                 }
                 Ok(DriverMsg::Policy(policy)) => self.feed(ClipEvent::PolicyChanged(policy)),
@@ -604,6 +632,28 @@ impl Driver {
 
     fn poll_backend(&mut self) {
         if let Ok(Some(snapshot)) = self.backend.poll() {
+            self.polled = snapshot.data.clone();
+            self.feed(ClipEvent::LocalChanged(snapshot));
+        }
+    }
+
+    /// A paste is about to go to the peer: whatever was copied here last must be on
+    /// its way first.
+    fn before_paste(&mut self) {
+        self.poll_backend();
+        self.read_held_back();
+        self.offer_current();
+    }
+
+    /// A copy the poll held back (see [`ClipPlatform::held_back`]) is read for the
+    /// paste that wants it, unless the peer's own copy is arriving just now: then the
+    /// placeholder is most likely that same copy, come by the system's own path, and
+    /// what arrives will be written over it.
+    fn read_held_back(&mut self) {
+        if self.prefetch.is_some() {
+            return;
+        }
+        if let Ok(Some(snapshot)) = self.backend.held_back() {
             self.polled = snapshot.data.clone();
             self.feed(ClipEvent::LocalChanged(snapshot));
         }
@@ -842,6 +892,8 @@ mod tests {
         next: Option<LocalSnapshot>,
         /// What was copied before the session began.
         before: Option<LocalSnapshot>,
+        /// A copy the poll saw and left unread.
+        held: Option<LocalSnapshot>,
     }
 
     impl ClipboardBackend for Counting {
@@ -868,6 +920,9 @@ mod tests {
         }
         fn current(&mut self) -> nexa_clip::Result<Option<LocalSnapshot>> {
             Ok(self.before.clone())
+        }
+        fn held_back(&mut self) -> nexa_clip::Result<Option<LocalSnapshot>> {
+            Ok(self.held.take())
         }
     }
 
@@ -982,6 +1037,7 @@ mod tests {
                 sensitive: false,
             }),
             before: None,
+            held: None,
         });
         driver.poll_backend();
         assert_eq!(driver.read_local(ClipKind::Png).unwrap(), picture);
@@ -989,6 +1045,48 @@ mod tests {
         // What the poll did not hold is read as before.
         assert!(driver.read_local(ClipKind::Html).is_err());
         assert_eq!(reads.load(Relaxed), 1);
+    }
+
+    /// A copy from another Apple device is a placeholder the poll does not read (that
+    /// fetches it, behind a system panel). Pasted into the session it is wanted: the
+    /// paste reads it, and waits for it like for any copy.
+    #[test]
+    fn a_paste_reads_the_copy_the_poll_held_back() {
+        let (mut driver, mut sent, _data) = connected_driver(Counting {
+            held: Some(text_snapshot(b"copied on the phone", false)),
+            ..Counting::default()
+        });
+        driver.poll_backend();
+        assert!(sent.try_recv().is_err(), "the poll leaves it alone");
+
+        driver.before_paste();
+        let Ok(ClipMessage::Announce(announce)) = sent.try_recv() else {
+            panic!("the paste sends it");
+        };
+        assert_eq!(
+            announce.inline,
+            vec![(ClipKind::Text, Bytes::from_static(b"copied on the phone"))]
+        );
+        assert_eq!(driver.sync.paste_requirement(), Some(announce.generation));
+    }
+
+    /// While the peer's own copy is arriving, the placeholder is most likely that copy
+    /// come by the system's path: it is not read, and what arrives goes over it.
+    #[test]
+    fn a_paste_does_not_read_a_held_back_copy_while_the_peer_s_is_arriving() {
+        let (mut driver, mut sent, _data) = connected_driver(Counting {
+            held: Some(text_snapshot(b"the placeholder", false)),
+            ..Counting::default()
+        });
+        let picture = picture(300_000);
+        announce_picture(&mut driver, (7, THEM), &picture);
+        while sent.try_recv().is_ok() {}
+        driver.before_paste();
+        assert!(
+            !matches!(sent.try_recv(), Ok(ClipMessage::Announce(_))),
+            "nothing of ours is announced"
+        );
+        assert_eq!(driver.sync.paste_requirement(), None);
     }
 
     /// What the toolbar is told, collected.
@@ -1195,7 +1293,10 @@ mod tests {
     fn a_paste_query_does_not_wait_on_a_full_queue() {
         let (tx, _rx) = mpsc::sync_channel(1);
         tx.try_send(DriverMsg::StreamEnded).unwrap();
-        let handle = ClipHandle { tx };
+        let handle = ClipHandle {
+            tx,
+            paste_waiting: Arc::default(),
+        };
         let started = Instant::now();
         assert_eq!(
             handle.paste_requirement(Duration::from_millis(30), |_| {}),
@@ -1209,7 +1310,10 @@ mod tests {
     #[test]
     fn a_paste_query_waits_at_most_its_limit_and_is_answered_later() {
         let (tx, rx) = mpsc::sync_channel(4);
-        let handle = ClipHandle { tx };
+        let handle = ClipHandle {
+            tx,
+            paste_waiting: Arc::default(),
+        };
         let (late_tx, late_rx) = mpsc::channel();
         let started = Instant::now();
         let need = handle.paste_requirement(Duration::from_millis(30), move |required| {
@@ -1231,7 +1335,10 @@ mod tests {
     #[test]
     fn a_paste_query_answered_in_time_is_known_at_once() {
         let (tx, rx) = mpsc::sync_channel(4);
-        let handle = ClipHandle { tx };
+        let handle = ClipHandle {
+            tx,
+            paste_waiting: Arc::default(),
+        };
         let answering = thread::spawn(move || {
             if let Ok(DriverMsg::PasteQuery(reply)) = rx.recv() {
                 reply.give(Some((9, ME)));

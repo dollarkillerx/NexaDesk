@@ -107,23 +107,49 @@ fn a_universal_clipboard_placeholder_of_the_peer_s_copy_is_replaced_by_ours() {
     );
 }
 
-/// From another device and not on the heels of the peer's copy, a placeholder is what
-/// the person copied there: it is read like any other copy.
+/// A placeholder whose text is a promise that says when it is asked for: reading it is
+/// what, on a real one, fetches from the other device and puts the panel up.
+fn remote_placeholder(board: &PrivateBoard, text: &'static str) -> Arc<AtomicUsize> {
+    let reads = Arc::new(AtomicUsize::new(0));
+    let counted = reads.clone();
+    let provider = PromiseProvider::new(
+        generation(99),
+        Arc::new(move |_, _| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Some(text.as_bytes().to_vec())
+        }),
+    );
+    let item = NSPasteboardItem::new();
+    assert!(item.setData_forType(&NSData::with_bytes(b""), &ns(REMOTE_TYPE)));
+    let types = NSArray::from_retained_slice(&[ns(TEXT_TYPE)]);
+    assert!(item.setDataProvider_forTypes(ProtocolObject::from_ref(&*provider), &types));
+    board.0.clearContents();
+    let writing: Retained<ProtocolObject<dyn NSPasteboardWriting>> =
+        ProtocolObject::from_retained(item);
+    assert!(
+        board
+            .0
+            .writeObjects(&NSArray::from_retained_slice(&[writing]))
+    );
+    reads
+}
+
+/// On 0.1.17 the host's poll still read a placeholder that arrived before the session
+/// had brought the same copy (a picture takes seconds, Apple's notice of it does not),
+/// or with nothing written here at all: the "Pasting from <the other Mac>" panel came
+/// up on a host nobody had pasted on, and the clipboard thread waited out the fetch
+/// while a paste was held for it. A poll never reads one now.
 #[test]
-fn a_universal_clipboard_copy_of_its_own_is_read_as_a_copy() {
+fn a_poll_never_reads_a_universal_clipboard_placeholder() {
     let board = PrivateBoard::new();
     let mut backend = backend(&board);
-    // Nothing written here yet.
-    board.foreign_write(&[(REMOTE_TYPE, b""), (TEXT_TYPE, b"from the phone")]);
-    let snapshot = backend.poll().unwrap().expect("a change");
-    assert!(!snapshot.owner_marker);
-    assert_eq!(
-        snapshot.data,
-        vec![(ClipKind::Text, Bytes::from_static(b"from the phone"))]
-    );
+    let reads = remote_placeholder(&board, "from the other Mac");
+    assert_eq!(backend.poll().unwrap(), None);
+    assert_eq!(backend.poll().unwrap(), None);
+    assert_eq!(reads.load(Ordering::SeqCst), 0, "nothing was fetched");
 
-    // Long after the peer's copy was written.
-    let text = b"from the peer";
+    // The session brings the peer's copy: it goes over the placeholder.
+    let text = b"from the other Mac";
     backend
         .write_promise(
             generation(4),
@@ -131,14 +157,41 @@ fn a_universal_clipboard_copy_of_its_own_is_read_as_a_copy() {
             &[(ClipKind::Text, Bytes::from_static(text))],
         )
         .unwrap();
+    assert_eq!(backend.owner_on_board(), Some(generation(4)));
+    assert_eq!(backend.held_back(), None, "nothing is left to read");
+    assert_eq!(reads.load(Ordering::SeqCst), 0);
+
+    // Also long after the peer's last copy was written.
     let _ = backend.poll().unwrap();
     backend.written.as_mut().unwrap().at = Instant::now() - REMOTE_ECHO_WINDOW * 2;
-    board.foreign_write(&[(REMOTE_TYPE, b""), (TEXT_TYPE, b"from the phone, later")]);
-    let snapshot = backend.poll().unwrap().expect("a change");
+    let reads = remote_placeholder(&board, "from the phone");
+    assert_eq!(backend.poll().unwrap(), None);
+    assert_eq!(reads.load(Ordering::SeqCst), 0);
+}
+
+/// What was copied on another device (a phone, say) is still wanted when it is pasted
+/// into the session: then, and only then, the placeholder is read.
+#[test]
+fn a_held_back_placeholder_is_read_for_a_paste() {
+    let board = PrivateBoard::new();
+    let mut backend = backend(&board);
+    let reads = remote_placeholder(&board, "from the phone");
+    assert_eq!(backend.poll().unwrap(), None);
+    let snapshot = backend.held_back().expect("the copy from the phone");
+    assert!(!snapshot.owner_marker);
     assert_eq!(
         snapshot.data,
-        vec![(ClipKind::Text, Bytes::from_static(b"from the phone, later"))]
+        vec![(ClipKind::Text, Bytes::from_static(b"from the phone"))]
     );
+    assert!(reads.load(Ordering::SeqCst) > 0);
+    assert_eq!(backend.held_back(), None, "once");
+
+    // A copy made here since is the newer one: the placeholder is forgotten.
+    let _ = remote_placeholder(&board, "from the phone again");
+    assert_eq!(backend.poll().unwrap(), None);
+    board.foreign_write(&[(TEXT_TYPE, b"copied here")]);
+    assert_eq!(backend.held_back(), None);
+    assert!(backend.poll().unwrap().is_some());
 }
 
 #[test]

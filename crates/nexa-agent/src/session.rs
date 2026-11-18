@@ -18,7 +18,7 @@ use nexa_session::rendezvous::link::Link;
 use nexa_session::{
     SessionError,
     bulk::BulkLimiter,
-    clip::{ClipCallbacks, ClipChannel, ClipSession},
+    clip::{ClipCallbacks, ClipChannel, ClipDirection, ClipProgress, ClipSession, ClipStage},
     cursor::{InjectHistory, StreamGeometry},
     framed::{FramedRecv, FramedSend, accept_bi, accept_uni},
     handshake::{ControlChannel, FLUSH_TIMEOUT, HANDSHAKE_TIMEOUT, HostAccepted},
@@ -910,10 +910,31 @@ fn start_clipboard(
             on_gate_progress: Box::new(|_| {}),
             on_notice: Box::new(move |n| ui.event(AgentEvent::ClipboardNotice(n))),
             // Nobody sits at the host to read a toolbar; the viewer shows both ways.
-            on_progress: Box::new(|_| {}),
+            // The log gets the copies that took a while, so "the paste waited" can be
+            // told from what crossed and how long it took (the lines are timestamped).
+            on_progress: Box::new(|p| eprintln!("{}", clipboard_log_line(&p))),
         },
         bulk,
     ))
+}
+
+/// One line of agent.log for a large copy: sizes and stages only, never content.
+fn clipboard_log_line(p: &ClipProgress) -> String {
+    let way = match p.direction {
+        ClipDirection::Receiving => "from the viewer",
+        ClipDirection::Sending => "to the viewer",
+    };
+    let stage = match p.stage {
+        ClipStage::Moving => "on its way",
+        ClipStage::Done => "across",
+        ClipStage::Dropped => "given up",
+    };
+    format!(
+        "nexa-agent: clipboard: {:?} {way} {stage}: {} of {} KiB",
+        p.kind,
+        p.done / 1024,
+        p.size / 1024
+    )
 }
 
 #[cfg(test)]

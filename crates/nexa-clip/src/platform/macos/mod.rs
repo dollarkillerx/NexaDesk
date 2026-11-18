@@ -239,6 +239,9 @@ pub struct MacClipboardBackend {
     resolver: PromiseResolver,
     change_count: isize,
     written: Option<Written>,
+    /// The poll saw another Apple device's placeholder and left it unread, see
+    /// [`MacClipboardBackend::held_back`].
+    held_back: bool,
 }
 
 // SAFETY: every call on the pasteboard holds the process-wide `BOARD` lock, so it is
@@ -261,6 +264,7 @@ impl MacClipboardBackend {
             resolver,
             change_count,
             written: None,
+            held_back: false,
         }
     }
 
@@ -273,6 +277,13 @@ impl MacClipboardBackend {
     /// Checks `changeCount` and describes the clipboard if it moved. Call this
     /// every [`POLL_INTERVAL`] and feed the result to
     /// [`ClipEvent::LocalChanged`](crate::ClipEvent::LocalChanged).
+    ///
+    /// Another Apple device's clipboard (Universal Clipboard) arrives as a placeholder
+    /// whose content is fetched from that device when someone reads it: seconds, with
+    /// the system's "Pasting from …" panel on screen. A poll in the background must not
+    /// set that off, least of all on a host nobody sits at, so a placeholder is never
+    /// read here. If it is the peer's own copy, the session brings that anyway and
+    /// writes over it; otherwise it waits for [`MacClipboardBackend::held_back`].
     pub fn poll(&mut self) -> Result<Option<LocalSnapshot>> {
         let echoed = {
             let _board = board_lock();
@@ -281,8 +292,13 @@ impl MacClipboardBackend {
                 return Ok(None);
             }
             self.change_count = count;
-            if !self.is_remote_echo() {
+            self.held_back = false;
+            if !self.is_remote_placeholder() {
                 return Ok(Some(self.snapshot_locked()));
+            }
+            if !self.is_remote_echo() {
+                self.held_back = true;
+                return Ok(None);
             }
             self.written
                 .as_ref()
@@ -304,13 +320,32 @@ impl MacClipboardBackend {
         Ok(None)
     }
 
-    /// Whether the clipboard now holds another Apple device's placeholder that
-    /// replaced the peer's copy just written here.
+    /// Whether the clipboard holds another Apple device's placeholder. Asks for type
+    /// names only, which fetches nothing.
+    fn is_remote_placeholder(&self) -> bool {
+        self.has_type(REMOTE_TYPE) && !self.has_type(OWNER_TYPE)
+    }
+
+    /// Whether the placeholder on the clipboard replaced the peer's copy just written
+    /// here.
     fn is_remote_echo(&self) -> bool {
         self.written.as_ref().is_some_and(|written| {
             written.promised.is_empty() && written.at.elapsed() <= REMOTE_ECHO_WINDOW
-        }) && self.has_type(REMOTE_TYPE)
-            && self.owner_locked().is_none()
+        })
+    }
+
+    /// The placeholder the poll left unread, read now: for a paste, which is the one
+    /// moment its content is wanted and the wait and the system's panel are expected.
+    /// `None` if there is none, or the clipboard has moved on since.
+    pub fn held_back(&mut self) -> Option<LocalSnapshot> {
+        if !std::mem::take(&mut self.held_back) {
+            return None;
+        }
+        let _board = board_lock();
+        if self.board.changeCount() != self.change_count || !self.is_remote_placeholder() {
+            return None;
+        }
+        Some(self.third_party_snapshot(self.has_type(CONCEALED_TYPE)))
     }
 
     /// Describes the clipboard as it is now, without touching our own promises.
@@ -494,6 +529,7 @@ impl ClipboardBackend for MacClipboardBackend {
         {
             return Err(ClipError::Busy);
         }
+        self.held_back = false;
         self.written = Some(Written {
             generation,
             formats: formats.to_vec(),

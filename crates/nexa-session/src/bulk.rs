@@ -25,6 +25,13 @@ use nexa_net::rate::RateController;
 
 /// Never less than this, whatever the allocation says.
 pub const BULK_FLOOR_BPS: u64 = 1_000_000;
+/// What a clipboard copy gets at least while a paste is held for it. Such a copy is not
+/// background work: the person's keys wait behind it. The viewer's scavenger backs off
+/// whenever the round trip is 20 ms above its lowest, which on a phone's hotspot is
+/// most of the time, so a picture there went at [`BULK_FLOOR_BPS`]: 1.4 MB of screenshot
+/// in 11 s. At this rate it takes under 3 s, and what it may add to the uplink's queue
+/// lasts no longer than the paste is held anyway.
+pub const PASTE_FLOOR_BPS: u64 = 4_000_000;
 /// The viewer's uplink scavenger never goes above this. It was 100 Mbit/s, which made
 /// a large picture copied on the viewer take seconds on a gigabit LAN while a paste of it
 /// held the keys; the delay rule, not this, is what keeps input moving.
@@ -198,8 +205,13 @@ impl BulkLimiter {
     }
 
     /// Takes `bytes` from the bucket, or returns how long to wait first.
+    #[cfg(test)]
     fn try_take(&self, bytes: usize, now: Instant) -> Result<(), Duration> {
-        let bytes_per_sec = self.rate.bulk_bps(now).max(BULK_FLOOR_BPS) as f64 / 8.0;
+        self.try_take_at_least(bytes, now, BULK_FLOOR_BPS)
+    }
+
+    fn try_take_at_least(&self, bytes: usize, now: Instant, floor: u64) -> Result<(), Duration> {
+        let bytes_per_sec = self.rate.bulk_bps(now).max(floor.max(BULK_FLOOR_BPS)) as f64 / 8.0;
         let mut b = lock(&self.bucket);
         let dt = now.saturating_duration_since(b.last).as_secs_f64();
         b.last = now;
@@ -218,8 +230,14 @@ impl BulkLimiter {
     /// Waits until `bytes` may be written. The rate is read again on every wake, so a
     /// change in the allocation applies to a transfer already under way.
     pub async fn acquire(&self, bytes: usize) {
+        self.acquire_at_least(bytes, BULK_FLOOR_BPS).await;
+    }
+
+    /// As [`BulkLimiter::acquire`], with a floor of its own for writes someone is
+    /// waiting on, see [`PASTE_FLOOR_BPS`].
+    pub async fn acquire_at_least(&self, bytes: usize, floor_bps: u64) {
         loop {
-            match self.try_take(bytes, Instant::now()) {
+            match self.try_take_at_least(bytes, Instant::now(), floor_bps) {
                 Ok(()) => return,
                 Err(wait) => tokio::time::sleep(wait).await,
             }
@@ -230,6 +248,30 @@ impl BulkLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A hotspot keeps the scavenger at the floor. A clipboard copy a paste is waiting
+    /// for is paced by its own, higher floor; a rate above that still applies.
+    #[test]
+    fn a_copy_a_paste_waits_for_has_a_floor_of_its_own() {
+        let pace = |rate_bps: u64, floor: u64| {
+            let limiter = BulkLimiter::fixed(rate_bps);
+            let t0 = Instant::now();
+            let (mut now, mut sent) = (t0, 0usize);
+            while now < t0 + Duration::from_secs(2) {
+                match limiter.try_take_at_least(16 * 1024, now, floor) {
+                    Ok(()) => sent += 16 * 1024,
+                    Err(wait) => now += wait,
+                }
+            }
+            sent as f64 * 8.0 / 2.0
+        };
+        let at_floor = pace(200_000, BULK_FLOOR_BPS);
+        assert!((at_floor - 1e6).abs() < 0.15e6, "{at_floor} bit/s");
+        let waited_for = pace(200_000, PASTE_FLOOR_BPS);
+        assert!((waited_for - 4e6).abs() < 0.4e6, "{waited_for} bit/s");
+        let fast_link = pace(40_000_000, PASTE_FLOOR_BPS);
+        assert!(fast_link > 35e6, "{fast_link} bit/s");
+    }
 
     #[test]
     fn the_bucket_paces_to_the_rate() {

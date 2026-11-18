@@ -208,6 +208,8 @@ struct InputState {
     next_sync: Instant,
     game: GameLock,
     lock_stats: LockStats,
+    /// What the clipboard was last told about a paste being held.
+    paste_waiting: bool,
 }
 
 /// Game mode's pointer lock (§7.4). Held only while in game mode with input
@@ -260,6 +262,14 @@ impl InputState {
             }
         }
         *lock(&self.cfg.gate_stats) = self.gate.stats();
+        // A copy a paste is held for is not background work for as long (§4.9).
+        let waiting = self.gate.is_holding();
+        if waiting != self.paste_waiting {
+            self.paste_waiting = waiting;
+            if let Some(clip) = lock(&self.cfg.clip).as_ref() {
+                clip.set_paste_waiting(waiting);
+            }
+        }
     }
 
     /// Records a paste with the gate: held for the copy it is meant for, if the host
@@ -666,6 +676,7 @@ pub fn spawn(cfg: InputThreadConfig, rx: Receiver<InputCmd>) -> JoinHandle<Recei
         next_sync,
         game: GameLock::default(),
         lock_stats: LockStats::default(),
+        paste_waiting: false,
     };
     thread::Builder::new()
         .name("input-capture".into())
