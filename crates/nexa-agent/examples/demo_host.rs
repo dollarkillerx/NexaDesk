@@ -4,8 +4,11 @@
 //! screen capture, Keychain, pasteboard or input system is used, and every session is
 //! allowed with view and input.
 //!
-//! Usage: `cargo run -p nexa-agent --example demo_host --release [addr]`
-//! (default `127.0.0.1:47900`). Connect with the fixed password [`PASSWORD`].
+//! Usage: `cargo run -p nexa-agent --example demo_host --release -- [addr] [--lan]
+//! [--signal wss://server[:port] [--signal-ca <pem>]]` (default `127.0.0.1:47900`).
+//! `--lan` announces it over mDNS (listen on `0.0.0.0:…` for an address to announce);
+//! `--signal` registers it with a signaling server and prints its device ID. Connect
+//! with the fixed password [`PASSWORD`].
 //! A white square follows the injected pointer and turns green while a button is
 //! held; every key, click and piece of text is printed.
 
@@ -231,17 +234,50 @@ mod demo {
                 AgentEvent::ConnectionFailed { remote, reason } => {
                     println!("CONNECTION from {remote} failed: {reason}")
                 }
+                AgentEvent::Signal(s) => match (&s.state, s.short_id) {
+                    (nexa_agent::SignalState::Online, Some(id)) => {
+                        println!("SIGNAL online, device ID {id}")
+                    }
+                    (state, _) => println!("SIGNAL {state:?}"),
+                },
                 _ => {}
             }
         }
     }
 
     pub fn main() {
-        let listen: SocketAddr = std::env::args()
-            .nth(1)
-            .unwrap_or_else(|| "127.0.0.1:47900".into())
-            .parse()
-            .expect("an address such as 127.0.0.1:47900");
+        let mut listen: SocketAddr = "127.0.0.1:47900".parse().expect("address");
+        let (mut lan, mut signal_url, mut signal_ca) = (false, None::<String>, None::<String>);
+        let mut args = std::env::args().skip(1);
+        while let Some(a) = args.next() {
+            match a.as_str() {
+                "--lan" => lan = true,
+                "--signal" => signal_url = args.next(),
+                "--signal-ca" => signal_ca = args.next(),
+                addr => listen = addr.parse().expect("an address such as 127.0.0.1:47900"),
+            }
+        }
+        let signal = signal_url.map(|url| {
+            let mut server = nexa_session::rendezvous::signal::SignalConfig::new(url);
+            if let Some(ca) = signal_ca {
+                server = server
+                    .with_ca_file(std::path::Path::new(&ca))
+                    .expect("signal CA");
+            }
+            nexa_agent::SignalSetup {
+                server,
+                bind_ip: if listen.ip().is_unspecified() {
+                    std::net::Ipv6Addr::UNSPECIFIED.into()
+                } else {
+                    listen.ip()
+                },
+                interfaces: None,
+                paired_only: false,
+                relay_only: false,
+                // No port mapping on the real router for a demo.
+                system_services: false,
+            }
+        });
         let dir = std::env::temp_dir().join(format!("nexa-demo-host-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temporary directory");
         let identity = DeviceIdentity::generate();
@@ -256,12 +292,12 @@ mod demo {
                     os: Os::Macos,
                     caps: probe_caps(),
                     timeouts: Timeouts::default(),
-                    signal: None,
+                    signal,
                     files: nexa_agent::FileSettings {
                         downloads: dir.join("Downloads"),
                         limits: Default::default(),
                     },
-                    lan_discovery: false,
+                    lan_discovery: lan,
                     web: None,
                     web_tls: None,
                     password: Some(Arc::new(HostPassword::create(PASSWORD).expect("password"))),

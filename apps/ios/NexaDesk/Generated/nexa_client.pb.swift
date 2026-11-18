@@ -717,6 +717,15 @@ nonisolated struct Nexa_Client_ConnectRequest: Sendable {
     set {auth = .password(newValue)}
   }
 
+  /// no secret: ask the person at the host (device ID only)
+  var request: Bool {
+    get {
+      if case .request(let v)? = auth {return v}
+      return false
+    }
+    set {auth = .request(newValue)}
+  }
+
   var unknownFields = SwiftProtobuf.UnknownStorage()
 
   nonisolated enum OneOf_Auth: Equatable, Sendable {
@@ -725,6 +734,8 @@ nonisolated struct Nexa_Client_ConnectRequest: Sendable {
     /// one-time code shown by the host
     case code(String)
     case password(String)
+    /// no secret: ask the person at the host (device ID only)
+    case request(Bool)
 
   }
 
@@ -1783,7 +1794,7 @@ nonisolated extension Nexa_Client_ClientConfig: SwiftProtobuf.Message, SwiftProt
 
 nonisolated extension Nexa_Client_ConnectRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".ConnectRequest"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}address\0\u{1}tag\0\u{1}mode\0\u{3}known_host\0\u{1}code\0\u{1}password\0\u{1}fps\0\u{3}signal_server\0")
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}address\0\u{1}tag\0\u{1}mode\0\u{3}known_host\0\u{1}code\0\u{1}password\0\u{1}fps\0\u{3}signal_server\0\u{1}request\0")
 
   mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1820,6 +1831,14 @@ nonisolated extension Nexa_Client_ConnectRequest: SwiftProtobuf.Message, SwiftPr
       }()
       case 7: try { try decoder.decodeSingularUInt32Field(value: &self.fps) }()
       case 8: try { try decoder.decodeSingularStringField(value: &self.signalServer) }()
+      case 9: try {
+        var v: Bool?
+        try decoder.decodeSingularBoolField(value: &v)
+        if let v = v {
+          if self.auth != nil {try decoder.handleConflictingOneOf()}
+          self.auth = .request(v)
+        }
+      }()
       default: break
       }
     }
@@ -1852,7 +1871,7 @@ nonisolated extension Nexa_Client_ConnectRequest: SwiftProtobuf.Message, SwiftPr
       guard case .password(let v)? = self.auth else { preconditionFailure() }
       try visitor.visitSingularStringField(value: v, fieldNumber: 6)
     }()
-    case nil: break
+    default: break
     }
     if self.fps != 0 {
       try visitor.visitSingularUInt32Field(value: self.fps, fieldNumber: 7)
@@ -1860,6 +1879,9 @@ nonisolated extension Nexa_Client_ConnectRequest: SwiftProtobuf.Message, SwiftPr
     if !self.signalServer.isEmpty {
       try visitor.visitSingularStringField(value: self.signalServer, fieldNumber: 8)
     }
+    try { if case .request(let v)? = self.auth {
+      try visitor.visitSingularBoolField(value: v, fieldNumber: 9)
+    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 

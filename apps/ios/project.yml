@@ -14,6 +14,12 @@ targets:
     platform: iOS
     sources:
       - path: NexaDesk
+    info:
+      path: NexaDesk/Info.plist
+      properties:
+        # Bonjour browsing for hosts on the LAN (LanBrowser); Xcode merges the
+        # INFOPLIST_KEY_* settings below into this file.
+        NSBonjourServices: [_nexadesk._udp]
     dependencies:
       - package: SwiftProtobuf
       - sdk: VideoToolbox.framework

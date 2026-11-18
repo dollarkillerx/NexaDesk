@@ -24,6 +24,7 @@ message ConnectRequest {
     string known_host = 4;            // hex public key from Ready.hosts or Connected.host_key
     string code = 5;                  // one-time code shown by the host
     string password = 6;
+    bool request = 9;                 // no secret: ask the person at the host (device ID only)
   }
 }
 

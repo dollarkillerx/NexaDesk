@@ -28,3 +28,8 @@ int32_t nexa_session_detach_view(NexaSession *s);
 int32_t nexa_session_set_input_active(NexaSession *s, bool active);
 int32_t nexa_session_command(NexaSession *s, const uint8_t *cmd, size_t len);
 int32_t nexa_last_error(uint8_t *buf, size_t cap, size_t *written);
+/// A signaling server's certificate: "trusted" or "untrusted", a newline, the SHA-256
+/// fingerprint. Blocks up to ~30 s: never on the main thread.
+int32_t nexa_signal_certificate(const uint8_t *url, size_t url_len, uint8_t *out, size_t cap, size_t *written);
+/// Trusts it if it still has `fingerprint`. Blocks like nexa_signal_certificate.
+int32_t nexa_signal_trust(const uint8_t *url, size_t url_len, const uint8_t *fingerprint, size_t fingerprint_len);

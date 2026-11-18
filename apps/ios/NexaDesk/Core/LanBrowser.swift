@@ -1,0 +1,121 @@
+import Foundation
+import Network
+
+/// A NexaDesk host announced on this network.
+struct LanHost: Identifiable, Equatable {
+    let id: String          // the host's device ID (TXT `id`), else the service name
+    let name: String        // TXT `n`
+    let os: String          // TXT `os`
+    let endpoint: NWEndpoint
+
+    static func == (a: LanHost, b: LanHost) -> Bool { a.id == b.id && a.endpoint == b.endpoint }
+}
+
+/// Lists hosts announcing `_nexadesk._udp` (crates/nexa-net/src/discovery.rs) through
+/// Bonjour. The Rust core's own mDNS needs a multicast entitlement on iOS; the system's
+/// browser needs only the local network permission and NSBonjourServices.
+///
+/// What is heard only fills in an address: who the host is is still settled by the
+/// handshake and pairing, as for a typed address.
+@MainActor
+final class LanBrowser: ObservableObject {
+    static let service = "_nexadesk._udp"
+
+    @Published private(set) var hosts: [LanHost] = []
+    private var browser: NWBrowser?
+
+    func start() {
+        guard browser == nil else { return }
+        let browser = NWBrowser(for: .bonjourWithTXTRecord(type: Self.service, domain: nil), using: .udp)
+        browser.browseResultsChangedHandler = { [weak self] results, _ in
+            // One host is heard once per interface it announces on: keep one of each.
+            var seen = Set<String>()
+            let hosts = results.compactMap(Self.host(from:))
+                .filter { seen.insert($0.id).inserted }
+                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            Task { @MainActor in self?.hosts = hosts }
+        }
+        browser.start(queue: .main)
+        self.browser = browser
+    }
+
+    func stop() {
+        browser?.cancel()
+        browser = nil
+        hosts = []
+    }
+
+    nonisolated private static func host(from result: NWBrowser.Result) -> LanHost? {
+        guard case let .service(serviceName, _, _, _) = result.endpoint else { return nil }
+        var txt: [String: String] = [:]
+        if case let .bonjour(record) = result.metadata {
+            txt = record.dictionary
+        }
+        // A display name is the peer's own text: no control characters, and short.
+        let name = (txt["n"] ?? serviceName).filter { !$0.isNewline && $0.unicodeScalars.allSatisfy { !CharacterSet.controlCharacters.contains($0) } }
+        return LanHost(
+            id: txt["id"] ?? serviceName,
+            name: String(name.prefix(64)),
+            os: txt["os"] ?? "",
+            endpoint: result.endpoint
+        )
+    }
+
+    /// The host's IPv4 address and port as "a.b.c.d:port", for `ConnectRequest.address`.
+    /// Opening a UDP "connection" resolves the service without sending anything.
+    static func resolve(_ host: LanHost, timeout: TimeInterval = 5) async -> String? {
+        await withCheckedContinuation { (done: CheckedContinuation<String?, Never>) in
+            let params = NWParameters.udp
+            // IPv4: an IPv6 link-local address needs a scope the core's parser does not take.
+            if let ip = params.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
+                ip.version = .v4
+            }
+            let connection = NWConnection(to: host.endpoint, using: params)
+            let once = Once()
+            let finish: @Sendable (String?) -> Void = { address in
+                if once.claim() {
+                    connection.cancel()
+                    done.resume(returning: address)
+                }
+            }
+            connection.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    if case let .hostPort(h, p)? = connection.currentPath?.remoteEndpoint {
+                        finish("\(Self.text(of: h)):\(p.rawValue)")
+                    } else {
+                        finish(nil)
+                    }
+                case .failed, .cancelled:
+                    finish(nil)
+                default:
+                    break
+                }
+            }
+            connection.start(queue: .global())
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { finish(nil) }
+        }
+    }
+
+    nonisolated private static func text(of host: NWEndpoint.Host) -> String {
+        switch host {
+        // Without the interface ("%en0"): the core parses plain addresses.
+        case .ipv4(let a): return "\(a)".split(separator: "%").first.map(String.init) ?? "\(a)"
+        case .ipv6(let a): return "[\("\(a)".split(separator: "%").first.map(String.init) ?? "\(a)")]"
+        case .name(let n, _): return n
+        @unknown default: return "\(host)"
+        }
+    }
+}
+
+/// Lets exactly one of several callbacks finish an operation.
+private final class Once: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+    func claim() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if done { return false }
+        done = true
+        return true
+    }
+}

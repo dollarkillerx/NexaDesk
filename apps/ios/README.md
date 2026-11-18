@@ -34,13 +34,31 @@ cargo run -p nexa-agent --example demo_host --release      # listens on 127.0.0.
 ```
 
 In the simulator, connect to `127.0.0.1:47900` with the password printed by the demo
-host. Debug builds also take `NEXA_TEST_ADDRESS` and `NEXA_TEST_SECRET` from the launch
+host. `--lan` (with `0.0.0.0:47900`) makes it show up under "On this network";
+`--signal wss://localhost:PORT --signal-ca cert.pem` registers it with a local
+`nexa-signal` and prints its device ID. Never test against port 47800 on your own
+Mac: that is your real NexaDesk. Debug builds also take `NEXA_TEST_ADDRESS` and `NEXA_TEST_SECRET` from the launch
 environment and connect at once:
 
 ```sh
 SIMCTL_CHILD_NEXA_TEST_ADDRESS=127.0.0.1:47900 SIMCTL_CHILD_NEXA_TEST_SECRET=nexademohost \
   xcrun simctl launch booted app.nexadesk.ios
 ```
+
+## Connecting
+
+- **On the same network:** hosts that announce themselves (`_nexadesk._udp`, as the
+  desktop app does unless "show this computer on the LAN" is off) are listed under
+  "On this network"; tap one, then enter its one-time code or password. An IP
+  address can also be typed; port 47800 is assumed when none is given. Tailscale
+  addresses work the same way.
+- **From anywhere, through your own signaling server:** enter the 9-digit device ID
+  and the server (`signal.example.com` or `wss://host:port`, as set on the computer).
+  With no code or password, the person at the computer is asked to allow it. A
+  server with its own (self-signed) certificate is trusted on first use: the app
+  shows its SHA-256 fingerprint to compare with
+  `openssl x509 -noout -fingerprint -sha256 -in <certificate>` on the server, and keeps
+  it in `signal-ca.pem` in the app's data (docs/DEPLOY.md §5).
 
 ## Controls
 
@@ -53,6 +71,6 @@ SIMCTL_CHILD_NEXA_TEST_ADDRESS=127.0.0.1:47900 SIMCTL_CHILD_NEXA_TEST_SECRET=nex
 
 ## Not yet
 
-Sound, the clipboard, file transfer, saved connections and the host list, choosing the
+Sound, the clipboard, file transfer, saved connections and known hosts, choosing the
 display, zoom, a trackpad-style pointer, and handling the app going to the background
 (the session is reconnected when it comes back, as after a network change).
