@@ -247,6 +247,10 @@ async fn an_agent_connects_looks_and_acts() {
         texts(&connected).contains("keyboard and mouse"),
         "{connected}"
     );
+    assert!(
+        texts(&connected).contains("display 0 = fake 1920×1080, shown now"),
+        "displays are numbered as nexa_display takes them: {connected}"
+    );
 
     let shot = agent.call("nexa_screenshot", json!({})).await;
     assert_eq!(shot["isError"], false, "{shot}");

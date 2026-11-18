@@ -177,6 +177,11 @@ pub struct Shot {
     pub height: u32,
     /// False when the screen was still changing when it was taken.
     pub settled: bool,
+    /// How long it waited for the screen to settle (zero for a plain screenshot).
+    pub waited: Duration,
+    /// The previous screenshot's size, when this one's differs: older coordinates
+    /// no longer fit.
+    pub resized_from: Option<(u32, u32)>,
 }
 
 pub enum Button {
@@ -409,7 +414,7 @@ impl Viewer {
             .frames
             .settle(Instant::now(), Duration::ZERO, self.timeouts.first_frame)
             .ok_or("no picture from the host yet")?;
-        self.encode(remote, &settled.image, true)
+        self.encode(remote, &settled.image, true, Duration::ZERO)
     }
 
     /// The screen once it has stopped changing after an action sent at `since`.
@@ -418,7 +423,7 @@ impl Viewer {
             .frames
             .settle(since, self.timeouts.quiet, self.timeouts.settle_max)
             .ok_or("no picture from the host yet")?;
-        self.encode(remote, &s.image, s.settled)
+        self.encode(remote, &s.image, s.settled, since.elapsed())
     }
 
     fn encode(
@@ -426,15 +431,19 @@ impl Viewer {
         remote: &Remote,
         image: &nexa_media::NativeImage,
         settled: bool,
+        waited: Duration,
     ) -> Result<Shot, String> {
         let rgb = snapshot::fit(snapshot::to_rgb(image)?, MAX_SIDE);
         let png = image::png(&rgb)?;
-        *lock(&remote.shot) = Some((rgb.width, rgb.height));
+        let size = (rgb.width, rgb.height);
+        let before = lock(&remote.shot).replace(size);
         Ok(Shot {
             png,
             width: rgb.width,
             height: rgb.height,
             settled,
+            waited,
+            resized_from: before.filter(|b| *b != size),
         })
     }
 
@@ -640,8 +649,8 @@ impl Viewer {
         if switched.is_none() {
             return Err(format!("the host did not switch to display {id}"));
         }
-        // The last screenshot showed the other display.
-        *lock(&remote.shot) = None;
+        // The last screenshot showed the other display; its size is kept so the next
+        // one can say it changed.
         let since = Instant::now();
         let deadline = since + self.timeouts.first_frame;
         while remote.frames.frames() == before && Instant::now() < deadline {

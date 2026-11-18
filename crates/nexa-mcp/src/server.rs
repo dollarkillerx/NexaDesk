@@ -22,8 +22,11 @@ const PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", 
 const INSTRUCTIONS: &str = "Operate another computer through NexaDesk. Connect with nexa_connect \
 (the person at that computer may have to allow it), then call nexa_screenshot and act with \
 nexa_click, nexa_drag, nexa_scroll, nexa_type and nexa_key. Coordinates are pixels in the \
-latest screenshot. Each action waits for the screen to settle and returns a new screenshot. Key \
-names are the remote computer's own: cmd is the Command key on a Mac and the Windows key on \
+latest screenshot (they change when a screenshot's size does). Each action waits for the screen \
+to settle (up to 3 s) and returns a new screenshot; the remote pointer is not drawn in it, but \
+it stays where the last click, drag or scroll put it. Typing and keys go to whatever has the \
+keyboard focus there: check the screenshot to see that they arrived. Calls run one at a time, \
+in the order they are sent. Key names are the remote computer's own: cmd is the Command key on a Mac and the Windows key on \
 Windows. With several displays, nexa_display lists and switches them. Where the person there \
 allowed it, nexa_run runs commands on its command line (often more reliable than clicking), \
 and nexa_clipboard_get / nexa_clipboard_set read and fill its clipboard (then paste with \
@@ -104,7 +107,7 @@ impl Server {
                 let address = str_arg(args, "address")?.ok_or("`address` is required")?;
                 let code = str_arg(args, "code")?;
                 let r = v.connect(address, code)?;
-                Ok(vec![text(&describe(&r))])
+                Ok(vec![text(&describe(v, &r))])
             }
             "nexa_sessions" => {
                 let list = v.sessions();
@@ -114,7 +117,7 @@ impl Server {
                 Ok(vec![text(
                     &list
                         .iter()
-                        .map(|r| describe(r))
+                        .map(|r| describe(v, r))
                         .collect::<Vec<_>>()
                         .join("\n"),
                 )])
@@ -141,7 +144,12 @@ impl Server {
                     return Err("`count` is 1, 2 (double click) or 3".into());
                 }
                 let since = v.click(&r, x, y, button, count as u32)?;
-                self.after(&r, args, since, &format!("Clicked at ({x}, {y})"))
+                self.after(
+                    &r,
+                    args,
+                    since,
+                    &format!("Clicked at ({x}, {y}); the pointer stays there"),
+                )
             }
             "nexa_scroll" => {
                 let r = v.remote(session_arg(args)?)?;
@@ -159,7 +167,12 @@ impl Server {
                     other => return Err(format!("unknown direction {other}")),
                 };
                 let since = v.scroll(&r, x, y, dx, dy)?;
-                self.after(&r, args, since, &format!("Scrolled at ({x}, {y})"))
+                self.after(
+                    &r,
+                    args,
+                    since,
+                    &format!("Scrolled at ({x}, {y}); the pointer stays there"),
+                )
             }
             "nexa_type" => {
                 let r = v.remote(session_arg(args)?)?;
@@ -169,7 +182,11 @@ impl Server {
                     &r,
                     args,
                     since,
-                    &format!("Typed {} characters", t.chars().count()),
+                    &format!(
+                        "Sent {} characters to whatever has the keyboard focus there; the \
+                         screenshot shows whether they arrived",
+                        t.chars().count()
+                    ),
                 )
             }
             "nexa_key" => {
@@ -177,7 +194,12 @@ impl Server {
                 let combo = str_arg(args, "keys")?.ok_or("`keys` is required")?;
                 let usages = keys::parse(combo)?;
                 let since = v.keys(&r, &usages)?;
-                self.after(&r, args, since, &format!("Pressed {combo}"))
+                self.after(
+                    &r,
+                    args,
+                    since,
+                    &format!("Pressed {combo} (sent to whatever has the keyboard focus there)"),
+                )
             }
             "nexa_drag" => {
                 let r = v.remote(session_arg(args)?)?;
@@ -195,7 +217,7 @@ impl Server {
                     args,
                     since,
                     &format!(
-                        "Dragged from ({}, {}) to ({}, {})",
+                        "Dragged from ({}, {}) to ({}, {}); the pointer stays at the end",
                         from.0, from.1, to.0, to.1
                     ),
                 )
@@ -227,7 +249,9 @@ impl Server {
                         match v.after(&r, since) {
                             Ok(shot) => Ok(shot_content(
                                 &shot,
-                                &format!("Display {id} is shown. Screenshot"),
+                                &format!(
+                                    "Display {id} is shown; coordinates now refer to it. Screenshot"
+                                ),
                             )),
                             Err(e) => Ok(vec![text(&format!(
                                 "Display {id} is shown, but no screenshot: {e}"
@@ -310,7 +334,7 @@ impl Server {
     }
 }
 
-fn describe(r: &Remote) -> String {
+fn describe(v: &Viewer, r: &Remote) -> String {
     let perms = r.host.perms.clone().unwrap_or_default();
     let mut allowed = Vec::new();
     if perms.view {
@@ -322,15 +346,22 @@ fn describe(r: &Remote) -> String {
     if perms.clipboard {
         allowed.push("clipboard");
     }
-    let displays = r
-        .host
-        .displays
+    let (list, current) = v.displays(r);
+    let current = current.or_else(|| list.first().map(|d| d.id));
+    let displays = list
         .iter()
-        .map(|d| format!("{} {}×{}", d.name, d.w, d.h))
+        .map(|d| {
+            let shown = if Some(d.id) == current {
+                ", shown now"
+            } else {
+                ""
+            };
+            format!("display {} = {} {}×{}{shown}", d.id, d.name, d.w, d.h)
+        })
         .collect::<Vec<_>>()
-        .join(", ");
+        .join("; ");
     format!(
-        "Session {}: {} ({}) at {}. Allowed: {}. Displays: {}.",
+        "Session {}: {} ({}) at {}. Allowed: {}. Displays (numbered for nexa_display): {}.",
         r.id,
         r.host.host_name,
         r.os_name(),
@@ -349,11 +380,20 @@ fn describe(r: &Remote) -> String {
 }
 
 fn shot_content(shot: &Shot, what: &str) -> Vec<Value> {
-    let note = if shot.settled {
-        ""
-    } else {
-        " The screen was still changing; take another screenshot to see where it ends up."
-    };
+    let mut note = String::new();
+    if let Some((w, h)) = shot.resized_from {
+        note.push_str(&format!(
+            " The picture is a different size from the last one ({w}×{h}): coordinates from \
+             earlier screenshots no longer fit."
+        ));
+    }
+    if !shot.settled {
+        note.push_str(&format!(
+            " Waited {:.1} s and the screen was still changing (something on it may move all \
+             the time); this is the newest picture.",
+            shot.waited.as_secs_f64()
+        ));
+    }
     vec![
         text(&format!(
             "{what} {}×{} pixels; coordinates for actions are pixels in this image.{note}",
@@ -441,7 +481,7 @@ fn error(id: Value, code: i64, message: &str) -> Value {
 fn tools() -> Vec<Value> {
     let session = json!({
         "type": "integer",
-        "description": "Session number from nexa_connect. May be left out while only one session is open.",
+        "description": "Session number from nexa_connect. May be left out while only one session is open; with several, leaving it out is an error that says so.",
     });
     let screenshot = json!({
         "type": "boolean",
@@ -503,7 +543,7 @@ fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "nexa_type",
-            "description": format!("Type text where the keyboard focus is, as characters (independent of the remote keyboard layout). At most {MAX_TEXT} characters. For Enter, Tab or shortcuts use nexa_key."),
+            "description": format!("Type text where the keyboard focus is (click a text field first), as characters, independent of the remote keyboard layout. At most {MAX_TEXT} characters. For Enter, Tab or shortcuts use nexa_key; for long text nexa_clipboard_set and a paste is faster."),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -529,13 +569,15 @@ fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "nexa_drag",
-            "description": "Press at one point, move to another and let go there: drag and drop, select text, move a window by its title bar.",
+            "description": "Press at one point, move to another in small steps (about 0.2 s in all) and let go there: drag and drop, select text, move a window by its title bar.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "session": session,
-                    "from_x": { "type": "number" }, "from_y": { "type": "number" },
-                    "to_x": { "type": "number" }, "to_y": { "type": "number" },
+                    "from_x": { "type": "number", "description": "Where to press: pixels from the left of the latest screenshot." },
+                    "from_y": { "type": "number", "description": "Where to press: pixels from the top." },
+                    "to_x": { "type": "number", "description": "Where to let go: pixels from the left." },
+                    "to_y": { "type": "number", "description": "Where to let go: pixels from the top." },
                     "button": { "type": "string", "enum": ["left", "right", "middle"], "description": "Default left." },
                     "screenshot": screenshot,
                 },
@@ -544,12 +586,12 @@ fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "nexa_display",
-            "description": "Without `display`: list the remote computer's displays. With it: show that display instead (one at a time); returns its screenshot.",
+            "description": "Without `display`: list the remote computer's displays, numbered from 0, and which is shown. With it: show that display instead (one at a time) and return its screenshot; its size may differ, and later coordinates refer to it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "session": session,
-                    "display": { "type": "integer", "description": "A display number from the list." },
+                    "display": { "type": "integer", "minimum": 0, "description": "A display number from the list (the first display is 0)." },
                 },
             },
         }),
@@ -586,4 +628,38 @@ fn tools() -> Vec<Value> {
             "inputSchema": { "type": "object", "properties": { "session": session } },
         }),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shot(settled: bool, resized_from: Option<(u32, u32)>) -> Shot {
+        Shot {
+            png: vec![],
+            width: 1024,
+            height: 768,
+            settled,
+            waited: std::time::Duration::from_millis(3000),
+            resized_from,
+        }
+    }
+
+    #[test]
+    fn a_screenshot_says_when_it_changed_size_or_never_settled() {
+        assert_eq!(
+            shot_content(&shot(true, None), "Screenshot")[0]["text"],
+            "Screenshot 1024×768 pixels; coordinates for actions are pixels in this image."
+        );
+        let both = shot_content(&shot(false, Some((1280, 800))), "Screenshot")[0]["text"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(
+            both.contains("different size from the last one (1280×800)"),
+            "{both}"
+        );
+        assert!(both.contains("Waited 3.0 s"), "{both}");
+        assert!(!both.contains("take another screenshot"), "{both}");
+    }
 }

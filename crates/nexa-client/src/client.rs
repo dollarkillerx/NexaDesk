@@ -5,7 +5,10 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex, MutexGuard, OnceLock,
-        atomic::{AtomicBool, Ordering::Relaxed},
+        atomic::{
+            AtomicBool,
+            Ordering::{Relaxed, SeqCst},
+        },
         mpsc::{self, Sender},
     },
     thread::JoinHandle,
@@ -481,7 +484,7 @@ impl Session {
     }
 
     fn to_input(&self, cmd: InputCmd) {
-        if self.input_started.load(Relaxed) {
+        if self.input_started.load(SeqCst) {
             let _ = self.input_tx.send(cmd);
         }
     }
@@ -593,7 +596,8 @@ impl Session {
         if active && self.input_granted.get() == Some(&false) {
             return Err("the host did not grant input");
         }
-        self.want_active.store(active, Relaxed);
+        // SeqCst with `start_input`: either it sees this, or this sees it started.
+        self.want_active.store(active, SeqCst);
         self.to_input(InputCmd::SetActive(active));
         Ok(())
     }
@@ -1250,6 +1254,7 @@ fn start_input(
     } else {
         nexa_input::Compiled::passthrough()
     };
+    let start_active = session.want_active.load(SeqCst);
     let handle = input::spawn(
         InputThreadConfig {
             conn: conn.clone(),
@@ -1262,7 +1267,7 @@ fn start_input(
             view: session.view.clone(),
             events: core.events.clone(),
             tag: session.tag,
-            start_active: session.want_active.load(Relaxed),
+            start_active,
             gate_stats,
             pointer_lock: {
                 let (deps, tx) = (core.deps.clone(), tx.clone());
@@ -1273,7 +1278,16 @@ fn start_input(
         },
         rx,
     );
-    session.input_started.store(true, Relaxed);
+    session.input_started.store(true, SeqCst);
+    // A `set_input_active` between reading `want_active` above and marking the thread
+    // started was dropped by `to_input`: catch up. (The session is reported connected
+    // before the thread starts, and a viewer without a window, nexa-mcp, activates
+    // input the moment it hears so; a lost activation left every click ignored.)
+    // Sending it twice is harmless.
+    let now = session.want_active.load(SeqCst);
+    if now != start_active {
+        let _ = session.input_tx.send(InputCmd::SetActive(now));
+    }
     Some(handle)
 }
 
