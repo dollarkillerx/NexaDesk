@@ -31,7 +31,7 @@ TOML="$CONF/nexa-signal.toml"
 INFO="$CONF/INFO"
 TLS="$CONF/tls"
 
-host="" key="" web=0 web_password="" binary="" port=443 action=install purge=0
+host="" key="" web=0 web_password="" binary="" port="" action=install purge=0
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'nexa-signal installer: %s\n' "$*" >&2; exit 1; }
@@ -86,8 +86,12 @@ fi
 
 # ---- checks --------------------------------------------------------------------------------
 
-case "$port" in ''|*[!0-9]*) die "--port must be a number" ;; esac
-[ "$port" -ge 1 ] && [ "$port" -le 65535 ] || die "--port must be 1-65535"
+# The key may come from the environment instead of the command line, where `ps` and the shell
+# history would show it: sudo env NEXA_SIGNAL_KEY=... sh install.sh
+[ -n "$key" ] || key="${NEXA_SIGNAL_KEY:-}"
+# Whether this run asks for anything that is in the configuration file.
+asked=0
+if [ -n "$host$key$port" ] || [ "$web" = 1 ]; then asked=1; fi
 command -v openssl >/dev/null 2>&1 || die "openssl is needed (apt install openssl / dnf install openssl)"
 if [ -z "$binary" ]; then
     if command -v curl >/dev/null 2>&1; then
@@ -123,31 +127,59 @@ guess_ip() {
     return 1
 }
 
-# What clients should type: a domain or an IPv4 address.
-if [ -z "$host" ]; then
-    host=$(guess_ip) || die "could not find this server's public address; pass --host <ip or domain>"
-fi
-case "$host" in *[!A-Za-z0-9.-]*|'') die "--host must be an IPv4 address or a domain name" ;; esac
-is_ip=0
-case "$host" in *[!0-9.]*) ;; *) is_ip=1 ;; esac
-# The relay and STUN are reached by address.
-if [ "$is_ip" = 1 ]; then
-    ip="$host"
-else
-    ip=$(getent ahostsv4 "$host" 2>/dev/null | awk 'NR==1{print $1}')
-    [ -n "$ip" ] || ip=$(guess_ip) || die "$host does not resolve to an address yet; point the domain at this server first"
-fi
-
-# Keep what an earlier run decided.
+# What an earlier run decided stays unless this run says otherwise: the address, the port, the key
+# and the browser page. A configuration that points at certificates this script did not make
+# (a public CA's, say) is the administrator's, and is left alone.
+exists=0 hand=0 rewrite=1
+old_key="" old_port="" old_host=""
 if [ -r "$TOML" ]; then
-    old_key=$(sed -n 's/^access_secrets = \["\(.*\)"\]$/\1/p' "$TOML" | head -n1)
+    exists=1
+    # The first key of the list (during a key change there are two).
+    old_key=$(sed -n 's/^access_secrets = \["\([^"]*\)".*$/\1/p' "$TOML" | head -n1)
+    old_port=$(sed -n 's/^listen = "[^"]*:\([0-9][0-9]*\)"$/\1/p' "$TOML" | head -n1)
+    old_host=$(sed -n 's/^server_names = \["\([^"]*\)".*$/\1/p' "$TOML" | head -n1)
+    grep -q "^tls_cert = \"$TLS/fullchain.pem\"" "$TOML" || hand=1
+    if [ "$hand" = 1 ] && [ "$asked" = 1 ]; then
+        die "$TOML points at certificates this script did not make, so it is managed by hand: change it there (or remove the file to let this script write it)"
+    fi
+    if [ "$hand" = 1 ] || [ "$asked" = 0 ]; then rewrite=0; fi
+    if [ "$hand" = 0 ] && [ -r "$TLS/host" ]; then old_host=$(cat "$TLS/host"); fi
+    [ -n "$host" ] || host="$old_host"
+    [ -n "$port" ] || port="$old_port"
     [ -n "$key" ] || key="$old_key"
+    # The browser page stays as it is, unless asked for again.
+    if [ "$web" = 0 ] && grep -q '^\[web\]' "$TOML"; then
+        web=2
+        web_password=$(awk '/^\[/{p=($0=="[web]")} p' "$TOML" | sed -n 's/^password = "\(.*\)"$/\1/p' | head -n1)
+    fi
 fi
-[ -n "$key" ] || key=$(random_key)
-[ "${#key}" -ge 10 ] || die "the key must be at least 10 characters"
-case "$key" in *[!A-Za-z0-9._~+=@%:-]*) die "the key may use letters, digits and . _ ~ + = @ % : - only" ;; esac
-if [ "$web" = 1 ] && [ -n "$web_password" ]; then
-    case "$web_password" in *[!A-Za-z0-9._~+=@%:-]*) die "the web password may use letters, digits and . _ ~ + = @ % : - only" ;; esac
+[ -n "$port" ] || port=443
+case "$port" in ''|*[!0-9]*) die "--port must be a number" ;; esac
+[ "$port" -ge 1 ] && [ "$port" -le 65535 ] || die "--port must be 1-65535"
+
+if [ "$hand" = 0 ]; then
+    # What clients should type: a domain or an IPv4 address.
+    if [ -z "$host" ]; then
+        host=$(guess_ip) || die "could not find this server's public address; pass --host <ip or domain>"
+    fi
+    case "$host" in *[!A-Za-z0-9.-]*|'') die "--host must be an IPv4 address or a domain name" ;; esac
+    is_ip=0
+    case "$host" in *[!0-9.]*) ;; *) is_ip=1 ;; esac
+    # The relay and STUN are reached by address.
+    if [ "$is_ip" = 1 ]; then
+        ip="$host"
+    else
+        ip=$(getent ahostsv4 "$host" 2>/dev/null | awk 'NR==1{print $1}')
+        [ -n "$ip" ] || ip=$(guess_ip) || die "$host does not resolve to an address yet; point the domain at this server first"
+    fi
+fi
+if [ "$rewrite" = 1 ]; then
+    [ -n "$key" ] || key=$(random_key)
+    [ "${#key}" -ge 10 ] || die "the key must be at least 10 characters"
+    case "$key" in *[!A-Za-z0-9._~+=@%:-]*) die "the key may use letters, digits and . _ ~ + = @ % : - only" ;; esac
+    if [ "$web" = 1 ] && [ -n "$web_password" ]; then
+        case "$web_password" in *[!A-Za-z0-9._~+=@%:-]*) die "the web password may use letters, digits and . _ ~ + = @ % : - only" ;; esac
+    fi
 fi
 
 # ---- the program ---------------------------------------------------------------------------
@@ -181,7 +213,8 @@ install -m 0755 "$tmp/nexa-signal" "$BIN"
 # TLS clients). The CA is what apps ask people to trust, shown as a fingerprint.
 
 make_cert=1
-if [ -r "$TLS/fullchain.pem" ] && [ -r "$TLS/ca.pem" ] && [ -r "$TLS/host" ] && [ "$(cat "$TLS/host")" = "$host" ]; then
+[ "$hand" = 0 ] || make_cert=0
+if [ "$hand" = 0 ] && [ -r "$TLS/fullchain.pem" ] && [ -r "$TLS/ca.pem" ] && [ -r "$TLS/host" ] && [ "$(cat "$TLS/host")" = "$host" ]; then
     openssl x509 -checkend 2592000 -noout -in "$TLS/fullchain.pem" >/dev/null 2>&1 && make_cert=0
 fi
 if [ "$make_cert" = 1 ]; then
@@ -211,17 +244,19 @@ if [ "$make_cert" = 1 ]; then
     install -m 0400 "$tmp/privkey.pem" "$TLS/privkey.pem"
     printf '%s' "$host" >"$TLS/host"
 fi
-if [ -z "$ROOT" ]; then
+if [ -z "$ROOT" ] && [ "$hand" = 0 ]; then
     chown -R 10001:10001 "$TLS"
     chmod 0750 "$TLS"
     # The CA's key signs certificates; the service never needs it.
     chown root:root "$TLS/ca.key"
     chmod 0600 "$TLS/ca.key"
 fi
-fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in "$TLS/ca.pem" | sed 's/^.*=//')
+fingerprint=""
+if [ "$hand" = 0 ]; then fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in "$TLS/ca.pem" | sed 's/^.*=//'); fi
 
 # ---- the configuration ---------------------------------------------------------------------
 
+if [ "$rewrite" = 1 ]; then
 say "==> Writing the configuration"
 {
     cat <<EOF
@@ -252,7 +287,7 @@ EOF
     if [ "$web" = 1 ]; then
         printf '\n[web]\nmax_allocations = 200\nmax_per_ip = 8\n'
         [ -z "$web_password" ] || printf 'password = "%s"\n' "$web_password"
-    elif [ -r "$TOML" ] && grep -q '^\[web\]' "$TOML"; then
+    elif [ "$web" = 2 ]; then
         # Already serving the browser page: keep its settings.
         printf '\n'
         awk '/^\[/{p=($0=="[web]")} p' "$TOML"
@@ -260,6 +295,7 @@ EOF
 } >"$tmp/nexa-signal.toml"
 install -m 0600 "$tmp/nexa-signal.toml" "$TOML"
 if [ -z "$ROOT" ]; then chown 10001:10001 "$TOML"; fi
+fi
 
 # Check it as the service will.
 "$BIN" --check-config "$TOML" >"$tmp/check.txt" 2>&1 || { cat "$tmp/check.txt" >&2; die "the configuration does not pass --check-config"; }
@@ -341,7 +377,8 @@ fi
 # ---- the answer ----------------------------------------------------------------------------
 
 if [ "$port" = 443 ]; then addr="wss://$host"; page="https://$host/"; else addr="wss://$host:$port"; page="https://$host:$port/"; fi
-if [ "$web" = 1 ]; then
+[ -n "$host" ] || die "no server name in $TOML; pass --host <ip or domain>"
+if [ "$web" != 0 ]; then
     if [ -n "$web_password" ]; then webline="Browser page:   $page  (password: $web_password)"; else webline="Browser page:   $page  (no password: anyone with a device ID and its code can try)"; fi
 else
     webline="Browser page:   off (run again with --web to turn it on)"
@@ -352,8 +389,12 @@ fi
     say "  Server address: $addr"
     say "  Signaling key:  $key"
     say "  $webline"
-    say "  Certificate:    private; apps ask to trust it once. Check that the fingerprint is"
-    say "                  $fingerprint"
+    if [ -n "$fingerprint" ]; then
+        say "  Certificate:    private; apps ask to trust it once. Check that the fingerprint is"
+        say "                  $fingerprint"
+    else
+        say "  Certificate:    the one named in $TOML (not made by this script)"
+    fi
     say ""
     say "  Put the address and the key in each app's \"Signaling server\" and \"Access password\"."
     say "  To offer it to everyone, add this to servers.json in the project:"

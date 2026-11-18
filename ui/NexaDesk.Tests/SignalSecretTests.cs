@@ -50,6 +50,49 @@ public class SignalSecretTests
     }
 
     [Fact]
+    public void Moving_to_another_server_takes_the_old_servers_key_out_of_the_Keychain()
+    {
+        var (s, _, keychain) = Settings(Server, kept: "old key here");
+        s.ServerInput = "other.example.com";
+        s.SecretInput = "new key here";
+        s.SaveCommand.Execute(null);
+        Assert.False(keychain.Kept.ContainsKey("signal-access:" + Server));
+        Assert.Equal("new key here", keychain.Kept["signal-access:wss://other.example.com"]);
+        Assert.Single(keychain.Kept);
+    }
+
+    [Fact]
+    public async Task Reading_the_key_back_is_not_a_change_of_server_and_says_when_it_is_done()
+    {
+        var (s, _, _) = Settings(Server, kept: "from the keychain");
+        var changed = 0;
+        s.ServerChanged += _ => changed++;
+        Assert.False(s.SecretLoaded.IsCompleted);
+        await s.LoadSecretAsync();
+        Assert.True(s.SecretLoaded.IsCompleted);
+        Assert.Equal(0, changed);
+        // Nothing to read: nothing to wait for.
+        Assert.True(Settings().Settings.SecretLoaded.IsCompleted);
+    }
+
+    [Fact]
+    public async Task Hosting_waits_for_the_key_to_come_out_of_the_Keychain()
+    {
+        var process = new FakeProcess();
+        var store = new MemorySettings(new AppSettings(Server));
+        var keychain = new MemorySavedPasswords();
+        keychain.Kept["signal-access:" + Server] = "open sesame";
+        var vm = new MainViewModel(new FakeClient(), new MemoryRecent(), new FakeLink(), process, new FakePermissions(),
+            new RecordingWindows(), new FakeAddresses(["192.168.1.35"]), "Mac", () => Samples.T0, store, passwords: keychain);
+        var starting = vm.Host.StartCommand.ExecuteAsync(null);
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+        Assert.Empty(process.Secrets);
+        await vm.Settings.LoadSecretAsync();
+        await starting;
+        Assert.Equal("open sesame", Assert.Single(process.Secrets));
+    }
+
+    [Fact]
     public void A_server_saved_before_keys_asks_for_one_and_changing_only_the_key_is_a_change()
     {
         var (s, _, _) = Settings(Server);

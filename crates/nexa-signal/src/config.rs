@@ -190,6 +190,8 @@ impl Limits {
 /// The shortest signaling key accepted.
 pub const MIN_ACCESS_SECRET_CHARS: usize = 10;
 /// The key `--example-config` prints: refused, so that nobody runs with it.
+/// What the page's password field takes (its `maxlength`).
+pub const MAX_WEB_PASSWORD_CHARS: usize = 128;
 pub const EXAMPLE_SECRET: &str = "CHANGE-THIS-to-a-long-key-of-your-own";
 
 pub const EXAMPLE: &str = r#"# nexa-signal: signaling, STUN and relay in one process (§4.3, §4.6).
@@ -282,10 +284,10 @@ impl Config {
         }
         if let Some(w) = &self.web
             && let Some(p) = &w.password
-            && (p.is_empty() || p.trim() != p)
+            && (p.is_empty() || p.trim() != p || p.chars().count() > MAX_WEB_PASSWORD_CHARS)
         {
             return Err(ConfigError::Invalid(
-                "web.password: not empty, and no space or line break at either end (leave it out for browsers without a password)"
+                "web.password: not empty, at most 128 characters, and no space or line break at either end (leave it out for browsers without a password)"
                     .into(),
             ));
         }
@@ -460,6 +462,9 @@ lisen = "x"
         ] {
             assert!(with(bad).is_err(), "{bad}");
         }
+        // The page's field takes 128 characters: a longer password could never be typed.
+        assert!(with(&format!("password = \"{}\"", "p".repeat(128))).is_ok());
+        assert!(with(&format!("password = \"{}\"", "p".repeat(129))).is_err());
     }
 
     #[test]

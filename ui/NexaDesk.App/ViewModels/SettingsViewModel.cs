@@ -26,6 +26,8 @@ public sealed partial class SettingsViewModel : ObservableObject
         _passwords = passwords;
         var loaded = store.Load();
         _savedServer = loaded.SignalServer;
+        // With no server or no Keychain there is nothing to wait for.
+        if (_passwords == null || _savedServer.Length == 0) _secretLoaded.TrySetResult();
         _serverInput = _savedServer;
         _announceOnLan = loaded.AnnounceOnLan;
         _allowBrowsers = loaded.AllowBrowsers;
@@ -119,18 +121,29 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     static string AccountFor(string server) => "signal-access:" + server;
 
-    /// <summary>Reads the saved server's key back from the Keychain. Run before anything uses it.</summary>
+    readonly TaskCompletionSource _secretLoaded = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>Completes once the saved server's key has been read back (at once when there is none to read).
+    /// What starts the agent waits for it, so the agent never starts without the key.</summary>
+    public Task SecretLoaded => _secretLoaded.Task;
+
+    /// <summary>Reads the saved server's key back from the Keychain. Run before anything uses it.
+    /// Raises no <see cref="ServerChanged"/>: the server did not change, and the key is read when used.</summary>
     public async Task LoadSecretAsync()
     {
         if (_passwords == null || SavedServer.Length == 0) return;
-        var kept = await _passwords.LoadAsync(AccountFor(SavedServer)) ?? "";
-        // What the person typed while the Keychain answered wins.
-        if (SecretInput.Length == 0 && SavedSecret.Length == 0) SecretInput = kept;
-        SavedSecret = kept;
-        OnServerChanged();
+        try
+        {
+            var kept = await _passwords.LoadAsync(AccountFor(SavedServer)) ?? "";
+            // What the person typed while the Keychain answered wins.
+            if (SecretInput.Length == 0 && SavedSecret.Length == 0) SecretInput = kept;
+            SavedSecret = kept;
+        }
+        finally
+        {
+            _secretLoaded.TrySetResult();
+        }
     }
-
-    void OnServerChanged() => ServerChanged?.Invoke(SavedServer);
 
     public bool HasServer => SavedServer.Length > 0;
 
@@ -172,8 +185,8 @@ public sealed partial class SettingsViewModel : ObservableObject
                 return;
             }
         }
-        // A server given up takes its key with it.
-        if (value.Length == 0 && SavedServer.Length > 0 && _passwords != null)
+        // A server given up, or replaced by another, takes its key with it.
+        if (SavedServer.Length > 0 && SavedServer != value && _passwords != null)
             await _passwords.DeleteAsync(AccountFor(SavedServer));
         SavedServer = value;
         SavedSecret = secret;

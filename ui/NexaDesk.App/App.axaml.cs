@@ -132,11 +132,8 @@ public partial class App : Application
             // agent still running, so the window's own attach would only race it on the link.
             // The server's access key comes out of the Keychain first: the agent starts with it.
             if (StartInBackground || vm.ResumesHosting)
-                _ = Task.Run(async () =>
-                {
-                    await vm.Settings.LoadSecretAsync();
-                    await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() => vm.Host.AttachOrStartAsync());
-                });
+                // On the UI thread, and awaited there: the view models raise events as they load.
+                _ = StartHostingAsync(vm);
             else
             {
                 _ = vm.Settings.LoadSecretAsync();
@@ -145,6 +142,12 @@ public partial class App : Application
             _ = vm.Updates.CheckDailyAsync();
         }
         base.OnFrameworkInitializationCompleted();
+    }
+
+    static async Task StartHostingAsync(MainViewModel vm)
+    {
+        await vm.Settings.LoadSecretAsync();
+        await vm.Host.AttachOrStartAsync();
     }
 
     static string DeviceName()

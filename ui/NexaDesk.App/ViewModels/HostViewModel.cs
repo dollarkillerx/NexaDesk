@@ -129,6 +129,8 @@ public sealed record ConnectOption(string Kind, string Address, string Detail = 
 public sealed partial class HostViewModel : ObservableObject
 {
     static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(60);
+    /// <summary>The longest start waits for the Keychain to give the server's key back.</summary>
+    static readonly TimeSpan SecretWait = TimeSpan.FromSeconds(10);
     static readonly TimeSpan RetryEvery = TimeSpan.FromMilliseconds(250);
 
     readonly IAgentLink _link;
@@ -139,6 +141,7 @@ public sealed partial class HostViewModel : ObservableObject
     readonly string _deviceName;
     readonly Func<string> _signalServer;
     readonly Func<string> _signalSecret;
+    readonly Func<Task> _secretReady;
     readonly Func<bool> _announceOnLan;
     readonly Func<bool> _allowBrowsers;
     readonly ILocalAddresses _addresses;
@@ -393,8 +396,9 @@ public sealed partial class HostViewModel : ObservableObject
     public HostViewModel(IAgentLink link, IAgentProcess process, IPermissionProbe permissions, IWindowService windows,
         ILocalAddresses addresses, string deviceName, Func<DateTimeOffset>? now = null, Func<string>? signalServer = null,
         Func<bool>? announceOnLan = null, TailscaleViewModel? tailscale = null, Func<bool>? allowBrowsers = null,
-        Action<bool>? rememberHosting = null, Func<string>? signalSecret = null)
+        Action<bool>? rememberHosting = null, Func<string>? signalSecret = null, Func<Task>? secretReady = null)
     {
+        _secretReady = secretReady ?? (() => Task.CompletedTask);
         _rememberHosting = rememberHosting ?? (_ => { });
         _signalSecret = signalSecret ?? (() => "");
         Paired.CollectionChanged += (_, _) => OnPropertyChanged(nameof(NoPairedDevices));
@@ -558,6 +562,8 @@ public sealed partial class HostViewModel : ObservableObject
                 Attached();
                 return;
             }
+            // The key comes out of the Keychain at start; do not run ahead of it (but not for ever).
+            await Task.WhenAny(_secretReady(), Task.Delay(SecretWait));
             var server = _signalServer();
             var secret = _signalSecret();
             var announce = _announceOnLan();
@@ -923,7 +929,8 @@ public sealed partial class MainViewModel : ObservableObject
         Connect = new ConnectViewModel(core, recent, windows, now, () => Settings.SavedServer, Tailscale, viewerPrefs, passwords,
             () => Settings.SavedSecret);
         Host = new HostViewModel(link, process, permissions, windows, addresses, deviceName, now, () => Settings.SavedServer,
-            () => Settings.AnnounceOnLan, Tailscale, () => Settings.AllowBrowsers, RememberHosting, () => Settings.SavedSecret);
+            () => Settings.AnnounceOnLan, Tailscale, () => Settings.AllowBrowsers, RememberHosting, () => Settings.SavedSecret,
+            () => Settings.SecretLoaded);
         Settings.ServerChanged += _ =>
         {
             Connect.OnServerChanged();
