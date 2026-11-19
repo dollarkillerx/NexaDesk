@@ -110,6 +110,21 @@ pub struct ObserveReply {
     pub png_len: u32,
     #[prost(string, tag = "16")]
     pub screenshot_error: String,
+    /// Why the screen could not be watched for changes (no thumbnails): `settled`
+    /// and `changed` then say nothing about it.
+    #[prost(string, tag = "17")]
+    pub watch_error: String,
+    /// The centre of each ref in `ui`, in the agent's pixels: `refs[i]` is `@e{i+1}`.
+    #[prost(message, repeated, tag = "18")]
+    pub refs: Vec<RefCenter>,
+}
+
+#[derive(Clone, Copy, PartialEq, Message)]
+pub struct RefCenter {
+    #[prost(sint32, tag = "1")]
+    pub x: i32,
+    #[prost(sint32, tag = "2")]
+    pub y: i32,
 }
 
 #[derive(Clone, PartialEq, Oneof)]

@@ -15,7 +15,7 @@ use std::{
 
 use nexa_agent::{
     Agent, AgentConfig, AgentEvent, AgentUi, Platform, ScreenInfo,
-    agent_view::{AgentView, Frontmost, PointRect, Rgba, UiNode, UiOptions},
+    agent_view::{AgentView, Frontmost, PointRect, Rgba, UiNode, UiOptions, UiTree, fingerprint},
     start,
 };
 use nexa_auth::{DeviceIdentity, PairingStore};
@@ -389,6 +389,19 @@ pub struct FakeView {
     pub absent: AtomicBool,
     /// What the focused "Name" field holds (typing that does not show in the picture).
     pub typed: Mutex<String>,
+    /// Screenshots fail (no Screen Recording permission, a display gone).
+    pub blind: AtomicBool,
+    /// Display-awake guards held now.
+    pub awake: Arc<AtomicU32>,
+}
+
+/// Held while the fake's display is kept awake.
+struct Awake(Arc<AtomicU32>);
+
+impl Drop for Awake {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, SeqCst);
+    }
 }
 
 pub const FAKE_OK: (f64, f64, f64, f64) = (100.0, 100.0, 100.0, 40.0);
@@ -406,6 +419,9 @@ fn point_rect(r: (f64, f64, f64, f64)) -> PointRect {
 impl AgentView for FakeView {
     fn screenshot(&self, _: &ScreenInfo, size: (u32, u32)) -> Result<Rgba, String> {
         self.screenshots.fetch_add(1, SeqCst);
+        if self.blind.load(SeqCst) {
+            return Err("screen recording is not allowed".into());
+        }
         let shade = self.shade.load(SeqCst) as u8;
         let (w, h) = (size.0.max(1), size.1.max(1));
         Ok(Rgba {
@@ -419,10 +435,10 @@ impl AgentView for FakeView {
             app: "Fake app".into(),
             window: "Fake window".into(),
             focused: "textfield \"Name\"".into(),
-            focused_value: self.typed.lock().unwrap().clone(),
+            focused_state: fingerprint(&*self.typed.lock().unwrap()),
         }
     }
-    fn ui(&self, _: &UiOptions) -> Result<Vec<UiNode>, String> {
+    fn ui(&self, _: &UiOptions) -> Result<UiTree, String> {
         self.uis.fetch_add(1, SeqCst);
         if self.unreadable.load(SeqCst) {
             return Err("this app shows no elements".into());
@@ -452,7 +468,8 @@ impl AgentView for FakeView {
                 interactive: true,
                 ..UiNode::default()
             },
-        ])
+        ]
+        .into())
     }
     fn pointer(&self) -> Option<(f64, f64)> {
         Some((480.0, 270.0))
@@ -501,6 +518,10 @@ impl Platform for FakePlatform {
     }
     fn agent_view(&self) -> Option<Arc<dyn AgentView>> {
         (!self.view.absent.load(SeqCst)).then(|| self.view.clone() as Arc<dyn AgentView>)
+    }
+    fn keep_display_awake(&self) -> Option<Box<dyn Send>> {
+        self.view.awake.fetch_add(1, SeqCst);
+        Some(Box::new(Awake(self.view.awake.clone())))
     }
 }
 

@@ -41,7 +41,9 @@ mod demo {
 
     use nexa_agent::{
         AgentConfig, AgentEvent, AgentUi, Platform, ScreenInfo,
-        agent_view::{AgentView, Frontmost, PointRect, Rgba, UiNode, UiOptions},
+        agent_view::{
+            AgentView, Frontmost, PointRect, Rgba, UiNode, UiOptions, UiTree, fingerprint,
+        },
         start,
     };
     use nexa_auth::{DeviceIdentity, HostPassword, PairingStore};
@@ -212,15 +214,15 @@ mod demo {
                 } else {
                     String::new()
                 },
-                focused_value: if form.field_focused {
-                    form.name.clone()
+                focused_state: if form.field_focused {
+                    fingerprint(&form.name)
                 } else {
-                    String::new()
+                    0
                 },
             }
         }
 
-        fn ui(&self, _: &UiOptions) -> Result<Vec<UiNode>, String> {
+        fn ui(&self, _: &UiOptions) -> Result<UiTree, String> {
             let form = lock(&self.form);
             let d = DISPLAYS[0];
             Ok(vec![
@@ -259,7 +261,8 @@ mod demo {
                     bounds: Some(rect((100.0, 240.0, 200.0, 20.0))),
                     ..UiNode::default()
                 },
-            ])
+            ]
+            .into())
         }
 
         fn pointer(&self) -> Option<(f64, f64)> {

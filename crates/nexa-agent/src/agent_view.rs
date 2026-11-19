@@ -53,11 +53,18 @@ pub struct Frontmost {
     pub window: String,
     /// The element with the keyboard focus, in a few words.
     pub focused: String,
-    /// What that element holds: its text, or for a password field only how many
-    /// characters. Never shown to the agent; a look compares it with the last look's,
-    /// so that typing counts as a change when the picture barely moves (one character,
-    /// next to a blinking caret, is below what tells pictures apart).
-    pub focused_value: String,
+    /// A fingerprint of what that element holds ([`fingerprint`] of its text, or for
+    /// a password field only of its length). Never shown to the agent; a look
+    /// compares it with the last look's, so that typing counts as a change when the
+    /// picture barely moves (one character, next to a blinking caret, is below what
+    /// tells pictures apart).
+    pub focused_state: u64,
+}
+
+/// A short stand-in for `value`, to tell whether it changed without keeping it.
+pub fn fingerprint(value: impl std::hash::Hash) -> u64 {
+    use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+    BuildHasherDefault::<DefaultHasher>::default().hash_one(value)
 }
 
 /// A picture, straight RGBA, top row first.
@@ -71,7 +78,41 @@ pub struct Rgba {
 #[derive(Clone, Copy, Debug)]
 pub struct UiOptions {
     pub interactive_only: bool,
+    /// At most this many elements besides the windows and menus at the top.
     pub max_nodes: usize,
+    /// The display shown, in global points. Elements wholly off it are not kept and
+    /// do not count against `max_nodes` (what is inside them is still looked at).
+    pub area: PointRect,
+}
+
+/// What a platform read of the frontmost window.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct UiTree {
+    /// Window first, then anything else at the top (open menus, the menu bar), each
+    /// followed by its elements in reading order.
+    pub nodes: Vec<UiNode>,
+    /// The walk stopped before it had seen everything (too many elements, too deep,
+    /// too slow): there may be more on the screen than `nodes` has.
+    pub cut_short: bool,
+}
+
+impl From<Vec<UiNode>> for UiTree {
+    fn from(nodes: Vec<UiNode>) -> Self {
+        Self {
+            nodes,
+            cut_short: false,
+        }
+    }
+}
+
+impl PointRect {
+    /// Whether the two share any area.
+    pub fn overlaps(&self, other: &PointRect) -> bool {
+        self.x < other.x + other.w
+            && other.x < self.x + self.w
+            && self.y < other.y + other.h
+            && other.y < self.y + self.h
+    }
 }
 
 /// Reads the screen for an agent. Calls block; they run on a blocking thread.
@@ -80,7 +121,7 @@ pub trait AgentView: Send + Sync {
     fn screenshot(&self, screen: &ScreenInfo, size: (u32, u32)) -> Result<Rgba, String>;
     fn frontmost(&self) -> Frontmost;
     /// The frontmost window's elements, window first, in reading order.
-    fn ui(&self, options: &UiOptions) -> Result<Vec<UiNode>, String>;
+    fn ui(&self, options: &UiOptions) -> Result<UiTree, String>;
     /// Where the pointer is, in global points.
     fn pointer(&self) -> Option<(f64, f64)>;
 }
@@ -160,8 +201,9 @@ const VALUE_MAX: usize = 200;
 
 /// The text an agent reads, and each ref's centre in its pixels (`refs[i]` is
 /// `@e{i+1}`). Elements off this screen are left out; so is anything past
-/// `max_nodes` lines, which a last line says.
-pub fn render(nodes: &[UiNode], at: AgentSpace<'_>, max_nodes: usize) -> (String, Vec<(i32, i32)>) {
+/// `max_nodes` lines, which a last line says, as it says a walk that was cut short.
+pub fn render(tree: &UiTree, at: AgentSpace<'_>, max_nodes: usize) -> (String, Vec<(i32, i32)>) {
+    let nodes = &tree.nodes;
     let mut text = String::new();
     let mut refs = Vec::new();
     let mut lines = 0;
@@ -206,6 +248,12 @@ pub fn render(nodes: &[UiNode], at: AgentSpace<'_>, max_nodes: usize) -> (String
         text.push_str(&format!(
             "… {left_out} more not shown (raise max_nodes, or look at a screenshot)\n"
         ));
+    }
+    if tree.cut_short {
+        text.push_str(
+            "… the window has more elements than could be read: some may be missing (look \
+             at a screenshot)\n",
+        );
     }
     (text, refs)
 }
@@ -302,7 +350,11 @@ mod tests {
             // Off this screen: on a display to its right.
             node(1, "button", "Elsewhere", true, (1500.0, 10.0, 40.0, 20.0)),
         ];
-        let (text, refs) = render(&nodes, at, 100);
+        let tree = UiTree {
+            nodes,
+            cut_short: false,
+        };
+        let (text, refs) = render(&tree, at, 100);
         assert_eq!(
             text,
             "window \"Untitled\" (0,0 1568×980)\n\
@@ -330,10 +382,21 @@ mod tests {
                 (f64::from(i) * 20.0, 0.0, 10.0, 10.0),
             ));
         }
-        let (text, refs) = render(&nodes, at, 4);
+        let mut tree = UiTree {
+            nodes,
+            cut_short: false,
+        };
+        let (text, refs) = render(&tree, at, 4);
         assert_eq!(refs.len(), 3);
         assert!(
             text.ends_with("… 7 more not shown (raise max_nodes, or look at a screenshot)\n"),
+            "{text}"
+        );
+        // A walk that stopped early says so too.
+        tree.cut_short = true;
+        let (text, _) = render(&tree, at, 100);
+        assert!(
+            text.ends_with("some may be missing (look at a screenshot)\n"),
             "{text}"
         );
     }

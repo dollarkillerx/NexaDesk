@@ -14,7 +14,7 @@ use std::{
 
 use nexa_agent::{
     ScreenInfo,
-    agent_view::{AgentView, Frontmost, PointRect, Rgba, UiNode, UiOptions},
+    agent_view::{AgentView, Frontmost, PointRect, Rgba, UiNode, UiOptions, UiTree, fingerprint},
 };
 use objc2_core_foundation::{CFNumber, CFString};
 
@@ -189,6 +189,29 @@ fn bounds(e: &Cf) -> Option<PointRect> {
     })
 }
 
+/// Longer than this, a focused element's text is not read to tell whether it changed.
+const LONG_VALUE: i64 = 20_000;
+const AX_VALUE_CF_RANGE: u32 = 4;
+
+#[repr(C)]
+#[derive(Default, Hash)]
+struct CFRange {
+    location: isize,
+    length: isize,
+}
+
+/// Where the caret or the selection is in a text element.
+fn selected_range(e: &Cf) -> Option<(isize, isize)> {
+    let v = attr(e, "AXSelectedTextRange")?;
+    let mut range = CFRange::default();
+    // SAFETY: an AXValue of the checked kind, written into a matching struct.
+    let ok = unsafe {
+        v.type_id() == AXValueGetTypeID()
+            && AXValueGetValue(v.0, AX_VALUE_CF_RANGE, (&mut range as *mut CFRange).cast())
+    };
+    ok.then_some((range.location, range.length))
+}
+
 fn children(e: &Cf) -> Vec<Cf> {
     let Some(array) = attr(e, "AXChildren") else {
         return Vec::new();
@@ -235,6 +258,13 @@ fn role_of(role: &str, subrole: Option<&str>) -> Option<(&'static str, bool)> {
         ("AXDateField", _) => ("datefield", true),
         ("AXStaticText", _) => ("text", false),
         ("AXHeading", _) => ("heading", false),
+        // A table's or outline's row (Finder's files, Mail's messages, a sidebar):
+        // named after the first text in it.
+        ("AXRow", _) => ("row", true),
+        // Acted on only when it has a title (a file's icon); see `Walk::visit`.
+        ("AXImage", _) => ("image", false),
+        ("AXMenu", _) => ("menu", false),
+        ("AXMenuBar", _) => ("menubar", false),
         _ => return None,
     })
 }
@@ -245,6 +275,8 @@ struct Walk<'a> {
     nodes: Vec<UiNode>,
     visits: usize,
     deadline: Instant,
+    /// A limit stopped it before it had seen everything.
+    cut_short: bool,
 }
 
 /// Elements looked at in one walk, kept or not.
@@ -259,6 +291,7 @@ impl Walk<'_> {
             || self.nodes.len() >= self.options.max_nodes
             || Instant::now() >= self.deadline
         {
+            self.cut_short = true;
             return;
         }
         self.visits += 1;
@@ -266,15 +299,30 @@ impl Walk<'_> {
         let subrole = string(e, "AXSubrole");
         let mut next_depth = kept_depth;
         if let Some((short, interactive)) = role_of(&role, subrole.as_deref()) {
-            let is_text = matches!(short, "text" | "heading");
-            let keep = depth == 0 || interactive || (!self.options.interactive_only && is_text);
-            if keep {
-                self.nodes
-                    .push(read_node(e, short, interactive, kept_depth));
-                next_depth = kept_depth + 1;
+            let is_text = matches!(short, "text" | "heading" | "image");
+            let interactive = interactive || (short == "image" && string(e, "AXTitle").is_some());
+            let wanted = depth == 0 || interactive || (!self.options.interactive_only && is_text);
+            if wanted {
+                let node = read_node(e, short, interactive, kept_depth);
+                // Off the display shown it is no use, and must not crowd out what is
+                // on it (a long list scrolled far down); its children are still seen.
+                let shown = depth == 0
+                    || node.bounds.is_some_and(|b| {
+                        b.w >= 1.0 && b.h >= 1.0 && b.overlaps(&self.options.area)
+                    });
+                if shown {
+                    self.nodes.push(node);
+                    next_depth = kept_depth + 1;
+                }
             }
-            // Text has no children worth a line.
-            if is_text {
+            // Text and pictures have no children worth a line.
+            if is_text && !interactive {
+                return;
+            }
+            // A menu's items only while it is open: a closed one's are not on the
+            // screen, and the menu bar would bring hundreds.
+            if matches!(short, "menubaritem" | "menuitem") && boolean(e, "AXSelected") != Some(true)
+            {
                 return;
             }
         }
@@ -309,6 +357,11 @@ fn read_node(e: &Cf, short: &'static str, interactive: bool, depth: u16) -> UiNo
         // Never a password's text.
         "password" => {}
         "slider" | "stepper" => value = string(e, "AXValue"),
+        "row" => {
+            if name.is_empty() {
+                name = first_text(e, 3).unwrap_or_default();
+            }
+        }
         _ if is_field => {
             value = Some(string(e, "AXValue").unwrap_or_default());
             if name.is_empty() {
@@ -341,6 +394,24 @@ fn read_node(e: &Cf, short: &'static str, interactive: bool, depth: u16) -> UiNo
         bounds: bounds(e),
         interactive,
     }
+}
+
+/// The first text inside `e`, looking `levels` deep: what a row of a table shows.
+fn first_text(e: &Cf, levels: u8) -> Option<String> {
+    for child in children(e) {
+        let role = string(&child, "AXRole").unwrap_or_default();
+        if matches!(role.as_str(), "AXStaticText" | "AXTextField")
+            && let Some(text) = string(&child, "AXValue")
+        {
+            return Some(text);
+        }
+        if levels > 1
+            && let Some(text) = first_text(&child, levels - 1)
+        {
+            return Some(text);
+        }
+    }
+    None
 }
 
 fn system() -> Option<Cf> {
@@ -389,11 +460,16 @@ impl AgentView for MacView {
                 || role.trim_start_matches("AX").to_lowercase(),
                 |r| r.0.to_owned(),
             );
-            // Never a password's text: only its length.
-            let value = if short == "password" {
-                number(&f, "AXNumberOfCharacters").map_or_else(String::new, |n| n.to_string())
+            let length = number(&f, "AXNumberOfCharacters");
+            let state = if short == "password" {
+                // Never a password's text: only its length.
+                fingerprint(length)
+            } else if length.is_some_and(|n| n > LONG_VALUE) {
+                // A long document is not copied out on every look: its length and
+                // where the caret or selection is say whether typing changed it.
+                fingerprint((length, selected_range(&f)))
             } else {
-                string(&f, "AXValue").unwrap_or_default()
+                fingerprint(string(&f, "AXValue"))
             };
             let label = string(&f, "AXTitle")
                 .or_else(|| string(&f, "AXDescription"))
@@ -404,7 +480,7 @@ impl AgentView for MacView {
             } else {
                 format!("{short} \"{label}\"")
             };
-            (described, value)
+            (described, state)
         });
         Frontmost {
             app: string(&app, "AXTitle").unwrap_or_default(),
@@ -412,25 +488,46 @@ impl AgentView for MacView {
                 .as_ref()
                 .and_then(|w| string(w, "AXTitle"))
                 .unwrap_or_default(),
-            focused_value: focused.as_ref().map(|f| f.1.clone()).unwrap_or_default(),
+            focused_state: focused.as_ref().map_or(0, |f| f.1),
             focused: focused.map(|f| f.0).unwrap_or_default(),
         }
     }
 
-    fn ui(&self, options: &UiOptions) -> Result<Vec<UiNode>, String> {
+    fn ui(&self, options: &UiOptions) -> Result<UiTree, String> {
         if !nexa_input::platform::macos::accessibility_granted() {
             return Err("this Mac has not given NexaDesk the Accessibility permission".into());
         }
         let app = front_app().ok_or("no app is in front")?;
-        let window = front_window(&app).ok_or("the app in front has no window")?;
+        let window = front_window(&app);
+        // An open context menu belongs to the application, not to a window.
+        let menus: Vec<Cf> = children(&app)
+            .into_iter()
+            .filter(|c| string(c, "AXRole").as_deref() == Some("AXMenu"))
+            .collect();
+        if window.is_none() && menus.is_empty() {
+            return Err("the app in front has no window".into());
+        }
         let mut walk = Walk {
             options,
             nodes: Vec::new(),
             visits: 0,
             deadline: Instant::now() + WALK_BUDGET,
+            cut_short: false,
         };
-        walk.visit(&window, 0, 0);
-        Ok(walk.nodes)
+        if let Some(window) = &window {
+            walk.visit(window, 0, 0);
+        }
+        for menu in &menus {
+            walk.visit(menu, 0, 0);
+        }
+        // The menu bar: its titles, and the items of the one that is open.
+        if let Some(bar) = attr(&app, "AXMenuBar") {
+            walk.visit(&bar, 0, 0);
+        }
+        Ok(UiTree {
+            nodes: walk.nodes,
+            cut_short: walk.cut_short,
+        })
     }
 
     fn pointer(&self) -> Option<(f64, f64)> {
@@ -458,5 +555,7 @@ mod tests {
         );
         assert_eq!(role_of("AXStaticText", None), Some(("text", false)));
         assert_eq!(role_of("AXGroup", None), None);
+        assert_eq!(role_of("AXRow", Some("AXOutlineRow")), Some(("row", true)));
+        assert_eq!(role_of("AXMenu", None), Some(("menu", false)));
     }
 }

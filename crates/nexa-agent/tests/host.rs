@@ -1275,7 +1275,7 @@ async fn first_config(accepted: &mut ViewerAccepted) -> StreamConfig {
 }
 
 enum Answer {
-    Look(ObserveReply, Vec<u8>),
+    Look(Box<ObserveReply>, Vec<u8>),
     Refused(String),
 }
 
@@ -1300,7 +1300,7 @@ async fn look(conn: &Connection, request: ObserveRequest) -> Answer {
             other => panic!("unexpected {other:?}"),
         }
     }
-    Answer::Look(reply, png)
+    Answer::Look(Box::new(reply), png)
 }
 
 fn ui_look() -> ObserveRequest {
@@ -1515,4 +1515,54 @@ async fn a_host_that_cannot_show_an_agent_its_screen_says_so() {
         Answer::Refused(why) => assert_eq!(why, nexa_session::agent::REFUSED_UNSUPPORTED),
         Answer::Look(..) => panic!("a host without a view answered a look"),
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_agents_session_keeps_the_display_awake_until_it_ends() {
+    let h = host_with(FakeUi::allowing(perms(true, true, false), false)).await;
+    let (_ep, conn, mut accepted) = agent_session(&h).await;
+    first_config(&mut accepted).await;
+    // Nothing is captured between looks: only the session keeps the display on.
+    assert_eq!(h.platform.view.awake.load(SeqCst), 1);
+    conn.close(0u32.into(), b"done");
+    until("the display released", Duration::from_secs(5), || {
+        h.platform.view.awake.load(SeqCst) == 0
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_screen_that_cannot_be_watched_says_why() {
+    let h = host_with(FakeUi::allowing(perms(true, true, false), false)).await;
+    let (_ep, conn, mut accepted) = agent_session(&h).await;
+    first_config(&mut accepted).await;
+    h.platform.view.blind.store(true, SeqCst);
+    let Answer::Look(reply, _) = look(
+        &conn,
+        ObserveRequest {
+            quiet_ms: 100,
+            max_ms: 1000,
+            ..Default::default()
+        },
+    )
+    .await
+    else {
+        panic!("refused")
+    };
+    assert_eq!(reply.watch_error, "screen recording is not allowed");
+    assert!(!reply.settled && !reply.changed);
+    assert!(reply.waited_ms < 500, "{}", reply.waited_ms);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_look_gives_each_refs_centre() {
+    let h = host_with(FakeUi::allowing(perms(true, true, false), false)).await;
+    let (_ep, conn, mut accepted) = agent_session(&h).await;
+    first_config(&mut accepted).await;
+    let Answer::Look(reply, _) = look(&conn, ui_look()).await else {
+        panic!("refused")
+    };
+    // OK at (163,163 163×65) and Name at (163,327 327×49), as the text has them.
+    let centres: Vec<(i32, i32)> = reply.refs.iter().map(|r| (r.x, r.y)).collect();
+    assert_eq!(centres, vec![(244, 195), (326, 351)]);
 }

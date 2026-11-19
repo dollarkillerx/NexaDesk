@@ -170,6 +170,11 @@ impl Platform for RealPlatform {
         Some(std::sync::Arc::new(crate::mac_view::MacView))
     }
 
+    fn keep_display_awake(&self) -> Option<Box<dyn Send>> {
+        nexa_media::macos::DisplayAwake::hold("NexaDesk: an AI agent is using this Mac")
+            .map(|a| Box::new(a) as Box<dyn Send>)
+    }
+
     fn audio_capture(&self, display_id: u32) -> Result<Box<dyn AudioCapture>, String> {
         SystemAudioCapture::start(display_id)
             .map(|c| Box::new(c) as Box<dyn AudioCapture>)

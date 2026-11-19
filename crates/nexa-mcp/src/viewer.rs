@@ -166,6 +166,8 @@ pub struct Remote {
 struct Refs {
     /// The look they came from; 0: none read yet.
     look: u64,
+    /// That look could not read the elements.
+    unreadable: bool,
     centers: Vec<(i32, i32)>,
 }
 
@@ -463,11 +465,14 @@ impl Viewer {
         };
         let (reply, png) = remote.session.observe(request, self.timeouts.look)?;
         let mut refs = 0;
-        if ui && reply.ui_error.is_empty() {
-            let centers = ref_centers(&reply.ui);
+        if ui {
+            // A tree that could not be read leaves no refs either: the old ones are of
+            // a screen that may be gone.
+            let centers: Vec<(i32, i32)> = reply.refs.iter().map(|r| (r.x, r.y)).collect();
             refs = centers.len();
             *lock(&remote.refs) = Refs {
                 look: remote.looks.fetch_add(1, Relaxed) + 1,
+                unreadable: !reply.ui_error.is_empty(),
                 centers,
             };
         }
@@ -495,6 +500,12 @@ impl Viewer {
                 if refs.look == 0 {
                     return Err(format!(
                         "no element tree read yet: call nexa_ui first, then use {r}"
+                    ));
+                }
+                if refs.unreadable {
+                    return Err(format!(
+                        "the last nexa_ui could not read the elements, so there is no {r}: \
+                         use coordinates from nexa_screenshot"
                     ));
                 }
                 let n = parse_ref(r).ok_or_else(|| format!("\"{r}\" is not a ref like @e3"))?;
@@ -782,43 +793,6 @@ fn parse_ref(r: &str) -> Option<usize> {
     t.parse::<usize>().ok().filter(|n| *n > 0)
 }
 
-/// The centre of each ref in an element tree's text, in order: a line holding
-/// `@e{n} …` ends with its bounds, `(x,y w×h)`.
-fn ref_centers(ui: &str) -> Vec<(i32, i32)> {
-    let mut out = Vec::new();
-    for line in ui.lines() {
-        let t = line.trim_start();
-        let Some(rest) = t.strip_prefix("@e") else {
-            continue;
-        };
-        let n: usize = match rest.split(' ').next().and_then(|n| n.parse().ok()) {
-            Some(n) => n,
-            None => continue,
-        };
-        let Some(open) = line.rfind('(') else {
-            continue;
-        };
-        let inner = line[open + 1..].trim_end().trim_end_matches(')');
-        let parsed = (|| {
-            let (xy, wh) = inner.split_once(' ')?;
-            let (x, y) = xy.split_once(',')?;
-            let (w, h) = wh.split_once('×')?;
-            Some((
-                x.parse::<i32>().ok()?,
-                y.parse::<i32>().ok()?,
-                w.parse::<i32>().ok()?,
-                h.parse::<i32>().ok()?,
-            ))
-        })();
-        if let Some((x, y, w, h)) = parsed
-            && n == out.len() + 1
-        {
-            out.push((x + w / 2, y + h / 2));
-        }
-    }
-    out
-}
-
 fn reason_text(d: &Disconnected) -> String {
     let reason = DisconnectReason::try_from(d.reason)
         .map(|r| format!("{r:?}"))
@@ -933,12 +907,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn refs_are_read_from_the_element_tree() {
-        let ui = "window \"W\" (0,0 1568×980)\n\
-                  \x20\x20@e1 button \"OK (sure)\" (100,100 40×20)\n\
-                  \x20\x20text \"Ready\" (0,0 10×10)\n\
-                  \x20\x20\x20\x20@e2 textfield value=\"a (b)\" focused (10,50 200×31)\n";
-        assert_eq!(ref_centers(ui), vec![(120, 110), (110, 65)]);
+    fn refs_are_named_like_the_tree_names_them() {
         assert_eq!(parse_ref("@e12"), Some(12));
         assert_eq!(parse_ref("e3"), Some(3));
         assert_eq!(parse_ref(" 7 "), Some(7));

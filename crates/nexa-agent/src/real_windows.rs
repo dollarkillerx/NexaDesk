@@ -129,6 +129,19 @@ impl Platform for RealPlatform {
         Ok(Box::new(DxgiCapturer::new(config)?))
     }
 
+    fn keep_display_awake(&self) -> Option<Box<dyn Send>> {
+        // Windows ties the request to a thread: one of its own, until the guard goes.
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        std::thread::Builder::new()
+            .name("nexa-agent-awake".into())
+            .spawn(move || {
+                let _awake = nexa_media::windows::DisplayAwake::hold();
+                let _ = rx.recv();
+            })
+            .ok()?;
+        Some(Box::new(tx))
+    }
+
     fn encoder(&self, config: EncoderConfig) -> nexa_media::Result<Box<dyn Encoder>> {
         nexa_media::windows::encoder(config)
     }

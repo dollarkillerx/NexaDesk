@@ -84,6 +84,12 @@ pub trait Platform: Send + Sync + 'static {
     fn agent_view(&self) -> Option<std::sync::Arc<dyn agent_view::AgentView>> {
         None
     }
+    /// Keeps the displays from sleeping for idleness while the guard is held. Video
+    /// capture does this on its own; an agent's session, which captures nothing until
+    /// it looks, holds this for as long as it lasts.
+    fn keep_display_awake(&self) -> Option<Box<dyn Send>> {
+        None
+    }
 }
 
 /// A session as shown to the person at the host.

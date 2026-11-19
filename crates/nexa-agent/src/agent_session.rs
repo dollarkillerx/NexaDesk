@@ -15,7 +15,8 @@ use std::{
 
 use nexa_session::{
     agent::{
-        AgentBody, AgentMsg, CHUNK, ObserveReply, ObserveRequest, REFUSED_UNSUPPORTED, agent_size,
+        AgentBody, AgentMsg, CHUNK, ObserveReply, ObserveRequest, REFUSED_UNSUPPORTED, RefCenter,
+        agent_size,
     },
     bulk::{BulkLimiter, UplinkScavenger},
     clip::ClipSession,
@@ -35,7 +36,9 @@ use tokio::sync::{mpsc, watch};
 
 use crate::{
     AgentEvent, ScreenInfo, SessionInfo,
-    agent_view::{AgentSpace, AgentView, Frontmost, Rgba, UiOptions, png, render, same_picture},
+    agent_view::{
+        AgentSpace, AgentView, Frontmost, PointRect, Rgba, UiOptions, png, render, same_picture,
+    },
     session::{
         AbortOnDrop, FileSlot, Geometry, Inbound, PathFollower, SessionEnv, control_writer,
         display_at, spawn_acceptors, start_clipboard,
@@ -73,6 +76,9 @@ struct Looks {
 /// How the screen was at the end of a look.
 #[derive(Default)]
 struct Last {
+    /// The display it was of: a look still running when the agent switched displays
+    /// leaves the old one's here, which the next look must not compare with.
+    display: Option<u32>,
     picture: Option<Rgba>,
     front: Option<Frontmost>,
 }
@@ -139,6 +145,10 @@ pub(crate) async fn run(
         state: Mutex::new((screen, space, display)),
     });
     let _ = ctl_tx.send(stream_config(display, space));
+
+    // Nothing is captured between looks, so nothing else keeps the display on: one
+    // that sleeps (and locks) mid-session would leave the agent looking at black.
+    let _awake = env.platform.keep_display_awake();
 
     // Visible before any input can flow (§9.3).
     env.ui.event(AgentEvent::SessionStarted(info));
@@ -384,9 +394,17 @@ fn look(looks: &Looks, req: &ObserveRequest) -> (ObserveReply, Vec<u8>) {
     let deadline = asked + max;
     let mut settled = req.quiet_ms == 0;
     let mut current: Option<Rgba> = None;
+    let mut watch_error = String::new();
     if req.quiet_ms > 0 {
         let mut still_since = Instant::now();
-        while let Ok(now_shot) = view.screenshot(&screen, thumb) {
+        loop {
+            let now_shot = match view.screenshot(&screen, thumb) {
+                Ok(shot) => shot,
+                Err(e) => {
+                    watch_error = e;
+                    break;
+                }
+            };
             let now = Instant::now();
             match &current {
                 Some(prev) if same_picture(prev, &now_shot) => {
@@ -405,7 +423,10 @@ fn look(looks: &Looks, req: &ObserveRequest) -> (ObserveReply, Vec<u8>) {
             std::thread::sleep(THUMB_EVERY.min(deadline.saturating_duration_since(now)));
         }
     } else {
-        current = view.screenshot(&screen, thumb).ok();
+        match view.screenshot(&screen, thumb) {
+            Ok(shot) => current = Some(shot),
+            Err(e) => watch_error = e,
+        }
     }
     let waited = start.elapsed();
     let front = view.frontmost();
@@ -413,6 +434,12 @@ fn look(looks: &Looks, req: &ObserveRequest) -> (ObserveReply, Vec<u8>) {
     // or two hardly moves the picture, but changes the focused field's value).
     let changed = {
         let mut last = lock(&looks.last);
+        if last.display != Some(display) {
+            *last = Last {
+                display: Some(display),
+                ..Last::default()
+            };
+        }
         let picture = match (last.picture.as_ref(), current.as_ref()) {
             (Some(a), Some(b)) => !same_picture(a, b),
             _ => false,
@@ -442,6 +469,7 @@ fn look(looks: &Looks, req: &ObserveRequest) -> (ObserveReply, Vec<u8>) {
         has_pointer: pointer.is_some(),
         pointer_x: pointer.map_or(0, |p| p.0),
         pointer_y: pointer.map_or(0, |p| p.1),
+        watch_error,
         ..Default::default()
     };
     if req.ui {
@@ -451,9 +479,20 @@ fn look(looks: &Looks, req: &ObserveRequest) -> (ObserveReply, Vec<u8>) {
         };
         match view.ui(&UiOptions {
             interactive_only: req.interactive_only,
+            // Rendering cuts at `max_nodes` lines and says how many more there were.
             max_nodes: max_nodes as usize * 4,
+            area: PointRect {
+                x: screen.origin_points.0,
+                y: screen.origin_points.1,
+                w: screen.size_points.0,
+                h: screen.size_points.1,
+            },
         }) {
-            Ok(nodes) => reply.ui = render(&nodes, at, max_nodes as usize).0,
+            Ok(tree) => {
+                let (text, refs) = render(&tree, at, max_nodes as usize);
+                reply.ui = text;
+                reply.refs = refs.into_iter().map(|(x, y)| RefCenter { x, y }).collect();
+            }
             Err(e) => reply.ui_error = e,
         }
     }

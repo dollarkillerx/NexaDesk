@@ -3,8 +3,8 @@
 //! pointer drawn, handed back as straight RGBA.
 
 use std::ptr::NonNull;
-use std::sync::mpsc;
-use std::time::Duration;
+use std::sync::{Mutex, mpsc};
+use std::time::{Duration, Instant};
 
 use block2::RcBlock;
 use objc2::AnyThread;
@@ -25,15 +25,33 @@ use super::{
 use crate::{MediaError, Result};
 
 const SHOT_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a display found in ScreenCaptureKit's list is used before asking again:
+/// asking is a round trip to the capture service, and a look takes a thumbnail every
+/// 100 ms while it waits for the screen to settle.
+const DISPLAY_KEPT: Duration = Duration::from_secs(5);
 
-/// Display `display_id` (0: the main one) at `width`×`height` pixels, the pointer
-/// drawn in: straight RGBA, top row first.
-pub fn screenshot_rgba(display_id: u32, width: u32, height: u32) -> Result<(u32, u32, Vec<u8>)> {
-    let display_id = if display_id == 0 {
-        CGMainDisplayID()
-    } else {
-        display_id
-    };
+struct Kept {
+    display_id: u32,
+    display: Retained<SCDisplay>,
+    at: Instant,
+}
+
+// SAFETY: an SCDisplay is an immutable description of a display, which
+// ScreenCaptureKit itself hands between its queues; it is only read here.
+unsafe impl Send for Kept {}
+
+static KEPT: Mutex<Option<Kept>> = Mutex::new(None);
+
+/// Display `display_id` as ScreenCaptureKit lists it, and whether it came from the
+/// last few seconds' list rather than a fresh one.
+fn display(display_id: u32) -> Result<(Retained<SCDisplay>, bool)> {
+    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(k) = kept.as_ref()
+        && k.display_id == display_id
+        && k.at.elapsed() < DISPLAY_KEPT
+    {
+        return Ok((k.display.clone(), true));
+    }
     let content = shareable_content()?;
     // SAFETY: plain getters on a valid object.
     let display = unsafe {
@@ -43,6 +61,35 @@ pub fn screenshot_rgba(display_id: u32, width: u32, height: u32) -> Result<(u32,
             .find(|d: &Retained<SCDisplay>| d.displayID() == display_id)
     }
     .ok_or_else(|| MediaError::Other(format!("display {display_id} is not available")))?;
+    *kept = Some(Kept {
+        display_id,
+        display: display.clone(),
+        at: Instant::now(),
+    });
+    Ok((display, false))
+}
+
+/// Display `display_id` (0: the main one) at `width`×`height` pixels, the pointer
+/// drawn in: straight RGBA, top row first.
+pub fn screenshot_rgba(display_id: u32, width: u32, height: u32) -> Result<(u32, u32, Vec<u8>)> {
+    let display_id = if display_id == 0 {
+        CGMainDisplayID()
+    } else {
+        display_id
+    };
+    let (shown, kept) = display(display_id)?;
+    match capture(&shown, width, height) {
+        // The display may have changed since it was listed (unplugged, rearranged):
+        // ask for the list again, once.
+        Err(_) if kept => {
+            *KEPT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            capture(&display(display_id)?.0, width, height)
+        }
+        result => result,
+    }
+}
+
+fn capture(display: &SCDisplay, width: u32, height: u32) -> Result<(u32, u32, Vec<u8>)> {
     // SAFETY: plain setters with values of the documented types on a fresh
     // configuration; the colour space is a CF static.
     let configuration = unsafe {
@@ -59,7 +106,7 @@ pub fn screenshot_rgba(display_id: u32, width: u32, height: u32) -> Result<(u32,
     let filter = unsafe {
         SCContentFilter::initWithDisplay_excludingWindows(
             SCContentFilter::alloc(),
-            &display,
+            display,
             &NSArray::new(),
         )
     };

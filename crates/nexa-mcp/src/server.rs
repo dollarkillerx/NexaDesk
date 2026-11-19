@@ -396,7 +396,12 @@ fn context(rep: &ObserveReply, done: Option<&str>) -> String {
         s.push_str(done);
         s.push('.');
         let secs = f64::from(rep.waited_ms) / 1000.0;
-        if rep.settled {
+        if !rep.watch_error.is_empty() {
+            s.push_str(&format!(
+                " Whether the screen changed is unknown: it could not be watched ({}).",
+                rep.watch_error.trim_end_matches('.')
+            ));
+        } else if rep.settled {
             s.push_str(&format!(
                 " The screen {} and settled after {secs:.1} s.",
                 if rep.changed {

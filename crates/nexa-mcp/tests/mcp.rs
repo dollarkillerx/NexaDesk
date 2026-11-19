@@ -617,3 +617,40 @@ async fn a_clipboard_not_allowed_is_explained() {
     assert_eq!(r["isError"], true);
     assert!(texts(&r).contains("did not allow the clipboard"), "{r}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refs_do_not_outlive_a_tree_that_could_not_be_read() {
+    let (h, agent) = connected_to(perms(true, true, false)).await;
+    let r = agent.call("nexa_ui", json!({})).await;
+    assert_eq!(r["isError"], false, "{r}");
+    assert!(texts(&r).contains("@e1 button \"OK\""), "{r}");
+    // Another app in front, whose elements cannot be read: @e1 is not the OK button.
+    h.platform
+        .view
+        .unreadable
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let r = agent.call("nexa_ui", json!({})).await;
+    assert!(texts(&r).contains("could not be read"), "{r}");
+    let r = agent.call("nexa_click", json!({ "ref": "@e1" })).await;
+    assert_eq!(r["isError"], true, "{r}");
+    assert!(texts(&r).contains("could not read the elements"), "{r}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_action_on_a_screen_that_cannot_be_watched_says_why() {
+    let (h, agent) = connected_to(perms(true, true, false)).await;
+    h.platform
+        .view
+        .blind
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let r = agent
+        .call("nexa_click", json!({ "x": 100, "y": 100 }))
+        .await;
+    assert_eq!(r["isError"], false, "{r}");
+    let t = texts(&r);
+    assert!(
+        t.contains("Whether the screen changed is unknown: it could not be watched (screen recording is not allowed)"),
+        "{t}"
+    );
+    assert!(!t.contains("still changing"), "{t}");
+}
