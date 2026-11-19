@@ -6,15 +6,19 @@
 //! appears whole only in the output, never in an echo of what was typed. On a Mac or
 //! Linux host the shell is told not to echo or prompt, and the command's standard
 //! input is empty, so a command that would wait for typing ends instead. On Windows
-//! (PowerShell, which echoes) the echoed lines and prompts are taken out.
+//! (PowerShell, which echoes) the echoed lines and prompts are taken out, and each
+//! command runs through a function the shell is given first ([`POWERSHELL_RUN`]), so
+//! the typed line stays short and does not wrap into the output.
 //!
 //! There is no terminal emulator here, so the few questions a console asks its
-//! terminal are answered by hand (device attributes, cursor position, status): a
-//! recent Windows' pseudo-console asks them as it starts and waits for the answers, so
-//! unanswered, PowerShell never ran a command (found on Windows 11 build 26200).
+//! terminal are answered by hand (device attributes, cursor position, status), in case
+//! a console waits for them.
 
 use std::{
-    sync::{Arc, Condvar, Mutex, MutexGuard},
+    sync::{
+        Arc, Condvar, Mutex, MutexGuard,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -100,6 +104,8 @@ pub struct Shell {
     id: u64,
     out: Shared,
     windows: bool,
+    /// PowerShell has [`POWERSHELL_RUN`]: it answered a line that defined it.
+    defined: AtomicBool,
 }
 
 /// How a command went.
@@ -146,7 +152,12 @@ impl Shell {
             }),
         );
         session.open_terminal(link);
-        let shell = Self { id, out, windows };
+        let shell = Self {
+            id,
+            out,
+            windows,
+            defined: AtomicBool::new(false),
+        };
         if !windows {
             // No echo, no line editor (which echoes by itself), no prompts, no colours,
             // and none of zsh's padding to the line's end before a prompt (PROMPT_SP).
@@ -173,7 +184,10 @@ impl Shell {
                 if windows { "$null" } else { "true" },
                 left.min(Duration::from_secs(10)),
             ) {
-                Ok(r) if !r.timed_out => return Ok(shell),
+                Ok(r) if !r.timed_out => {
+                    shell.defined.store(true, Ordering::Relaxed);
+                    return Ok(shell);
+                }
                 Ok(_) => {}
                 Err(e) => {
                     shell.close();
@@ -203,7 +217,12 @@ impl Shell {
             }
             out.buf.clear();
         }
-        self.write(&wrap(command, &nonce, self.windows));
+        let line = wrap(command, &nonce, self.windows);
+        if self.windows && !self.defined.load(Ordering::Relaxed) {
+            self.write(&format!("{POWERSHELL_RUN}; {line}"));
+        } else {
+            self.write(&line);
+        }
         let deadline = Instant::now() + timeout;
         if let Some(done) = self.wait_for(&marker, deadline)? {
             return Ok(done);
@@ -278,13 +297,23 @@ fn exit_text(why: &str) -> String {
     format!("the host's command line ended: {why}")
 }
 
+/// What every command runs through on Windows, defined once as the shell starts.
+/// PowerShell has no one exit status: this gives a program's exit code if one
+/// failed, else 1 if the command stopped on an error or wrote one, else 0. `$?` alone
+/// stays true after `& { }` for both (on Windows `cmd /c exit 7` gave 0), and a
+/// `throw` would end the whole line, marker and all, without the `catch`. The
+/// marker goes down the same pipeline as the output, so it prints after it.
+const POWERSHELL_RUN: &str = "function global:__nexa_run([string]$n, [scriptblock]$b) { \
+     $global:LASTEXITCODE = 0; $e = $Error[0]; \
+     try { & $b; $ok = $? } catch { $ok = $false; $_ | Out-String }; \
+     '__NEXA' + '_END_' + $n + ' ' + $(if ($LASTEXITCODE) { $LASTEXITCODE } \
+     elseif (-not $ok -or $Error[0] -ne $e) { 1 } else { 0 }) }";
+
 /// The line typed for `command`, followed by the marker line.
 fn wrap(command: &str, nonce: &str, windows: bool) -> String {
     if windows {
-        format!(
-            "& {{ {command} }}; $nexaOk = $?; Write-Output ('{MARK}' + '_{nonce} ' + \
-             $(if ($nexaOk) {{ 0 }} else {{ 1 }}))\r"
-        )
+        // Quoted: a bare `1e5` would be a number.
+        format!("__nexa_run '{nonce}' {{ {command} }}\r")
     } else {
         // Braces keep `cd` and variables in this shell; stdin is empty.
         format!("{{ {command}\r}} </dev/null; printf '\\n%s_%s %d\\n' {MARK} {nonce} \"$?\"\r")
@@ -321,6 +350,7 @@ fn clean(raw: &str, windows: bool) -> (String, bool) {
         .filter(|l| {
             // What the shell echoed of the typed lines, and PowerShell's prompts.
             !(l.contains(&format!("{MARK}' +"))
+                || (windows && l.contains("__nexa_run "))
                 || l.contains(&format!("printf '\\n%s_%s %d\\n' {MARK}"))
                 || (windows && l.starts_with("PS ") && l.trim_end().ends_with('>')))
         })
@@ -447,12 +477,29 @@ mod tests {
     fn windows_echo_and_prompts_are_taken_out() {
         let m = format!("{MARK}_n1 ");
         let raw = format!(
-            "\x1b[?25lPS C:\\Users\\me> & {{ dir }}; $nexaOk = $?; Write-Output ('{MARK}' + '_n1 ' + 0)\r\n\
+            "\x1b[?25lPS C:\\Users\\me> __nexa_run 'n1' {{ dir }}\r\n\
              \x1b[32mfile.txt\x1b[0m\r\n{m}0\r\nPS C:\\Users\\me> "
         );
         let r = finished(&raw, &m, true).unwrap();
         assert_eq!(r.output, "file.txt");
         assert_eq!(r.status, Some(0));
+    }
+
+    #[test]
+    fn powershell_reports_a_programs_exit_code_and_errors() {
+        // Checked by hand on Windows 11 (PowerShell 5.1): `cmd /c exit 7` gives 7,
+        // `Get-Item C:\\nope` and `throw "boom"` give 1 (the throw's error printed),
+        // `cmd /c exit 0` and `Get-Location` give 0, and `Set-Location` stays.
+        assert!(POWERSHELL_RUN.contains("if ($LASTEXITCODE) { $LASTEXITCODE }"));
+        assert!(POWERSHELL_RUN.contains("$Error[0] -ne $e"));
+        assert!(POWERSHELL_RUN.contains("catch { $ok = $false; $_ | Out-String }"));
+        assert!(
+            !POWERSHELL_RUN.contains(MARK),
+            "the marker is never typed whole"
+        );
+        assert!(!POWERSHELL_RUN.contains(['\r', '\n']), "one line");
+        let line = wrap("cmd /c exit 7", "1e5", true);
+        assert_eq!(line, "__nexa_run '1e5' { cmd /c exit 7 }\r");
     }
 
     #[test]
@@ -465,7 +512,7 @@ mod tests {
             "the marker is never typed whole"
         );
         let win = wrap("Get-Location", "n3", true);
-        assert!(win.contains("& { Get-Location }"));
+        assert!(win.contains("{ Get-Location }"));
         assert!(!win.contains("__NEXA_END_n3"));
     }
 

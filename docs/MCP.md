@@ -701,6 +701,8 @@ Claude Code / Codex ──stdio──▶ nexa-mcp（转发）──本地套接�
   - **改法（0.1.31）**：AI 的 shell 自己回答这几种询问（设备属性一、二，光标位置，设备状态），跨两次读取被切开的询问也能识别，每个只答一次。等待 shell 就绪从 15 秒延长到 30 秒，每 10 秒重新探测一次。仍然失败时，错误信息里带上 shell 最后输出的内容（控制字符转成可见形式），下次能直接看到原因。
 - **0.1.32 复测，真正的原因**：确认窗口允许后连上了，权限里也有 “command line”，但 `nexa_run` 30 秒后仍报 “did not answer”，而且 shell 一个字节都没输出，说明问题不在询问没人回答。取回 Windows 的 `agent.log`，里面有一行 `PS C:\Users\…> PS C:\Users\…>`：PowerShell 的输出进了 agent 自己的标准输出。应用启动 nexa-agent 时把它的标准输入、输出、错误都重定向到管道（`Platform.StartInfo`）；`nexa-term` 用 `CreateProcessW` 启动 PowerShell 时没有指定标准句柄，PowerShell 就继承了 agent 的管道，而不是用伪控制台。所以应用的“终端”窗口、浏览器终端和 AI 的命令行在 Windows 上都收不到输出。
   - **改法（0.1.33）**：`crates/nexa-term/src/windows.rs` 设 `STARTF_USESTDHANDLES`，三个标准句柄都设为 `INVALID_HANDLE_VALUE`，PowerShell 只能用伪控制台。0.1.31 加的询问应答没有坏处，留着。
+- **0.1.33 复测**：命令行能用了，`nexa_run` 0.1–0.7 秒返回，中文、报错、表格输出都正确。但退出状态总是 0：`& { }` 之后的 `$?` 不反映里面程序的退出码（`cmd /c exit 7` 得 0），也不反映非终止错误（`Get-Item C:\nope` 得 0）；`throw` 会中断整行，结束标记打不出来，只能等到超时再 Ctrl+C。
+  - **改法（0.1.34）**：shell 就绪时定义一个全局函数 `__nexa_run`（`terminal.rs` 的 `POWERSHELL_RUN`），每条命令只敲 `__nexa_run '<nonce>' { 命令 }`。函数先把 `$LASTEXITCODE` 清零、记下 `$Error[0]`，用 `try/catch` 跑命令（`throw` 的错误打印出来），然后在同一条管道里输出结束标记：有程序退出码就用它，否则命令出错或写了错误为 1，否则为 0。敲进去的行变短了，不会再超过 200 列折行、把回显漏进输出。在 Windows 真机上手动验证过：7、1、1、0，表格输出在标记之前，`Set-Location` 保留。
 - **应用里看不到“终端”按钮**：工具条上的“终端”只在对方允许了命令行时出现，但核心传给应用的权限里一直没有这一项（`Permissions` 只有 1–5 号字段），所以按钮从来不出现，AI 也不知道有没有命令行。补上第 6 号字段 `terminal`（`.proto`、`proto.rs`、iOS 生成代码），应用（C#）本来就读第 6 号字段。`nexa_connect` 的权限说明里现在会写 “command line”。
 - **小问题，还没修**：
   - 勾选框的勾选状态读不出来；只读输入框的文字读成空。
