@@ -269,6 +269,11 @@ pub trait Directory: Send + Sync {
     fn devices(&self) -> Vec<Device>;
     /// How to sign in to `device` when the agent has not paired with it itself.
     fn sign_in(&self, device: &Device) -> Result<SignIn, String>;
+    /// The roots the person trusts for their own signaling server (the app's
+    /// signal-ca.pem); None: the agent's own data directory's, if any.
+    fn signal_ca(&self) -> Option<PathBuf> {
+        None
+    }
 }
 
 pub struct Viewer {
@@ -318,11 +323,15 @@ impl Viewer {
                 }
             })
             .map_err(|e| e.to_string())?;
+        let signal_ca = directory
+            .signal_ca()
+            .unwrap_or_else(|| data_dir.join("signal-ca.pem"));
         let core = Core::new(
             deps,
             device_name,
             data_dir.clone(),
             data_dir.join("downloads"),
+            signal_ca,
             EventTx::new(tx),
         )
         .map_err(|e| e.to_string())?;

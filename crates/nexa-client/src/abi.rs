@@ -290,8 +290,16 @@ pub unsafe fn init_with_deps(
                 .spawn(move || run_events(rx, callback, closing))
                 .map_err(|e| Abi(NEXA_E_INTERNAL, e.to_string()))?;
         }
-        let core = Core::new(deps, device_name, data_dir, downloads, EventTx::new(tx))
-            .map_err(|e| Abi(NEXA_E_INTERNAL, e.to_string()))?;
+        let signal_ca = data_dir.join("signal-ca.pem");
+        let core = Core::new(
+            deps,
+            device_name,
+            data_dir,
+            downloads,
+            signal_ca,
+            EventTx::new(tx),
+        )
+        .map_err(|e| Abi(NEXA_E_INTERNAL, e.to_string()))?;
         let id = next_handle();
         registry().clients.insert(
             id,

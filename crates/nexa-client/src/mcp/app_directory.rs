@@ -153,6 +153,12 @@ impl Directory for AppDirectory {
             signal_secret,
         })
     }
+
+    fn signal_ca(&self) -> Option<PathBuf> {
+        // The certificate the person accepted for their server, as the app's own
+        // sessions trust it.
+        Some(self.data_dir.join("signal-ca.pem"))
+    }
 }
 
 #[cfg(test)]
@@ -198,5 +204,12 @@ mod tests {
         assert_eq!(by_id.signal_server, "wss://s.example:8443");
         let e = d.sign_in(&devices[1]).err().unwrap();
         assert!(e.contains("no way to sign in"), "{e}");
+    }
+
+    #[test]
+    fn ai_sessions_trust_the_signaling_server_the_person_accepted() {
+        let d = AppDirectory::new(PathBuf::from("/data"));
+        // Not the AI core's own data directory (`/data/ai`), which has none.
+        assert_eq!(d.signal_ca(), Some(PathBuf::from("/data/signal-ca.pem")));
     }
 }

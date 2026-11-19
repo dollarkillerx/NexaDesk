@@ -176,6 +176,8 @@ pub struct Core {
     data_dir: PathBuf,
     /// Where files from hosts are saved (§3.1 stream 4).
     downloads: PathBuf,
+    /// Extra roots for a self-hosted signaling server (signal-ca.pem), used if it exists.
+    signal_ca: PathBuf,
     device: OnceCell<Arc<Device>>,
     caps: OnceCell<Caps>,
 }
@@ -186,6 +188,7 @@ impl Core {
         device_name: String,
         data_dir: PathBuf,
         downloads: PathBuf,
+        signal_ca: PathBuf,
         events: EventTx,
     ) -> std::io::Result<Arc<Self>> {
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -202,6 +205,7 @@ impl Core {
             device_name,
             data_dir,
             downloads,
+            signal_ca,
             device: OnceCell::new(),
             caps: OnceCell::new(),
         });
@@ -939,10 +943,10 @@ async fn connect_by_id(
     }
     let mut server = SignalConfig::new(request.signal_server.trim().to_owned())
         .with_access_secret(&request.signal_secret);
-    let ca = core.data_dir.join("signal-ca.pem");
+    let ca = &core.signal_ca;
     if ca.exists() {
         server = server
-            .with_ca_file(&ca)
+            .with_ca_file(ca)
             .map_err(|e| (DisconnectReason::InvalidRequest, e))?;
     }
     let keys = device.signal_keys();
