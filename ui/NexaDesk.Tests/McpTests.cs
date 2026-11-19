@@ -1,3 +1,4 @@
+using NexaDesk.Services;
 using NexaDesk.ViewModels;
 using Xunit;
 
@@ -44,5 +45,58 @@ public class McpTests
         Assert.False(vm.JsonCopied);
         await copying;
         Assert.False(vm.ClaudeCopied);
+    }
+
+    [Fact]
+    public void The_switch_serves_ai_apps_and_is_kept()
+    {
+        var (server, settings) = (new FakeAgentServer(), new MemorySettings());
+        var vm = new McpViewModel(new RecordingWindows(), MacPath, true, server, settings, "Studio Mac");
+        Assert.False(vm.Serving);
+        Assert.False(server.IsServing);
+
+        vm.Serving = true;
+        Assert.True(server.IsServing);
+        Assert.Equal("Studio Mac", server.StartedAs);
+        Assert.True(settings.Current.AiApps);
+
+        // Opened again: it serves at once, as it was left.
+        var again = new FakeAgentServer();
+        var reopened = new McpViewModel(new RecordingWindows(), MacPath, true, again, settings, "Studio Mac");
+        Assert.True(reopened.Serving);
+        Assert.True(again.IsServing);
+
+        vm.Serving = false;
+        Assert.False(server.IsServing);
+        Assert.False(settings.Current.AiApps);
+    }
+
+    [Fact]
+    public void A_server_that_cannot_start_says_why_and_stays_off()
+    {
+        var server = new FakeAgentServer { Refuse = "another NexaDesk already serves AI agents" };
+        var settings = new MemorySettings();
+        var vm = new McpViewModel(new RecordingWindows(), MacPath, true, server, settings);
+        vm.Serving = true;
+        Assert.False(vm.Serving);
+        Assert.Contains("another NexaDesk already serves AI agents", vm.StartError);
+        Assert.False(settings.Current.AiApps);
+    }
+
+    [Fact]
+    public void What_ai_agents_operate_is_shown_and_can_be_stopped()
+    {
+        var server = new FakeAgentServer();
+        var vm = new McpViewModel(new RecordingWindows(), MacPath, true, server, new MemorySettings());
+        vm.Serving = true;
+        Assert.False(vm.HasSessions);
+        server.Show(new AgentSessionInfo("claude-code", "MacBook"), new AgentSessionInfo("", "PC"));
+        Assert.True(vm.HasSessions);
+        Assert.Equal(2, vm.Sessions.Count);
+        Assert.Contains("claude-code", vm.Sessions[0]);
+        Assert.Contains("MacBook", vm.Sessions[0]);
+        vm.StopSessionsCommand.Execute(null);
+        Assert.Equal(1, server.SessionsStopped);
+        Assert.False(vm.HasSessions);
     }
 }

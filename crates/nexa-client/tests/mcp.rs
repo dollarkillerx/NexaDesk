@@ -1,5 +1,6 @@
 //! The MCP server against a real agent over loopback QUIC, driven by JSON-RPC
-//! messages as an MCP client sends them. Fake devices on both sides: nothing here
+//! messages as an MCP client sends them. Fake devices on both sides, and a made-up
+//! directory of the devices an agent may operate (docs/MCP.md §16): nothing here
 //! touches the screen, keyboard, pasteboard or Keychain of this machine.
 
 #[path = "../../nexa-agent/tests/common/mod.rs"]
@@ -17,9 +18,13 @@ use nexa_auth::{FileKeyStore, KeyStore};
 use nexa_client::{
     deps::{Deps, KeySource, KeySourceError},
     input::InputCmd,
+    mcp::{
+        server::Server,
+        viewer::{Device, Directory, SignIn, Viewer},
+    },
+    proto::ConnectAuth,
 };
 use nexa_input::Hid;
-use nexa_mcp::{server::Server, viewer::Viewer};
 use nexa_media::{Decoder, PresentMode, Presenter};
 use nexa_session::{clip::ClipPlatform, handshake::Timeouts};
 use nexa_wire::control::{Caps, Codec, Os};
@@ -95,9 +100,59 @@ impl Deps for TestDeps {
     }
 }
 
-/// The server, used from blocking threads as stdio would.
+/// The devices the person allowed AI agents to operate, made up: each signs in with
+/// the code its fake host shows (the app's would use a saved password; the agent
+/// never sees either).
+#[derive(Default)]
+struct FakeDirectory {
+    devices: Mutex<Vec<(Device, Option<String>)>>,
+}
+
+impl FakeDirectory {
+    /// Allows `h` as "Test host", signing in with its current code.
+    fn allow(&self, h: &Host) {
+        let device = Device {
+            name: "Test host".into(),
+            address: h.addr.to_string(),
+            sign_in: "a one-time code".into(),
+        };
+        let mut devices = lock(&self.devices);
+        devices.retain(|(d, _)| d.address != device.address);
+        devices.push((device, Some(h.agent.current_code().to_string())));
+    }
+
+    /// The person took away the way to sign in to every device.
+    fn forget_sign_ins(&self) {
+        for (d, code) in lock(&self.devices).iter_mut() {
+            d.sign_in.clear();
+            *code = None;
+        }
+    }
+}
+
+impl Directory for FakeDirectory {
+    fn devices(&self) -> Vec<Device> {
+        lock(&self.devices).iter().map(|(d, _)| d.clone()).collect()
+    }
+    fn sign_in(&self, device: &Device) -> Result<SignIn, String> {
+        let devices = lock(&self.devices);
+        let code = devices
+            .iter()
+            .find(|(d, _)| d.address == device.address)
+            .and_then(|(_, c)| c.clone())
+            .ok_or_else(|| format!("NexaDesk has no way to sign in to {}", device.name))?;
+        Ok(SignIn {
+            auth: ConnectAuth::Code(code),
+            signal_server: String::new(),
+            signal_secret: String::new(),
+        })
+    }
+}
+
+/// The server, used from blocking threads as the app's socket would.
 struct Agent {
     server: Arc<Mutex<Server>>,
+    directory: Arc<FakeDirectory>,
     next: Mutex<u64>,
     _dir: tempfile::TempDir,
 }
@@ -110,15 +165,18 @@ impl Agent {
             dir: dir.path().to_path_buf(),
             clipboard: clipboard.clone(),
         });
+        let directory = Arc::new(FakeDirectory::default());
         let viewer = Viewer::new(
             deps,
             clipboard,
             dir.path().to_path_buf(),
             "test agent".into(),
+            directory.clone(),
         )
         .unwrap();
         Self {
-            server: Arc::new(Mutex::new(Server::new(viewer))),
+            server: Arc::new(Mutex::new(Server::new(Arc::new(viewer), 1))),
+            directory,
             next: Mutex::new(1),
             _dir: dir,
         }
@@ -178,12 +236,12 @@ fn png_size(result: &Value) -> (u32, u32) {
     )
 }
 
+/// Allows `h` for AI agents (as the person would in NexaDesk) and connects to it by
+/// name.
 async fn connect(agent: &Agent, h: &Host) -> Value {
+    agent.directory.allow(h);
     agent
-        .call(
-            "nexa_connect",
-            json!({ "address": h.addr.to_string(), "code": h.agent.current_code().to_string() }),
-        )
+        .call("nexa_connect", json!({ "device": "Test host" }))
         .await
 }
 
@@ -373,15 +431,17 @@ async fn a_paired_host_connects_again_without_a_code() {
     assert_eq!(first["isError"], false, "{first}");
     agent.call("nexa_disconnect", json!({})).await;
 
+    // The directory could no longer sign in: the agent's own pairing does.
+    agent.directory.forget_sign_ins();
     let again = agent
-        .call("nexa_connect", json!({ "address": h.addr.to_string() }))
+        .call("nexa_connect", json!({ "device": "Test host" }))
         .await;
     assert_eq!(again["isError"], false, "{again}");
     assert!(texts(&again).contains("Session 2"), "{again}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_unpaired_address_without_a_code_is_explained() {
+async fn only_the_devices_the_person_allowed_can_be_reached() {
     let h = host(
         FakeUi::allowing(perms(true, true, false), false),
         Timeouts::default(),
@@ -389,11 +449,46 @@ async fn an_unpaired_address_without_a_code_is_explained() {
     .await;
     h.agent.set_allow_agents(true);
     let agent = Agent::new();
+    // Nothing allowed yet: nothing to list, nothing to connect to, whatever the agent
+    // knows of the address.
+    let none = agent.call("nexa_devices", json!({})).await;
+    assert!(
+        texts(&none).contains("No computer may be operated"),
+        "{none}"
+    );
     let r = agent
-        .call("nexa_connect", json!({ "address": h.addr.to_string() }))
+        .call("nexa_connect", json!({ "device": h.addr.to_string() }))
         .await;
     assert_eq!(r["isError"], true);
-    assert!(texts(&r).contains("one-time code"), "{r}");
+    assert!(texts(&r).contains("no device may be operated"), "{r}");
+
+    agent.directory.allow(&h);
+    let listed = agent.call("nexa_devices", json!({})).await;
+    let t = texts(&listed);
+    assert!(
+        t.contains(&format!(
+            "\"Test host\" ({}): signs in with a one-time code",
+            h.addr
+        )),
+        "{t}"
+    );
+    let r = agent
+        .call("nexa_connect", json!({ "device": "Elsewhere" }))
+        .await;
+    assert_eq!(r["isError"], true);
+    assert!(
+        texts(&r).contains(
+            "there is no device \"Elsewhere\" among those you may operate: \"Test host\""
+        ),
+        "{r}"
+    );
+    // No way to sign in: said, not tried with something the agent made up.
+    agent.directory.forget_sign_ins();
+    let r = agent
+        .call("nexa_connect", json!({ "device": "test HOST" }))
+        .await;
+    assert_eq!(r["isError"], true);
+    assert!(texts(&r).contains("no way to sign in to Test host"), "{r}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -697,4 +792,84 @@ async fn refs_are_pressed_and_filled_without_the_pointer() {
         "{:?}",
         h.platform.injected.all()
     );
+}
+
+/// One JSON-RPC exchange over the app's socket, as `nexa-mcp` relays it.
+#[cfg(unix)]
+fn exchange(
+    conn: &mut std::os::unix::net::UnixStream,
+    reader: &mut std::io::BufReader<std::os::unix::net::UnixStream>,
+    msg: Value,
+) -> Value {
+    use std::io::{BufRead, Write};
+    writeln!(conn, "{msg}").unwrap();
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    serde_json::from_str(&line).unwrap()
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_ai_app_reaches_the_app_through_its_socket_and_its_sessions_end_with_it() {
+    use nexa_client::mcp::{Service, listen};
+
+    let h = host(
+        FakeUi::allowing(perms(true, true, false), false),
+        Timeouts::default(),
+    )
+    .await;
+    h.agent.set_allow_agents(true);
+    let dir = tempfile::tempdir().unwrap();
+    let directory = Arc::new(FakeDirectory::default());
+    directory.allow(&h);
+    let endpoint = dir.path().join("mcp.sock").to_string_lossy().into_owned();
+    let service = Service::start_with(
+        &endpoint,
+        dir.path().join("ai"),
+        "test agent".into(),
+        directory,
+    )
+    .unwrap();
+    // Only this user may open it.
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(&endpoint).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600);
+
+    let endpoint2 = endpoint.clone();
+    let service = Arc::new(service);
+    let s = service.clone();
+    let session = tokio::task::spawn_blocking(move || {
+        let mut conn = listen::connect(&endpoint2).unwrap();
+        let mut reader = std::io::BufReader::new(conn.try_clone().unwrap());
+        let init = exchange(
+            &mut conn,
+            &mut reader,
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                    "params": { "protocolVersion": "2025-06-18", "capabilities": {},
+                                "clientInfo": { "name": "claude-code", "version": "1" } } }),
+        );
+        assert_eq!(init["result"]["serverInfo"]["name"], "nexadesk");
+        let r = exchange(
+            &mut conn,
+            &mut reader,
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                    "params": { "name": "nexa_connect", "arguments": { "device": "Test host" } } }),
+        );
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        // The app sees who operates what.
+        let shown = s.sessions();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].client, "claude-code");
+        assert_eq!(shown[0].device, "Test host");
+        // The AI app goes away: its session ends with it.
+        drop(reader);
+        drop(conn);
+    });
+    session.await.unwrap();
+    until("the AI's session ended", WAIT, || {
+        service.sessions().is_empty()
+    })
+    .await;
+    drop(service);
+    assert!(!std::path::Path::new(&endpoint).exists());
 }

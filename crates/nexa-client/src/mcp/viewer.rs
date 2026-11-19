@@ -1,5 +1,9 @@
-//! The viewer behind the tools: one `nexa_client::Core` without windows, its agent
-//! sessions, and the hosts it has paired with (docs/MCP.md §3, §13).
+//! The viewer behind the tools: one `Core` without windows, its agent sessions, and
+//! the hosts it has paired with (docs/MCP.md §3, §13, §16).
+//!
+//! It connects only to devices a [`Directory`] lists (the ones the person allowed AI
+//! agents to operate) and signs in the way the directory says: the agent asks for a
+//! device by name and never handles a password, code or key.
 //!
 //! An agent session has no video. After each action the viewer sends a mark on the
 //! input stream; a look asks the host for what the agent wants to see (the frontmost
@@ -23,7 +27,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nexa_client::{
+use crate::{
     client::{Core, EventTx, Session},
     deps::Deps,
     memclip::MemoryClipboard,
@@ -37,7 +41,7 @@ use nexa_session::agent::{ActRequest, Action, ObserveReply, ObserveRequest};
 use nexa_wire::control::Mode;
 use prost::Message;
 
-use crate::terminal::{Ran, Shell};
+use super::terminal::{Ran, Shell};
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -149,6 +153,10 @@ impl Events {
 /// An agent session.
 pub struct Remote {
     pub id: u64,
+    /// The MCP client that opened it: only it sees the session, and it ends with it.
+    pub owner: u64,
+    /// The device as the directory names it.
+    pub device: String,
     pub address: String,
     pub host: Connected,
     session: Arc<Session>,
@@ -181,7 +189,7 @@ pub enum Target {
 }
 
 impl Remote {
-    pub fn perms(&self) -> nexa_client::proto::Permissions {
+    pub fn perms(&self) -> crate::proto::Permissions {
         self.host.perms.clone().unwrap_or_default()
     }
 
@@ -232,26 +240,69 @@ pub enum Button {
     Middle,
 }
 
+/// A computer an AI agent may operate, as the person's NexaDesk knows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Device {
+    /// What it is called: the person's label for it, or the host's own name.
+    pub name: String,
+    /// Where it is: `host:port`, or a 9-digit device ID.
+    pub address: String,
+    /// How NexaDesk would sign in, in a few words ("a saved password"); empty when it
+    /// has no way to.
+    pub sign_in: String,
+}
+
+/// How to sign in to a device. Built by the directory inside the app and handed to
+/// the core; nothing of it reaches the agent.
+pub struct SignIn {
+    pub auth: ConnectAuth,
+    /// For a device ID: the signaling server and its access key.
+    pub signal_server: String,
+    pub signal_secret: String,
+}
+
+/// Where the devices an agent may operate come from, and how to sign in to them: the
+/// person's saved connections and the system's secret store in the app (docs/MCP.md
+/// §16); made-up ones in tests.
+pub trait Directory: Send + Sync {
+    /// The devices the person allowed AI agents to operate.
+    fn devices(&self) -> Vec<Device>;
+    /// How to sign in to `device` when the agent has not paired with it itself.
+    fn sign_in(&self, device: &Device) -> Result<SignIn, String>;
+}
+
 pub struct Viewer {
     core: Arc<Core>,
     events: Arc<Events>,
     /// The clipboard every session shares, in memory (`HeadlessDeps` hands it out).
     clipboard: Arc<MemoryClipboard>,
     data_dir: PathBuf,
+    directory: Arc<dyn Directory>,
     remotes: Mutex<BTreeMap<u64, Arc<Remote>>>,
     next_id: AtomicU64,
+    /// Each MCP client's name (its `clientInfo`), for the app to show.
+    clients: Mutex<BTreeMap<u64, String>>,
     pub timeouts: Timeouts,
-    /// The signaling server's access key, read when a device ID is connected to.
-    signal_secret: Box<dyn Fn() -> String + Send + Sync>,
+}
+
+/// An AI agent's session, for the app to show.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentSession {
+    /// The MCP client's name ("claude-code", "codex-mcp-client").
+    pub client: String,
+    pub device: String,
+    pub session: u64,
 }
 
 impl Viewer {
-    /// `clipboard` must be the one `deps` hands to sessions.
+    /// `clipboard` must be the one `deps` hands to sessions; `deps` must be an agent's
+    /// (`is_agent`), with a device key of its own.
     pub fn new(
         deps: Arc<dyn Deps>,
         clipboard: Arc<MemoryClipboard>,
         data_dir: PathBuf,
         device_name: String,
+        directory: Arc<dyn Directory>,
     ) -> Result<Self, String> {
         std::fs::create_dir_all(&data_dir).map_err(|e| format!("data directory: {e}"))?;
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
@@ -280,22 +331,67 @@ impl Viewer {
             events,
             clipboard,
             data_dir,
+            directory,
             remotes: Mutex::new(BTreeMap::new()),
             next_id: AtomicU64::new(1),
+            clients: Mutex::new(BTreeMap::new()),
             timeouts: Timeouts::default(),
-            signal_secret: Box::new(String::new),
         })
     }
 
-    /// Where the signaling server's access key comes from (the system's secret store).
-    pub fn with_signal_secret(mut self, f: impl Fn() -> String + Send + Sync + 'static) -> Self {
-        self.signal_secret = Box::new(f);
-        self
+    /// `owner`'s sessions.
+    pub fn sessions(&self, owner: u64) -> Vec<Arc<Remote>> {
+        self.forget_ended();
+        lock(&self.remotes)
+            .values()
+            .filter(|r| r.owner == owner)
+            .cloned()
+            .collect()
     }
 
-    pub fn sessions(&self) -> Vec<Arc<Remote>> {
+    /// The devices the agent may connect to.
+    pub fn devices(&self) -> Vec<Device> {
+        self.directory.devices()
+    }
+
+    /// Names MCP client `owner` (from its `initialize`).
+    pub fn name_client(&self, owner: u64, name: &str) {
+        lock(&self.clients).insert(owner, name.to_owned());
+    }
+
+    /// Ends what MCP client `owner` opened: it has gone.
+    pub fn end_client(&self, owner: u64) {
+        lock(&self.clients).remove(&owner);
+        let gone: Vec<Arc<Remote>> = lock(&self.remotes)
+            .values()
+            .filter(|r| r.owner == owner)
+            .cloned()
+            .collect();
+        for r in gone {
+            self.disconnect(&r);
+        }
+    }
+
+    /// Every agent's sessions, for the app to show.
+    pub fn agent_sessions(&self) -> Vec<AgentSession> {
         self.forget_ended();
-        lock(&self.remotes).values().cloned().collect()
+        let clients = lock(&self.clients);
+        lock(&self.remotes)
+            .values()
+            .map(|r| AgentSession {
+                client: clients.get(&r.owner).cloned().unwrap_or_default(),
+                device: r.device.clone(),
+                session: r.id,
+            })
+            .collect()
+    }
+
+    /// Ends every agent's sessions (the person said stop).
+    pub fn disconnect_all(&self) {
+        let all: Vec<Arc<Remote>> = lock(&self.remotes).values().cloned().collect();
+        for r in all {
+            self.disconnect(&r);
+        }
     }
 
     fn forget_ended(&self) {
@@ -309,35 +405,71 @@ impl Viewer {
         });
     }
 
-    /// The session `id`, or the only one when `id` is not given.
-    pub fn remote(&self, id: Option<u64>) -> Result<Arc<Remote>, String> {
+    /// `owner`'s session `id`, or its only one when `id` is not given.
+    pub fn remote(&self, owner: u64, id: Option<u64>) -> Result<Arc<Remote>, String> {
         if let Some(id) = id
             && let Some(ended) = self.events.ended(id)
+            && lock(&self.remotes)
+                .get(&id)
+                .is_some_and(|r| r.owner == owner)
         {
             self.forget_ended();
             return Err(format!("session {id} has ended: {}", reason_text(&ended)));
         }
         self.forget_ended();
         let remotes = lock(&self.remotes);
+        let mine: Vec<&Arc<Remote>> = remotes.values().filter(|r| r.owner == owner).collect();
         match id {
-            Some(id) => remotes
-                .get(&id)
+            Some(id) => mine
+                .into_iter()
+                .find(|r| r.id == id)
                 .cloned()
                 .ok_or_else(|| format!("there is no session {id}")),
-            None => match remotes.len() {
-                1 => Ok(remotes.values().next().cloned().unwrap()),
+            None => match mine.len() {
+                1 => Ok(mine[0].clone()),
                 0 => Err("not connected: use nexa_connect first".into()),
                 _ => Err("several sessions are open: say which with `session`".into()),
             },
         }
     }
 
-    /// Connects to `address` (`host:port` or a 9-digit device ID). Without `code` it
-    /// signs in as a host paired before, or (by device ID) asks the person there.
-    pub fn connect(&self, address: &str, code: Option<&str>) -> Result<Arc<Remote>, String> {
-        let address = normalize(address)?;
+    /// The directory's device that `name` names: its name (any case), address or
+    /// device ID.
+    fn find_device(&self, name: &str) -> Result<Device, String> {
+        let wanted = name.trim();
+        let id = normalize(wanted).unwrap_or_default();
+        let devices = self.directory.devices();
+        if let Some(d) = devices
+            .iter()
+            .find(|d| d.name.eq_ignore_ascii_case(wanted) || d.address == wanted || d.address == id)
+        {
+            return Ok(d.clone());
+        }
+        if devices.is_empty() {
+            return Err(
+                "no device may be operated by an AI agent yet: the person allows one in \
+                 NexaDesk (\"Allow AI to operate\" on a saved device)"
+                    .into(),
+            );
+        }
+        let names: Vec<String> = devices.iter().map(|d| format!("\"{}\"", d.name)).collect();
+        Err(format!(
+            "there is no device \"{wanted}\" among those you may operate: {}",
+            names.join(", ")
+        ))
+    }
+
+    /// Connects MCP client `owner` to the directory's device `name`: as the agent paired
+    /// with it before if it did, otherwise the way the directory signs in (a saved
+    /// password, or a device ID whose person allows it).
+    pub fn connect(&self, owner: u64, name: &str) -> Result<Arc<Remote>, String> {
+        let device = self.find_device(name)?;
+        let address = device.address.clone();
         self.forget_ended();
-        if let Some(r) = lock(&self.remotes).values().find(|r| r.address == address) {
+        if let Some(r) = lock(&self.remotes)
+            .values()
+            .find(|r| r.owner == owner && r.address == address)
+        {
             return Ok(r.clone());
         }
         if lock(&self.remotes).len() >= MAX_SESSIONS {
@@ -345,46 +477,65 @@ impl Viewer {
                 "at most {MAX_SESSIONS} sessions at once: disconnect one first"
             ));
         }
-        let by_id = is_device_id(&address);
         let mut known = KnownHosts::load(&self.data_dir);
-        let (auth, signed_in) = match code.map(str::trim).filter(|c| !c.is_empty()) {
-            Some(c) => (ConnectAuth::Code(c.to_owned()), false),
-            None => match known.key(&address) {
-                Some(key) => (ConnectAuth::KnownHost(key), true),
-                None if by_id => (ConnectAuth::Request(true), false),
-                None => {
-                    return Err(format!(
-                        "{address} has not been paired with this agent: give the one-time code \
-                         the host shows (`code`)"
-                    ));
+        // Paired with the agent before: no secret needed. A host that has forgotten
+        // it gets the directory's way instead.
+        if let Some(key) = known.key(&address) {
+            let paired = SignIn {
+                auth: ConnectAuth::KnownHost(key),
+                signal_server: String::new(),
+                signal_secret: String::new(),
+            };
+            match self.try_connect(owner, &device, paired) {
+                Err(Refused::NotPaired) => {
+                    known.forget(&address);
+                    known.save(&self.data_dir);
                 }
-            },
-        };
-        let config = Config::load(&self.data_dir)?;
-        if by_id && config.signal_server.is_empty() {
-            return Err(format!(
-                "{address} is a device ID, which needs a signaling server: set \"signal_server\" \
-                 in {}",
-                self.data_dir.join("config.json").display()
-            ));
+                Err(Refused::Other(e)) => return Err(e),
+                Ok(r) => return Ok(r),
+            }
         }
+        let sign_in = self.directory.sign_in(&device)?;
+        self.try_connect(owner, &device, sign_in)
+            .map_err(|e| match e {
+                Refused::NotPaired => format!("{} did not accept this agent", device.name),
+                Refused::Other(e) => e,
+            })
+    }
+
+    fn try_connect(
+        &self,
+        owner: u64,
+        device: &Device,
+        sign_in: SignIn,
+    ) -> Result<Arc<Remote>, Refused> {
+        let address = device.address.clone();
+        let by_id = is_device_id(&address);
+        if by_id && sign_in.signal_server.is_empty() {
+            return Err(Refused::Other(format!(
+                "{} is reached by device ID, which needs a signaling server: set one in \
+                 NexaDesk",
+                device.name
+            )));
+        }
+        let signed_in = matches!(sign_in.auth, ConnectAuth::KnownHost(_));
         let id = self.next_id.fetch_add(1, Relaxed);
         let session = self.core.connect(ConnectRequest {
             address: address.clone(),
             signal_server: if by_id {
-                config.signal_server
+                sign_in.signal_server
             } else {
                 String::new()
             },
             signal_secret: if by_id {
-                (self.signal_secret)()
+                sign_in.signal_secret
             } else {
                 String::new()
             },
             tag: id,
             mode: Mode::Office as i32,
             fps: 0,
-            auth: Some(auth),
+            auth: Some(sign_in.auth),
         });
         let outcome = self.events.wait(id, self.timeouts.connect, |s| {
             s.ended
@@ -397,27 +548,25 @@ impl Viewer {
             Some(Err(d)) => {
                 session.close();
                 if signed_in && d.reason == DisconnectReason::NotPaired as i32 {
-                    known.forget(&address);
-                    known.save(&self.data_dir);
-                    return Err(format!(
-                        "{address} no longer knows this agent: give the one-time code it shows \
-                         (`code`)"
-                    ));
+                    return Err(Refused::NotPaired);
                 }
-                return Err(format!(
-                    "could not connect to {address}: {}",
+                return Err(Refused::Other(format!(
+                    "could not connect to {}: {}",
+                    device.name,
                     reason_text(&d)
-                ));
+                )));
             }
             None => {
                 session.close();
-                return Err(format!(
-                    "{address} did not answer within {} s (nobody allowed the connection there?)",
+                return Err(Refused::Other(format!(
+                    "{} did not answer within {} s (nobody allowed the connection there?)",
+                    device.name,
                     self.timeouts.connect.as_secs()
-                ));
+                )));
             }
         };
         if !host.host_key.is_empty() && (host.paired_now || signed_in) {
+            let mut known = KnownHosts::load(&self.data_dir);
             known.remember(&address, &host.host_key, &host.host_name);
             known.save(&self.data_dir);
         }
@@ -425,10 +574,10 @@ impl Viewer {
         // through unchanged.
         let Some(space) = self.events.wait(id, SPACE_WAIT, |s| s.stream.clone()) else {
             session.close();
-            return Err(format!(
-                "{address} did not say how large its screen is: is it a NexaDesk too old \
-                 for agents?"
-            ));
+            return Err(Refused::Other(format!(
+                "{} did not say how large its screen is: is its NexaDesk too old for agents?",
+                device.name
+            )));
         };
         session.resize_view(space.w, space.h, 1.0);
         if host.perms.as_ref().is_some_and(|p| p.input) {
@@ -436,6 +585,8 @@ impl Viewer {
         }
         let remote = Arc::new(Remote {
             id,
+            owner,
+            device: device.name.clone(),
             address,
             host,
             session,
@@ -458,7 +609,7 @@ impl Viewer {
     /// and, after an action, once its screen has stopped changing. The element tree's
     /// refs replace the last ones.
     pub fn look(&self, remote: &Remote, after_mark: u64, what: &LookFor) -> Result<Looked, String> {
-        self.remote(Some(remote.id))?;
+        self.remote(remote.owner, Some(remote.id))?;
         let request = ObserveRequest {
             after_mark,
             quiet_ms: if what.settle {
@@ -492,7 +643,7 @@ impl Viewer {
     }
 
     fn can_act(&self, remote: &Remote) -> Result<(), String> {
-        self.remote(Some(remote.id))?;
+        self.remote(remote.owner, Some(remote.id))?;
         if !remote.host.perms.as_ref().is_some_and(|p| p.input) {
             return Err("the host allowed viewing only, not keyboard and mouse".into());
         }
@@ -738,7 +889,7 @@ impl Viewer {
     /// Shows display `id` instead: the host's agent pixels are that display's from
     /// now on, and the last element tree's refs no longer hold.
     pub fn select_display(&self, remote: &Remote, id: u32) -> Result<(u32, u32), String> {
-        self.remote(Some(remote.id))?;
+        self.remote(remote.owner, Some(remote.id))?;
         if !remote.host.displays.iter().any(|d| d.id == id) {
             let ids: Vec<String> = remote
                 .host
@@ -767,7 +918,7 @@ impl Viewer {
     pub fn run(&self, remote: &Remote, command: &str, timeout: Duration) -> Result<Ran, String> {
         // The viewer is not told whether the command line was granted: opening it
         // says (a refused one ends at once with "denied").
-        self.remote(Some(remote.id))?;
+        self.remote(remote.owner, Some(remote.id))?;
         if command.trim().is_empty() {
             return Err("no command given".into());
         }
@@ -791,7 +942,7 @@ impl Viewer {
 
     /// The text on the shared clipboard: what a host copied last, or what was set.
     pub fn clipboard_text(&self, remote: &Remote) -> Result<Option<String>, String> {
-        self.remote(Some(remote.id))?;
+        self.remote(remote.owner, Some(remote.id))?;
         if !remote.perms().clipboard {
             return Err("the host did not allow the clipboard".into());
         }
@@ -801,7 +952,7 @@ impl Viewer {
     /// Puts `text` on the clipboard and waits for the host to have it, so a paste
     /// there right after gets it. False if the host did not confirm in time.
     pub fn set_clipboard(&self, remote: &Remote, text: &str) -> Result<bool, String> {
-        self.remote(Some(remote.id))?;
+        self.remote(remote.owner, Some(remote.id))?;
         if !remote.perms().clipboard {
             return Err("the host did not allow the clipboard".into());
         }
@@ -833,6 +984,13 @@ impl Drop for Viewer {
         }
         self.core.shut_down();
     }
+}
+
+/// Why a connection did not go through.
+enum Refused {
+    /// The host no longer knows the agent's key.
+    NotPaired,
+    Other(String),
 }
 
 /// `@e12`, `e12` or `12` → 12.
@@ -869,42 +1027,6 @@ fn normalize(address: &str) -> Result<String, String> {
         return Ok(digits);
     }
     Ok(a.to_owned())
-}
-
-/// `config.json` in the data directory: where device IDs are looked up. The server's
-/// access key is not kept here but in the system's secret store
-/// (`nexa-mcp set-signal-secret`, [`crate::secret`]).
-#[derive(Debug, Default)]
-struct Config {
-    signal_server: String,
-}
-
-impl Config {
-    fn load(dir: &Path) -> Result<Self, String> {
-        let path = dir.join("config.json");
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            return Ok(Self::default());
-        };
-        let v: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| format!("{} is not valid JSON: {e}", path.display()))?;
-        let field = |k: &str| {
-            v.get(k)
-                .and_then(|s| s.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_owned()
-        };
-        if !field("signal_secret").is_empty() {
-            return Err(format!(
-                "{} holds the server's access key, which belongs in the system's secret store: \
-                 run `nexa-mcp set-signal-secret` and take it out of the file",
-                path.display()
-            ));
-        }
-        Ok(Self {
-            signal_server: field("signal_server"),
-        })
-    }
 }
 
 /// `hosts.json`: the address each paired host was reached at, and its key, so it can
@@ -988,23 +1110,5 @@ mod tests {
         k2.forget("a:1");
         k2.save(dir.path());
         assert!(KnownHosts::load(dir.path()).key("a:1").is_none());
-    }
-
-    #[test]
-    fn the_config_names_the_server_and_never_holds_its_key() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.json");
-        std::fs::write(&path, r#"{"signal_server":" wss://s:8443 "}"#).unwrap();
-        assert_eq!(
-            Config::load(dir.path()).unwrap().signal_server,
-            "wss://s:8443"
-        );
-        std::fs::write(
-            &path,
-            r#"{"signal_server":"wss://s:8443","signal_secret":"k"}"#,
-        )
-        .unwrap();
-        let e = Config::load(dir.path()).unwrap_err();
-        assert!(e.contains("set-signal-secret"), "{e}");
     }
 }

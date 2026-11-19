@@ -1,18 +1,22 @@
-//! The MCP side: JSON-RPC 2.0 over stdio, one JSON message per line (the MCP stdio
-//! transport), and the tools (docs/MCP.md §3.1, §13.5).
+//! The MCP side: JSON-RPC 2.0, one JSON message per line (the MCP stdio transport,
+//! which `nexa-mcp` relays from the AI app to NexaDesk's local socket), and the tools
+//! (docs/MCP.md §3.1, §13.5, §16). One `Server` per MCP client; its sessions end with it.
 //!
 //! Requests are handled one at a time, in order. Tool failures come back as results
 //! with `isError` (the agent can read and act on them); protocol mistakes as JSON-RPC
 //! errors.
 
-use std::io::{BufRead, Write};
+use std::{
+    io::{BufRead, Write},
+    sync::Arc,
+};
 
 use base64::Engine;
 use serde_json::{Value, json};
 
 use nexa_session::agent::{Action, ObserveReply};
 
-use crate::{
+use super::{
     keys,
     viewer::{Button, LookFor, Looked, MAX_TEXT, Remote, Target, Viewer},
 };
@@ -21,8 +25,10 @@ use crate::{
 /// one it does not know.
 const PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
-const INSTRUCTIONS: &str = "Operate another computer through NexaDesk. Connect with nexa_connect \
-(the person at that computer may have to allow it). Read the screen with nexa_ui first: the \
+const INSTRUCTIONS: &str = "Operate another computer through NexaDesk. nexa_devices lists the \
+computers the person here allowed you to operate; connect to one with nexa_connect {device} \
+(NexaDesk signs in itself, and the person at that computer is asked to allow it). Read the \
+screen with nexa_ui first: the \
 frontmost window's elements as text, each one you can act on with a ref like @e3, its role, \
 name, value, state and position. Act by ref (nexa_click {ref: \"@e3\"}, nexa_type {ref, text}) \
 rather than by coordinates where you can. Refs hold until your next nexa_ui: read again after \
@@ -44,12 +50,22 @@ an AI agent is connected and can end it at any time; someone who wants to watch 
 with the NexaDesk app as well.";
 
 pub struct Server {
-    viewer: Viewer,
+    viewer: Arc<Viewer>,
+    /// This MCP client, as the viewer tells its sessions apart.
+    client: u64,
+}
+
+impl Drop for Server {
+    /// The client has gone: so do its sessions.
+    fn drop(&mut self) {
+        self.viewer.end_client(self.client);
+    }
 }
 
 impl Server {
-    pub fn new(viewer: Viewer) -> Self {
-        Self { viewer }
+    /// Serves MCP client `client` (a number of its own) with `viewer`.
+    pub fn new(viewer: Arc<Viewer>, client: u64) -> Self {
+        Self { viewer, client }
     }
 
     pub fn viewer(&self) -> &Viewer {
@@ -88,7 +104,16 @@ impl Server {
         let id = id?; // a notification (`notifications/initialized`, `…/cancelled`)
         let params = obj.get("params").cloned().unwrap_or(Value::Null);
         Some(match method {
-            "initialize" => ok(id, initialize(&params)),
+            "initialize" => {
+                if let Some(name) = params
+                    .get("clientInfo")
+                    .and_then(|c| c.get("name"))
+                    .and_then(Value::as_str)
+                {
+                    self.viewer.name_client(self.client, name);
+                }
+                ok(id, initialize(&params))
+            }
             "ping" => ok(id, json!({})),
             "tools/list" => ok(id, json!({ "tools": tools() })),
             "tools/call" => match params.get("name").and_then(Value::as_str) {
@@ -113,17 +138,40 @@ impl Server {
     fn run(&mut self, name: &str, args: &Value) -> Result<Vec<Value>, String> {
         let v = &self.viewer;
         match name {
+            "nexa_devices" => {
+                let devices = v.devices();
+                if devices.is_empty() {
+                    return Ok(vec![text(
+                        "No computer may be operated by an AI agent yet. The person here allows \
+                         one in NexaDesk: \"Allow AI to operate\" on a saved device.",
+                    )]);
+                }
+                let lines: Vec<String> = devices
+                    .iter()
+                    .map(|d| {
+                        let how = if d.sign_in.is_empty() {
+                            "NexaDesk has no way to sign in to it yet".to_owned()
+                        } else {
+                            format!("signs in with {}", d.sign_in)
+                        };
+                        format!("\"{}\" ({}): {how}", d.name, d.address)
+                    })
+                    .collect();
+                Ok(vec![text(&format!(
+                    "{}\nConnect with nexa_connect {{device: \"<name>\"}}.",
+                    lines.join("\n")
+                ))])
+            }
             "nexa_connect" => {
-                let address = str_arg(args, "address")?.ok_or("`address` is required")?;
-                let code = str_arg(args, "code")?;
-                let r = v.connect(address, code)?;
+                let device = str_arg(args, "device")?.ok_or("`device` is required")?;
+                let r = v.connect(self.client, device)?;
                 Ok(vec![text(&format!(
                     "{} Read the screen with nexa_ui.",
                     describe(v, &r)
                 ))])
             }
             "nexa_sessions" => {
-                let list = v.sessions();
+                let list = v.sessions(self.client);
                 if list.is_empty() {
                     return Ok(vec![text("No sessions.")]);
                 }
@@ -136,7 +184,7 @@ impl Server {
                 )])
             }
             "nexa_disconnect" => {
-                let r = v.remote(session_arg(args)?)?;
+                let r = v.remote(self.client, session_arg(args)?)?;
                 v.disconnect(&r);
                 Ok(vec![text(&format!(
                     "Disconnected session {} ({}).",
@@ -144,7 +192,7 @@ impl Server {
                 ))])
             }
             "nexa_ui" => {
-                let r = v.remote(session_arg(args)?)?;
+                let r = v.remote(self.client, session_arg(args)?)?;
                 let all = args.get("all").and_then(Value::as_bool).unwrap_or(false);
                 let max = int_arg(args, "max_nodes")?.unwrap_or(0);
                 if !(0..=2000).contains(&max) {
@@ -160,7 +208,7 @@ impl Server {
                 Ok(look_content(&looked, None))
             }
             "nexa_screenshot" => {
-                let r = v.remote(session_arg(args)?)?;
+                let r = v.remote(self.client, session_arg(args)?)?;
                 let marks = args.get("marks").and_then(Value::as_bool).unwrap_or(false);
                 let what = LookFor {
                     screenshot: true,
@@ -171,13 +219,13 @@ impl Server {
                 Ok(look_content(&looked, None))
             }
             "nexa_press" => {
-                let r = v.remote(session_arg(args)?)?;
+                let r = v.remote(self.client, session_arg(args)?)?;
                 let target = str_arg(args, "ref")?.ok_or("`ref` is required")?;
                 v.act(&r, target, Action::Press, "")?;
                 self.after(&r, args, 0, &format!("Pressed {target}"))
             }
             "nexa_set_value" => {
-                let r = v.remote(session_arg(args)?)?;
+                let r = v.remote(self.client, session_arg(args)?)?;
                 let target = str_arg(args, "ref")?.ok_or("`ref` is required")?;
                 let t = str_arg(args, "text")?.ok_or("`text` is required")?;
                 if t.chars().count() > MAX_TEXT {
@@ -187,7 +235,7 @@ impl Server {
                 self.after(&r, args, 0, &format!("Set the value of {target}"))
             }
             "nexa_click" => {
-                let r = v.remote(session_arg(args)?)?;
+                let r = v.remote(self.client, session_arg(args)?)?;
                 let target = target_arg(args, "")?;
                 let button = button_arg(args)?;
                 let count = int_arg(args, "count")?.unwrap_or(1);
@@ -203,7 +251,7 @@ impl Server {
                 self.after(&r, args, mark, &format!("{verb} {}", target_text(&target)))
             }
             "nexa_scroll" => {
-                let r = v.remote(session_arg(args)?)?;
+                let r = v.remote(self.client, session_arg(args)?)?;
                 let target = target_arg(args, "")?;
                 let amount = int_arg(args, "amount")?.unwrap_or(3);
                 if !(1..=30).contains(&amount) {
@@ -226,7 +274,7 @@ impl Server {
                 )
             }
             "nexa_type" => {
-                let r = v.remote(session_arg(args)?)?;
+                let r = v.remote(self.client, session_arg(args)?)?;
                 let t = str_arg(args, "text")?.ok_or("`text` is required")?;
                 // Into an element: click it first, so it has the focus.
                 let into = str_arg(args, "ref")?.map(|s| Target::Ref(s.to_owned()));
@@ -245,14 +293,14 @@ impl Server {
                 self.after(&r, args, mark, &done)
             }
             "nexa_key" => {
-                let r = v.remote(session_arg(args)?)?;
+                let r = v.remote(self.client, session_arg(args)?)?;
                 let combo = str_arg(args, "keys")?.ok_or("`keys` is required")?;
                 let usages = keys::parse(combo)?;
                 let mark = v.keys(&r, &usages)?;
                 self.after(&r, args, mark, &format!("Pressed {combo}"))
             }
             "nexa_drag" => {
-                let r = v.remote(session_arg(args)?)?;
+                let r = v.remote(self.client, session_arg(args)?)?;
                 let from = target_arg(args, "from_")?;
                 let to = target_arg(args, "to_")?;
                 let button = button_arg(args)?;
@@ -269,7 +317,7 @@ impl Server {
                 )
             }
             "nexa_display" => {
-                let r = v.remote(session_arg(args)?)?;
+                let r = v.remote(self.client, session_arg(args)?)?;
                 match int_arg(args, "display")? {
                     None => {
                         let (list, current) = v.displays(&r);
@@ -301,7 +349,7 @@ impl Server {
                 }
             }
             "nexa_run" => {
-                let r = v.remote(session_arg(args)?)?;
+                let r = v.remote(self.client, session_arg(args)?)?;
                 let command = str_arg(args, "command")?.ok_or("`command` is required")?;
                 let secs = int_arg(args, "timeout")?.unwrap_or(30);
                 if !(1..=600).contains(&secs) {
@@ -319,7 +367,7 @@ impl Server {
                 let cut = if ran.truncated {
                     format!(
                         " Output was long: only its last {} KB is shown.",
-                        crate::terminal::MAX_OUTPUT >> 10
+                        super::terminal::MAX_OUTPUT >> 10
                     )
                 } else {
                     String::new()
@@ -332,14 +380,14 @@ impl Server {
                 Ok(vec![text(&format!("{head}{cut}\n{body}"))])
             }
             "nexa_clipboard_get" => {
-                let r = v.remote(session_arg(args)?)?;
+                let r = v.remote(self.client, session_arg(args)?)?;
                 Ok(vec![text(&match v.clipboard_text(&r)? {
                     Some(t) => t,
                     None => "(the clipboard has no text)".to_owned(),
                 })])
             }
             "nexa_clipboard_set" => {
-                let r = v.remote(session_arg(args)?)?;
+                let r = v.remote(self.client, session_arg(args)?)?;
                 let t = str_arg(args, "text")?.ok_or("`text` is required")?;
                 if t.len() > MAX_CLIPBOARD {
                     return Err(format!("at most {} KB at a time", MAX_CLIPBOARD >> 10));
@@ -616,15 +664,19 @@ fn tools() -> Vec<Value> {
     let y = json!({ "type": "number", "description": "Pixels from the top." });
     vec![
         json!({
+            "name": "nexa_devices",
+            "description": "List the computers the person here allowed you to operate, by name, with how NexaDesk signs in to each.",
+            "inputSchema": { "type": "object", "properties": {} },
+        }),
+        json!({
             "name": "nexa_connect",
-            "description": "Connect to another computer running NexaDesk. The person there is usually asked to allow it, and sees that an AI agent is connected. A computer paired before connects without a code.",
+            "description": "Connect to one of the computers nexa_devices lists. NexaDesk signs in itself (you never handle a password or code); the person at that computer is asked to allow it and sees that an AI agent is connected.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "address": { "type": "string", "description": "host:port on the network, or the 9-digit device ID the computer shows." },
-                    "code": { "type": "string", "description": "The one-time code the computer shows. Needed the first time, unless connecting by device ID and asking the person there." },
+                    "device": { "type": "string", "description": "Its name as nexa_devices gives it (or its address or device ID)." },
                 },
-                "required": ["address"],
+                "required": ["device"],
             },
         }),
         json!({

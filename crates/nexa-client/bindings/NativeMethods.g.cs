@@ -187,6 +187,40 @@ namespace NexaDesk.Native
         public static extern int nexa_terminal_close(ulong id);
 
         /// <summary>
+        ///  Starts serving local AI apps (through `nexa-mcp`) on the socket for `data_dir`
+        ///  (empty: the default), signing in to the devices the person allowed AI agents to
+        ///  operate. `name` is what hosts are told the AI's device is called. Already serving:
+        ///  nothing changes.
+        ///
+        ///  # Safety
+        ///  `data_dir` valid for `data_dir_len` bytes, `name` for `name_len`.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "nexa_mcp_start", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int nexa_mcp_start(byte* data_dir, nuint data_dir_len, byte* name, nuint name_len);
+
+        /// <summary>
+        ///  Stops serving AI apps and ends every AI agent's session.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "nexa_mcp_stop", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int nexa_mcp_stop();
+
+        /// <summary>
+        ///  Ends every AI agent's session; the server keeps serving.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "nexa_mcp_stop_sessions", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int nexa_mcp_stop_sessions();
+
+        /// <summary>
+        ///  What AI agents are doing, as UTF-8 JSON into `out`:
+        ///  `{"serving": bool, "sessions": [{"client": "claude-code", "device": "MacBook"}]}`.
+        ///
+        ///  # Safety
+        ///  `out` writable for `cap`, `written` writable.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "nexa_mcp_status", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int nexa_mcp_status(byte* @out, nuint cap, nuint* written);
+
+        /// <summary>
         ///  Keeps `password` for the saved connection `account` in the login Keychain,
         ///  replacing one kept before.
         ///

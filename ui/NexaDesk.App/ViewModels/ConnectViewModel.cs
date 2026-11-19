@@ -15,6 +15,8 @@ public sealed partial class RecentDeviceViewModel(ConnectViewModel owner, Recent
     public string Name => Device.Label.Length > 0 ? Device.Label
         : string.IsNullOrWhiteSpace(Device.Name) ? Address : Device.Name;
     public bool HasPassword => Device.HasPassword;
+    /// <summary>AI apps on this computer may operate it (docs/MCP.md §16).</summary>
+    public bool AiAllowed => Device.AiAllowed;
     /// <summary>As shown: an ID in groups of three, or the address.</summary>
     public string Address => Texts.NormalizeDeviceId(Device.Address) is { } id
         ? $"ID {Texts.GroupDeviceId(id)}"
@@ -40,6 +42,7 @@ public sealed partial class RecentDeviceViewModel(ConnectViewModel owner, Recent
     [ObservableProperty] private string _editLabel = "";
     [ObservableProperty] private string _editPassword = "";
     [ObservableProperty] private bool _forgetPassword;
+    [ObservableProperty] private bool _editAiAllowed;
     [ObservableProperty] private string? _editError;
 
     /// <summary>What the name box shows greyed out: the host's own name.</summary>
@@ -51,6 +54,7 @@ public sealed partial class RecentDeviceViewModel(ConnectViewModel owner, Recent
         EditLabel = Device.Label;
         EditPassword = "";
         ForgetPassword = false;
+        EditAiAllowed = Device.AiAllowed;
         EditError = null;
         IsEditing = !IsEditing;
     }
@@ -66,7 +70,7 @@ public sealed partial class RecentDeviceViewModel(ConnectViewModel owner, Recent
     private async Task SaveEdit()
     {
         var password = ForgetPassword ? null : EditPassword.Length > 0 ? EditPassword : "";
-        EditError = await owner.UpdateRecentAsync(this, EditLabel.Trim(), password, ForgetPassword);
+        EditError = await owner.UpdateRecentAsync(this, EditLabel.Trim(), password, ForgetPassword, EditAiAllowed);
         if (EditError == null)
         {
             EditPassword = "";
@@ -287,7 +291,8 @@ public sealed partial class ConnectViewModel : ObservableObject
     /// <summary>The editor's changes: a name of the person's own (empty: the host's),
     /// a new password to keep (null: none; empty: leave as it is), or the kept one dropped.
     /// Null when done, else why not.</summary>
-    internal async Task<string?> UpdateRecentAsync(RecentDeviceViewModel device, string label, string? password, bool forget)
+    internal async Task<string?> UpdateRecentAsync(RecentDeviceViewModel device, string label, string? password, bool forget,
+        bool aiAllowed = false)
     {
         if (password is { Length: > 0 } && Texts.SignInFor(password) is not ConnectAuth.Password)
             return L.Get("Connect.SavedPasswordInvalid");
@@ -308,7 +313,7 @@ public sealed partial class ConnectViewModel : ObservableObject
         // The list may have changed while the Keychain answered.
         at = _recent.FindIndex(r => r.Address == device.Device.Address && r.HostKey == device.HostKey);
         if (at < 0) return null;
-        entry = _recent[at] with { Label = label, HasPassword = entry.HasPassword };
+        entry = _recent[at] with { Label = label, HasPassword = entry.HasPassword, AiAllowed = aiAllowed };
         _recent[at] = entry;
         _store.Save(_recent);
         RebuildRecent();
@@ -504,7 +509,7 @@ public sealed partial class ConnectViewModel : ObservableObject
         var before = _recent.FirstOrDefault(r => r.Address == address || (c.HostKey.Length > 0 && r.HostKey == c.HostKey));
         _recent.RemoveAll(r => r.Address == address || (c.HostKey.Length > 0 && r.HostKey == c.HostKey));
         var entry = new RecentDevice(address, c.HostName, c.HostKey, _now().ToUnixTimeSeconds(),
-            before?.Label ?? "", before?.HasPassword ?? false);
+            before?.Label ?? "", before?.HasPassword ?? false, before?.AiAllowed ?? false);
         // Kept under the address before the host's key was known: file it under the key.
         var movedFrom = before is { HasPassword: true } && before.PasswordAccount != entry.PasswordAccount
             ? before.PasswordAccount

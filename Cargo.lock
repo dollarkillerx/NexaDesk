@@ -1460,6 +1460,7 @@ dependencies = [
 name = "nexa-client"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "block2",
  "bytes",
  "csbindgen",
@@ -1481,6 +1482,7 @@ dependencies = [
  "objc2-foundation",
  "prost",
  "quinn",
+ "serde_json",
  "tempfile",
  "tokio",
  "windows",
@@ -1526,22 +1528,7 @@ dependencies = [
 name = "nexa-mcp"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
- "bytes",
- "libc",
- "nexa-agent",
- "nexa-auth",
  "nexa-client",
- "nexa-clip",
- "nexa-input",
- "nexa-media",
- "nexa-net",
- "nexa-session",
- "nexa-wire",
- "prost",
- "serde_json",
- "tempfile",
- "tokio",
 ]
 
 [[package]]

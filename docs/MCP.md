@@ -528,3 +528,101 @@ window "未命名 — 文本编辑" (0,0 1568×980)
   - 高 DPI 多显示器下的坐标。
 - 在真实 Mac 上跑一遍 G0–G3（同 §14 待做）。
 
+## 16. 由本机 NexaDesk 应用登录，`nexa-mcp` 只转发（方案）
+
+> 状态（2026-11-19）：M1、M2 已实现，未提交（见 16.5）。M3 还差真实的 MacBook，需要先在 Mac mini 上装好新版应用。参考 MySSH：MCP 服务在桌面应用里，`myssh-mcp` 只是一个转发程序，凭据和主机列表都由应用管。
+
+### 16.1 为什么改
+
+现在的 `nexa-mcp` 自己负责连接：一次性码由 AI 传进来，签名服务器的接入密钥存在它自己的钥匙串条目里。这样 AI 会碰到凭据，而且已经在应用里保存好密码、配对过的电脑，AI 也用不上。改成：**谁来登录、用什么登录，都由本机的 NexaDesk 应用决定**。AI 只说“连哪台”，看不到也传不了任何密码、一次性码或密钥。
+
+### 16.2 结论
+
+| 问题 | 决定 |
+|---|---|
+| MCP 服务在哪里 | 在 NexaDesk 应用的进程里，由 Rust 内核（libnexa_client）运行。macOS 用 `~/Library/Application Support/NexaDesk/mcp.sock`：目录 0700，套接字 0600，并校验对方的 uid。Windows 用只有当前用户能连的命名管道。做法照搬 nexa-agent 的本地 IPC |
+| `nexa-mcp` | 改成转发程序：在 stdin/stdout 和上面的套接字之间原样搬运字节，没有任何凭据，也不建自己的内核。应用没有运行，或者 MCP 开关没开时，用一句话报错后退出。Claude、Codex 等的配置不用改，仍然指向应用旁边的 `nexa-mcp` |
+| 总开关 | 设置 →“AI 代理（MCP）”里加“让本机的 AI 应用使用 NexaDesk”，默认关闭。关闭时停止监听，断开已连上的 AI 应用，并结束所有 AI 会话 |
+| AI 能连哪些电脑 | 只能连应用里已有的设备（最近的设备、已配对的设备），而且每台都要单独打开“允许 AI 操作”，默认关闭。这个开关存在 `recent.json` 里该设备的记录上 |
+| 怎么登录 | 和人在应用里点“连接”时的顺序相同：已保存的固定密码 → 已配对 → 设备 ID 请求对方允许（用应用里设置的信令服务器和它的接入密钥）。密码只在应用进程里从钥匙串取出来用，不出这个进程 |
+| AI 用哪个身份 | AI 会话用应用里**单独的一个内核**，有自己的设备密钥（钥匙串里另一个条目）和自己的配对记录（`<数据目录>/agent/`）。这个内核标明自己是 AI（`is_agent`），被控端总会询问，并显示这是 AI。不和人共用设备密钥，是因为人把某台设备设成了“无人值守”时，AI 不能借这个身份跳过询问 |
+| 工具 | `nexa_devices`：列出允许 AI 操作的设备，包括名字、设备 ID 或地址、系统，以及能用什么方式登录。`nexa_connect {device}`：设备的名字、设备 ID 或地址，只能从这个列表里选，**不再接受 `code`**。其余工具（`nexa_ui`、`nexa_click`、`nexa_press`……）不变 |
+| 本机能看到什么 | 应用里显示 AI 会话：哪个 AI 客户端（MCP 的 clientInfo，比如 “claude-code”）、在操作哪台设备，可以一键全部停止 |
+| 旧的独立模式 | `nexa-mcp` 不再自己连接，`config.json`、`hosts.json`、`set-signal-secret` 都去掉。测试仍然在进程内直接驱动 MCP 服务（用假的设备目录） |
+
+### 16.3 结构
+
+```
+Claude Code / Codex ──stdio──▶ nexa-mcp（转发）──本地套接字──▶ NexaDesk 应用
+                                                            ├─ C#：开关、每台设备的“允许 AI 操作”、AI 会话列表
+                                                            └─ libnexa_client
+                                                                 ├─ 人用的内核（RealDeps）
+                                                                 └─ MCP 服务 + AI 用的内核（is_agent，单独的密钥和配对记录）
+                                                                      └─ 设备目录：recent.json + 钥匙串里保存的密码
+                                                                                + settings.json 的信令服务器和接入密钥
+```
+
+- MCP 的工具代码（现在的 `nexa-mcp/src/server.rs`、`viewer.rs`、`keys.rs`、`terminal.rs`）移进 nexa-client，成为 `nexa_client::mcp` 模块，只在 macOS 和 Windows 上编译。这样它和应用在同一个动态库里，避免 nexa-mcp ↔ nexa-client 的循环依赖。
+- `Viewer` 的连接改为向一个 `Directory`（设备目录）要“这台设备怎么登录”。应用里的实现从上面那些文件和钥匙串读取，测试里用假的。
+- 新增导出：`nexa_mcp_serve(on)`、`nexa_mcp_status()`（AI 会话列表，给 C# 显示）、`nexa_mcp_stop_all()`。
+- 每个 MCP 客户端一条连接。连接断开（AI 退出）时，它开的会话一起结束。
+
+### 16.4 阶段
+
+| 阶段 | 内容 | 验证 |
+|---|---|---|
+| M1 | 把 MCP 搬进 nexa-client；`Directory`；本地套接字服务；`nexa-mcp` 改成转发程序；`nexa_devices` 和新的 `nexa_connect` | 集成测试：经套接字驱动，用假目录和假被控端，密码只出现在目录里 |
+| M2 | C#：总开关、每台设备的“允许 AI 操作”、AI 会话列表和“全部停止”；三种语言的文字 | 界面测试 |
+| M3 | 用演示主机，再用真实的 MacBook，在 Claude Code 和 Codex 里实测 | 用 MacBook 跑一次测速 |
+
+### 16.5 M1、M2 实现
+
+- **代码位置**：
+  - `nexa_client::mcp`：`server`、`viewer`、`keys`、`terminal` 从 nexa-mcp 搬来，并新增 `listen`、`app_directory`，以及 `mod.rs` 里的 `Service`。只在 macOS 和 Windows 上编译，iOS 不受影响。
+  - `nexa-mcp` 只剩 `main.rs`，是个转发程序，唯一的依赖是 nexa-client。`--socket` 可以指定套接字，测试时用。
+- **设备目录**：
+  - `viewer::Directory` 有两个方法：`devices()` 列出允许 AI 操作的设备；`sign_in(device)` 给出怎么登录（`SignIn`：认证方式、信令服务器、接入密钥）。
+  - `AppDirectory` 的数据来源：
+    - 允许 AI 的设备：`recent.json` 里 `aiAllowed` 为真的记录，名字优先用你起的标签；
+    - 固定密码：钥匙串，经新增的 `abi::load_saved_password`，只在本进程内使用；
+    - 信令服务器：`settings.json` 的 `signalServer`；
+    - 接入密钥：钥匙串的 `signal-access:<服务器>`。
+- **登录顺序**：
+  1. 先看 AI 自己的配对记录（`<数据目录>/ai/hosts.json`），有就直接用，不需要任何秘密。被控端说“不认识”时，删掉这条记录，往下走。
+  2. 再用设备目录给的方式：保存的固定密码；或者，对设备 ID 发请求，由对方点允许。
+  3. 两者都没有时，报错并说明原因（“NexaDesk has no way to sign in to …”）。
+- **会话归属**：
+  - 每个 AI 应用的连接对应一个 `Server`，它开的会话只有它自己看得到，连接断开时一起结束。
+  - `initialize` 里的 `clientInfo.name` 会记下来，给应用显示。
+- **本地套接字**：
+  - macOS：`<数据目录>/mcp.sock`。要求目录属于本人且其他人不可写；套接字权限 0600；用 `getpeereid` 校验对方的 uid。旧的套接字连不上就删掉；连得上，说明已有一个 NexaDesk 在服务。
+  - Windows：命名管道 `nexadesk-mcp-<数据目录的 FNV-1a>`，只有所有者能连，拒绝远程客户端，首个实例独占。
+  - 停止服务时，用 `hang_up` 主动断开每个连接。
+- **导出**：`nexa_mcp_start(data_dir, name)`、`nexa_mcp_stop`、`nexa_mcp_stop_sessions`、`nexa_mcp_status`。状态是 JSON：`{serving, sessions: [{client, device}]}`。
+- **工具**：
+  - 新增 `nexa_devices`，列出名字、地址和登录方式；
+  - `nexa_connect {device}` 按名字（不分大小写）、地址或设备 ID 连接，`code` 参数去掉了；
+  - 说明文字改成先用 `nexa_devices`。
+- **应用（C#）**：
+  - `IAgentServer` / `NativeAgentServer`：开启服务后每 2 秒读一次状态，有变化时在 UI 线程通知。
+  - `AppSettings.AiApps`：开关，保存后下次启动照旧。
+  - `RecentDevice.AiAllowed`：在设备的“编辑”里勾选，列表上显示“允许 AI”标签，重新连接后保留。
+  - MCP 区：开关、开启失败的原因、“AI 正在操作”列表（客户端 → 设备）和“全部停止”。英、中、日三种语言。
+- **去掉的**：`nexa-mcp` 的 `config.json`、`hosts.json`、`set-signal-secret` / `clear-signal-secret`（`secret.rs`），以及 `NexaDesk-mcp` 数据目录。
+- **测试**：
+  - `nexa-client/tests/mcp.rs` 16 个：
+    - 原有工具测试改用假的设备目录；
+    - 没有允许的设备时拒绝，并说明；
+    - AI 只能连允许的设备，名字不分大小写；
+    - 没有登录方式时说明原因；
+    - 用自己的配对记录重新连接；
+    - 经真实套接字的端到端测试：权限 0600、按 clientInfo 显示、AI 应用断开后会话结束、停止后套接字被删除。
+  - `app_directory` 的单元测试。
+  - C#：开关的保存和启动、开启失败、会话列表和“全部停止”、设备的 AI 标记。
+  - 整个 workspace 和 329 个桌面测试都通过；clippy 在 macOS、Windows 和 iOS 上都没有警告。
+- **实测（演示主机）**：
+  - `examples/mcp_demo` 按应用的方式提供服务：设备目录里只有演示主机，用它的演示密码。
+  - Claude Code 经 `nexa-mcp --socket` 依次调用 `nexa_devices` → `nexa_connect {device: "NexaDesk demo"}` → 读树、输入、点击 3 次，结果正确。整个过程中，AI 没有接触任何密码。
+  - 演示主机询问时标明“(an AI agent)”；Claude Code 退出后，会话随之结束。
+- **注意**：macOS 套接字路径最长 104 字节。默认路径大约 60 字节，没有问题；家目录特别长时，开启会失败，并显示原因。
+

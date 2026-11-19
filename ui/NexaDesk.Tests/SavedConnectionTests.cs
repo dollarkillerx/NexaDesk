@@ -210,4 +210,36 @@ public class SavedConnectionTests
         Assert.Empty(passwords.Kept);
         Assert.Empty(recent.Saved);
     }
+
+    [Fact]
+    public void Ai_may_operate_a_saved_device_only_once_allowed_and_it_stays_allowed()
+    {
+        var device = new RecentDevice("220041958", "MacBook", Samples.HostKey, 1, HasPassword: true);
+        var (client, recent, passwords) = (new FakeClient(), new MemoryRecent(device), new MemorySavedPasswords());
+        passwords.Kept[Samples.HostKey] = Password;
+        var vm = Make(client, recent, passwords);
+        Assert.False(vm.Recent[0].AiAllowed);
+
+        var row = vm.Recent[0];
+        row.EditCommand.Execute(null);
+        Assert.False(row.EditAiAllowed);
+        row.EditAiAllowed = true;
+        row.SaveEditCommand.Execute(null);
+        Assert.Null(row.EditError);
+        Assert.True(vm.Recent[0].AiAllowed);
+        Assert.True(recent.Saved[0].AiAllowed);
+        // The password is untouched by it.
+        Assert.Equal(Password, passwords.Kept[Samples.HostKey]);
+
+        // Connected again: still allowed.
+        vm.Recent[0].ConnectCommand.Execute(null);
+        client.Raise(Unpaired(client.Requests[0].Tag));
+        Assert.True(recent.Saved[0].AiAllowed);
+
+        vm.Recent[0].EditCommand.Execute(null);
+        Assert.True(vm.Recent[0].EditAiAllowed);
+        vm.Recent[0].EditAiAllowed = false;
+        vm.Recent[0].SaveEditCommand.Execute(null);
+        Assert.False(recent.Saved[0].AiAllowed);
+    }
 }

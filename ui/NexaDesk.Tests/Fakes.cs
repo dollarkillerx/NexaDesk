@@ -213,6 +213,44 @@ public sealed class FakePermissions : IPermissionProbe
     public void OpenSettings(PermissionKind kind) => Opened.Add(kind);
 }
 
+/// <summary>NexaDesk's MCP server, made up: starts unless told to refuse, and shows the sessions it is given.</summary>
+public sealed class FakeAgentServer : IAgentServer
+{
+    public string? Refuse { get; set; }
+    public bool IsServing { get; private set; }
+    public string StartedAs { get; private set; } = "";
+    public int SessionsStopped { get; private set; }
+    public IReadOnlyList<AgentSessionInfo> Sessions { get; private set; } = [];
+    public event Action? Changed;
+
+    public string? Start(string deviceName)
+    {
+        if (Refuse != null) return Refuse;
+        IsServing = true;
+        StartedAs = deviceName;
+        return null;
+    }
+
+    public void Stop()
+    {
+        IsServing = false;
+        Show();
+    }
+
+    public void StopSessions()
+    {
+        SessionsStopped++;
+        Show();
+    }
+
+    /// <summary>What AI agents operate now, as the core would report it.</summary>
+    public void Show(params AgentSessionInfo[] sessions)
+    {
+        Sessions = sessions;
+        Changed?.Invoke();
+    }
+}
+
 public sealed class MemoryRecent(params RecentDevice[] initial) : IRecentStore
 {
     public List<RecentDevice> Saved { get; private set; } = initial.ToList();

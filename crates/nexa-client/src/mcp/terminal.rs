@@ -13,7 +13,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use nexa_client::{
+use crate::{
     client::Session,
     terminal::{self, TermOut},
 };

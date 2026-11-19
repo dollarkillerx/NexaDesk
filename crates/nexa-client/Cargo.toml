@@ -17,6 +17,9 @@ nexa-clip = { path = "../nexa-clip" }
 nexa-input = { path = "../nexa-input" }
 nexa-session = { path = "../nexa-session" }
 bytes.workspace = true
+# The MCP server for AI agents (src/mcp, docs/MCP.md §16).
+base64 = "0.22"
+serde_json = "1"
 prost = "0.14"
 quinn = "=0.11.12"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "sync"] }
@@ -49,7 +52,12 @@ windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_Graphics_Imaging",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
     "Win32_System_Com",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
     "Win32_UI_HiDpi",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",

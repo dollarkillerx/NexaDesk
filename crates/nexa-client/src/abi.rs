@@ -733,6 +733,111 @@ fn saved_password(account: &[u8]) -> Result<impl nexa_auth::keystore::KeyStore, 
     Ok(store)
 }
 
+/// The MCP server for AI agents while the person has it on (docs/MCP.md §16).
+#[cfg(any(target_os = "macos", windows))]
+static MCP: Mutex<Option<crate::mcp::Service>> = Mutex::new(None);
+
+#[cfg(any(target_os = "macos", windows))]
+fn mcp() -> std::sync::MutexGuard<'static, Option<crate::mcp::Service>> {
+    MCP.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Starts serving local AI apps (through `nexa-mcp`) on the socket for `data_dir`
+/// (empty: the default), signing in to the devices the person allowed AI agents to
+/// operate. `name` is what hosts are told the AI's device is called. Already serving:
+/// nothing changes.
+///
+/// # Safety
+/// `data_dir` valid for `data_dir_len` bytes, `name` for `name_len`.
+#[cfg(any(target_os = "macos", windows))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nexa_mcp_start(
+    data_dir: *const u8,
+    data_dir_len: usize,
+    name: *const u8,
+    name_len: usize,
+) -> i32 {
+    guarded(|| {
+        // SAFETY: per the contract.
+        let (dir, name) = unsafe { (bytes_of(data_dir, data_dir_len)?, bytes_of(name, name_len)?) };
+        let dir = std::str::from_utf8(dir).map_err(|_| invalid("data_dir is not UTF-8"))?;
+        let name = std::str::from_utf8(name).map_err(|_| invalid("name is not UTF-8"))?;
+        let dir = if dir.is_empty() {
+            default_data_dir()
+        } else {
+            PathBuf::from(dir)
+        };
+        let mut serving = mcp();
+        if serving.is_none() {
+            let name = if name.trim().is_empty() {
+                "NexaDesk".to_owned()
+            } else {
+                name.trim().to_owned()
+            };
+            *serving =
+                Some(crate::mcp::Service::start(&dir, name).map_err(|e| Abi(NEXA_E_INTERNAL, e))?);
+        }
+        Ok(())
+    })
+}
+
+/// Stops serving AI apps and ends every AI agent's session.
+#[cfg(any(target_os = "macos", windows))]
+#[unsafe(no_mangle)]
+pub extern "C" fn nexa_mcp_stop() -> i32 {
+    guarded(|| {
+        if let Some(service) = mcp().take() {
+            service.stop_sessions();
+        }
+        Ok(())
+    })
+}
+
+/// Ends every AI agent's session; the server keeps serving.
+#[cfg(any(target_os = "macos", windows))]
+#[unsafe(no_mangle)]
+pub extern "C" fn nexa_mcp_stop_sessions() -> i32 {
+    guarded(|| {
+        if let Some(service) = mcp().as_ref() {
+            service.stop_sessions();
+        }
+        Ok(())
+    })
+}
+
+/// What AI agents are doing, as UTF-8 JSON into `out`:
+/// `{"serving": bool, "sessions": [{"client": "claude-code", "device": "MacBook"}]}`.
+///
+/// # Safety
+/// `out` writable for `cap`, `written` writable.
+#[cfg(any(target_os = "macos", windows))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nexa_mcp_status(out: *mut u8, cap: usize, written: *mut usize) -> i32 {
+    guarded(|| {
+        let serving = mcp();
+        let sessions: Vec<serde_json::Value> = serving
+            .as_ref()
+            .map(|s| s.sessions())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| serde_json::json!({ "client": s.client, "device": s.device }))
+            .collect();
+        let status = serde_json::json!({ "serving": serving.is_some(), "sessions": sessions });
+        drop(serving);
+        // SAFETY: per the contract.
+        unsafe { give(status.to_string().as_bytes(), out, cap, written) }
+    })
+}
+
+/// The password kept for the saved connection `account`, if any: what NexaDesk signs
+/// in to it with for an AI agent (docs/MCP.md §16). It stays in this process.
+#[cfg(any(target_os = "macos", windows))]
+pub(crate) fn load_saved_password(account: &str) -> Option<String> {
+    use nexa_auth::keystore::KeyStore;
+    let kept = saved_password(account.as_bytes()).ok()?.load().ok()??;
+    String::from_utf8(kept.to_vec()).ok()
+}
+
 /// Keeps `password` for the saved connection `account` in the login Keychain,
 /// replacing one kept before.
 ///

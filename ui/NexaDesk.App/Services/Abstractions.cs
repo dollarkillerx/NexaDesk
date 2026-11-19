@@ -84,10 +84,12 @@ public interface IPermissionProbe
 /// <summary>
 /// A host connected to before. <paramref name="Label"/> is the person's own name for it
 /// (empty: the host's); <paramref name="HasPassword"/> says its fixed password is in the
-/// Keychain (see <see cref="ISavedPasswords"/>), never the password itself.
+/// Keychain (see <see cref="ISavedPasswords"/>), never the password itself;
+/// <paramref name="AiAllowed"/> lets AI apps on this computer operate it through NexaDesk's MCP
+/// server, which signs in the same way (docs/MCP.md §16).
 /// </summary>
 public sealed record RecentDevice(string Address, string Name, string HostKey, long LastConnected,
-    string Label = "", bool HasPassword = false)
+    string Label = "", bool HasPassword = false, bool AiAllowed = false)
 {
     /// <summary>What the Keychain item is filed under: the host's key once known, else its address.</summary>
     public string PasswordAccount => HostKey.Length > 0 ? HostKey : Address;
@@ -151,7 +153,39 @@ public interface ILocalAddresses
 /// start it again, and quitting or restarting to update leaves it as it was.
 /// AllowAgents: AI agents (nexa-mcp, docs/MCP.md §4.2) may ask to connect; off by default.</summary>
 public sealed record AppSettings(string SignalServer = "", bool AnnounceOnLan = true, string Language = "",
-    bool AllowBrowsers = false, bool ResumeHosting = true, bool UseServerList = false, bool AllowAgents = false);
+    bool AllowBrowsers = false, bool ResumeHosting = true, bool UseServerList = false, bool AllowAgents = false,
+    bool AiApps = false);
+
+/// <summary>An AI agent operating a device through NexaDesk: which AI app, which device.</summary>
+public sealed record AgentSessionInfo(string Client, string Device);
+
+/// <summary>
+/// NexaDesk's MCP server for AI apps on this computer (docs/MCP.md §16): they reach it through nexa-mcp and
+/// operate the devices the person allowed, signed in to by NexaDesk.
+/// </summary>
+public interface IAgentServer
+{
+    /// <summary>Starts serving (nothing changes if it already does); null when it serves, else why not.</summary>
+    string? Start(string deviceName);
+    /// <summary>Stops serving and ends every AI agent's session.</summary>
+    void Stop();
+    /// <summary>Ends every AI agent's session; it keeps serving.</summary>
+    void StopSessions();
+    /// <summary>What AI agents operate now.</summary>
+    IReadOnlyList<AgentSessionInfo> Sessions { get; }
+    /// <summary>Raised on the UI thread when <see cref="Sessions"/> changes.</summary>
+    event Action? Changed;
+}
+
+/// <summary>No MCP server (tests, or a build without the core).</summary>
+public sealed class NoAgentServer : IAgentServer
+{
+    public string? Start(string deviceName) => "not available";
+    public void Stop() { }
+    public void StopSessions() { }
+    public IReadOnlyList<AgentSessionInfo> Sessions => [];
+    public event Action? Changed { add { } remove { } }
+}
 
 /// <summary>The viewer's picture choices, remembered for the next session.</summary>
 public sealed record ViewerPrefs(string Quality = "auto", string Resolution = "auto");

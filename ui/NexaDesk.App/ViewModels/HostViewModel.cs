@@ -1046,7 +1046,8 @@ public sealed partial class MainViewModel : ObservableObject
         IPermissionProbe permissions, IWindowService windows, ILocalAddresses addresses, string deviceName,
         Func<DateTimeOffset>? now = null, ISettingsStore? settings = null, ILoginItem? loginItem = null,
         IKeymapService? keymap = null, IViewerPrefs? viewerPrefs = null, ISavedPasswords? passwords = null,
-        IAppUpdater? updater = null, IServerTrust? serverTrust = null, IServerDirectory? serverDirectory = null, IServerProbe? serverProbe = null)
+        IAppUpdater? updater = null, IServerTrust? serverTrust = null, IServerDirectory? serverDirectory = null, IServerProbe? serverProbe = null,
+        IAgentServer? agentServer = null)
     {
         _keymap = keymap;
         _core = core;
@@ -1074,7 +1075,7 @@ public sealed partial class MainViewModel : ObservableObject
         Tray = new TrayViewModel(Host);
         Updates = new UpdatesViewModel(updater ?? NullAppUpdater.Instance, () => Tray.QuitCommand.Execute(null));
         About = new AboutViewModel(windows);
-        Mcp = McpViewModel.ForThisApp(windows);
+        Mcp = McpViewModel.ForThisApp(windows, agentServer, settings, deviceName);
         ServerTrust = new ServerTrustFlow(serverTrust ?? new NoServerTrust(), windows);
         // A server saved in settings is checked at once; a failure on its certificate,
         // connecting or hosting, asks too.

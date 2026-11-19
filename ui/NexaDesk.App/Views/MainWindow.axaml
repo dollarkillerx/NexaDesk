@@ -178,6 +178,9 @@
                           <Border Classes="badge" IsVisible="{Binding HasPassword}">
                             <TextBlock Text="{l:T Connect.PasswordSaved}" />
                           </Border>
+                          <Border Classes="badge" IsVisible="{Binding AiAllowed}">
+                            <TextBlock Text="{l:T Connect.AiBadge}" />
+                          </Border>
                         </StackPanel>
                         <TextBlock Classes="muted" Text="{Binding Address}" />
                         <TextBlock Classes="muted" Text="{Binding LastSeen, StringFormat={l:T Main.LastConnected}}" />
@@ -194,6 +197,8 @@
                         <TextBox Classes="revealPasswordButton" Text="{Binding EditPassword}" PasswordChar="•" MaxLength="128"
                                  PlaceholderText="{l:T Connect.EditPasswordPlaceholder}" IsEnabled="{Binding !ForgetPassword}" />
                         <CheckBox Content="{l:T Connect.ForgetPassword}" IsChecked="{Binding ForgetPassword}" IsVisible="{Binding HasPassword}" />
+                        <CheckBox Content="{l:T Connect.AiAllowed}" IsChecked="{Binding EditAiAllowed}" />
+                        <TextBlock Classes="muted" TextWrapping="Wrap" Margin="28,0,0,0" Text="{l:T Connect.AiAllowedHint}" />
                         <TextBlock Classes="errorText" Text="{Binding EditError}" IsVisible="{Binding EditError, Converter={x:Static ObjectConverters.IsNotNull}}" />
                         <StackPanel Orientation="Horizontal" Spacing="6">
                           <Button Classes="small accent" Content="{l:T Connect.Save}" Command="{Binding SaveEditCommand}" />
@@ -638,6 +643,25 @@
                     </Expander.Header>
                     <StackPanel Spacing="8">
                       <TextBlock Classes="muted" TextWrapping="Wrap" Text="{l:T Main.McpHelp}" />
+                      <!-- The MCP server in this app: AI apps reach it through nexa-mcp (docs/MCP.md §16). -->
+                      <CheckBox Name="AiAppsBox" Content="{l:T Main.AiApps}" IsChecked="{Binding Serving}" />
+                      <TextBlock Classes="muted" TextWrapping="Wrap" Margin="28,0,0,0" Text="{l:T Main.AiAppsHelp}" />
+                      <TextBlock Classes="errorText" TextWrapping="Wrap" Text="{Binding StartError}"
+                                 IsVisible="{Binding StartError, Converter={x:Static ObjectConverters.IsNotNull}}" />
+                      <Border Classes="warn" Name="AiSessionsPanel" IsVisible="{Binding HasSessions}">
+                        <StackPanel Spacing="4">
+                          <TextBlock Classes="label" Text="{l:T Main.AiAppsOperating}" />
+                          <ItemsControl ItemsSource="{Binding Sessions}">
+                            <ItemsControl.ItemTemplate>
+                              <DataTemplate x:DataType="x:String">
+                                <TextBlock TextWrapping="Wrap" Text="{Binding}" />
+                              </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                          </ItemsControl>
+                          <Button Classes="small danger" Name="AiStopAllButton" HorizontalAlignment="Left" Margin="0,4,0,0"
+                                  Content="{l:T Main.AiAppsStopAll}" Command="{Binding StopSessionsCommand}" />
+                        </StackPanel>
+                      </Border>
                       <Border Classes="warn" IsVisible="{Binding IsMissing}">
                         <TextBlock Name="McpMissingText" TextWrapping="Wrap" Text="{l:T Main.McpMissing}" />
                       </Border>

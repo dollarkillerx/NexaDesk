@@ -13,6 +13,8 @@ pub mod deps;
 pub mod headless;
 pub mod input;
 pub mod keymap;
+#[cfg(any(target_os = "macos", windows))]
+pub mod mcp;
 pub mod memclip;
 pub mod presenter;
 pub mod proto;
