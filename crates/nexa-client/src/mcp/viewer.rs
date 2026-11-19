@@ -1100,8 +1100,8 @@ const DRAG_STEPS: u32 = 12;
 const DRAG_STEP: Duration = Duration::from_millis(16);
 /// For the host to switch displays.
 const SWITCH_WAIT: Duration = Duration::from_secs(10);
-/// For a new shell to answer.
-const SHELL_READY: Duration = Duration::from_secs(15);
+/// For a new shell to answer: PowerShell can take a while to start on a busy PC.
+const SHELL_READY: Duration = Duration::from_secs(30);
 /// For the host to confirm a copy.
 const CLIP_WAIT: Duration = Duration::from_secs(3);
 

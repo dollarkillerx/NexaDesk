@@ -7,6 +7,11 @@
 //! Linux host the shell is told not to echo or prompt, and the command's standard
 //! input is empty, so a command that would wait for typing ends instead. On Windows
 //! (PowerShell, which echoes) the echoed lines and prompts are taken out.
+//!
+//! There is no terminal emulator here, so the few questions a console asks its
+//! terminal are answered by hand (device attributes, cursor position, status): a
+//! recent Windows' pseudo-console asks them as it starts and waits for the answers, so
+//! unanswered, PowerShell never ran a command (found on Windows 11 build 26200).
 
 use std::{
     sync::{Arc, Condvar, Mutex, MutexGuard},
@@ -34,6 +39,59 @@ const MARK: &str = "__NEXA_END";
 struct Out {
     buf: Vec<u8>,
     exited: Option<String>,
+    /// The end of the output so far, for a question split between two reads.
+    tail: Vec<u8>,
+    /// Answers owed to the console's questions, written by whoever waits next.
+    replies: Vec<&'static [u8]>,
+}
+
+/// The questions a console asks its terminal, and the answers a plain VT100-like
+/// terminal gives: primary and secondary device attributes, cursor position (always
+/// the top left: nothing here tracks it), device status.
+const QUESTIONS: [(&[u8], &[u8]); 6] = [
+    (b"\x1b[c", b"\x1b[?1;2c"),
+    (b"\x1b[0c", b"\x1b[?1;2c"),
+    (b"\x1b[>c", b"\x1b[>0;10;1c"),
+    (b"\x1b[>0c", b"\x1b[>0;10;1c"),
+    (b"\x1b[6n", b"\x1b[1;1R"),
+    (b"\x1b[5n", b"\x1b[0n"),
+];
+
+/// The answers owed for the questions in `data`, read after `tail` (the end of the
+/// previous read, so a question split between reads is found once).
+fn questions(tail: &[u8], data: &[u8]) -> Vec<&'static [u8]> {
+    let mut seen = tail.to_vec();
+    seen.extend_from_slice(data);
+    let mut owed = Vec::new();
+    for at in 0..seen.len() {
+        for (q, a) in QUESTIONS {
+            // Only questions that end in the new data: one wholly in the tail was
+            // answered when it arrived.
+            if seen[at..].starts_with(q) && at + q.len() > tail.len() {
+                owed.push(a);
+            }
+        }
+    }
+    owed
+}
+
+/// What the shell printed last, its control characters made visible, for an error.
+fn last_printed(buf: &[u8]) -> String {
+    let text = String::from_utf8_lossy(&buf[buf.len().saturating_sub(600)..]).into_owned();
+    let shown: String = text
+        .chars()
+        .map(|c| match c {
+            '\n' => "\\n".to_owned(),
+            '\r' => "\\r".to_owned(),
+            c if c.is_control() => format!("\\x{:02x}", c as u32),
+            c => c.to_string(),
+        })
+        .collect();
+    if shown.is_empty() {
+        "nothing".into()
+    } else {
+        format!("\"{shown}\"")
+    }
 }
 
 type Shared = Arc<(Mutex<Out>, Condvar)>;
@@ -68,6 +126,12 @@ impl Shell {
                 let mut out = lock(m);
                 match o {
                     TermOut::Data(d) => {
+                        let owed = questions(&out.tail, d);
+                        out.replies.extend(owed);
+                        let mut tail = std::mem::take(&mut out.tail);
+                        tail.extend_from_slice(d);
+                        let keep = tail.len().saturating_sub(8);
+                        out.tail = tail.split_off(keep);
                         out.buf.extend_from_slice(d);
                         if out.buf.len() > KEEP {
                             let cut = out.buf.len() - KEEP;
@@ -92,15 +156,29 @@ impl Shell {
                  PROMPT_EOL_MARK='' PROMPT_COMMAND='' NO_COLOR=1\r",
             );
         }
-        match shell.run(if windows { "$null" } else { "true" }, ready_within) {
-            Ok(r) if !r.timed_out => Ok(shell),
-            Ok(_) => {
+        // Asked again every few seconds until the deadline: a slow PowerShell can
+        // start after the first question was typed.
+        let deadline = Instant::now() + ready_within;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                let seen = last_printed(&lock(&shell.out.0).buf);
                 shell.close();
-                Err("the host's command line did not answer".into())
+                return Err(format!(
+                    "the host's command line did not answer within {} s (it printed {seen})",
+                    ready_within.as_secs()
+                ));
             }
-            Err(e) => {
-                shell.close();
-                Err(e)
+            match shell.run(
+                if windows { "$null" } else { "true" },
+                left.min(Duration::from_secs(10)),
+            ) {
+                Ok(r) if !r.timed_out => return Ok(shell),
+                Ok(_) => {}
+                Err(e) => {
+                    shell.close();
+                    return Err(e);
+                }
             }
         }
     }
@@ -153,6 +231,16 @@ impl Shell {
         let (m, cv) = &*self.out;
         let mut out = lock(m);
         loop {
+            if !out.replies.is_empty() {
+                // Answered off the lock: the output thread takes it to deliver more.
+                let owed = std::mem::take(&mut out.replies);
+                drop(out);
+                for a in owed {
+                    terminal::write(self.id, a);
+                }
+                out = lock(m);
+                continue;
+            }
             let text = String::from_utf8_lossy(&out.buf).into_owned();
             if let Some(r) = finished(&text, marker, self.windows) {
                 return Ok(Some(r));
@@ -307,6 +395,36 @@ fn nonce() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_consoles_questions_are_answered_once_even_split_between_reads() {
+        assert_eq!(
+            questions(b"", b"PS> \x1b[c\x1b[6n"),
+            vec![b"\x1b[?1;2c".as_slice(), b"\x1b[1;1R".as_slice()]
+        );
+        // Split: the start in one read, the end in the next.
+        assert!(questions(b"", b"abc\x1b[").is_empty());
+        assert_eq!(
+            questions(b"abc\x1b[", b"6nxyz"),
+            vec![b"\x1b[1;1R".as_slice()]
+        );
+        // Already answered when it arrived whole: not again.
+        assert!(questions(b"\x1b[6n", b"more").is_empty());
+        assert_eq!(
+            questions(b"", b"\x1b[>c"),
+            vec![b"\x1b[>0;10;1c".as_slice()]
+        );
+        assert!(questions(b"", b"plain text, \x1b[31mred\x1b[0m").is_empty());
+    }
+
+    #[test]
+    fn what_a_silent_shell_printed_is_shown_readably() {
+        assert_eq!(last_printed(b""), "nothing");
+        assert_eq!(
+            last_printed(b"PS C:\\>\x1b[?25h\r\n"),
+            "\"PS C:\\>\\x1b[?25h\\r\\n\""
+        );
+    }
+
     use super::*;
 
     #[test]

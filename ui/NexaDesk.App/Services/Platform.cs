@@ -404,10 +404,13 @@ public sealed class SettingsStore(string path) : ISettingsStore
             using var f = File.OpenRead(path);
             if (f.Length > 1 << 16) return new AppSettings();
             var s = JsonSerializer.Deserialize(f, SettingsJson.Default.AppSettings) ?? new AppSettings();
-            // Only what the app itself would have written is honoured.
-            return new AppSettings(ViewModels.Texts.NormalizeServer(s.SignalServer) ?? "", s.AnnounceOnLan,
-                Localization.L.IsSupported(s.Language ?? "") ? s.Language! : "", s.AllowBrowsers, s.ResumeHosting,
-                s.UseServerList, s.AllowAgents);
+            // Only what the app itself would have written is honoured. Everything else is kept as read: a
+            // field listed here by hand was once left out (AiApps), so AI apps were off after every launch.
+            return s with
+            {
+                SignalServer = ViewModels.Texts.NormalizeServer(s.SignalServer) ?? "",
+                Language = Localization.L.IsSupported(s.Language ?? "") ? s.Language! : "",
+            };
         }
         catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException)
         {

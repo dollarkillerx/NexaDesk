@@ -667,6 +667,22 @@ async fn commands_run_in_one_shell_with_their_status() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_agent_is_told_whether_the_command_line_was_allowed() {
+    for terminal in [true, false] {
+        let h = host(
+            FakeUi::allowing(granted(terminal, false), false),
+            Timeouts::default(),
+        )
+        .await;
+        h.agent.set_allow_agents(true);
+        let agent = Agent::new();
+        let r = connect(&agent, &h).await;
+        assert_eq!(r["isError"], false, "{r}");
+        assert_eq!(texts(&r).contains("command line"), terminal, "{r}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_command_line_not_allowed_is_explained() {
     let (_h, agent) = connected_to(granted(false, false)).await;
     let r = agent

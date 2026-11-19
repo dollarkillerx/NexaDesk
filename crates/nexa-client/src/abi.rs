@@ -836,8 +836,18 @@ pub unsafe extern "C" fn nexa_mcp_start(
             } else {
                 name.trim().to_owned()
             };
-            *serving =
-                Some(crate::mcp::Service::start(&dir, name).map_err(|e| Abi(NEXA_E_INTERNAL, e))?);
+            // In viewer.log either way: a service that did not start leaves AI apps with
+            // nothing to reach, and the reason is otherwise only on screen.
+            match crate::mcp::Service::start(&dir, name) {
+                Ok(service) => {
+                    nexa_media::diag!("ai agents: serving");
+                    *serving = Some(service);
+                }
+                Err(e) => {
+                    nexa_media::diag!("ai agents: could not serve: {e}");
+                    return Err(Abi(NEXA_E_INTERNAL, e));
+                }
+            }
         }
         Ok(())
     })
@@ -850,6 +860,7 @@ pub extern "C" fn nexa_mcp_stop() -> i32 {
     guarded(|| {
         if let Some(service) = mcp().take() {
             service.stop_sessions();
+            nexa_media::diag!("ai agents: stopped");
         }
         Ok(())
     })

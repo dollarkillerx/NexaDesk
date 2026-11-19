@@ -1118,6 +1118,9 @@ nonisolated struct Nexa_Client_Permissions: Sendable {
 
   var audio: Bool = false
 
+  /// the host's command line
+  var terminal: Bool = false
+
   var unknownFields = SwiftProtobuf.UnknownStorage()
 
   init() {}
@@ -2778,7 +2781,7 @@ nonisolated extension Nexa_Client_AnswerTransfer: SwiftProtobuf.Message, SwiftPr
 
 nonisolated extension Nexa_Client_Permissions: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".Permissions"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}view\0\u{1}input\0\u{1}clipboard\0\u{1}file\0\u{1}audio\0")
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}view\0\u{1}input\0\u{1}clipboard\0\u{1}file\0\u{1}audio\0\u{1}terminal\0")
 
   mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -2791,6 +2794,7 @@ nonisolated extension Nexa_Client_Permissions: SwiftProtobuf.Message, SwiftProto
       case 3: try { try decoder.decodeSingularBoolField(value: &self.clipboard) }()
       case 4: try { try decoder.decodeSingularBoolField(value: &self.file) }()
       case 5: try { try decoder.decodeSingularBoolField(value: &self.audio) }()
+      case 6: try { try decoder.decodeSingularBoolField(value: &self.terminal) }()
       default: break
       }
     }
@@ -2812,6 +2816,9 @@ nonisolated extension Nexa_Client_Permissions: SwiftProtobuf.Message, SwiftProto
     if self.audio != false {
       try visitor.visitSingularBoolField(value: self.audio, fieldNumber: 5)
     }
+    if self.terminal != false {
+      try visitor.visitSingularBoolField(value: self.terminal, fieldNumber: 6)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -2821,6 +2828,7 @@ nonisolated extension Nexa_Client_Permissions: SwiftProtobuf.Message, SwiftProto
     if lhs.clipboard != rhs.clipboard {return false}
     if lhs.file != rhs.file {return false}
     if lhs.audio != rhs.audio {return false}
+    if lhs.terminal != rhs.terminal {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

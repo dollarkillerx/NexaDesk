@@ -132,6 +132,36 @@ public class McpTests
         Assert.Equal(2, server.Starts);
     }
 
+    [Fact]
+    public void Turned_on_it_is_on_again_at_the_next_launch_from_the_real_settings_file()
+    {
+        var dir = Directory.CreateTempSubdirectory("nexa-ai-apps-");
+        try
+        {
+            var path = Path.Combine(dir.FullName, "settings.json");
+            var vm = new McpViewModel(new RecordingWindows(), MacPath, true, new FakeAgentServer(), new SettingsStore(path));
+            vm.Serving = true;
+            Assert.True(new SettingsStore(path).Load().AiApps);
+
+            // The next launch: read back from the file, the server starts.
+            var server = new FakeAgentServer();
+            var relaunched = new McpViewModel(new RecordingWindows(), MacPath, true, server, new SettingsStore(path));
+            Assert.True(relaunched.Serving);
+            Assert.True(server.IsServing);
+
+            // Saving another setting keeps it on: every field survives a load and save.
+            var store = new SettingsStore(path);
+            store.Save(store.Load() with { AllowBrowsers = true });
+            var after = store.Load();
+            Assert.True(after.AiApps);
+            Assert.True(after.AllowBrowsers);
+        }
+        finally
+        {
+            dir.Delete(recursive: true);
+        }
+    }
+
     static async Task Until(Func<bool> done)
     {
         for (var i = 0; i < 200 && !done(); i++) await Task.Delay(10);

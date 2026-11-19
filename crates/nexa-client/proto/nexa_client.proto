@@ -66,6 +66,7 @@ message AnswerTransfer { uint64 id = 1; bool accept = 2; }     // to TRANSFER_NE
 
 message Permissions {
   bool view = 1; bool input = 2; bool clipboard = 3; bool file = 4; bool audio = 5;
+  bool terminal = 6;           // the host's command line
 }
 
 message KnownHost { string key = 1; string name = 2; uint64 last_seen = 3; }

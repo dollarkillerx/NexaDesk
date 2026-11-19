@@ -213,6 +213,9 @@ pub struct Permissions {
     pub file: bool,
     #[prost(bool, tag = "5")]
     pub audio: bool,
+    /// The host's command line: the app offers a terminal, an AI agent `nexa_run`.
+    #[prost(bool, tag = "6")]
+    pub terminal: bool,
 }
 
 #[derive(Clone, PartialEq, Message)]

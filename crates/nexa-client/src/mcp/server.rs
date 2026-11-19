@@ -486,6 +486,9 @@ fn describe(v: &Viewer, r: &Remote) -> String {
     if perms.file {
         allowed.push("files");
     }
+    if perms.terminal {
+        allowed.push("command line");
+    }
     let (list, current) = v.displays(r);
     let current = current.or_else(|| list.first().map(|d| d.id));
     let displays = list

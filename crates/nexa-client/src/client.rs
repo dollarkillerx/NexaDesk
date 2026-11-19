@@ -813,6 +813,7 @@ fn perms_message(p: &nexa_wire::control::Permissions) -> Permissions {
         clipboard: p.clipboard,
         file: p.file,
         audio: p.audio,
+        terminal: p.terminal,
     }
 }
 
