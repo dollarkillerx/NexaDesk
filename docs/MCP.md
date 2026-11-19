@@ -1,6 +1,6 @@
 # NexaDesk MCP 方案
 
-> 状态（2026-11-19）：A0（macOS，§9）、A1（被控端知情，§10）、A2 和 A3（§11）已实现；agent 会话 G0（§13、§14）已实现，未提交，取代 A0 的视频截图。
+> 状态（2026-11-19）：A0（macOS，§9）、A1（被控端知情，§10）、A2 和 A3（§11）已实现；agent 会话 G0（§13、§14）已实现并推送，取代 A0 的视频截图；G1–G3（§15）已实现，未提交。
 > - 已验证：用本机的演示主机（`demo_host`，127.0.0.1:47900，VideoToolbox 真编真解）按 MCP 协议走完一遍：连接、截图、点击、输入、按键、滚动、断开，以及配对后不用码重连。被控端不接受 AI 代理时被拒且不弹窗；接受时确认请求标明是 AI 代理。
 > - A2/A3 已验证：拖动、显示器切换在演示主机上实测；命令行和剪贴板在集成测试里对真实的被控端代码验证（命令行开的是本机真实的 shell）；macOS 安装包里带上了 `nexa-mcp`，Developer ID 签名、hardened runtime 下能正常连接截图。
 > - 尚未测试：真实的被控端（应用里的确认窗口和提示条只看过渲染图）、经信令服务器连接、在 Claude Code 里实际调用，以及 Windows 上的 `nexa-mcp.exe`（只在 Mac 上交叉编译通过，没有在 Windows 上运行过）。
@@ -299,7 +299,7 @@ claude mcp add nexadesk -- /path/to/target/release/nexa-mcp
 
 ## 13. Agent 会话（方案）
 
-> 状态（2026-11-19）：G0 已实现（§14）。取代原先“在视频流里截图”的做法（§3.2）。被控端还没有发布过，所以不考虑兼容旧版。
+> 状态（2026-11-19）：G0 已实现（§14），G1–G3 已实现（§15）。取代原先“在视频流里截图”的做法（§3.2）。被控端还没有发布过，所以不考虑兼容旧版。
 
 ### 13.1 结论
 
@@ -468,5 +468,63 @@ window "未命名 — 文本编辑" (0,0 1568×980)
   - 稳定判断的门槛（0.2% / 24）。
   - 需要装了被控端的另一台 Mac，或者先在这台 Mac 上授权。
 - 全选、高亮这类细小的变化，像素和焦点值都看不出来，会报告“没变”。实际中是否误导 agent，要看真实使用。
-- G1–G3 照 §13.6。
+- G1–G3 见 §15。
+
+## 15. G1–G3 实现（与方案的差异）
+
+> 状态（2026-11-19）：已实现，未提交。macOS 部分在演示主机和测试里验证；**Windows 部分（G2）只在 Mac 上交叉编译、clippy 通过，没有在 Windows 上运行过**。真实 Mac 的辅助功能操作同样还没跑过。
+
+### G1：截图上标出编号（set-of-marks）
+
+- `ObserveRequest.marks`（字段 8）：截图时顺带读一次元素树，在截图上给每个编号画框，并在框的左上角（上方放得下就放在上方）贴一个同色的标签，写上编号。颜色按编号轮换，共 6 种。数字用内置的 3×5 点阵放大 3 倍（9×15 像素），不依赖字体。
+- 树也一起返回，编号随之替换成这棵树的编号。
+- `nexa_screenshot {marks: true}`：编号和树里的文字对不上号时用，比如图标按钮、名字重复的元素。
+
+### G3：不移动指针，按编号操作
+
+- 协议：Agent 流上新增 `ActRequest`（字段 5）和 `ActReply`（字段 6），一条流一个动作。动作有 `PRESS`、`FOCUS`、`SET_VALUE`。`ObserveReply.tree`（字段 19）给每棵树编号，`ActRequest` 带上它，不是最后一棵树就拒绝（“call nexa_ui again”）。
+- 被控端记着最后一棵树里每个编号的元素句柄（`UiNode.element`）。读树失败也会作废旧句柄。动作要“键盘和鼠标”权限，先等 `after_mark` 之前的输入处理完再做。
+- macOS：
+  - `PRESS` 用 `AXPress`；表格的行没有 AXPress，改为设 `AXSelected`。
+  - `FOCUS` 设 `AXFocused`，`SET_VALUE` 设 `AXValue`。
+  - 错误码翻译成 agent 能照着做的话，比如“元素没了，重新 nexa_ui”“这个元素不能这样操作，改用点击”。
+- `nexa-mcp`：
+  - 新增 `nexa_press {ref, then}` 和 `nexa_set_value {ref, text, then}`；
+  - 做完照常等画面稳定，报告变化；
+  - 说明里写明什么时候用它们：点击点不中，不想移动指针，一次填好整个输入框。
+- **网页的树裁剪**：
+  - 整块不在当前显示器上的部分（大小不为 0）不再往下遍历。很长的网页、滚得很远的列表，只看屏幕上的那一段，不会因为遍历上限停在屏幕外。
+  - 链接、按钮没有名字时，用里面的第一段文字当名字。
+
+### G2：Windows 被控端
+
+- `win_view.rs`：
+  - **元素树**：用 UI Automation 读前台窗口的元素。缓存请求加控件视图，每个元素的子元素一次跨进程调用取回。应用超时 1.5 秒，遍历上限和 macOS 相同（6000 个元素、40 层、3 秒），也同样裁剪屏幕外的部分。
+  - **打开的右键菜单**：是桌面顶层的单独窗口，也会读进来。
+  - **控件类型的对应**：Button/SplitButton → button，Edit → textfield 或 password，ListItem/TreeItem/DataItem → row，Hyperlink → link，等等。密码框不读值。
+  - **前台信息**：程序名取可执行文件名，窗口标题用 `GetWindowTextW`。焦点元素用 UIA 读，内容只比指纹。
+  - **操作**：`PRESS` 依次尝试 Invoke、Toggle、SelectionItem.Select、ExpandCollapse、LegacyIAccessible 的默认动作；`FOCUS` 用 `SetFocus`；`SET_VALUE` 用 ValuePattern（只读的输入框会报错）。
+  - 每次调用都加入多线程 COM 套间，所以保存下来的元素句柄可以在任何阻塞线程上使用。
+- **截图**（`nexa_media::windows::screenshot_rgba`）：用 GDI 的 `StretchBlt`（HALFTONE，带 CAPTUREBLT）按 agent 坐标系的大小截取，再用 `DrawIconEx` 画上光标。不需要视频那套 DXGI 复制。
+- 坐标：Windows 被控端的“点”就是物理像素，和 UIA、`GetCursorPos` 用的一致。
+
+### 测试
+
+- `nexa-agent/tests/host.rs`：
+  - 按编号操作：最后一棵树的编号有效，旧树的编号被拒；平台的错误原样返回；整个过程不注入任何指针或按键输入。
+  - 没有“键盘和鼠标”权限时拒绝操作。
+  - 带编号的截图在元素框上画了标记，元素中间不动。
+- `nexa-mcp/tests/mcp.rs`：读树前不能按编号操作；带编号的截图同时返回树；`nexa_press`、`nexa_set_value` 都能用，并且不移动指针。
+- `agent_view` 单元测试：标记框、标签和数字的位置与颜色。
+- 演示主机实测：带编号的截图（见上），`nexa_press` 和 `nexa_set_value` 都起作用，指针一直停在 (0, 0)。
+- 整个 workspace 的测试通过。clippy 在 macOS、Windows（gnu 交叉编译，包括 `win_view` 和 GDI 截图）和 iOS 上都没有警告。
+
+### 待做
+
+- 在 Windows 上实际跑一遍：
+  - 记事本、资源管理器、Edge 网页、设置的元素树；
+  - 截图和光标；
+  - 操作是否生效；
+  - 高 DPI 多显示器下的坐标。
+- 在真实 Mac 上跑一遍 G0–G3（同 §14 待做）。
 

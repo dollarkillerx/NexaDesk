@@ -22,6 +22,8 @@ mod real;
 mod real;
 #[cfg(any(target_os = "macos", windows))]
 mod terminal;
+#[cfg(windows)]
+mod win_view;
 
 #[cfg(any(target_os = "macos", windows))]
 fn main() {

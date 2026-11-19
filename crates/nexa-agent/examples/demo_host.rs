@@ -42,7 +42,8 @@ mod demo {
     use nexa_agent::{
         AgentConfig, AgentEvent, AgentUi, Platform, ScreenInfo,
         agent_view::{
-            AgentView, Frontmost, PointRect, Rgba, UiNode, UiOptions, UiTree, fingerprint,
+            Act, AgentView, Element, Frontmost, PointRect, Rgba, UiNode, UiOptions, UiTree,
+            fingerprint,
         },
         start,
     };
@@ -118,6 +119,13 @@ mod demo {
         selected: bool,
         /// Command or Control is held.
         modifier: bool,
+    }
+
+    /// The demo window's elements an agent can act on without the pointer.
+    #[derive(Debug)]
+    enum DemoElement {
+        Button,
+        Field,
     }
 
     const BUTTON: (f64, f64, f64, f64) = (100.0, 100.0, 160.0, 40.0);
@@ -222,6 +230,25 @@ mod demo {
             }
         }
 
+        fn act(&self, element: &Element, act: &Act) -> Result<(), String> {
+            let which = element
+                .0
+                .downcast_ref::<DemoElement>()
+                .ok_or("not the demo's")?;
+            let mut form = lock(&self.form);
+            match (which, act) {
+                (DemoElement::Button, Act::Press) => form.clicks += 1,
+                (DemoElement::Field, Act::Focus | Act::Press) => form.field_focused = true,
+                (DemoElement::Field, Act::SetValue(text)) => {
+                    form.name = text.clone();
+                    form.selected = false;
+                }
+                _ => return Err("this element cannot do that: click it instead".into()),
+            }
+            println!("ACT {which:?} {act:?}");
+            Ok(())
+        }
+
         fn ui(&self, _: &UiOptions) -> Result<UiTree, String> {
             let form = lock(&self.form);
             let d = DISPLAYS[0];
@@ -239,6 +266,7 @@ mod demo {
                     name: "Click me".into(),
                     bounds: Some(rect(BUTTON)),
                     interactive: true,
+                    element: Some(Element(Arc::new(DemoElement::Button))),
                     ..UiNode::default()
                 },
                 UiNode {
@@ -253,6 +281,7 @@ mod demo {
                     },
                     bounds: Some(rect(FIELD)),
                     interactive: true,
+                    element: Some(Element(Arc::new(DemoElement::Field))),
                 },
                 UiNode {
                     depth: 1,

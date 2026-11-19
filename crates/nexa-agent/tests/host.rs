@@ -1248,7 +1248,7 @@ async fn the_fixed_password_does_not_let_an_agent_in_unasked() {
 // ---------------------------------------------------------------------------------
 
 use nexa_session::{
-    agent::{AgentBody, AgentMsg, ObserveReply, ObserveRequest},
+    agent::{ActReply, ActRequest, Action, AgentBody, AgentMsg, ObserveReply, ObserveRequest},
     proto::InputMark,
 };
 
@@ -1565,4 +1565,145 @@ async fn a_look_gives_each_refs_centre() {
     // OK at (163,163 163×65) and Name at (163,327 327×49), as the text has them.
     let centres: Vec<(i32, i32)> = reply.refs.iter().map(|r| (r.x, r.y)).collect();
     assert_eq!(centres, vec![(244, 195), (326, 351)]);
+}
+
+/// An action on a ref: `Ok` when done, the host's reason otherwise.
+async fn act(conn: &Connection, request: ActRequest) -> Result<(), String> {
+    let (mut send, mut recv) = open_bi(conn, StreamType::Agent).await.unwrap();
+    send.send(&AgentMsg::from(AgentBody::Act(request)))
+        .await
+        .unwrap();
+    match tokio::time::timeout(WAIT, recv.next::<AgentMsg>())
+        .await
+        .expect("an answer")
+        .unwrap()
+        .and_then(|m| m.body)
+    {
+        Some(AgentBody::Acted(ActReply { error })) if error.is_empty() => Ok(()),
+        Some(AgentBody::Acted(ActReply { error })) => Err(error),
+        Some(AgentBody::Refused(why)) => Err(why),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+fn press(tree: u64, r: u32) -> ActRequest {
+    ActRequest {
+        tree,
+        r#ref: r,
+        action: Action::Press as i32,
+        ..Default::default()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refs_are_acted_on_without_the_pointer_while_their_tree_is_the_last() {
+    let h = host_with(FakeUi::allowing(perms(true, true, false), false)).await;
+    let (_ep, conn, mut accepted) = agent_session(&h).await;
+    first_config(&mut accepted).await;
+    let Answer::Look(first, _) = look(&conn, ui_look()).await else {
+        panic!("refused")
+    };
+    assert_ne!(first.tree, 0);
+    act(&conn, press(first.tree, 1)).await.unwrap();
+    act(
+        &conn,
+        ActRequest {
+            tree: first.tree,
+            r#ref: 2,
+            action: Action::SetValue as i32,
+            text: "hello".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        *h.platform.view.acted.lock().unwrap(),
+        vec!["OK press".to_owned(), "Name set hello".to_owned()]
+    );
+    // What the platform says no to comes back as it said it.
+    let e = act(
+        &conn,
+        ActRequest {
+            tree: first.tree,
+            r#ref: 1,
+            action: Action::SetValue as i32,
+            text: "x".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(e, "a button has no value");
+    assert!(
+        act(&conn, press(first.tree, 3))
+            .await
+            .unwrap_err()
+            .contains("no @e3")
+    );
+    // A newer tree: the first one's refs no longer hold.
+    let Answer::Look(second, _) = look(&conn, ui_look()).await else {
+        panic!("refused")
+    };
+    assert!(second.tree > first.tree);
+    let e = act(&conn, press(first.tree, 1)).await.unwrap_err();
+    assert!(e.contains("call nexa_ui again"), "{e}");
+    // No pointer moved for any of it.
+    assert!(h.platform.injected.all().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn acting_needs_the_keyboard_and_mouse_permission() {
+    let h = host_with(FakeUi::allowing(perms(true, false, false), false)).await;
+    let (_ep, conn, mut accepted) = agent_session(&h).await;
+    first_config(&mut accepted).await;
+    let Answer::Look(reply, _) = look(&conn, ui_look()).await else {
+        panic!("refused")
+    };
+    let e = act(&conn, press(reply.tree, 1)).await.unwrap_err();
+    assert_eq!(e, "the host did not allow keyboard and mouse");
+    assert!(h.platform.view.acted.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_marked_screenshot_boxes_and_numbers_the_refs() {
+    let h = host_with(FakeUi::allowing(perms(true, true, false), false)).await;
+    let (_ep, conn, mut accepted) = agent_session(&h).await;
+    first_config(&mut accepted).await;
+    let plain = ObserveRequest {
+        screenshot: true,
+        ..Default::default()
+    };
+    let Answer::Look(_, unmarked) = look(&conn, plain).await else {
+        panic!("refused")
+    };
+    let Answer::Look(reply, marked) = look(
+        &conn,
+        ObserveRequest {
+            marks: true,
+            ..plain
+        },
+    )
+    .await
+    else {
+        panic!("refused")
+    };
+    // The tree comes with it, and its refs are the ones marked.
+    assert_eq!(reply.refs.len(), 2);
+    assert!(reply.ui.contains("@e1 button \"OK\""), "{}", reply.ui);
+    let pixels = |png: &[u8]| {
+        let decoder = png::Decoder::new(std::io::Cursor::new(png.to_vec()));
+        let mut reader = decoder.read_info().unwrap();
+        let mut buf = vec![0; reader.output_buffer_size().unwrap()];
+        reader.next_frame(&mut buf).unwrap();
+        buf
+    };
+    let (a, b) = (pixels(&unmarked), pixels(&marked));
+    // OK at (163,163 163×65): its box's left edge is drawn, its middle is not.
+    let at = |buf: &[u8], x: usize, y: usize| {
+        let i = (y * 1568 + x) * 3;
+        [buf[i], buf[i + 1], buf[i + 2]]
+    };
+    assert_ne!(at(&a, 163, 190), at(&b, 163, 190));
+    assert_eq!(at(&a, 244, 195), at(&b, 244, 195));
 }

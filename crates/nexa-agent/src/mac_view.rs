@@ -9,12 +9,15 @@
 use std::{
     ffi::c_void,
     ptr,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use nexa_agent::{
     ScreenInfo,
-    agent_view::{AgentView, Frontmost, PointRect, Rgba, UiNode, UiOptions, UiTree, fingerprint},
+    agent_view::{
+        Act, AgentView, Element, Frontmost, PointRect, Rgba, UiNode, UiOptions, UiTree, fingerprint,
+    },
 };
 use objc2_core_foundation::{CFNumber, CFString};
 
@@ -47,6 +50,7 @@ unsafe extern "C" {
         value: *mut CFTypeRef,
     ) -> AXError;
     fn AXUIElementSetAttributeValue(e: CFTypeRef, attr: CFTypeRef, value: CFTypeRef) -> AXError;
+    fn AXUIElementPerformAction(e: CFTypeRef, action: CFTypeRef) -> AXError;
     fn AXUIElementSetMessagingTimeout(e: CFTypeRef, seconds: f32) -> AXError;
     fn AXValueGetValue(value: CFTypeRef, kind: u32, out: *mut c_void) -> bool;
     fn AXValueGetTypeID() -> usize;
@@ -298,12 +302,15 @@ impl Walk<'_> {
         let role = string(e, "AXRole").unwrap_or_default();
         let subrole = string(e, "AXSubrole");
         let mut next_depth = kept_depth;
+        // Where it is, once read: to leave out what is wholly off the display.
+        let mut known: Option<Option<PointRect>> = None;
         if let Some((short, interactive)) = role_of(&role, subrole.as_deref()) {
             let is_text = matches!(short, "text" | "heading" | "image");
             let interactive = interactive || (short == "image" && string(e, "AXTitle").is_some());
             let wanted = depth == 0 || interactive || (!self.options.interactive_only && is_text);
             if wanted {
                 let node = read_node(e, short, interactive, kept_depth);
+                known = Some(node.bounds);
                 // Off the display shown it is no use, and must not crowd out what is
                 // on it (a long list scrolled far down); its children are still seen.
                 let shown = depth == 0
@@ -325,6 +332,16 @@ impl Walk<'_> {
             {
                 return;
             }
+        }
+        // A part wholly off the display (most of a long web page, a list scrolled far)
+        // holds nothing on it: not looked through, which keeps a big page within the
+        // walk's limits. A size of 0 says nothing about where the children are.
+        if depth > 0
+            && known
+                .unwrap_or_else(|| bounds(e))
+                .is_some_and(|b| b.w >= 1.0 && b.h >= 1.0 && !b.overlaps(&self.options.area))
+        {
+            return;
         }
         for child in children(e) {
             self.visit(&child, depth + 1, next_depth);
@@ -357,6 +374,12 @@ fn read_node(e: &Cf, short: &'static str, interactive: bool, depth: u16) -> UiNo
         // Never a password's text.
         "password" => {}
         "slider" | "stepper" => value = string(e, "AXValue"),
+        // A web link or button names itself by the text in it.
+        "link" | "button" => {
+            if name.is_empty() {
+                name = first_text(e, 2).unwrap_or_default();
+            }
+        }
         "row" => {
             if name.is_empty() {
                 name = first_text(e, 3).unwrap_or_default();
@@ -393,6 +416,10 @@ fn read_node(e: &Cf, short: &'static str, interactive: bool, depth: u16) -> UiNo
         states,
         bounds: bounds(e),
         interactive,
+        element: interactive.then(|| {
+            // SAFETY: `e` is a valid element; the copy is +1 and owned by the handle.
+            Element(Arc::new(AxElement(Cf(unsafe { CFRetain(e.0) }))))
+        }),
     }
 }
 
@@ -434,6 +461,37 @@ fn front_app() -> Option<Cf> {
 
 fn front_window(app: &Cf) -> Option<Cf> {
     attr(app, "AXFocusedWindow").or_else(|| attr(app, "AXMainWindow"))
+}
+
+/// An element kept with the last tree, to act on.
+struct AxElement(Cf);
+
+// SAFETY: AXUIElements are CF objects, retained and released from any thread; the
+// Accessibility calls made on them are made from one blocking thread at a time.
+unsafe impl Send for AxElement {}
+unsafe impl Sync for AxElement {}
+
+/// What an Accessibility error means to an agent.
+fn ax_error(what: &str, code: AXError) -> String {
+    match code {
+        -25202 => "the element is gone (the screen changed): call nexa_ui again".into(),
+        -25205 | -25206 => format!("this element cannot {what}: click it instead"),
+        -25204 => "the app did not answer in time".into(),
+        -25211 => "this Mac has not given NexaDesk the Accessibility permission".into(),
+        code => format!("could not {what} (Accessibility error {code})"),
+    }
+}
+
+fn perform(e: &Cf, action: &str) -> AXError {
+    let key = name(action);
+    // SAFETY: a valid element and CFString.
+    unsafe { AXUIElementPerformAction(e.0, (&*key as *const CFString).cast()) }
+}
+
+fn set(e: &Cf, attribute: &str, value: CFTypeRef) -> AXError {
+    let key = name(attribute);
+    // SAFETY: a valid element, CFString key and CF value.
+    unsafe { AXUIElementSetAttributeValue(e.0, (&*key as *const CFString).cast(), value) }
 }
 
 pub struct MacView;
@@ -528,6 +586,45 @@ impl AgentView for MacView {
             nodes: walk.nodes,
             cut_short: walk.cut_short,
         })
+    }
+
+    fn act(&self, element: &Element, act: &Act) -> Result<(), String> {
+        let e = &element
+            .0
+            .downcast_ref::<AxElement>()
+            .ok_or("not an element of this Mac")?
+            .0;
+        // SAFETY: plain FFI on a valid element; the timeout keeps a hung app from
+        // holding the action up.
+        unsafe { AXUIElementSetMessagingTimeout(e.0, 2.0) };
+        let code = match act {
+            Act::Press => match perform(e, "AXPress") {
+                // A table's row has no press: choosing it is selecting it.
+                -25206 if string(e, "AXRole").as_deref() == Some("AXRow") => {
+                    // SAFETY: a CF static.
+                    set(e, "AXSelected", unsafe { kCFBooleanTrue })
+                }
+                code => code,
+            },
+            // SAFETY: a CF static.
+            Act::Focus => set(e, "AXFocused", unsafe { kCFBooleanTrue }),
+            Act::SetValue(text) => {
+                let value = CFString::from_str(text);
+                set(e, "AXValue", (&*value as *const CFString).cast())
+            }
+        };
+        if code == AX_SUCCESS {
+            Ok(())
+        } else {
+            Err(ax_error(
+                match act {
+                    Act::Press => "be pressed",
+                    Act::Focus => "take the focus",
+                    Act::SetValue(_) => "have its value set",
+                },
+                code,
+            ))
+        }
     }
 
     fn pointer(&self) -> Option<(f64, f64)> {

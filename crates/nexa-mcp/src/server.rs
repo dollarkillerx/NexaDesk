@@ -8,12 +8,13 @@
 use std::io::{BufRead, Write};
 
 use base64::Engine;
-use nexa_session::agent::ObserveReply;
 use serde_json::{Value, json};
+
+use nexa_session::agent::{Action, ObserveReply};
 
 use crate::{
     keys,
-    viewer::{Button, Looked, MAX_TEXT, Remote, Target, Viewer},
+    viewer::{Button, LookFor, Looked, MAX_TEXT, Remote, Target, Viewer},
 };
 
 /// Protocol versions this server speaks; the newest is offered to clients asking for
@@ -28,6 +29,9 @@ rather than by coordinates where you can. Refs hold until your next nexa_ui: rea
 the screen changes. When the elements do not show what you need (pictures, canvases, games, \
 some Electron or custom-drawn apps, or to check how something looks), call nexa_screenshot: \
 a lossless picture, the pointer drawn in, whose pixels are the coordinates actions take. \
+nexa_press and nexa_set_value act on a ref through the accessibility API without moving the \
+pointer: when a click does not land, or to fill a field in one go. nexa_screenshot {marks: \
+true} boxes and numbers the refs on the picture. \
 Each action waits until the remote computer has carried it out and its screen has settled \
 (up to 3 s), then says whether the screen changed, what is in front and what has the keyboard \
 focus; pass then: \"ui\" or \"screenshot\" to get the new elements or picture with it. Typing \
@@ -146,13 +150,41 @@ impl Server {
                 if !(0..=2000).contains(&max) {
                     return Err("`max_nodes` is 1 to 2000".into());
                 }
-                let looked = v.look(&r, 0, true, false, !all, max as u32)?;
+                let what = LookFor {
+                    ui: true,
+                    all,
+                    max_nodes: max as u32,
+                    ..LookFor::default()
+                };
+                let looked = v.look(&r, 0, &what)?;
                 Ok(look_content(&looked, None))
             }
             "nexa_screenshot" => {
                 let r = v.remote(session_arg(args)?)?;
-                let looked = v.look(&r, 0, false, true, true, 0)?;
+                let marks = args.get("marks").and_then(Value::as_bool).unwrap_or(false);
+                let what = LookFor {
+                    screenshot: true,
+                    marks,
+                    ..LookFor::default()
+                };
+                let looked = v.look(&r, 0, &what)?;
                 Ok(look_content(&looked, None))
+            }
+            "nexa_press" => {
+                let r = v.remote(session_arg(args)?)?;
+                let target = str_arg(args, "ref")?.ok_or("`ref` is required")?;
+                v.act(&r, target, Action::Press, "")?;
+                self.after(&r, args, 0, &format!("Pressed {target}"))
+            }
+            "nexa_set_value" => {
+                let r = v.remote(session_arg(args)?)?;
+                let target = str_arg(args, "ref")?.ok_or("`ref` is required")?;
+                let t = str_arg(args, "text")?.ok_or("`text` is required")?;
+                if t.chars().count() > MAX_TEXT {
+                    return Err(format!("at most {MAX_TEXT} characters at a time"));
+                }
+                v.act(&r, target, Action::SetValue, t)?;
+                self.after(&r, args, 0, &format!("Set the value of {target}"))
             }
             "nexa_click" => {
                 let r = v.remote(session_arg(args)?)?;
@@ -332,7 +364,13 @@ impl Server {
             "screenshot" => (false, true),
             other => return Err(format!("`then` is none, ui or screenshot, not {other}")),
         };
-        match self.viewer.look(r, mark, ui, screenshot, true, 0) {
+        let what = LookFor {
+            settle: true,
+            ui,
+            screenshot,
+            ..LookFor::default()
+        };
+        match self.viewer.look(r, mark, &what) {
             Ok(looked) => Ok(look_content(&looked, Some(done))),
             Err(e) => Ok(vec![text(&format!(
                 "{done}, but the screen could not be looked at afterwards: {e}"
@@ -609,7 +647,13 @@ fn tools() -> Vec<Value> {
         json!({
             "name": "nexa_screenshot",
             "description": "A lossless picture of the remote screen, the pointer drawn in. For what the elements do not show: pictures, canvases, games, apps whose elements cannot be read, or to check how something looks. Its pixels are the coordinates actions take.",
-            "inputSchema": { "type": "object", "properties": { "session": session } },
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session": session,
+                    "marks": { "type": "boolean", "description": "Box and number every element you can act on, from a fresh element tree whose refs (@e1 is box 1) replace the last ones; the tree comes too. For telling which ref is which on the screen." },
+                },
+            },
         }),
         json!({
             "name": "nexa_click",
@@ -636,6 +680,33 @@ fn tools() -> Vec<Value> {
                     "then": then,
                 },
                 "required": ["text"],
+            },
+        }),
+        json!({
+            "name": "nexa_press",
+            "description": "Do an element's own action through the remote computer's accessibility API: press a button, toggle a checkbox, choose a row or menu item, open a pop-up. The pointer does not move and the element need not be uncovered. For when a click does not land, or the pointer should stay where it is; elements an app draws itself may not have one: click those.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session": session,
+                    "ref": { "type": "string", "description": "A ref from the last nexa_ui, like @e3." },
+                    "then": then,
+                },
+                "required": ["ref"],
+            },
+        }),
+        json!({
+            "name": "nexa_set_value",
+            "description": format!("Replace a text field's whole text with `text` through the accessibility API, in one go: no typing, no keyboard layout or input method in the way, the pointer does not move. At most {MAX_TEXT} characters. Some fields only notice typing (search-as-you-type, forms that check each key): use nexa_type for those."),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session": session,
+                    "ref": { "type": "string", "description": "A field's ref from the last nexa_ui." },
+                    "text": { "type": "string" },
+                    "then": then,
+                },
+                "required": ["ref", "text"],
             },
         }),
         json!({

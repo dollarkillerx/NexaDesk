@@ -10,6 +10,8 @@
 //!   bool interactive_only = 5;
 //!   uint32 max_nodes = 6;
 //!   bool screenshot = 7;        // a lossless PNG, the pointer drawn in
+//!   bool marks = 8;             // the screenshot with each ref boxed and numbered
+//!                               // (reads the elements, as `ui` does)
 //! }
 //! message ObserveReply {
 //!   uint32 display = 1; uint32 w = 2; uint32 h = 3;  // the agent's pixels of that display
@@ -18,12 +20,25 @@
 //!   bool has_pointer = 10; sint32 pointer_x = 11; sint32 pointer_y = 12;
 //!   string ui = 13; string ui_error = 14;
 //!   uint32 png_len = 15; string screenshot_error = 16;
+//!   string watch_error = 17;     // the screen could not be watched for changes
+//!   repeated RefCenter refs = 18;
+//!   uint64 tree = 19;            // names the refs, for `ActRequest` (0: none read)
 //! }
+//! message ActRequest {          // do something to a ref, without the pointer
+//!   uint64 after_mark = 1;      // once the input stream got this far
+//!   uint64 tree = 2;            // the tree the ref is from: must be the last one read
+//!   uint32 ref = 3;             // 1 for @e1
+//!   Action action = 4;          // PRESS, FOCUS or SET_VALUE
+//!   string text = 5;            // for SET_VALUE
+//! }
+//! message ActReply { string error = 1; }  // empty: done
 //! message AgentMsg { oneof body {
-//!   ObserveRequest observe = 1;  // agent → host, the only message it sends
+//!   ObserveRequest observe = 1;  // agent → host: a look …
 //!   ObserveReply reply = 2;      // host → agent, first
 //!   bytes png = 3;               // host → agent: the PNG in pieces, png_len in all
-//!   string refused = 4;          // host → agent, instead of a reply
+//!   string refused = 4;          // host → agent, instead of a reply or an acted
+//!   ActRequest act = 5;          // agent → host: … or an action, one per stream
+//!   ActReply acted = 6;          // host → agent
 //! } }
 //! ```
 //!
@@ -74,6 +89,8 @@ pub struct ObserveRequest {
     pub max_nodes: u32,
     #[prost(bool, tag = "7")]
     pub screenshot: bool,
+    #[prost(bool, tag = "8")]
+    pub marks: bool,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -117,6 +134,45 @@ pub struct ObserveReply {
     /// The centre of each ref in `ui`, in the agent's pixels: `refs[i]` is `@e{i+1}`.
     #[prost(message, repeated, tag = "18")]
     pub refs: Vec<RefCenter>,
+    /// Which tree `refs` belong to, for an [`ActRequest`]; 0 when none was read.
+    #[prost(uint64, tag = "19")]
+    pub tree: u64,
+}
+
+/// What an [`ActRequest`] does to its element, through the accessibility API: the
+/// pointer does not move, and the element need not be uncovered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, prost::Enumeration)]
+#[repr(i32)]
+pub enum Action {
+    Unknown = 0,
+    /// Its default action: a button's press, a checkbox's toggle, a row's selection,
+    /// a menu's opening.
+    Press = 1,
+    /// Gives it the keyboard focus.
+    Focus = 2,
+    /// Replaces a field's text with `text`.
+    SetValue = 3,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct ActRequest {
+    #[prost(uint64, tag = "1")]
+    pub after_mark: u64,
+    #[prost(uint64, tag = "2")]
+    pub tree: u64,
+    #[prost(uint32, tag = "3")]
+    pub r#ref: u32,
+    #[prost(enumeration = "Action", tag = "4")]
+    pub action: i32,
+    #[prost(string, tag = "5")]
+    pub text: String,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct ActReply {
+    /// Why it was not done; empty when it was.
+    #[prost(string, tag = "1")]
+    pub error: String,
 }
 
 #[derive(Clone, Copy, PartialEq, Message)]
@@ -137,11 +193,15 @@ pub enum AgentBody {
     Png(Vec<u8>),
     #[prost(string, tag = "4")]
     Refused(String),
+    #[prost(message, tag = "5")]
+    Act(ActRequest),
+    #[prost(message, tag = "6")]
+    Acted(ActReply),
 }
 
 #[derive(Clone, PartialEq, Message)]
 pub struct AgentMsg {
-    #[prost(oneof = "AgentBody", tags = "1, 2, 3, 4")]
+    #[prost(oneof = "AgentBody", tags = "1, 2, 3, 4, 5, 6")]
     pub body: Option<AgentBody>,
 }
 
@@ -174,7 +234,16 @@ mod tests {
             interactive_only: true,
             max_nodes: 300,
             screenshot: false,
+            marks: true,
         }));
         assert_eq!(AgentMsg::decode(m.encode_to_vec().as_slice()).unwrap(), m);
+        let a = AgentMsg::from(AgentBody::Act(ActRequest {
+            after_mark: 3,
+            tree: 2,
+            r#ref: 5,
+            action: Action::SetValue as i32,
+            text: "hello".into(),
+        }));
+        assert_eq!(AgentMsg::decode(a.encode_to_vec().as_slice()).unwrap(), a);
     }
 }

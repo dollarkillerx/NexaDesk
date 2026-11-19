@@ -2,7 +2,7 @@
 //! request on a stream of its own, then the reply and the screenshot in pieces.
 
 use nexa_session::{
-    agent::{AgentBody, AgentMsg, MAX_PNG, ObserveReply, ObserveRequest},
+    agent::{ActRequest, AgentBody, AgentMsg, MAX_PNG, ObserveReply, ObserveRequest},
     framed::open_bi,
     handshake::FLUSH_TIMEOUT,
 };
@@ -48,4 +48,30 @@ pub(crate) async fn observe(conn: Connection, request: ObserveRequest) -> Look {
     }
     recv.stop();
     Ok((reply, png))
+}
+
+/// An action on a ref (docs/MCP.md §13, G3): done, or why not.
+pub(crate) async fn act(conn: Connection, request: ActRequest) -> Result<(), String> {
+    let (mut send, mut recv) = open_bi(&conn, StreamType::Agent)
+        .await
+        .map_err(|e| format!("could not ask the host: {e}"))?;
+    send.send(&AgentMsg::from(AgentBody::Act(request)))
+        .await
+        .map_err(|e| format!("could not ask the host: {e}"))?;
+    send.finish_and_flush(FLUSH_TIMEOUT).await;
+    let answer = recv.next::<AgentMsg>().await;
+    recv.stop();
+    match answer {
+        Ok(Some(AgentMsg {
+            body: Some(AgentBody::Acted(r)),
+        })) if r.error.is_empty() => Ok(()),
+        Ok(Some(AgentMsg {
+            body: Some(AgentBody::Acted(r)),
+        })) => Err(r.error),
+        Ok(Some(AgentMsg {
+            body: Some(AgentBody::Refused(why)),
+        })) => Err(why),
+        Ok(_) => Err("the host did not answer".into()),
+        Err(e) => Err(format!("the host did not answer: {e}")),
+    }
 }

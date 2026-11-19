@@ -14,6 +14,7 @@ mod gpu;
 mod hwenc;
 mod power;
 mod present;
+mod screenshot;
 
 use nexa_wire::control::{Caps, Chroma, Codec, CodecCap};
 use windows::{
@@ -39,6 +40,7 @@ pub use gpu::{GpuFrame, viewer_device};
 pub use hwenc::{HwEncoder, WinEncoder, encoder, hardware_h264};
 pub use power::{DisplayAwake, wake_display};
 pub use present::D3dPresenter;
+pub use screenshot::screenshot_rgba;
 
 /// A monitor on the desktop.
 #[derive(Clone, Debug, PartialEq)]

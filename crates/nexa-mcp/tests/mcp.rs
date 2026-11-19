@@ -654,3 +654,47 @@ async fn an_action_on_a_screen_that_cannot_be_watched_says_why() {
     );
     assert!(!t.contains("still changing"), "{t}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refs_are_pressed_and_filled_without_the_pointer() {
+    let (h, agent) = connected_to(perms(true, true, false)).await;
+    let r = agent.call("nexa_press", json!({ "ref": "@e1" })).await;
+    assert_eq!(r["isError"], true, "{r}");
+    assert!(texts(&r).contains("call nexa_ui first"), "{r}");
+
+    // Boxes and numbers on the picture, with the tree whose refs they are.
+    let r = agent
+        .call("nexa_screenshot", json!({ "marks": true }))
+        .await;
+    assert_eq!(r["isError"], false, "{r}");
+    assert_eq!(png_size(&r), SPACE);
+    assert!(texts(&r).contains("@e2 textfield \"Name\""), "{r}");
+
+    let r = agent
+        .call("nexa_press", json!({ "ref": "@e1", "then": "ui" }))
+        .await;
+    assert_eq!(r["isError"], false, "{r}");
+    let t = texts(&r);
+    assert!(t.starts_with("Pressed @e1."), "{t}");
+    assert!(t.contains("@e1 button \"OK\""), "{t}");
+    let r = agent
+        .call("nexa_set_value", json!({ "ref": "@e2", "text": "hello" }))
+        .await;
+    assert_eq!(r["isError"], false, "{r}");
+    assert!(texts(&r).starts_with("Set the value of @e2."), "{r}");
+    let r = agent
+        .call("nexa_set_value", json!({ "ref": "@e1", "text": "x" }))
+        .await;
+    assert_eq!(r["isError"], true, "{r}");
+    assert!(texts(&r).contains("a button has no value"), "{r}");
+    assert_eq!(
+        *h.platform.view.acted.lock().unwrap(),
+        vec!["OK press".to_owned(), "Name set hello".to_owned()]
+    );
+    // None of it moved the pointer or pressed a key.
+    assert!(
+        h.platform.injected.all().is_empty(),
+        "{:?}",
+        h.platform.injected.all()
+    );
+}

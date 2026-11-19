@@ -43,6 +43,37 @@ pub struct UiNode {
     pub bounds: Option<PointRect>,
     /// Something to click, type into or choose: it gets a ref.
     pub interactive: bool,
+    /// The element itself, for [`AgentView::act`] (interactive elements only).
+    pub element: Option<Element>,
+}
+
+/// A platform's handle on one element (an `AXUIElement`, an
+/// `IUIAutomationElement`), kept with the last tree an agent read so it can act on
+/// a ref without the pointer.
+#[derive(Clone)]
+pub struct Element(pub std::sync::Arc<dyn std::any::Any + Send + Sync>);
+
+impl std::fmt::Debug for Element {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Element")
+    }
+}
+
+impl PartialEq for Element {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// What an agent does to an element without the pointer (docs/MCP.md §13, G3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Act {
+    /// Its default action: press a button, toggle a checkbox, select a row, open a
+    /// menu.
+    Press,
+    Focus,
+    /// Replaces a field's text.
+    SetValue(String),
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -124,6 +155,11 @@ pub trait AgentView: Send + Sync {
     fn ui(&self, options: &UiOptions) -> Result<UiTree, String>;
     /// Where the pointer is, in global points.
     fn pointer(&self) -> Option<(f64, f64)>;
+    /// Does `act` to an element of the last tree read. The default: nothing can be.
+    fn act(&self, element: &Element, act: &Act) -> Result<(), String> {
+        let _ = (element, act);
+        Err("this computer cannot act on elements directly: click instead".into())
+    }
 }
 
 /// Maps global points on `screen` to the agent's pixels of it, `space`.
@@ -199,16 +235,31 @@ fn quoted(s: &str, max: usize) -> String {
 const NAME_MAX: usize = 80;
 const VALUE_MAX: usize = 200;
 
-/// The text an agent reads, and each ref's centre in its pixels (`refs[i]` is
-/// `@e{i+1}`). Elements off this screen are left out; so is anything past
-/// `max_nodes` lines, which a last line says, as it says a walk that was cut short.
-pub fn render(tree: &UiTree, at: AgentSpace<'_>, max_nodes: usize) -> (String, Vec<(i32, i32)>) {
+/// One ref of a rendered tree: where it is in the agent's pixels, and which node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ref {
+    pub rect: (i32, i32, u32, u32),
+    /// Its index in the tree's nodes.
+    pub node: usize,
+}
+
+impl Ref {
+    pub fn center(&self) -> (i32, i32) {
+        let (x, y, w, h) = self.rect;
+        (x + (w / 2) as i32, y + (h / 2) as i32)
+    }
+}
+
+/// The text an agent reads, and its refs (`refs[i]` is `@e{i+1}`). Elements off this
+/// screen are left out; so is anything past `max_nodes` lines, which a last line
+/// says, as it says a walk that was cut short.
+pub fn render(tree: &UiTree, at: AgentSpace<'_>, max_nodes: usize) -> (String, Vec<Ref>) {
     let nodes = &tree.nodes;
     let mut text = String::new();
     let mut refs = Vec::new();
     let mut lines = 0;
     let mut left_out = 0;
-    for node in nodes {
+    for (index, node) in nodes.iter().enumerate() {
         let rect = node.bounds.as_ref().and_then(|b| at.rect(b));
         // The window always; an element only where it can be seen on this screen.
         if node.depth > 0 && rect.is_none() {
@@ -221,8 +272,10 @@ pub fn render(tree: &UiTree, at: AgentSpace<'_>, max_nodes: usize) -> (String, V
         let indent = usize::from(node.depth.min(12)) * 2;
         text.extend(std::iter::repeat_n(' ', indent));
         if node.interactive && node.depth > 0 {
-            let (x, y, w, h) = rect.expect("checked above");
-            refs.push((x + (w / 2) as i32, y + (h / 2) as i32));
+            refs.push(Ref {
+                rect: rect.expect("checked above"),
+                node: index,
+            });
             text.push_str(&format!("@e{} ", refs.len()));
         }
         text.push_str(&node.role);
@@ -276,6 +329,83 @@ pub fn same_picture(a: &Rgba, b: &Rgba) -> bool {
         .count();
     // 0.2%: at 160×100, 32 pixels.
     differing * 500 <= pixels
+}
+
+/// Digits 3×5, a row per entry, high bit on the left.
+const DIGITS: [[u8; 5]; 10] = [
+    [0b111, 0b101, 0b101, 0b101, 0b111],
+    [0b010, 0b110, 0b010, 0b010, 0b111],
+    [0b111, 0b001, 0b111, 0b100, 0b111],
+    [0b111, 0b001, 0b111, 0b001, 0b111],
+    [0b101, 0b101, 0b111, 0b001, 0b001],
+    [0b111, 0b100, 0b111, 0b001, 0b111],
+    [0b111, 0b100, 0b111, 0b101, 0b111],
+    [0b111, 0b001, 0b001, 0b001, 0b001],
+    [0b111, 0b101, 0b111, 0b101, 0b111],
+    [0b111, 0b101, 0b111, 0b001, 0b111],
+];
+/// How much a digit's 3×5 cells are scaled up.
+const DIGIT_SCALE: i32 = 3;
+/// Colours that stand out on most screens and from each other, by ref.
+const MARK_COLOURS: [[u8; 3]; 6] = [
+    [230, 30, 50],
+    [20, 100, 230],
+    [10, 150, 60],
+    [190, 30, 180],
+    [220, 110, 0],
+    [0, 140, 160],
+];
+
+impl Rgba {
+    fn fill(&mut self, x: i32, y: i32, w: i32, h: i32, rgb: [u8; 3]) {
+        let (iw, ih) = (self.width as i32, self.height as i32);
+        for row in y.max(0)..(y + h).min(ih) {
+            for col in x.max(0)..(x + w).min(iw) {
+                let i = (row as usize * self.width as usize + col as usize) * 4;
+                self.data[i..i + 3].copy_from_slice(&rgb);
+            }
+        }
+    }
+}
+
+/// Set-of-marks (docs/MCP.md §13, G1): each ref boxed in a colour of its own, with
+/// its number on a tab of that colour at the box's top left, above the box where
+/// there is room.
+pub fn draw_marks(image: &mut Rgba, refs: &[Ref]) {
+    let cell = DIGIT_SCALE;
+    let tab_h = 5 * cell + 4;
+    for (i, r) in refs.iter().enumerate() {
+        let rgb = MARK_COLOURS[i % MARK_COLOURS.len()];
+        let (x, y, w, h) = (r.rect.0, r.rect.1, r.rect.2 as i32, r.rect.3 as i32);
+        // The box, 2 pixels wide.
+        image.fill(x, y, w, 2, rgb);
+        image.fill(x, y + h - 2, w, 2, rgb);
+        image.fill(x, y, 2, h, rgb);
+        image.fill(x + w - 2, y, 2, h, rgb);
+        // The tab with the number.
+        let number = (i + 1).to_string();
+        let tab_w = number.len() as i32 * 4 * cell + 4 - cell;
+        let tab_x = x.min(image.width as i32 - tab_w).max(0);
+        let tab_y = if y >= tab_h { y - tab_h } else { y };
+        image.fill(tab_x, tab_y, tab_w, tab_h, rgb);
+        for (k, d) in number.bytes().enumerate() {
+            let glyph = DIGITS[usize::from(d - b'0')];
+            let gx = tab_x + 2 + k as i32 * 4 * cell;
+            for (row, bits) in glyph.iter().enumerate() {
+                for col in 0..3 {
+                    if bits & (0b100 >> col) != 0 {
+                        image.fill(
+                            gx + col * cell,
+                            tab_y + 2 + row as i32 * cell,
+                            cell,
+                            cell,
+                            [255, 255, 255],
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Encodes `rgba` as an 8-bit RGB PNG (the screen has no transparency).
@@ -362,7 +492,43 @@ mod tests {
              \x20\x20@e2 textfield \"Search\" value=\"he said \\\"hi\\\" then left\" focused (109,54 218×26)\n\
              \x20\x20text \"Ready\" (22,958 65×15)\n"
         );
-        assert_eq!(refs, vec![(18, 18), (218, 67)]);
+        let centers: Vec<_> = refs.iter().map(Ref::center).collect();
+        assert_eq!(centers, vec![(18, 18), (218, 67)]);
+        assert_eq!(refs[1].node, 2);
+    }
+
+    #[test]
+    fn marks_box_each_ref_and_number_it() {
+        let mut image = Rgba {
+            width: 100,
+            height: 60,
+            data: vec![255; 100 * 60 * 4],
+        };
+        let refs = [
+            Ref {
+                rect: (20, 30, 40, 20),
+                node: 1,
+            },
+            Ref {
+                rect: (0, 0, 10, 10),
+                node: 2,
+            },
+        ];
+        draw_marks(&mut image, &refs);
+        let at = |x: usize, y: usize| {
+            let i = (y * 100 + x) * 4;
+            [image.data[i], image.data[i + 1], image.data[i + 2]]
+        };
+        // @e1: red box; its tab above it, a white "1" on red.
+        assert_eq!(at(20, 40), MARK_COLOURS[0]);
+        assert_eq!(at(59, 49), MARK_COLOURS[0]);
+        assert_eq!(at(40, 40), [255, 255, 255]);
+        assert_eq!(at(20, 17), MARK_COLOURS[0]);
+        // The "1": its middle column, three pixels per cell, from (22, 13).
+        assert_eq!(at(25, 13), [255, 255, 255]);
+        assert_eq!(at(22, 13), MARK_COLOURS[0]);
+        // @e2 at the top: no room above, so the tab is inside, in blue.
+        assert_eq!(at(1, 1), MARK_COLOURS[1]);
     }
 
     #[test]

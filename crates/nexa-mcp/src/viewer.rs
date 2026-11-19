@@ -33,7 +33,7 @@ use nexa_client::{
         PointerWheel, SelectDisplay, SendText, SessionCommand, StreamChanged,
     },
 };
-use nexa_session::agent::{ObserveReply, ObserveRequest};
+use nexa_session::agent::{ActRequest, Action, ObserveReply, ObserveRequest};
 use nexa_wire::control::Mode;
 use prost::Message;
 
@@ -168,6 +168,8 @@ struct Refs {
     look: u64,
     /// That look could not read the elements.
     unreadable: bool,
+    /// The host's name for that tree, which an action on a ref gives back.
+    tree: u64,
     centers: Vec<(i32, i32)>,
 }
 
@@ -197,6 +199,22 @@ impl Remote {
             _ => "an unknown system",
         }
     }
+}
+
+/// What a look asks for.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LookFor {
+    /// After an action: wait for the screen to stop changing.
+    pub settle: bool,
+    /// The element tree (its refs replace the last ones).
+    pub ui: bool,
+    /// With `ui`: text as well as what can be acted on.
+    pub all: bool,
+    /// With `ui`: at most this many lines (0: the host's default).
+    pub max_nodes: u32,
+    pub screenshot: bool,
+    /// The screenshot with each ref boxed and numbered (reads the tree too).
+    pub marks: bool,
 }
 
 /// What a look brought back.
@@ -437,32 +455,25 @@ impl Viewer {
     }
 
     /// Asks the host for a look: once it has got to mark `after_mark` (0: at once)
-    /// and, after a mark, once its screen has stopped changing. The element tree's
+    /// and, after an action, once its screen has stopped changing. The element tree's
     /// refs replace the last ones.
-    pub fn look(
-        &self,
-        remote: &Remote,
-        after_mark: u64,
-        ui: bool,
-        screenshot: bool,
-        interactive_only: bool,
-        max_nodes: u32,
-    ) -> Result<Looked, String> {
+    pub fn look(&self, remote: &Remote, after_mark: u64, what: &LookFor) -> Result<Looked, String> {
         self.remote(Some(remote.id))?;
-        let settle = after_mark != 0;
         let request = ObserveRequest {
             after_mark,
-            quiet_ms: if settle {
+            quiet_ms: if what.settle {
                 self.timeouts.quiet.as_millis() as u32
             } else {
                 0
             },
             max_ms: self.timeouts.settle_max.as_millis() as u32,
-            ui,
-            interactive_only,
-            max_nodes,
-            screenshot,
+            ui: what.ui,
+            interactive_only: !what.all,
+            max_nodes: what.max_nodes,
+            screenshot: what.screenshot,
+            marks: what.marks,
         };
+        let ui = what.ui || what.marks;
         let (reply, png) = remote.session.observe(request, self.timeouts.look)?;
         let mut refs = 0;
         if ui {
@@ -473,6 +484,7 @@ impl Viewer {
             *lock(&remote.refs) = Refs {
                 look: remote.looks.fetch_add(1, Relaxed) + 1,
                 unreadable: !reply.ui_error.is_empty(),
+                tree: reply.tree,
                 centers,
             };
         }
@@ -534,6 +546,44 @@ impl Viewer {
             .session
             .command(SessionCommand { cmd: Some(cmd) })
             .map_err(str::to_owned)
+    }
+
+    /// Does `action` to `r` of the last element tree through the host's accessibility
+    /// API: no pointer moves. After whatever input was sent before it.
+    pub fn act(&self, remote: &Remote, r: &str, action: Action, text: &str) -> Result<(), String> {
+        self.can_act(remote)?;
+        let (tree, n) = {
+            let refs = lock(&remote.refs);
+            if refs.look == 0 {
+                return Err(format!(
+                    "no element tree read yet: call nexa_ui first, then use {r}"
+                ));
+            }
+            if refs.unreadable {
+                return Err(format!(
+                    "the last nexa_ui could not read the elements, so there is no {r}"
+                ));
+            }
+            let n = parse_ref(r).ok_or_else(|| format!("\"{r}\" is not a ref like @e3"))?;
+            if n > refs.centers.len() {
+                return Err(format!(
+                    "there is no {r} in the last element tree ({} refs): call nexa_ui again",
+                    refs.centers.len()
+                ));
+            }
+            (refs.tree, n)
+        };
+        let after_mark = remote.marks.load(Relaxed);
+        remote.session.act(
+            ActRequest {
+                after_mark,
+                tree,
+                r#ref: n as u32,
+                action: action as i32,
+                text: text.to_owned(),
+            },
+            self.timeouts.look,
+        )
     }
 
     /// Ends an action: a mark after it, which the look that follows waits for.

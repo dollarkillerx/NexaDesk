@@ -369,6 +369,11 @@ pub enum SessionCtl {
         nexa_session::agent::ObserveRequest,
         mpsc::Sender<crate::agent::Look>,
     ),
+    /// An agent's action on a ref, answered on `reply`.
+    Act(
+        nexa_session::agent::ActRequest,
+        mpsc::Sender<Result<(), String>>,
+    ),
 }
 
 /// The handle behind `NexaSession*`. All methods return immediately.
@@ -451,6 +456,23 @@ impl Session {
             .clone()
             .ok_or_else(|| "not connected".to_owned())?;
         ctl.send(SessionCtl::Look(request, tx))
+            .map_err(|_| "the session has ended".to_owned())?;
+        rx.recv_timeout(timeout)
+            .map_err(|_| "the host did not answer in time".to_owned())?
+    }
+
+    /// An AI agent's session: asks the host to act on a ref without the pointer, and
+    /// waits up to `timeout` for it to be done.
+    pub fn act(
+        &self,
+        request: nexa_session::agent::ActRequest,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        let (tx, rx) = mpsc::channel();
+        let ctl = lock(&self.command)
+            .clone()
+            .ok_or_else(|| "not connected".to_owned())?;
+        ctl.send(SessionCtl::Act(request, tx))
             .map_err(|_| "the session has ended".to_owned())?;
         rx.recv_timeout(timeout)
             .map_err(|_| "the host did not answer in time".to_owned())?
@@ -1813,6 +1835,12 @@ async fn stream_session(
                     let conn = conn.clone();
                     tokio::spawn(async move {
                         let _ = reply.send(crate::agent::observe(conn, request).await);
+                    });
+                }
+                SessionCtl::Act(request, reply) => {
+                    let conn = conn.clone();
+                    tokio::spawn(async move {
+                        let _ = reply.send(crate::agent::act(conn, request).await);
                     });
                 }
             },

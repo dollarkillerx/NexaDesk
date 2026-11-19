@@ -15,7 +15,9 @@ use std::{
 
 use nexa_agent::{
     Agent, AgentConfig, AgentEvent, AgentUi, Platform, ScreenInfo,
-    agent_view::{AgentView, Frontmost, PointRect, Rgba, UiNode, UiOptions, UiTree, fingerprint},
+    agent_view::{
+        Act, AgentView, Element, Frontmost, PointRect, Rgba, UiNode, UiOptions, UiTree, fingerprint,
+    },
     start,
 };
 use nexa_auth::{DeviceIdentity, PairingStore};
@@ -393,6 +395,9 @@ pub struct FakeView {
     pub blind: AtomicBool,
     /// Display-awake guards held now.
     pub awake: Arc<AtomicU32>,
+    /// What was done to its elements without the pointer, as "OK press",
+    /// "Name set hello".
+    pub acted: Mutex<Vec<String>>,
 }
 
 /// Held while the fake's display is kept awake.
@@ -457,6 +462,7 @@ impl AgentView for FakeView {
                 name: "OK".into(),
                 bounds: Some(point_rect(FAKE_OK)),
                 interactive: true,
+                element: Some(Element(Arc::new("OK"))),
                 ..UiNode::default()
             },
             UiNode {
@@ -466,6 +472,7 @@ impl AgentView for FakeView {
                 value: Some(String::new()),
                 bounds: Some(point_rect(FAKE_NAME)),
                 interactive: true,
+                element: Some(Element(Arc::new("Name"))),
                 ..UiNode::default()
             },
         ]
@@ -473,6 +480,17 @@ impl AgentView for FakeView {
     }
     fn pointer(&self) -> Option<(f64, f64)> {
         Some((480.0, 270.0))
+    }
+    fn act(&self, element: &Element, act: &Act) -> Result<(), String> {
+        let name = element.0.downcast_ref::<&str>().ok_or("not the fake's")?;
+        let done = match act {
+            Act::Press => format!("{name} press"),
+            Act::Focus => format!("{name} focus"),
+            Act::SetValue(t) if *name == "Name" => format!("{name} set {t}"),
+            Act::SetValue(_) => return Err("a button has no value".into()),
+        };
+        self.acted.lock().unwrap().push(done);
+        Ok(())
     }
 }
 

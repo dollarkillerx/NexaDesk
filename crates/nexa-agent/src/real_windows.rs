@@ -129,6 +129,10 @@ impl Platform for RealPlatform {
         Ok(Box::new(DxgiCapturer::new(config)?))
     }
 
+    fn agent_view(&self) -> Option<std::sync::Arc<dyn nexa_agent::agent_view::AgentView>> {
+        Some(std::sync::Arc::new(crate::win_view::WinView))
+    }
+
     fn keep_display_awake(&self) -> Option<Box<dyn Send>> {
         // Windows ties the request to a thread: one of its own, until the guard goes.
         let (tx, rx) = std::sync::mpsc::channel::<()>();

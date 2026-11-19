@@ -15,8 +15,8 @@ use std::{
 
 use nexa_session::{
     agent::{
-        AgentBody, AgentMsg, CHUNK, ObserveReply, ObserveRequest, REFUSED_UNSUPPORTED, RefCenter,
-        agent_size,
+        ActReply, ActRequest, Action, AgentBody, AgentMsg, CHUNK, ObserveReply, ObserveRequest,
+        REFUSED_UNSUPPORTED, RefCenter, agent_size,
     },
     bulk::{BulkLimiter, UplinkScavenger},
     clip::ClipSession,
@@ -37,7 +37,8 @@ use tokio::sync::{mpsc, watch};
 use crate::{
     AgentEvent, ScreenInfo, SessionInfo,
     agent_view::{
-        AgentSpace, AgentView, Frontmost, PointRect, Rgba, UiOptions, png, render, same_picture,
+        Act, AgentSpace, AgentView, Element, Frontmost, PointRect, Rgba, UiOptions, draw_marks,
+        png, render, same_picture,
     },
     session::{
         AbortOnDrop, FileSlot, Geometry, Inbound, PathFollower, SessionEnv, control_writer,
@@ -69,8 +70,19 @@ struct Looks {
     may_view: bool,
     /// The screen at the end of the last look, to tell the agent whether it changed.
     last: Mutex<Last>,
-    /// One look at a time: they take screenshots.
+    /// One look or action at a time: they take screenshots and read the elements.
     turn: tokio::sync::Mutex<()>,
+    /// Acting on elements needs the keyboard and mouse permission.
+    may_act: bool,
+    /// The last tree read: what an action's ref names.
+    tree: Mutex<Tree>,
+}
+
+/// The elements of the last tree's refs (`elements[i]` is `@e{i+1}`).
+#[derive(Default)]
+struct Tree {
+    id: u64,
+    elements: Vec<Option<Element>>,
 }
 
 /// How the screen was at the end of a look.
@@ -171,6 +183,8 @@ pub(crate) async fn run(
         may_view: perms.view,
         last: Mutex::default(),
         turn: tokio::sync::Mutex::new(()),
+        may_act: perms.input,
+        tree: Mutex::default(),
     });
     let bulk = BulkLimiter::new(Arc::new(UplinkScavenger::new(conn.clone())));
 
@@ -311,12 +325,18 @@ async fn read_datagrams(conn: Connection, on_pointer: Option<Box<dyn Fn(Pointer)
     }
 }
 
-/// One look: the request, then the reply and the PNG in pieces.
+/// One look or one action: the request, then the answer.
 async fn serve_look(looks: Arc<Looks>, mut send: FramedSend, mut recv: FramedRecv) {
     let request = match recv.next::<AgentMsg>().await {
         Ok(Some(AgentMsg {
             body: Some(AgentBody::Observe(r)),
         })) => r,
+        Ok(Some(AgentMsg {
+            body: Some(AgentBody::Act(a)),
+        })) => {
+            recv.stop();
+            return serve_act(looks, send, a).await;
+        }
         _ => return,
     };
     recv.stop();
@@ -356,6 +376,71 @@ async fn serve_look(looks: Arc<Looks>, mut send: FramedSend, mut recv: FramedRec
         }
     }
     send.finish_and_flush(FLUSH_TIMEOUT * 4).await;
+}
+
+/// An action on a ref of the last tree, through the accessibility API.
+async fn serve_act(looks: Arc<Looks>, mut send: FramedSend, request: ActRequest) {
+    let refusal = if !looks.may_act {
+        Some("the host did not allow keyboard and mouse")
+    } else if looks.view.is_none() {
+        Some(REFUSED_UNSUPPORTED)
+    } else {
+        None
+    };
+    let answer = match refusal {
+        Some(why) => AgentBody::Refused(why.to_owned()),
+        None => {
+            let _turn = looks.turn.lock().await;
+            let l = looks.clone();
+            match tokio::task::spawn_blocking(move || act(&l, &request)).await {
+                Ok(result) => AgentBody::Acted(ActReply {
+                    error: result.err().unwrap_or_default(),
+                }),
+                Err(_) => AgentBody::Acted(ActReply {
+                    error: "the action failed on the host".into(),
+                }),
+            }
+        }
+    };
+    let _ = send.send(&AgentMsg::from(answer)).await;
+    send.finish_and_flush(FLUSH_TIMEOUT).await;
+}
+
+/// Does what `request` asks, once the input before it went through. Blocks.
+fn act(looks: &Looks, request: &ActRequest) -> Result<(), String> {
+    let view = looks.view.as_ref().expect("checked by the caller");
+    if request.after_mark != 0
+        && let Some(marks) = &looks.marks
+    {
+        marks.wait(request.after_mark, MAX_WAIT);
+    }
+    let what = match Action::try_from(request.action) {
+        Ok(Action::Press) => Act::Press,
+        Ok(Action::Focus) => Act::Focus,
+        Ok(Action::SetValue) => Act::SetValue(request.text.clone()),
+        _ => return Err("unknown action".into()),
+    };
+    let element = {
+        let tree = lock(&looks.tree);
+        if request.tree == 0 || request.tree != tree.id {
+            return Err(
+                "the refs are from an element tree that is no longer the last one read: \
+                 call nexa_ui again"
+                    .into(),
+            );
+        }
+        let n = request.r#ref as usize;
+        match tree.elements.get(n.wrapping_sub(1)) {
+            None => return Err(format!("there is no @e{n} in the last element tree")),
+            Some(None) => {
+                return Err(format!(
+                    "@e{n} cannot be acted on directly: click it instead"
+                ));
+            }
+            Some(Some(e)) => e.clone(),
+        }
+    };
+    view.act(&element, &what)
 }
 
 /// `space` scaled down to a thumbnail, keeping its shape.
@@ -472,7 +557,8 @@ fn look(looks: &Looks, req: &ObserveRequest) -> (ObserveReply, Vec<u8>) {
         watch_error,
         ..Default::default()
     };
-    if req.ui {
+    let mut marked = Vec::new();
+    if req.ui || req.marks {
         let max_nodes = match req.max_nodes {
             0 => DEFAULT_MAX_NODES,
             n => n.min(MAX_NODES),
@@ -491,14 +577,41 @@ fn look(looks: &Looks, req: &ObserveRequest) -> (ObserveReply, Vec<u8>) {
             Ok(tree) => {
                 let (text, refs) = render(&tree, at, max_nodes as usize);
                 reply.ui = text;
-                reply.refs = refs.into_iter().map(|(x, y)| RefCenter { x, y }).collect();
+                reply.refs = refs
+                    .iter()
+                    .map(|r| {
+                        let (x, y) = r.center();
+                        RefCenter { x, y }
+                    })
+                    .collect();
+                // The refs' elements, for acting on them until the next tree.
+                let mut last = lock(&looks.tree);
+                last.id += 1;
+                last.elements = refs
+                    .iter()
+                    .map(|r| tree.nodes[r.node].element.clone())
+                    .collect();
+                reply.tree = last.id;
+                marked = refs;
             }
-            Err(e) => reply.ui_error = e,
+            Err(e) => {
+                reply.ui_error = e;
+                // Refs read before name another screen: none hold now.
+                let mut last = lock(&looks.tree);
+                last.id += 1;
+                last.elements.clear();
+            }
         }
     }
     let mut png_bytes = Vec::new();
     if req.screenshot {
-        match view.screenshot(&screen, space).and_then(|s| png(&s)) {
+        let shot = view.screenshot(&screen, space).map(|mut s| {
+            if req.marks {
+                draw_marks(&mut s, &marked);
+            }
+            s
+        });
+        match shot.and_then(|s| png(&s)) {
             Ok(p) if p.len() <= nexa_session::agent::MAX_PNG => png_bytes = p,
             Ok(p) => {
                 reply.screenshot_error = format!("the screenshot is too large ({} bytes)", p.len())
