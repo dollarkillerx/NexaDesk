@@ -736,9 +736,63 @@ fn saved_password(account: &[u8]) -> Result<impl nexa_auth::keystore::KeyStore, 
     let store = nexa_auth::keystore::KeychainStore::new(SAVED_PASSWORD_SERVICE, account);
     #[cfg(not(target_vendor = "apple"))]
     let store = nexa_auth::keystore::FileKeyStore::new(
-        default_data_dir().join("saved-passwords").join(account),
+        default_data_dir()
+            .join("saved-passwords")
+            .join(saved_password_file(account)),
     );
     Ok(store)
+}
+
+/// The longest file name [`saved_password_file`] makes, well under Windows' 255.
+#[cfg(any(not(target_vendor = "apple"), test))]
+const SAVED_PASSWORD_NAME_MAX: usize = 200;
+
+/// The file a saved password is kept in outside Apple's Keychain. An account that is
+/// already a name every system takes is used as it is, as it always was (host keys in
+/// hex, plain addresses). Any other starts with `~` and has every byte but letters,
+/// digits, `-` and `_` written as `%XX`: a signaling server's account
+/// (`signal-access:wss://host:8443`) made a path Windows refused (os error 123, for `:`
+/// and `/`), so a public server's access key could not be kept. A long one is cut and
+/// ends with a hash of the whole account.
+#[cfg(any(not(target_vendor = "apple"), test))]
+fn saved_password_file(account: &str) -> String {
+    let stem = account
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    let device = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.as_bytes()[3].is_ascii_digit());
+    let taken_as_is = !account.is_empty()
+        && account.len() <= SAVED_PASSWORD_NAME_MAX
+        && !account.starts_with('~')
+        && !account.ends_with(['.', ' '])
+        && !device
+        && !account.chars().any(|c| {
+            c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+        });
+    if taken_as_is {
+        return account.to_owned();
+    }
+    let mut name = String::from("~");
+    for b in account.bytes() {
+        if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' {
+            name.push(char::from(b));
+        } else {
+            name.push_str(&format!("%{b:02X}"));
+        }
+    }
+    if name.len() > SAVED_PASSWORD_NAME_MAX {
+        // FNV-1a: stable from one build to the next, unlike std's hasher.
+        let hash = account.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        });
+        name.truncate(SAVED_PASSWORD_NAME_MAX - 17);
+        name.push_str(&format!("~{hash:016x}"));
+    }
+    name
 }
 
 /// The MCP server for AI agents while the person has it on (docs/MCP.md §16).
@@ -1151,6 +1205,69 @@ pub unsafe extern "C" fn nexa_signal_trust(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn saved_password_files_have_names_every_system_takes() {
+        use super::{SAVED_PASSWORD_NAME_MAX, saved_password_file};
+        // As before: host keys in hex, plain addresses and names.
+        for kept in [
+            "4d27201d549f6456b7ad9c58f3fd605c",
+            "192.168.1.20",
+            "studio.tail1234.ts.net",
+        ] {
+            assert_eq!(saved_password_file(kept), kept);
+        }
+        assert_eq!(
+            saved_password_file("signal-access:wss://209.33.171.123:8443"),
+            "~signal-access%3Awss%3A%2F%2F209%2E33%2E171%2E123%3A8443"
+        );
+        for odd in [
+            "con",
+            "COM1.txt",
+            "a:b",
+            "x.",
+            "~x",
+            "a/b",
+            "a\\b",
+            "a*b",
+            "tab\there",
+        ] {
+            let name = saved_password_file(odd);
+            assert!(
+                name.starts_with('~')
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"-_%~".contains(&b)),
+                "{odd:?} -> {name}"
+            );
+        }
+        // Long accounts fit, and stay apart.
+        let long = |port: u32| format!("signal-access:wss://{}.example:{port}", "a".repeat(200));
+        let (a, b) = (
+            saved_password_file(&long(8443)),
+            saved_password_file(&long(8444)),
+        );
+        assert!(a.len() <= SAVED_PASSWORD_NAME_MAX && b.len() <= SAVED_PASSWORD_NAME_MAX);
+        assert_ne!(a, b);
+    }
+
+    /// The access key of a public signaling server is kept and read back (os error 123
+    /// before).
+    #[cfg(windows)]
+    #[test]
+    fn a_servers_access_key_is_kept_on_windows() {
+        use nexa_auth::keystore::{FileKeyStore, KeyStore};
+        let dir = tempfile::tempdir().unwrap();
+        let account = "signal-access:wss://209.33.171.123:8443";
+        let store = FileKeyStore::new(dir.path().join(super::saved_password_file(account)));
+        store.store(b"secret").unwrap();
+        assert_eq!(
+            store.load().unwrap().as_deref().map(Vec::as_slice),
+            Some(&b"secret"[..])
+        );
+        store.delete().unwrap();
+        assert_eq!(store.load().unwrap(), None);
+    }
 
     fn normalized(kind: u32, input: &str) -> Result<String, i32> {
         let mut out = [0u8; 256];
