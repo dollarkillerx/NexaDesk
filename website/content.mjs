@@ -45,7 +45,7 @@ export const TEXT = {
     shotPhone: "手机上的连接页",
     shotPhoneSession: "手机横屏控制",
     aiTitle: "让 AI 替你操作别的电脑",
-    aiText: "NexaDesk 自带 MCP 服务。把它加到 Claude Code、Codex、Claude Desktop 等 AI 应用里，AI 就能连接你允许的电脑：读界面元素、看截图、点按和输入，替你把事情做完。",
+    aiText: "NexaDesk 自带 MCP 服务。把它加到 Claude Code、Codex、Claude Desktop 等 AI 应用里，AI 就能连接你允许的电脑：读界面元素、看截图、点按和输入、运行命令、收发文件，替你把事情做完。",
     aiPoints: [
       "由 NexaDesk 登录：用你为设备保存的密码，或者请对方允许。AI 看不到任何密码、一次性码或密钥。",
       "AI 只看得到、只连得上你在“编辑”里勾了“允许 AI 操作”的设备。",
@@ -135,7 +135,7 @@ export const TEXT = {
     shotPhone: "The connect page on a phone",
     shotPhoneSession: "Controlling from a phone held sideways",
     aiTitle: "Let an AI operate your other computers",
-    aiText: "NexaDesk comes with an MCP server. Add it to an AI app such as Claude Code, Codex or Claude Desktop, and the AI can connect to the computers you allow: read what is on screen element by element, take screenshots, click and type, and get the job done for you.",
+    aiText: "NexaDesk comes with an MCP server. Add it to an AI app such as Claude Code, Codex or Claude Desktop, and the AI can connect to the computers you allow: read what is on screen element by element, take screenshots, click and type, run commands, send and fetch files, and get the job done for you.",
     aiPoints: [
       "NexaDesk signs in, with the password you saved for the device or by asking the person there. The AI never sees a password, one-time code or key.",
       "The AI can see and reach only the devices you ticked “Allow AI to operate” for, in their Edit.",
@@ -225,7 +225,7 @@ export const TEXT = {
     shotPhone: "スマートフォンの接続ページ",
     shotPhoneSession: "スマートフォンを横にして操作",
     aiTitle: "AI にほかのコンピュータを操作させる",
-    aiText: "NexaDesk には MCP サーバーが付いています。Claude Code、Codex、Claude Desktop などの AI アプリに追加すると、AI は許可したコンピュータに接続し、画面の要素を読み、スクリーンショットを撮り、クリックや入力をして、作業を代わりに進めます。",
+    aiText: "NexaDesk には MCP サーバーが付いています。Claude Code、Codex、Claude Desktop などの AI アプリに追加すると、AI は許可したコンピュータに接続し、画面の要素を読み、スクリーンショットを撮り、クリックや入力、コマンドの実行、ファイルの送受信をして、作業を代わりに進めます。",
     aiPoints: [
       "サインインするのは NexaDesk です。デバイスに保存したパスワードを使うか、相手に許可を求めます。AI がパスワード・ワンタイムコード・キーを見ることはありません。",
       "AI が見られるのも接続できるのも、「編集」で「AI の操作を許可」をオンにしたデバイスだけです。",

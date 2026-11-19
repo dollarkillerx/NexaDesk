@@ -724,6 +724,9 @@ pub(crate) async fn run(
                 limits: env.files.limits,
                 bulk: bulk.clone(),
                 confirm_timeout: CONFIRM_TIMEOUT,
+                // Files by path only to a session that has the command line, which
+                // reads them anyway.
+                serve_requests: perms.terminal,
             },
             Arc::new(move |event| ui.event(AgentEvent::Transfer { session, event })),
         )

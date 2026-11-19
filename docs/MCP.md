@@ -626,3 +626,61 @@ Claude Code / Codex ──stdio──▶ nexa-mcp（转发）──本地套接�
   - 演示主机询问时标明“(an AI agent)”；Claude Code 退出后，会话随之结束。
 - **注意**：macOS 套接字路径最长 104 字节。默认路径大约 60 字节，没有问题；家目录特别长时，开启会失败，并显示原因。
 
+
+## 17. 文件收发（实现）
+
+> 状态（2026-11-19）：已实现，随下一个版本发布。
+
+### 17.1 结论
+
+| 问题 | 决定 |
+|---|---|
+| 发文件给对方 | `nexa_send_file {path}`：本机文件的绝对路径。走现有的文件传输（流类型 4），落在对方的 `~/Downloads/NexaDesk`（Windows 是用户目录下的 `Downloads\NexaDesk`），同名加编号，不覆盖。超过 256 MB 仍要对方的人确认。需要“传输文件”权限 |
+| 从对方取文件 | `nexa_receive_file {path, save_as?}`：对方机器上的绝对路径。协议原来只能由持有文件的一方发起，所以新增一条消息 `FileRequest {path}`（`FileMsg` 字段 6）：查看端开一条文件流发请求，被控端在同一条流上按原流程发送（角色对调）。SHA-256 校验通过才保留 |
+| 谁能取 | 只有同时允许了“传输文件”和“命令行”的会话。命令行本来就能读对方的任何文件，所以这不增加 AI 的能力；没有命令行时，仍然没有任何办法读对方的文件。普通查看端（人用的应用）不对外提供文件（`serve_requests: false`） |
+| 取到哪里 | 默认放在 AI 的下载目录 `<数据目录>/ai/downloads`，结果里写明路径；`save_as` 可以指定本机的绝对路径（必须不存在，所在目录必须存在，先检查再传，跨磁盘时复制） |
+| agent 会话的文件权限 | 原来 agent 会话一律不开文件（§13 时的简化）。现在和普通会话一样：确认窗口勾了“传输文件”才有。被控端的提示条照常显示正在传的文件，对方的人也能把文件拖到提示条上发给 AI |
+
+### 17.2 协议
+
+```text
+查看端                                   被控端
+  FileRequest { path }            ──→    会话有命令行？是绝对路径、可读的普通文件？
+                                  ←──    FileOffer { name, size }
+                                         （否则 FileAnswer { NotFound(11) | NotPermitted }）
+  FileAnswer { Ok }               ──→
+                                  ←──    FileChunk ×n、FileEnd { sha256 }
+  FileResult { status }           ──→
+```
+
+- 被控端：`TransferConfig.serve_requests = perms.terminal`（普通会话和 agent 会话都一样）。路径不是绝对路径、不存在、是目录时回 `NotFound`；没有命令行时回 `NotPermitted`；发送名额满时回 `Busy`。发送过程算作被控端的一次发出传输，界面上看得到。
+- 查看端：`Transfers::request_file(path)` 立刻返回传输编号（方向是“收”，名字先取路径最后一段，收到 `FileOffer` 后改成对方给的名字）。查看端自己要的文件不再弹确认；大小上限和磁盘空间检查照旧。
+- 旧版被控端不认识字段 6，会一直等 `FileOffer`，10 秒后断开这条流；查看端把它报成“没有给”，提示需要对方 0.1.28 或更新并允许命令行。
+- `FileStatus::NotFound` 在两边的界面里沿用“不是文件”（`FailReason::NotAFile`），IPC 和应用不用改。
+
+### 17.3 工具
+
+- `nexa_send_file {session?, path, timeout?}`：等到对方收好才返回，默认最多 300 秒（1–3600），超时取消。结果写明文件名、大小和对方的落点。
+- `nexa_receive_file {session?, path, save_as?, timeout?}`：同上，结果写明本机路径。
+- 失败时说清原因：对方的人拒绝、太大、没有空间、校验不符、断线、超时、没有这个文件、没有权限（取文件时提示需要命令行和新版本）。
+- `nexa_connect` 的权限说明里，允许了文件会写“files”。说明文字（instructions）也提到这两个工具。
+
+### 17.4 顺带修的
+
+- `nexa_run` 在 zsh 上的输出前面有一长串空格：zsh 的 `PROMPT_SP` 在提示符前把行补满。初始化命令里加了 `unsetopt prompt_sp prompt_cr`。
+
+### 17.5 测试
+
+- `nexa-session/tests/transfer.rs`：
+  - 查看端按路径取文件（比确认阈值大，也不问人），内容一致，被控端记为一次完成的发出传输；
+  - 没有命令行、没有文件权限时都拒绝；不存在的路径、相对路径、目录都回“不是文件”，什么都不写。
+- `nexa-client/tests/mcp.rs`（经真实被控端）：
+  - 发过去落在对方下载目录，再按路径取回到 `save_as`，内容一致；`save_as` 已存在时拒绝；不给 `save_as` 时放进 AI 的下载目录；不存在、目录、相对路径都报“没有这个文件”；
+  - 只有文件没有命令行时取文件被拒，并说明；没有文件权限时两个工具都说明。
+- 演示主机加了 `--grant-all`（再允许文件和命令行，命令行是本机的真 shell），并打印 `DOWNLOADS` 目录。经 `mcp_demo` + `nexa-mcp --socket` 实测：5 MB 随机文件发过去、取回来，三份 SHA-256 一致；不存在的路径报错清楚。
+- macOS 和 Windows 目标的 clippy 都没有警告。
+
+### 17.6 还没做
+
+- Windows 被控端上的实测（代码共用，没在真机上跑过）。
+- 一次传多个文件、传目录（现在一次一个文件；目录可以先用 `nexa_run` 打包）。

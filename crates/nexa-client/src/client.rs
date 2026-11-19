@@ -412,6 +412,32 @@ pub struct Session {
 }
 
 impl Session {
+    /// Sends the file at `path` to the host. Its transfer id: progress and the
+    /// outcome arrive as `Transfer` events. Only with the `file` permission.
+    pub(crate) fn send_file(&self, path: PathBuf) -> Result<u64, &'static str> {
+        let transfers = lock(&self.transfers)
+            .clone()
+            .ok_or("the host did not allow file transfer")?;
+        let _runtime = self.core.handle.enter();
+        Ok(transfers.send_file(path))
+    }
+
+    /// Asks the host for the file at `path` there, saved into the downloads
+    /// folder. Its transfer id, as for [`send_file`](Self::send_file). The host
+    /// hands files out only to a session that also has the command line.
+    pub(crate) fn request_file(&self, path: String) -> Result<u64, &'static str> {
+        let transfers = lock(&self.transfers)
+            .clone()
+            .ok_or("the host did not allow file transfer")?;
+        let _runtime = self.core.handle.enter();
+        Ok(transfers.request_file(path))
+    }
+
+    /// Stops a transfer, either way; false if there is no such one.
+    pub(crate) fn cancel_transfer(&self, id: u64) -> bool {
+        lock(&self.transfers).as_ref().is_some_and(|t| t.cancel(id))
+    }
+
     /// What game mode's pointer lock did in this session (engaged, released).
     pub fn lock_stats(&self) -> LockStats {
         *lock(&self.lock_stats)
@@ -1674,6 +1700,8 @@ async fn stream_session(
                 limits: TransferLimits::default(),
                 bulk: bulk.clone(),
                 confirm_timeout: CONFIRM_TIMEOUT,
+                // A viewer never hands out its own files on request.
+                serve_requests: false,
             },
             Arc::new(move |e| events.send(tag, EventBody::Transfer(Transfer::of(&e)))),
         )

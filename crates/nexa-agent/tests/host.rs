@@ -1031,6 +1031,7 @@ fn viewer_transfers(
             limits: Default::default(),
             bulk: BulkLimiter::fixed(400_000_000),
             confirm_timeout: Duration::from_secs(5),
+            serve_requests: false,
         },
         Arc::new(move |e| l.lock().unwrap().push(e)),
     );

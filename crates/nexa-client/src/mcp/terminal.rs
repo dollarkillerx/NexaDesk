@@ -84,10 +84,11 @@ impl Shell {
         session.open_terminal(link);
         let shell = Self { id, out, windows };
         if !windows {
-            // No echo, no line editor (which echoes by itself), no prompts, no colours.
+            // No echo, no line editor (which echoes by itself), no prompts, no colours,
+            // and none of zsh's padding to the line's end before a prompt (PROMPT_SP).
             shell.write(
                 " stty -echo 2>/dev/null; set +o emacs 2>/dev/null; set +o vi 2>/dev/null; \
-                 unsetopt zle 2>/dev/null; export TERM=dumb PS1='' PS2='' PROMPT='' RPROMPT='' \
+                 unsetopt zle prompt_sp prompt_cr 2>/dev/null; export TERM=dumb PS1='' PS2='' PROMPT='' RPROMPT='' \
                  PROMPT_EOL_MARK='' PROMPT_COMMAND='' NO_COLOR=1\r",
             );
         }

@@ -13,6 +13,9 @@
 //! its clicks, a "Name" field that takes what is typed once clicked (Backspace, and
 //! Command or Control + A to select it all), and the count as text; its screenshots
 //! draw them, with the count as a bar and each character as a block.
+//! `--grant-all` allows files and the command line too (a real shell on this Mac,
+//! run as you), to try file transfer and `nexa_run`; files sent to it land in the
+//! folder its `DOWNLOADS` line names.
 //! `--lan` announces it over mDNS (listen on `0.0.0.0:…` for an address to announce);
 //! `--signal` registers it with a signaling server and prints its device ID; the
 //! server's access password comes from `NEXA_SIGNAL_SECRET`, as for the real agent.
@@ -512,6 +515,8 @@ mod demo {
     /// "remember this device", so the viewer connects again with no code.
     struct DemoUi {
         remember: bool,
+        /// Files and the command line as well as view and input.
+        grant_all: bool,
     }
 
     impl Consent for DemoUi {
@@ -529,6 +534,8 @@ mod demo {
                 perms: Permissions {
                     view: true,
                     input: true,
+                    file: self.grant_all,
+                    terminal: self.grant_all,
                     ..Default::default()
                 },
                 save: self.remember,
@@ -564,12 +571,14 @@ mod demo {
         let mut displays = 1usize;
         let mut remember = false;
         let mut agents = false;
+        let mut grant_all = false;
         let mut args = std::env::args().skip(1);
         while let Some(a) = args.next() {
             match a.as_str() {
                 "--lan" => lan = true,
                 "--remember" => remember = true,
                 "--agents" => agents = true,
+                "--grant-all" => grant_all = true,
                 "--displays" => displays = args.next().and_then(|n| n.parse().ok()).unwrap_or(1),
                 "--signal" => signal_url = args.next(),
                 "--signal-ca" => signal_ca = args.next(),
@@ -601,6 +610,7 @@ mod demo {
         });
         let dir = std::env::temp_dir().join(format!("nexa-demo-host-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temporary directory");
+        println!("DOWNLOADS {}", dir.join("Downloads").display());
         let identity = DeviceIdentity::generate();
         let store = PairingStore::open(dir.join("pairings.json"), identity.store_mac_key())
             .expect("pairing store");
@@ -629,7 +639,10 @@ mod demo {
                     displays,
                     ..Demo::default()
                 }),
-                Arc::new(DemoUi { remember }),
+                Arc::new(DemoUi {
+                    remember,
+                    grant_all,
+                }),
             )
             .await
             .expect("agent");

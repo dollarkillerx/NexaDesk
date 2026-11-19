@@ -22,8 +22,27 @@
 //! message FileChunk  { uint64 offset = 1; bytes data = 2; }
 //! message FileEnd    { bytes sha256 = 1; }
 //! message FileResult { FileStatus status = 1; }
+//! message FileRequest { string path = 1; }
 //! message FileMsg { oneof body { FileOffer offer = 1; FileAnswer answer = 2;
-//!                   FileChunk chunk = 3; FileEnd end = 4; FileResult result = 5; } }
+//!                   FileChunk chunk = 3; FileEnd end = 4; FileResult result = 5;
+//!                   FileRequest request = 6; } }
+//! ```
+//!
+//! A viewer can also ask for a file by its path on the host (`FileRequest`), on a
+//! stream it opens: the host then sends on that stream as above, with the roles of
+//! the two ends swapped. Only a host session that also has the command line serves
+//! requests (`TransferConfig::serve_requests`): the command line reads every file
+//! anyway, so this adds no power, and without it there is still no way to read the
+//! host's files.
+//!
+//! ```text
+//! viewer                                   host
+//!   FileRequest { path }            ──→    an absolute path to a readable file?
+//!                                   ←──    FileOffer { name, size }
+//!                                          (or FileAnswer { NotFound | NotPermitted })
+//!   FileAnswer { Ok }               ──→
+//!                                   ←──    FileChunk ×n, FileEnd
+//!   FileResult { status }           ──→
 //! ```
 //!
 //! Every message from the network is checked: one offer and only first, a name
@@ -110,6 +129,8 @@ pub enum FileStatus {
     NoSpace = 8,
     WriteFailed = 9,
     Busy = 10,
+    /// A requested path is not an absolute path to a file that can be read.
+    NotFound = 11,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -146,6 +167,13 @@ pub struct FileResult {
     pub status: i32,
 }
 
+/// A viewer asking for the file at `path` on the host.
+#[derive(Clone, PartialEq, Message)]
+pub struct FileRequest {
+    #[prost(string, tag = "1")]
+    pub path: String,
+}
+
 #[derive(Clone, PartialEq, Oneof)]
 pub enum FileBody {
     #[prost(message, tag = "1")]
@@ -158,11 +186,13 @@ pub enum FileBody {
     End(FileEnd),
     #[prost(message, tag = "5")]
     Result(FileResult),
+    #[prost(message, tag = "6")]
+    Request(FileRequest),
 }
 
 #[derive(Clone, PartialEq, Message)]
 pub struct FileMsg {
-    #[prost(oneof = "FileBody", tags = "1, 2, 3, 4, 5")]
+    #[prost(oneof = "FileBody", tags = "1, 2, 3, 4, 5, 6")]
     pub body: Option<FileBody>,
 }
 
@@ -202,7 +232,8 @@ pub enum FailReason {
     Io,
     ConnectionLost,
     Timeout,
-    /// Folders and other non-files cannot be sent.
+    /// Folders and other non-files cannot be sent; a requested path is not a
+    /// readable file.
     NotAFile,
     Busy,
 }
@@ -217,6 +248,7 @@ impl FailReason {
             FileStatus::NoSpace => Self::NoSpace,
             FileStatus::WriteFailed => Self::Io,
             FileStatus::Busy => Self::Busy,
+            FileStatus::NotFound => Self::NotAFile,
             _ => Self::Invalid,
         }
     }
@@ -486,6 +518,9 @@ pub struct TransferConfig {
     pub limits: TransferLimits,
     pub bulk: Arc<BulkLimiter>,
     pub confirm_timeout: Duration,
+    /// Whether the peer may ask for a file here by its path: only on a host, for a
+    /// session that also has the command line.
+    pub serve_requests: bool,
 }
 
 struct Active {
@@ -624,10 +659,36 @@ impl Transfers {
             let Ok(_slot) = inner.outgoing.clone().acquire_owned().await else {
                 return;
             };
-            let state = match send(&inner, &path, &mut tracker, cancelled).await {
+            let state = match send(&inner, &path, &mut tracker, cancelled, None).await {
                 Ok(()) => TransferState::Done { path: None },
                 Err(stop) => stop.state(),
             };
+            tracker.finish(state);
+        });
+        id
+    }
+
+    /// Asks the host for the file at `path` there (an absolute path). Returns its
+    /// transfer id at once: an incoming transfer, named from the path until the
+    /// host's offer names it. Must run inside a tokio runtime.
+    pub fn request_file(&self, path: String) -> u64 {
+        let name = path
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        let (mut tracker, cancel) = self.register(Direction::Incoming, name, 0);
+        let id = tracker.event.id;
+        tracker.emit(TransferState::Waiting);
+        let me = self.clone();
+        tokio::spawn(async move {
+            if me.inner.incoming.fetch_add(1, Relaxed) >= MAX_INCOMING {
+                me.inner.incoming.fetch_sub(1, Relaxed);
+                tracker.finish(TransferState::Failed(FailReason::Busy));
+                return;
+            }
+            let state = fetch(&me, path, &mut tracker, cancel).await;
+            me.inner.incoming.fetch_sub(1, Relaxed);
             tracker.finish(state);
         });
         id
@@ -716,11 +777,14 @@ async fn cancelled(rx: &mut watch::Receiver<bool>) {
 // Sending
 // ---------------------------------------------------------------------------------
 
+/// Sends the file at `path`, on a new stream, or on `streams`: one the peer opened
+/// to ask for it.
 async fn send(
     inner: &Arc<Inner>,
     path: &Path,
     tracker: &mut Tracker,
     mut cancel: watch::Receiver<bool>,
+    streams: Option<(FramedSend, FramedRecv)>,
 ) -> Result<(), Stop> {
     let meta = tokio::fs::metadata(path)
         .await
@@ -737,9 +801,12 @@ async fn send(
         return Err(Stop::Cancelled { by_peer: false });
     }
 
-    let (mut tx, mut rx) = open_bi(&inner.conn, StreamType::File)
-        .await
-        .map_err(|_| Stop::Failed(FailReason::ConnectionLost))?;
+    let (mut tx, mut rx) = match streams {
+        Some(s) => s,
+        None => open_bi(&inner.conn, StreamType::File)
+            .await
+            .map_err(|_| Stop::Failed(FailReason::ConnectionLost))?,
+    };
     let abandon = |tx: &mut FramedSend, rx: &mut FramedRecv| {
         tx.reset(code::CANCELLED);
         rx.stop_with(code::CANCELLED);
@@ -879,9 +946,12 @@ async fn turn_away(send: &mut FramedSend, recv: &mut FramedRecv, status: FileSta
 }
 
 async fn receive(me: &Transfers, mut send: FramedSend, mut recv: FramedRecv) {
-    let inner = &me.inner;
     let offer = match tokio::time::timeout(OFFER_TIMEOUT, next_msg(&mut recv)).await {
         Ok(Ok(Some(FileBody::Offer(o)))) => o,
+        Ok(Ok(Some(FileBody::Request(r)))) => {
+            serve_request(me, r, send, recv).await;
+            return;
+        }
         Ok(Ok(Some(_))) => {
             turn_away(&mut send, &mut recv, FileStatus::Invalid).await;
             return;
@@ -897,8 +967,36 @@ async fn receive(me: &Transfers, mut send: FramedSend, mut recv: FramedRecv) {
         turn_away(&mut send, &mut recv, FileStatus::Invalid).await;
         return;
     };
-    let size = offer.size;
-    let (mut tracker, mut cancel) = me.register(Direction::Incoming, name.clone(), size);
+    let (mut tracker, cancel) = me.register(Direction::Incoming, name.clone(), offer.size);
+    let state = take_offer(
+        me,
+        &name,
+        offer.size,
+        &mut send,
+        &mut recv,
+        &mut tracker,
+        cancel,
+        true,
+    )
+    .await;
+    tracker.finish(state);
+}
+
+/// Receives an offered file: checks its size and the space for it, asks the
+/// person here about a large one when `ask` (not for a file this side asked for),
+/// then takes it.
+#[allow(clippy::too_many_arguments)]
+async fn take_offer(
+    me: &Transfers,
+    name: &str,
+    size: u64,
+    send: &mut FramedSend,
+    recv: &mut FramedRecv,
+    tracker: &mut Tracker,
+    mut cancel: watch::Receiver<bool>,
+    ask: bool,
+) -> TransferState {
+    let inner = &me.inner;
     let limits = inner.config.limits;
     let refusal = if size > limits.max_size {
         Some(FailReason::TooLarge)
@@ -910,12 +1008,11 @@ async fn receive(me: &Transfers, mut send: FramedSend, mut recv: FramedRecv) {
         None
     };
     if let Some(reason) = refusal {
-        turn_away(&mut send, &mut recv, reason.status()).await;
-        tracker.finish(TransferState::Failed(reason));
-        return;
+        turn_away(send, recv, reason.status()).await;
+        return TransferState::Failed(reason);
     }
 
-    if size > limits.confirm_above {
+    if ask && size > limits.confirm_above {
         let (reply, answer) = oneshot::channel();
         if let Some(a) = lock(&inner.active).get_mut(&tracker.event.id) {
             a.confirm = Some(reply);
@@ -925,31 +1022,113 @@ async fn receive(me: &Transfers, mut send: FramedSend, mut recv: FramedRecv) {
             a = tokio::time::timeout(inner.config.confirm_timeout, answer) => matches!(a, Ok(Ok(true))),
             _ = cancelled(&mut cancel) => false,
             // The sender gave up while the person was deciding.
-            _ = next_msg(&mut recv) => {
+            _ = next_msg(recv) => {
                 send.reset(code::CANCELLED);
-                tracker.finish(TransferState::Cancelled { by_peer: true });
-                return;
+                return TransferState::Cancelled { by_peer: true };
             }
         };
         if !accepted {
-            turn_away(&mut send, &mut recv, FileStatus::Declined).await;
-            tracker.finish(TransferState::Failed(FailReason::Declined));
-            return;
+            turn_away(send, recv, FileStatus::Declined).await;
+            return TransferState::Failed(FailReason::Declined);
         }
     }
 
-    let state = match receive_body(
-        inner,
-        &name,
-        size,
-        &mut send,
-        &mut recv,
-        &mut tracker,
-        cancel,
-    )
-    .await
-    {
+    match receive_body(inner, name, size, send, recv, tracker, cancel).await {
         Ok(path) => TransferState::Done { path: Some(path) },
+        Err(stop) => stop.state(),
+    }
+}
+
+/// The viewer's side of a request: asks for `path`, then takes the host's offer.
+async fn fetch(
+    me: &Transfers,
+    path: String,
+    tracker: &mut Tracker,
+    mut cancel: watch::Receiver<bool>,
+) -> TransferState {
+    let inner = &me.inner;
+    let Ok((mut tx, mut rx)) = open_bi(&inner.conn, StreamType::File).await else {
+        return TransferState::Failed(FailReason::ConnectionLost);
+    };
+    let abandon = |tx: &mut FramedSend, rx: &mut FramedRecv| {
+        tx.reset(code::CANCELLED);
+        rx.stop_with(code::CANCELLED);
+    };
+    if send_msg(&mut tx, FileBody::Request(FileRequest { path }))
+        .await
+        .is_err()
+    {
+        return lost_or(&inner.conn, Stop::Failed(FailReason::NotPermitted)).state();
+    }
+    let first = tokio::select! {
+        m = tokio::time::timeout(OFFER_TIMEOUT, next_msg(&mut rx)) => m,
+        _ = cancelled(&mut cancel) => {
+            abandon(&mut tx, &mut rx);
+            return TransferState::Cancelled { by_peer: false };
+        }
+    };
+    match first {
+        Ok(Ok(Some(FileBody::Offer(o)))) => {
+            let Some(name) = sanitize_file_name(&o.name) else {
+                turn_away(&mut tx, &mut rx, FileStatus::Invalid).await;
+                return TransferState::Failed(FailReason::Invalid);
+            };
+            tracker.event.name = name.clone();
+            tracker.event.size = o.size;
+            take_offer(me, &name, o.size, &mut tx, &mut rx, tracker, cancel, false).await
+        }
+        Ok(Ok(Some(FileBody::Answer(a)))) => {
+            TransferState::Failed(FailReason::of_status(status_of(a.status)))
+        }
+        Ok(Ok(Some(_))) => {
+            abandon(&mut tx, &mut rx);
+            TransferState::Failed(FailReason::Invalid)
+        }
+        // Turned away unread: no `file` permission, or a host that does not know
+        // requests (it gives up on the stream once its wait for an offer is over).
+        Ok(Ok(None)) | Ok(Err(_)) => {
+            lost_or(&inner.conn, Stop::Failed(FailReason::NotPermitted)).state()
+        }
+        Err(_) => {
+            abandon(&mut tx, &mut rx);
+            TransferState::Failed(FailReason::NotPermitted)
+        }
+    }
+}
+
+/// The host's side of a request: sends the file at the requested path on the
+/// stream the viewer opened, if this session serves requests and it is a file.
+async fn serve_request(
+    me: &Transfers,
+    request: FileRequest,
+    mut tx: FramedSend,
+    mut rx: FramedRecv,
+) {
+    let inner = &me.inner;
+    if !inner.config.serve_requests {
+        turn_away(&mut tx, &mut rx, FileStatus::NotPermitted).await;
+        return;
+    }
+    let path = PathBuf::from(&request.path);
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let is_file = path.is_absolute()
+        && !name.is_empty()
+        && tokio::fs::metadata(&path).await.is_ok_and(|m| m.is_file());
+    if !is_file {
+        turn_away(&mut tx, &mut rx, FileStatus::NotFound).await;
+        return;
+    }
+    let Ok(_slot) = inner.outgoing.clone().try_acquire_owned() else {
+        turn_away(&mut tx, &mut rx, FileStatus::Busy).await;
+        return;
+    };
+    let (mut tracker, cancel) = me.register(Direction::Outgoing, name, 0);
+    tracker.emit(TransferState::Waiting);
+    let state = match send(inner, &path, &mut tracker, cancel, Some((tx, rx))).await {
+        Ok(()) => TransferState::Done { path: None },
         Err(stop) => stop.state(),
     };
     tracker.finish(state);

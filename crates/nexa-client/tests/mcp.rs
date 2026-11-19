@@ -676,6 +676,98 @@ async fn a_command_line_not_allowed_is_explained() {
     assert!(texts(&r).contains("did not allow its command line"), "{r}");
 }
 
+fn with_files(terminal: bool) -> nexa_wire::control::Permissions {
+    nexa_wire::control::Permissions {
+        file: true,
+        terminal,
+        ..perms(true, true, false)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn files_go_to_the_host_and_come_back_by_their_path() {
+    let (h, agent) = connected_to(with_files(true)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("报告.txt");
+    std::fs::write(&src, b"from the agent").unwrap();
+    let sent = agent.call("nexa_send_file", json!({ "path": src })).await;
+    assert_eq!(sent["isError"], false, "{sent}");
+    assert!(
+        texts(&sent).starts_with("Sent 报告.txt (14 bytes)"),
+        "{sent}"
+    );
+    let there = h.downloads.join("报告.txt");
+    assert_eq!(std::fs::read(&there).unwrap(), b"from the agent");
+
+    // Back by its path there, saved where the agent says.
+    let back = dir.path().join("back.txt");
+    let got = agent
+        .call(
+            "nexa_receive_file",
+            json!({ "path": there, "save_as": back }),
+        )
+        .await;
+    assert_eq!(got["isError"], false, "{got}");
+    assert!(texts(&got).contains(&back.display().to_string()), "{got}");
+    assert_eq!(std::fs::read(&back).unwrap(), b"from the agent");
+    // Never over a file that is there.
+    let again = agent
+        .call(
+            "nexa_receive_file",
+            json!({ "path": there, "save_as": back }),
+        )
+        .await;
+    assert_eq!(again["isError"], true);
+    assert!(texts(&again).contains("already exists"), "{again}");
+    // Without save_as: into the AI's own downloads, named as there.
+    let plain = agent
+        .call("nexa_receive_file", json!({ "path": there }))
+        .await;
+    assert_eq!(plain["isError"], false, "{plain}");
+    assert!(texts(&plain).contains("报告.txt"), "{plain}");
+    // Something that is not a file there.
+    for path in [
+        h.downloads.join("missing.txt").display().to_string(),
+        h.downloads.display().to_string(),
+        "报告.txt".to_owned(),
+    ] {
+        let r = agent
+            .call("nexa_receive_file", json!({ "path": path }))
+            .await;
+        assert_eq!(r["isError"], true, "{path}");
+        assert!(texts(&r).contains("no such file"), "{r}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fetching_needs_the_command_line_and_either_way_needs_files() {
+    let (h, agent) = connected_to(with_files(false)).await;
+    std::fs::create_dir_all(&h.downloads).unwrap();
+    let there = h.downloads.join("secret.txt");
+    std::fs::write(&there, b"secret").unwrap();
+    let r = agent
+        .call("nexa_receive_file", json!({ "path": there }))
+        .await;
+    assert_eq!(r["isError"], true);
+    assert!(
+        texts(&r).contains("only when the command line was allowed"),
+        "{r}"
+    );
+
+    let (_h, agent) = connected_to(granted(true, false)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("a.txt");
+    std::fs::write(&src, b"a").unwrap();
+    for (tool, path) in [
+        ("nexa_send_file", src.display().to_string()),
+        ("nexa_receive_file", there.display().to_string()),
+    ] {
+        let r = agent.call(tool, json!({ "path": path })).await;
+        assert_eq!(r["isError"], true, "{tool}");
+        assert!(texts(&r).contains("did not allow files"), "{r}");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_clipboard_goes_both_ways_without_this_machines_own() {
     let (h, agent) = connected_to(granted(false, true)).await;

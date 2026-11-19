@@ -33,8 +33,9 @@ use crate::{
     memclip::MemoryClipboard,
     proto::{
         ClipboardCode, Command, ConnectAuth, ConnectRequest, Connected, DisconnectReason,
-        Disconnected, DisplayInfo, Event, EventBody, KeyPress, PointerButton, PointerMove,
-        PointerWheel, SelectDisplay, SendText, SessionCommand, StreamChanged,
+        Disconnected, DisplayInfo, Event, EventBody, FailReason, KeyPress, PointerButton,
+        PointerMove, PointerWheel, SelectDisplay, SendText, SessionCommand, StreamChanged,
+        Transfer, TransferState,
     },
 };
 use nexa_session::agent::{ActRequest, Action, ObserveReply, ObserveRequest};
@@ -86,6 +87,8 @@ struct TagState {
     stream: Option<StreamChanged>,
     /// Copies the host confirmed it has on its clipboard (`CLIPBOARD_SENT`).
     clips_sent: u64,
+    /// File transfers, as last heard of, by id; taken out once waited for.
+    transfers: HashMap<u64, Transfer>,
 }
 
 #[derive(Default)]
@@ -105,6 +108,9 @@ impl Events {
             EventBody::Stream(s) => state.stream = Some(s),
             EventBody::Clipboard(n) if n.code == ClipboardCode::Sent as i32 => {
                 state.clips_sent += 1
+            }
+            EventBody::Transfer(t) => {
+                state.transfers.insert(t.id, t);
             }
             _ => return,
         }
@@ -147,6 +153,12 @@ impl Events {
 
     fn clips_sent(&self, tag: u64) -> u64 {
         lock(&self.tags).get(&tag).map_or(0, |s| s.clips_sent)
+    }
+
+    fn forget_transfer(&self, tag: u64, id: u64) {
+        if let Some(s) = lock(&self.tags).get_mut(&tag) {
+            s.transfers.remove(&id);
+        }
     }
 }
 
@@ -973,6 +985,113 @@ impl Viewer {
                 (s.clips_sent > before).then_some(())
             })
             .is_some())
+    }
+}
+
+impl Viewer {
+    /// Sends the file at `path` on this computer to the host, which saves it in
+    /// its downloads folder (Downloads/NexaDesk), and waits until it is there.
+    pub fn send_file(
+        &self,
+        remote: &Remote,
+        path: &Path,
+        timeout: Duration,
+    ) -> Result<Transfer, String> {
+        self.remote(remote.owner, Some(remote.id))?;
+        if !remote.perms().file {
+            return Err("the person there did not allow files in this session".into());
+        }
+        if !path.is_absolute() {
+            return Err("give the absolute path of a file on this computer".into());
+        }
+        let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        if !meta.is_file() {
+            return Err(format!("{} is not a file", path.display()));
+        }
+        let id = remote.session.send_file(path.to_path_buf())?;
+        self.wait_transfer(remote, id, timeout)
+            .map_err(|t| failed(&t, true))
+    }
+
+    /// Fetches the file at `path` on the host (an absolute path there) into this
+    /// computer's downloads folder for AI agents, and waits until it is here.
+    pub fn receive_file(
+        &self,
+        remote: &Remote,
+        path: &str,
+        timeout: Duration,
+    ) -> Result<Transfer, String> {
+        self.remote(remote.owner, Some(remote.id))?;
+        // The host hands a file out only if the command line was allowed too, which
+        // reads every file there anyway; the viewer is not told, so the host says.
+        if !remote.perms().file {
+            return Err("the person there did not allow files in this session".into());
+        }
+        let id = remote.session.request_file(path.to_owned())?;
+        self.wait_transfer(remote, id, timeout)
+            .map_err(|t| failed(&t, false))
+    }
+
+    /// Waits for transfer `id` to end: Ok when done, else how it ended. One still
+    /// going after `timeout` is cancelled.
+    fn wait_transfer(
+        &self,
+        remote: &Remote,
+        id: u64,
+        timeout: Duration,
+    ) -> Result<Transfer, Transfer> {
+        let ended = |t: &Transfer| {
+            matches!(
+                TransferState::try_from(t.state),
+                Ok(TransferState::Done | TransferState::Failed | TransferState::Cancelled)
+            )
+        };
+        let last = self.events.wait(remote.id, timeout, |s| {
+            s.transfers.get(&id).filter(|t| ended(t)).cloned()
+        });
+        let result = match last {
+            Some(t) if t.state == TransferState::Done as i32 => Ok(t),
+            Some(t) => Err(t),
+            None => {
+                remote.session.cancel_transfer(id);
+                let mut t = lock(&self.events.tags)
+                    .get(&remote.id)
+                    .and_then(|s| s.transfers.get(&id).cloned())
+                    .unwrap_or_default();
+                t.state = TransferState::Failed as i32;
+                t.reason = FailReason::Timeout as i32;
+                Err(t)
+            }
+        };
+        self.events.forget_transfer(remote.id, id);
+        result
+    }
+}
+
+/// Why a transfer did not go through, for the agent: `sending` to the host, or
+/// fetching from it.
+fn failed(t: &Transfer, sending: bool) -> String {
+    if t.state == TransferState::Cancelled as i32 {
+        return if t.by_peer {
+            "the other side stopped the transfer".into()
+        } else {
+            "the transfer was cancelled".into()
+        };
+    }
+    match FailReason::try_from(t.reason).unwrap_or(FailReason::None) {
+        FailReason::Declined => "the person there declined the file".into(),
+        FailReason::TooLarge => "the file is too large (8 GB at most)".into(),
+        FailReason::NotPermitted if sending => "the host refused the file: files are not allowed in this session there".into(),
+        FailReason::NotPermitted => "the host did not hand the file out: it does so only when the command line was allowed in this session too, and with NexaDesk 0.1.28 or later there".into(),
+        FailReason::NotAFile if sending => "not a file".into(),
+        FailReason::NotAFile => "there is no such file on the remote computer (give the absolute path of a file, not a folder)".into(),
+        FailReason::NoSpace => "there is not enough free disk space on the receiving side".into(),
+        FailReason::Io => "the file could not be read or written".into(),
+        FailReason::HashMismatch => "the file arrived damaged (its checksum did not match), so it was not kept".into(),
+        FailReason::ConnectionLost => "the connection was lost".into(),
+        FailReason::Timeout => "it took too long, so it was cancelled".into(),
+        FailReason::Busy => "the other side is busy with other transfers; try again shortly".into(),
+        FailReason::Invalid | FailReason::None => "the transfer failed".into(),
     }
 }
 

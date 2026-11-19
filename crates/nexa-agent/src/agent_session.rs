@@ -25,6 +25,7 @@ use nexa_session::{
     input::{InjectThread, Marks, PointMap, pump_input_stream},
     proto::{CloseReason, ControlBody, ControlMsg, Goodbye, close},
     rendezvous::link::Link,
+    transfer::{self, CONFIRM_TIMEOUT, TransferConfig, Transfers},
 };
 use nexa_wire::{
     control::{Chroma, Codec, Mode, StreamConfig},
@@ -138,8 +139,7 @@ pub(crate) async fn run(
         },
     ));
     let mut path = PathFollower { link, last: None };
-    // No files in an agent's session (§13.1).
-    *lock(&files) = None;
+    let session_id = info.id;
 
     let finish = |conn: &Connection, reason: CloseReason, message: &str| {
         conn.close(close::for_reason(reason).into(), message.as_bytes());
@@ -187,6 +187,29 @@ pub(crate) async fn run(
         tree: Mutex::default(),
     });
     let bulk = BulkLimiter::new(Arc::new(UplinkScavenger::new(conn.clone())));
+    // Files as in any session, only if allowed: the agent sends them here, and the
+    // person here can drop files for it on the banner. It can also ask for a file by
+    // its path, but only with the command line, which reads every file anyway.
+    let transfers = perms.file.then(|| {
+        let ui = env.ui.clone();
+        Transfers::new(
+            conn.clone(),
+            TransferConfig {
+                downloads: env.files.downloads.clone(),
+                limits: env.files.limits,
+                bulk: bulk.clone(),
+                confirm_timeout: CONFIRM_TIMEOUT,
+                serve_requests: perms.terminal,
+            },
+            Arc::new(move |event| {
+                ui.event(AgentEvent::Transfer {
+                    session: session_id,
+                    event,
+                })
+            }),
+        )
+    });
+    *lock(&files) = transfers.clone();
 
     let (in_tx, mut in_rx) = mpsc::unbounded_channel();
     let (uni_task, bi_task) = spawn_acceptors(&conn, in_tx);
@@ -255,6 +278,10 @@ pub(crate) async fn run(
                     };
                     tasks.push(AbortOnDrop(Some(task)));
                 }
+                Inbound::Bi(StreamType::File, send, file_recv) => match &transfers {
+                    Some(t) => t.accept(send, file_recv),
+                    None => transfer::refuse(send, file_recv),
+                },
                 Inbound::Bi(StreamType::Agent, send, look_recv) => {
                     tasks.retain(|t| t.0.as_ref().is_some_and(|t| !t.is_finished()));
                     tasks.push(AbortOnDrop(Some(tokio::spawn(serve_look(
@@ -271,6 +298,11 @@ pub(crate) async fn run(
         }
     };
 
+    // No transfer outlives its session; partial files are deleted by their tasks.
+    *lock(&files) = None;
+    if let Some(t) = &transfers {
+        t.shutdown();
+    }
     let local_end = !matches!(reason, CloseReason::Unspecified);
     if local_end {
         let _ = ctl_tx.send(ControlBody::Bye(Goodbye {

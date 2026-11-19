@@ -268,6 +268,18 @@ struct Side {
 }
 
 fn side(conn: &Connection, dir: &Path, limits: TransferLimits, bulk: Arc<BulkLimiter>) -> Side {
+    side_with(conn, dir, limits, bulk, false)
+}
+
+/// A side that hands out files asked for by path when `serve_requests`: a host
+/// session with the command line.
+fn side_with(
+    conn: &Connection,
+    dir: &Path,
+    limits: TransferLimits,
+    bulk: Arc<BulkLimiter>,
+    serve_requests: bool,
+) -> Side {
     let log = Arc::new(Log::default());
     let l = log.clone();
     let downloads = dir.join("Downloads/NexaDesk");
@@ -278,6 +290,7 @@ fn side(conn: &Connection, dir: &Path, limits: TransferLimits, bulk: Arc<BulkLim
             limits,
             bulk,
             confirm_timeout: Duration::from_secs(5),
+            serve_requests,
         },
         Arc::new(move |e| l.0.lock().unwrap().push(e)),
     );
@@ -417,6 +430,113 @@ async fn viewer_to_host_round_trip_and_collision() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn host_to_viewer_round_trip_and_collision() {
     round_trip(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_viewer_fetches_a_file_by_path_from_a_host_with_the_command_line() {
+    let net = connect(None).await;
+    let dir = tempfile::tempdir().unwrap();
+    let viewer = side(&net.viewer, &dir.path().join("viewer"), LIMITS, fast());
+    let host = side_with(&net.host, &dir.path().join("host"), LIMITS, fast(), true);
+    let _serve = serve(&net.host, Some(host.transfers.clone()));
+
+    // Larger than the confirm threshold: the viewer asked for it, so nobody is asked.
+    let src = dir.path().join("logs").join("agent.log");
+    std::fs::create_dir_all(src.parent().unwrap()).unwrap();
+    let data = payload((32 << 20) + 5, 3);
+    std::fs::write(&src, &data).unwrap();
+    let id = viewer
+        .transfers
+        .request_file(src.to_string_lossy().into_owned());
+    until("fetched", Duration::from_secs(20), || {
+        viewer.log.last(id).is_some_and(|e| e.state.is_final())
+    })
+    .await;
+    let got = viewer.log.last(id).unwrap();
+    let placed = viewer.downloads.join("agent.log");
+    assert_eq!(
+        got.state,
+        TransferState::Done {
+            path: Some(placed.clone())
+        }
+    );
+    assert_eq!(
+        (got.name.as_str(), got.size, got.done),
+        ("agent.log", data.len() as u64, data.len() as u64)
+    );
+    assert_eq!(std::fs::read(&placed).unwrap(), data);
+    // The host sent it as any of its transfers, so its person sees it go.
+    until("host done", Duration::from_secs(5), || {
+        host.log.final_of(transfer::Direction::Outgoing).is_some()
+    })
+    .await;
+    assert_eq!(
+        host.log
+            .final_of(transfer::Direction::Outgoing)
+            .unwrap()
+            .state,
+        TransferState::Done { path: None }
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn requests_need_the_command_line_and_an_absolute_path_to_a_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join("secret.txt");
+    std::fs::write(&secret, b"secret").unwrap();
+
+    async fn ask(viewer: &Side, path: &str) -> TransferState {
+        let id = viewer.transfers.request_file(path.to_owned());
+        until("answered", Duration::from_secs(15), || {
+            viewer.log.last(id).is_some_and(|e| e.state.is_final())
+        })
+        .await;
+        viewer.log.last(id).unwrap().state
+    }
+
+    // A session with files but not the command line hands nothing out.
+    let net = connect(None).await;
+    let viewer = side(&net.viewer, &dir.path().join("v1"), LIMITS, fast());
+    let host = side_with(&net.host, &dir.path().join("h1"), LIMITS, fast(), false);
+    let _serve = serve(&net.host, Some(host.transfers.clone()));
+    assert_eq!(
+        ask(&viewer, &secret.to_string_lossy()).await,
+        TransferState::Failed(FailReason::NotPermitted)
+    );
+    // Nor one without files at all.
+    let net2 = connect(None).await;
+    let viewer2 = side(&net2.viewer, &dir.path().join("v2"), LIMITS, fast());
+    let _refuse = serve(&net2.host, None);
+    assert_eq!(
+        ask(&viewer2, &secret.to_string_lossy()).await,
+        TransferState::Failed(FailReason::NotPermitted)
+    );
+    assert!(files_in(&viewer.downloads).is_empty() && files_in(&viewer2.downloads).is_empty());
+
+    // With it: only an absolute path to something that is a file.
+    let net3 = connect(None).await;
+    let viewer3 = side(&net3.viewer, &dir.path().join("v3"), LIMITS, fast());
+    let host3 = side_with(&net3.host, &dir.path().join("h3"), LIMITS, fast(), true);
+    let _serve3 = serve(&net3.host, Some(host3.transfers.clone()));
+    let missing = dir.path().join("missing.txt");
+    for path in [
+        missing.to_string_lossy().into_owned(),
+        "secret.txt".to_owned(),
+        dir.path().to_string_lossy().into_owned(),
+    ] {
+        assert_eq!(
+            ask(&viewer3, &path).await,
+            TransferState::Failed(FailReason::NotAFile),
+            "{path}"
+        );
+    }
+    assert!(files_in(&viewer3.downloads).is_empty());
+    assert_eq!(
+        ask(&viewer3, &secret.to_string_lossy()).await,
+        TransferState::Done {
+            path: Some(viewer3.downloads.join("secret.txt"))
+        }
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

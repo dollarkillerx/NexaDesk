@@ -34,7 +34,7 @@
   - Phones: touch gestures, the on-screen keyboard, input methods, and a row of Esc, Tab, modifier and arrow keys.
   - Off by default: turn on "Allow browsers to connect" in Settings.
 - **Command line** - Open just the host's shell, in the app (a native terminal control, the same on macOS and Windows) or in a browser (xterm.js). It is a separate permission, off by default, and the shell and everything it started end with the session. Linux and Windows machines without a desktop run the command-line host `nexa-term-host` (bash / PowerShell), see [docs/TERM_HOST.md](docs/TERM_HOST.md).
-- **AI agents (MCP)** - NexaDesk comes with an MCP server, so AI apps such as Claude Code, Codex and Claude Desktop can operate the computers you allow: they read the screen as a tree of elements and act on them, take screenshots when they need to, and run commands on the command line. NexaDesk signs in for them with the password you saved, so the AI never sees a password, code or key, and the computer being operated asks each time and shows that it is an AI. See [AI agents](#ai-agents-mcp) below.
+- **AI agents (MCP)** - NexaDesk comes with an MCP server, so AI apps such as Claude Code, Codex and Claude Desktop can operate the computers you allow: they read the screen as a tree of elements and act on them, take screenshots when they need to, run commands on the command line, and send and fetch files. NexaDesk signs in for them with the password you saved, so the AI never sees a password, code or key, and the computer being operated asks each time and shows that it is an AI. See [AI agents](#ai-agents-mcp) below.
 - **Several people at once** - Up to four people (app and browsers together) can connect to the same Mac, each allowed separately and each able to control; whoever leaves ends only their own session.
 - **Sign-in** - A one-time code (the host allows it), a fixed password (the owner's own way in, no prompt), or through a server just the device ID, which the host sees as an unverified request. The device ID can be reset at any time.
 - **Stays reachable** - Remote control is on when NexaDesk starts, also after "Restart to update", so updating a host from afar does not lock you out; once you stop it yourself, it stays off until you start it again. It can also start at login.
@@ -141,7 +141,7 @@ AI apps on your computer operate other computers through NexaDesk, the way you w
 2. On the "Connect" page, click Edit on a saved device and tick "Allow AI to operate". The AI can see and connect to only these devices, by name. NexaDesk signs in with the password saved for the device, or asks the person there when it is reached by device ID; the AI never sees a password, one-time code or key.
 3. On the computer to be operated, turn on "Allow AI agents to connect" in Settings. Each AI connection is still asked about, with the AI marked in the prompt and the banner, and the command line is a separate permission.
 
-Then ask the AI, e.g. "Connect to my MacBook, open Chrome and run a speed test". It reads the screen as a tree of elements (buttons, fields, rows) and acts on them, takes a screenshot when it needs to see, and can run commands on the command line. `nexa-mcp` itself only relays between the AI app and NexaDesk and keeps nothing. The design is in [docs/MCP.md](docs/MCP.md) (in Chinese).
+Then ask the AI, e.g. "Connect to my MacBook, open Chrome and run a speed test". It reads the screen as a tree of elements (buttons, fields, rows) and acts on them, takes a screenshot when it needs to see, and can run commands on the command line and send files there or fetch them from there by path (fetching needs the command line allowed too, which reads every file anyway). `nexa-mcp` itself only relays between the AI app and NexaDesk and keeps nothing. The design is in [docs/MCP.md](docs/MCP.md) (in Chinese).
 
 ## Troubleshooting
 
@@ -260,5 +260,5 @@ The design documents are in Chinese.
 - **Windows**: the many problems found on real hardware, in both the host and the viewer; the host's pointer shape on the viewer, HEVC, sound, running as a service (login screen and UAC), see [docs/WINDOWS.md](docs/WINDOWS.md).
 - **Browser**: testing on iPhone / Safari and Firefox (Chrome on Android is in use); TURN over TCP/TLS for networks that block UDP; sound and file transfer.
 - **Command-line host**: running the Windows build on real hardware; running as a Windows service.
-- **AI agents**: sending and receiving files (the command line and the clipboard work); reading a Windows screen as elements (UI Automation) on real hardware.
+- **AI agents**: reading a Windows screen as elements (UI Automation), and the command line and files, on real hardware.
 - **Product decisions**: how an unattended machine is first paired; what someone who only knows the ID may do; whether file permission is split by direction.

@@ -45,7 +45,8 @@ and keys go to whatever has the focus. Calls run one at a time, in order. Key na
 remote computer's own: cmd is the Command key on a Mac and the Windows key on Windows. \
 nexa_display lists and switches displays. Where the person there allowed it, nexa_run runs \
 commands on its command line (often more reliable than clicking), and nexa_clipboard_get / \
-nexa_clipboard_set read and fill its clipboard. The person at the remote computer sees that \
+nexa_clipboard_set read and fill its clipboard, nexa_send_file sends a file there and \
+nexa_receive_file fetches one from there by its path. The person at the remote computer sees that \
 an AI agent is connected and can end it at any time; someone who wants to watch can connect \
 with the NexaDesk app as well.";
 
@@ -399,6 +400,49 @@ impl Server {
                     "Put on the clipboard; the remote computer did not confirm it yet. Paste with nexa_key in a moment."
                 })])
             }
+            "nexa_send_file" => {
+                let r = v.remote(self.client, session_arg(args)?)?;
+                let path = str_arg(args, "path")?.ok_or("`path` is required")?;
+                let wait = file_wait(args)?;
+                let t = v.send_file(&r, std::path::Path::new(path), wait)?;
+                let folder = if r.host.host_os == 1 {
+                    r"Downloads\NexaDesk in the user's folder"
+                } else {
+                    "~/Downloads/NexaDesk"
+                };
+                Ok(vec![text(&format!(
+                    "Sent {} ({}). It is in {folder} on the remote computer; a name already there gets a number added, as in \"name (1).ext\". Move it with nexa_run if it belongs elsewhere.",
+                    t.name,
+                    size_text(t.size)
+                ))])
+            }
+            "nexa_receive_file" => {
+                let r = v.remote(self.client, session_arg(args)?)?;
+                let path = str_arg(args, "path")?.ok_or("`path` is required")?;
+                let save_as = str_arg(args, "save_as")?.map(std::path::PathBuf::from);
+                if let Some(to) = &save_as {
+                    check_save_as(to)?;
+                }
+                let wait = file_wait(args)?;
+                let t = v.receive_file(&r, path, wait)?;
+                let mut at = std::path::PathBuf::from(&t.path);
+                if let Some(to) = save_as {
+                    move_file(&at, &to).map_err(|e| {
+                        format!(
+                            "fetched to {}, but it could not be moved to {}: {e}",
+                            at.display(),
+                            to.display()
+                        )
+                    })?;
+                    at = to;
+                }
+                Ok(vec![text(&format!(
+                    "Fetched {} ({}) to {} on this computer.",
+                    t.name,
+                    size_text(t.size),
+                    at.display()
+                ))])
+            }
             _ => Err(format!("unknown tool {name}")),
         }
     }
@@ -438,6 +482,9 @@ fn describe(v: &Viewer, r: &Remote) -> String {
     }
     if perms.clipboard {
         allowed.push("clipboard");
+    }
+    if perms.file {
+        allowed.push("files");
     }
     let (list, current) = v.displays(r);
     let current = current.or_else(|| list.first().map(|d| d.id));
@@ -574,6 +621,62 @@ fn button_arg(args: &Value) -> Result<Button, String> {
         "middle" => Ok(Button::Middle),
         other => Err(format!("unknown button {other}: left, right or middle")),
     }
+}
+
+/// How long a file may take: `timeout` seconds, 5 minutes by default.
+fn file_wait(args: &Value) -> Result<std::time::Duration, String> {
+    let secs = int_arg(args, "timeout")?.unwrap_or(300);
+    if !(1..=3600).contains(&secs) {
+        return Err("`timeout` is 1 to 3600 seconds".into());
+    }
+    Ok(std::time::Duration::from_secs(secs as u64))
+}
+
+fn size_text(bytes: u64) -> String {
+    match bytes {
+        b if b < 1 << 10 => format!("{b} bytes"),
+        b if b < 1 << 20 => format!("{:.1} KB", b as f64 / 1024.0),
+        b if b < 1 << 30 => format!("{:.1} MB", b as f64 / (1 << 20) as f64),
+        b => format!("{:.2} GB", b as f64 / (1 << 30) as f64),
+    }
+}
+
+/// Where a fetched file may go: an absolute path, not taken yet, in a folder that
+/// exists. Checked before fetching, so a bad one costs no transfer.
+fn check_save_as(to: &std::path::Path) -> Result<(), String> {
+    if !to.is_absolute() {
+        return Err("`save_as` must be an absolute path on this computer".into());
+    }
+    if to.symlink_metadata().is_ok() {
+        return Err(format!(
+            "{} already exists; NexaDesk does not replace files",
+            to.display()
+        ));
+    }
+    match to.parent() {
+        Some(dir) if dir.is_dir() => Ok(()),
+        _ => Err(format!("the folder for {} does not exist", to.display())),
+    }
+}
+
+/// Moves `from` to `to`, which must not exist: a rename, or a copy across disks.
+fn move_file(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    check_save_as(to).map_err(std::io::Error::other)?;
+    if std::fs::hard_link(from, to).is_ok() {
+        return std::fs::remove_file(from);
+    }
+    // Another disk: copy into a new file (never over one), then drop the original.
+    let mut src = std::fs::File::open(from)?;
+    let mut dst = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(to)?;
+    if let Err(e) = std::io::copy(&mut src, &mut dst).and_then(|_| dst.sync_all()) {
+        drop(dst);
+        let _ = std::fs::remove_file(to);
+        return Err(e);
+    }
+    std::fs::remove_file(from)
 }
 
 fn text(s: &str) -> Value {
@@ -840,6 +943,33 @@ fn tools() -> Vec<Value> {
                 "type": "object",
                 "properties": { "session": session, "text": { "type": "string" } },
                 "required": ["text"],
+            },
+        }),
+        json!({
+            "name": "nexa_send_file",
+            "description": "Send a file from this computer to the remote one, and wait until it is there. It lands in the NexaDesk folder in Downloads there (~/Downloads/NexaDesk on a Mac); move it with nexa_run if it belongs elsewhere. A file over 256 MB waits for the person there to accept it. Needs files to have been allowed.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session": session,
+                    "path": { "type": "string", "description": "Absolute path of a file on this computer." },
+                    "timeout": { "type": "integer", "minimum": 1, "maximum": 3600, "description": "Seconds before it is cancelled. Default 300." },
+                },
+                "required": ["path"],
+            },
+        }),
+        json!({
+            "name": "nexa_receive_file",
+            "description": "Fetch a file from the remote computer to this one, and wait until it is here. Give its absolute path there (find it with nexa_run if needed). Needs both files and the command line to have been allowed: the command line reads every file there anyway. The file is checked against a checksum before it is kept.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session": session,
+                    "path": { "type": "string", "description": "Absolute path of a file on the remote computer, e.g. /Users/me/report.pdf or C:\\Users\\me\\report.pdf." },
+                    "save_as": { "type": "string", "description": "Absolute path on this computer to save it as; must not exist yet. Default: NexaDesk's folder for AI downloads (the result says where)." },
+                    "timeout": { "type": "integer", "minimum": 1, "maximum": 3600, "description": "Seconds before it is cancelled. Default 300." },
+                },
+                "required": ["path"],
             },
         }),
         json!({
