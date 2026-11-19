@@ -176,6 +176,20 @@ public sealed partial class HostViewModel : ObservableObject
     /// <summary>The longest start waits for the Keychain to give the server's key back.</summary>
     static readonly TimeSpan SecretWait = TimeSpan.FromSeconds(10);
     static readonly TimeSpan RetryEvery = TimeSpan.FromMilliseconds(250);
+    /// <summary>Restarts in a row before an agent that keeps ending is left stopped.</summary>
+    const int MaxRestarts = 3;
+    /// <summary>Hosting this long counts as working again: the restarts start over.</summary>
+    static readonly TimeSpan SteadyAfter = TimeSpan.FromMinutes(1);
+
+    /// <summary>
+    /// The wait before restarting an agent that ended without the person stopping it, times the
+    /// restarts so far (2, 4, 6 s). An update restart is the usual case: the new app can reach the
+    /// old agent in the second it takes to shut down, and lose it right after.
+    /// </summary>
+    internal TimeSpan RestartAfter { get; set; } = TimeSpan.FromSeconds(2);
+    int _restarts;
+    bool _restartPending;
+    DateTimeOffset _hostingSince;
 
     readonly IAgentLink _link;
     readonly IAgentProcess _process;
@@ -735,6 +749,7 @@ public sealed partial class HostViewModel : ObservableObject
     {
         State = HostState.Hosting;
         Error = null;
+        _hostingSince = _now();
         _rememberHosting(true);
         _link.Send(new UiRequest.ListPairings());
         // The agent starts with agents refused; this is the person's setting.
@@ -901,6 +916,30 @@ public sealed partial class HostViewModel : ObservableObject
     {
         if (State == HostState.Stopped) return;
         Stopped(_stopping ? null : L.Get("Host.LinkLost"));
+        if (!_stopping) RestartSoon();
+    }
+
+    /// <summary>
+    /// The agent ended without the person stopping it (it was another app's that was quitting, it
+    /// crashed, or its port was not free yet): start it again shortly, so whoever is away is not
+    /// locked out. A few times in a row at most; then it stays stopped with its error.
+    /// </summary>
+    void RestartSoon()
+    {
+        if (_restartPending) return;
+        if (_hostingSince != default && _now() - _hostingSince >= SteadyAfter) _restarts = 0;
+        if (_restarts >= MaxRestarts) return;
+        _restarts++;
+        _restartPending = true;
+        _ = RestartAsync(RestartAfter * _restarts);
+    }
+
+    async Task RestartAsync(TimeSpan after)
+    {
+        await Task.Delay(after);
+        _restartPending = false;
+        if (State != HostState.Stopped || _stopping || !StartCommand.CanExecute(null)) return;
+        await StartCommand.ExecuteAsync(null);
     }
 
     void OnProcessExited(AgentExit exit)
@@ -908,22 +947,29 @@ public sealed partial class HostViewModel : ObservableObject
         if (_stopping && State == HostState.Stopped) return;
         var text = exit.LastOutput;
         string message;
+        // What a restart cannot fix: the person has to.
+        var lasting = false;
         if (text.Contains("Screen Recording", StringComparison.OrdinalIgnoreCase))
         {
             message = L.Get("Host.ExitScreenRecording");
             ShowPermissionGuide();
+            lasting = true;
         }
         else if (text.Contains("cannot listen", StringComparison.OrdinalIgnoreCase))
             message = L.Format("Host.ExitCannotListen", ListenAddress);
         else if (text.Contains("already running", StringComparison.OrdinalIgnoreCase))
             message = L.Get("Host.ExitAlreadyRunning");
         else if (text.Contains("device key", StringComparison.OrdinalIgnoreCase))
+        {
             message = L.Get("Host.ExitDeviceKey");
+            lasting = true;
+        }
         else
             message = L.Format("Host.ExitUnexpected", exit.Code);
         var detail = text.Length > 0 ? $"\n{text.Split('\n').Last()}" : "";
         if (State != HostState.Stopped) Stopped(message + detail);
         else Error = message + detail;
+        if (!_stopping && !lasting) RestartSoon();
     }
 
     /// <summary>At exit: nobody would see the banner, so hosting stops with the app.</summary>

@@ -187,4 +187,78 @@ public class ResumeHostingTests
             dir.Delete(recursive: true);
         }
     }
+
+    /// <summary>
+    /// An update restart: the new app reaches the old app's agent while it is still shutting down, and
+    /// loses it a moment later. Remote control must come back by itself: whoever restarted from afar
+    /// cannot press Start.
+    /// </summary>
+    [AvaloniaFact]
+    public async Task An_agent_lost_right_after_an_update_restart_is_started_again()
+    {
+        var settings = new MemorySettings(new AppSettings(ResumeHosting: true));
+        var link = new FakeLink();
+        link.ConnectResults.Enqueue(null); // the old agent, still answering
+        var process = new FakeProcess();
+        var main = App(settings, link, process);
+        main.Host.RestartAfter = TimeSpan.FromMilliseconds(20);
+        await main.Host.AttachOrStartAsync();
+        Assert.True(main.Host.IsHosting);
+        Assert.Empty(process.Starts);
+
+        // It finishes shutting down.
+        link.ConnectResults.Enqueue("no socket");
+        link.ConnectResults.Enqueue(null);
+        link.Drop();
+        await Until(() => main.Host.IsHosting);
+        Assert.Single(process.Starts);
+        Assert.Null(main.Host.Error);
+    }
+
+    [AvaloniaFact]
+    public async Task An_agent_that_keeps_ending_is_restarted_a_few_times_then_left_stopped()
+    {
+        var settings = new MemorySettings(new AppSettings(ResumeHosting: true));
+        var link = new FakeLink { DefaultConnectResult = "no socket" };
+        var process = new FakeProcess();
+        var main = App(settings, link, process);
+        main.Host.RestartAfter = TimeSpan.FromMilliseconds(10);
+        link.ConnectResults.Enqueue(null);
+        await main.Host.AttachOrStartAsync();
+        Assert.True(main.Host.IsHosting);
+        link.Drop();
+        // Each restart's agent ends at once, as one whose port is not free would.
+        for (var i = 1; i <= 3; i++)
+        {
+            await Until(() => process.Starts.Count == i);
+            process.Exit(1, "nexa-agent: cannot listen on [::]:47800");
+        }
+        await Task.Delay(300);
+        Assert.Equal(3, process.Starts.Count);
+        Assert.False(main.Host.IsHosting);
+        Assert.NotNull(main.Host.Error);
+    }
+
+    [AvaloniaFact]
+    public async Task An_agent_the_person_stopped_is_not_started_again()
+    {
+        var settings = new MemorySettings();
+        var (main, link, process) = await Hosting(settings);
+        main.Host.RestartAfter = TimeSpan.FromMilliseconds(10);
+        main.Host.StopCommand.Execute(null);
+        link.Drop();
+        await Task.Delay(200);
+        Assert.Single(process.Starts);
+        Assert.False(main.Host.IsHosting);
+    }
+
+    static async Task Until(Func<bool> done)
+    {
+        var end = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (!done())
+        {
+            Assert.True(DateTime.UtcNow < end, "timed out");
+            await Task.Delay(10);
+        }
+    }
 }
