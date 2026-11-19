@@ -129,6 +129,46 @@ public sealed record ConnectOption(string Kind, string Address, string Detail = 
     public bool HasDetail => Detail.Length > 0;
 }
 
+/// <summary>
+/// The addresses of one way in (the NexaDesk app, a browser) as shown: first the few most people
+/// need, then the rest folded away. A Mac with virtual machines or containers has a bridge for
+/// each, and listing them all side by side left people not knowing which one to give.
+/// </summary>
+public sealed partial class AddressGroup : ObservableObject
+{
+    public ObservableCollection<ConnectOption> Main { get; } = new();
+    public ObservableCollection<ConnectOption> More { get; } = new();
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(MoreText))]
+    private bool _expanded;
+
+    /// <summary>Said once for the whole group (a browser's certificate warning), not on every row.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasNote))]
+    private string _note = "";
+
+    public bool HasNote => Note.Length > 0;
+    public bool HasMore => More.Count > 0;
+    public bool IsEmpty => Main.Count == 0;
+    public string MoreText => Expanded ? L.Get("Host.FewerAddresses") : L.Format("Host.MoreAddresses", More.Count);
+
+    [RelayCommand]
+    private void ToggleMore() => Expanded = !Expanded;
+
+    internal void Set(IEnumerable<ConnectOption> main, IEnumerable<ConnectOption> more, string note = "")
+    {
+        Main.Clear();
+        foreach (var o in main) Main.Add(o);
+        More.Clear();
+        foreach (var o in more) More.Add(o);
+        Note = note;
+        OnPropertyChanged(nameof(HasMore));
+        OnPropertyChanged(nameof(IsEmpty));
+        OnPropertyChanged(nameof(MoreText));
+    }
+}
+
 /// <summary>"允许别人控制本机": the agent, its code, and the devices paired with it.</summary>
 public sealed partial class HostViewModel : ObservableObject
 {
@@ -172,6 +212,10 @@ public sealed partial class HostViewModel : ObservableObject
     /// <summary>While hosting: every address the viewer may type, Tailscale first.</summary>
     public ObservableCollection<ConnectOption> ConnectOptions { get; } = new();
 
+    /// <summary>The same ways in, grouped and with the less likely addresses folded, as the window shows them.</summary>
+    public AddressGroup AppAddresses { get; } = new();
+    public AddressGroup WebAddresses { get; } = new();
+
     /// <summary>
     /// Listen on every interface, dual-stack (the default): LAN and Tailscale at once, and
     /// interfaces that come later. Off: only <see cref="ListenAddress"/>.
@@ -198,7 +242,7 @@ public sealed partial class HostViewModel : ObservableObject
     public IReadOnlyList<BannerViewModel> Banners => _banners;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsStopped), nameof(IsStarting), nameof(IsHosting), nameof(StateText), nameof(RestartNeeded),
+    [NotifyPropertyChangedFor(nameof(IsStopped), nameof(IsStarting), nameof(IsHosting), nameof(StateText), nameof(ShortStateText), nameof(RestartNeeded),
         nameof(NoPairedDevices))]
     [NotifyCanExecuteChangedFor(nameof(StartCommand), nameof(StopCommand), nameof(RotateCodeCommand))]
     private HostState _state = HostState.Stopped;
@@ -450,7 +494,9 @@ public sealed partial class HostViewModel : ObservableObject
     /// <summary>The value just copied, for two seconds, so its row can say so.</summary>
     [ObservableProperty] private string? _copied;
 
-    [RelayCommand]
+    // Concurrent: while one value says "copied" for two seconds, every other value (they all
+    // share this command) stays clickable instead of greying out as disabled.
+    [RelayCommand(AllowConcurrentExecutions = true)]
     private async Task Copy(string? text)
     {
         if (string.IsNullOrEmpty(text)) return;
@@ -460,6 +506,14 @@ public sealed partial class HostViewModel : ObservableObject
         await Task.Delay(CopiedFor);
         if (mine == _copies) Copied = null;
     }
+
+    /// <summary>The sidebar's line, seen from every page: whether this Mac can be reached now.</summary>
+    public string ShortStateText => State switch
+    {
+        HostState.Starting => L.Get("Host.SidebarStarting"),
+        HostState.Hosting => L.Get("Host.SidebarOn"),
+        _ => L.Get("Host.SidebarOff"),
+    };
 
     public string StateText => State switch
     {
@@ -485,35 +539,75 @@ public sealed partial class HostViewModel : ObservableObject
     void RebuildOptions()
     {
         ConnectOptions.Clear();
-        if (!IsHosting || ActiveListen.Length == 0) return;
+        if (!IsHosting || ActiveListen.Length == 0)
+        {
+            AppAddresses.Set([], []);
+            WebAddresses.Set([], []);
+            return;
+        }
         var (host, port) = SplitListen(ActiveListen);
         var suffix = port == Texts.DefaultPort ? "" : $":{port}";
         var everywhere = host is "0.0.0.0" or "::";
         var ips = everywhere ? _addresses.Candidates().Where(ip => ip != "127.0.0.1").ToList() : [host];
         var tailnet = ips.Where(IsTailnet).ToList();
+        var lan = ips.Where(ip => !IsTailnet(ip)).ToList();
+        // The LAN addresses to show first: those on a network with a router. The others are mostly
+        // bridges to virtual machines and containers, which nobody on the LAN can reach.
+        var routed = everywhere ? _addresses.Routed() : [];
+        var mainLan = lan.Where(routed.Contains).ToList();
+        if (mainLan.Count == 0) mainLan = [.. lan.Take(1)];
+        var otherLan = lan.Where(ip => !mainLan.Contains(ip)).ToList();
+        string LanKind(string ip) => ip is "127.0.0.1" or "::1" ? L.Get("Host.KindLocalOnly") : L.Get("Host.KindLan");
+        // Folded ones: known not to be on a routed LAN, or simply not the first when that is unknown.
+        string OtherKind(string ip) => routed.Count > 0 ? L.Get("Host.KindOtherNic") : LanKind(ip);
+
+        var app = new List<ConnectOption>();
         if (tailnet.Count > 0 && Tailscale.DnsName.Length > 0)
-            ConnectOptions.Add(new ConnectOption("Tailscale", Tailscale.DnsName + suffix, L.Format("Host.OrAddress", tailnet[0], suffix)));
+            app.Add(new ConnectOption("Tailscale", Tailscale.DnsName + suffix, L.Format("Host.OrAddress", tailnet[0], suffix)));
         else
-            foreach (var ip in tailnet) ConnectOptions.Add(new ConnectOption("Tailscale", Bracket(ip) + suffix));
-        foreach (var ip in ips.Where(ip => !IsTailnet(ip)))
-            ConnectOptions.Add(new ConnectOption(ip == "127.0.0.1" || ip == "::1" ? L.Get("Host.KindLocalOnly") : L.Get("Host.KindLan"), Bracket(ip) + suffix));
+            app.AddRange(tailnet.Select(ip => new ConnectOption("Tailscale", Bracket(ip) + suffix)));
+        foreach (var o in app) ConnectOptions.Add(o);
+        foreach (var ip in lan)
+            ConnectOptions.Add(new ConnectOption(LanKind(ip), Bracket(ip) + suffix));
+        AppAddresses.Set(
+            [.. app, .. mainLan.Select(ip => new ConnectOption(LanKind(ip), Bracket(ip) + suffix))],
+            otherLan.Select(ip => new ConnectOption(OtherKind(ip), Bracket(ip) + suffix)));
+
         // Browser access: the page is served on the same addresses, MagicDNS name first.
-        if (StartedWithBrowsers == true)
+        if (StartedWithBrowsers != true)
         {
-            var web = tailnet.Count > 0 && Tailscale.DnsName.Length > 0
-                ? [Tailscale.DnsName, .. ips.Where(ip => !IsTailnet(ip))]
-                : ips;
-            // HTTPS only. With our own certificate the browser warns once: the person checks
-            // the start of the fingerprint it shows against this one.
-            var detail = _webFingerprint.Length == 0 || _webCertCustom
-                ? L.Get("Host.BrowserDetail")
-                : L.Format("Host.BrowserDetailSelfSigned", ShortFingerprint(_webFingerprint));
-            foreach (var h in web.Where(h => h != "127.0.0.1" && h != "::1"))
-                ConnectOptions.Add(new ConnectOption(L.Get("Host.KindBrowser"), $"https://{Bracket(h)}:{WebPort}", detail));
-            // From anywhere: the signaling server serves the page; there they type the ID.
-            if (HasDeviceId && ServerPage(StartedWithServer ?? _signalServer()) is { } page)
-                ConnectOptions.Add(new ConnectOption(L.Get("Host.KindBrowserServer"), page, L.Format("Host.BrowserServerDetail", DeviceIdDisplay)));
+            WebAddresses.Set([], []);
+            return;
         }
+        var web = tailnet.Count > 0 && Tailscale.DnsName.Length > 0
+            ? [Tailscale.DnsName, .. lan]
+            : ips;
+        // HTTPS only. With our own certificate the browser warns once: the person checks
+        // the start of the fingerprint it shows against this one.
+        var selfSigned = _webFingerprint.Length > 0 && !_webCertCustom;
+        var detail = selfSigned
+            ? L.Format("Host.BrowserDetailSelfSigned", ShortFingerprint(_webFingerprint))
+            : L.Get("Host.BrowserDetail");
+        string Url(string h) => $"https://{Bracket(h)}:{WebPort}";
+        foreach (var h in web.Where(h => h != "127.0.0.1" && h != "::1"))
+            ConnectOptions.Add(new ConnectOption(L.Get("Host.KindBrowser"), Url(h), detail));
+        // From anywhere: the signaling server serves the page; there they type the ID.
+        ConnectOption? anywhere = null;
+        if (HasDeviceId && ServerPage(StartedWithServer ?? _signalServer()) is { } page)
+        {
+            ConnectOptions.Add(new ConnectOption(L.Get("Host.KindBrowserServer"), page, L.Format("Host.BrowserServerDetail", DeviceIdDisplay)));
+            anywhere = new ConnectOption(L.Get("Host.KindAnywhere"), page, L.Format("Host.BrowserServerDetail", DeviceIdDisplay));
+        }
+        bool Shown(string h) => h != "127.0.0.1" && h != "::1";
+        var webTail = tailnet.Count > 0 && Tailscale.DnsName.Length > 0 ? [Tailscale.DnsName] : tailnet;
+        WebAddresses.Set(
+            [
+                .. webTail.Select(h => new ConnectOption("Tailscale", Url(h))),
+                .. mainLan.Where(Shown).Select(ip => new ConnectOption(L.Get("Host.KindLan"), Url(ip))),
+                .. anywhere is null ? [] : new[] { anywhere },
+            ],
+            otherLan.Where(Shown).Select(ip => new ConnectOption(OtherKind(ip), Url(ip))),
+            selfSigned ? L.Format("Host.WebCertNote", ShortFingerprint(_webFingerprint)) : "");
     }
 
     partial void OnStateChanged(HostState value) => RebuildOptions();
@@ -917,10 +1011,30 @@ public sealed partial class PermissionGuideViewModel : ObservableObject
     private void Close() => CloseRequested?.Invoke();
 }
 
-/// <summary>The main window: both halves and what they share.</summary>
+/// <summary>The main window's pages, one per thing a person comes to do; the sidebar picks one.</summary>
+public enum MainPage { Connect, Host, Paired, Settings }
+
+/// <summary>The main window: a sidebar and its pages, and what they share.</summary>
 public sealed partial class MainViewModel : ObservableObject
 {
     readonly IClientCore _core;
+
+    /// <summary>The page shown. Everything that is set once and left (language, the server,
+    /// browsers, the fixed password…) is on Settings, so the other pages keep to their task.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsConnectPage), nameof(IsHostPage), nameof(IsPairedPage), nameof(IsSettingsPage))]
+    private MainPage _page;
+
+    public bool IsConnectPage => Page == MainPage.Connect;
+    public bool IsHostPage => Page == MainPage.Host;
+    public bool IsPairedPage => Page == MainPage.Paired;
+    public bool IsSettingsPage => Page == MainPage.Settings;
+
+    [RelayCommand]
+    private void ShowPage(string page)
+    {
+        if (Enum.TryParse<MainPage>(page, out var p)) Page = p;
+    }
 
     public ConnectViewModel Connect { get; }
     public HostViewModel Host { get; }

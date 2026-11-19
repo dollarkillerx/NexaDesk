@@ -101,5 +101,18 @@
   "Updates.Failed": "アップデートを確認できません：{0}",
   "About.Source": "GitHub のソースコード",
   "About.Issues": "問題を報告",
-  "About.Website": "Web サイト"
+  "About.Website": "Web サイト",
+  "Nav.Connect": "接続する",
+  "Nav.Host": "接続を受ける",
+  "Nav.Paired": "ペアリング済み",
+  "Nav.Settings": "設定",
+  "Host.SidebarOn": "リモート操作：オン",
+  "Host.SidebarOff": "リモート操作：オフ",
+  "Host.SidebarStarting": "リモート操作：開始中…",
+  "Host.PairedNeedsHosting": "「接続を受ける」をオンにすると、ペアリング済みのデバイスがここに表示されます。",
+  "Settings.General": "一般",
+  "Settings.HostSection": "接続を受ける",
+  "Settings.Network": "ネットワーク",
+  "Settings.KeyboardSection": "キーボードと権限",
+  "Settings.AboutSection": "情報"
 }

@@ -101,5 +101,18 @@
   "Updates.Failed": "Could not check for updates: {0}",
   "About.Source": "Source on GitHub",
   "About.Issues": "Report a problem",
-  "About.Website": "Website"
+  "About.Website": "Website",
+  "Nav.Connect": "Connect",
+  "Nav.Host": "Let others in",
+  "Nav.Paired": "Paired devices",
+  "Nav.Settings": "Settings",
+  "Host.SidebarOn": "Remote control: on",
+  "Host.SidebarOff": "Remote control: off",
+  "Host.SidebarStarting": "Remote control: starting…",
+  "Host.PairedNeedsHosting": "Turn on remote control to see the devices paired with this computer.",
+  "Settings.General": "General",
+  "Settings.HostSection": "Letting others in",
+  "Settings.Network": "Network",
+  "Settings.KeyboardSection": "Keyboard and permissions",
+  "Settings.AboutSection": "About"
 }

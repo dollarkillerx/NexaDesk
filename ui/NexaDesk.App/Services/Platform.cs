@@ -469,30 +469,41 @@ public sealed class RecentStore(string path) : IRecentStore
 
 public sealed class LocalAddresses : ILocalAddresses
 {
-    public IReadOnlyList<string> Candidates()
+    public IReadOnlyList<string> Candidates() => Scan().Select(x => x.Ip).Append("127.0.0.1").ToList();
+
+    public IReadOnlyCollection<string> Routed() => Scan().Where(x => x.Routed).Select(x => x.Ip).ToHashSet();
+
+    /// <summary>
+    /// The LAN on an interface with an IPv4 gateway first (Wi-Fi, Ethernet), then Tailscale, then
+    /// the LAN without one: the bridges macOS makes for virtual machines and containers
+    /// (bridge100, vmnet…), which have no router behind them.
+    /// </summary>
+    static List<(string Ip, bool Routed)> Scan()
     {
-        var list = new List<(int rank, string ip)>();
+        var list = new List<(int rank, string ip, bool routed)>();
         try
         {
             foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
             {
                 if (nic.OperationalStatus != OperationalStatus.Up) continue;
-                foreach (var a in nic.GetIPProperties().UnicastAddresses)
+                var props = nic.GetIPProperties();
+                var routed = props.GatewayAddresses.Any(g =>
+                    g.Address.AddressFamily == AddressFamily.InterNetwork && !g.Address.Equals(IPAddress.Any));
+                foreach (var a in props.UnicastAddresses)
                 {
                     if (a.Address.AddressFamily != AddressFamily.InterNetwork || IPAddress.IsLoopback(a.Address)) continue;
                     var b = a.Address.GetAddressBytes();
                     if (b[0] == 169 && b[1] == 254) continue;
                     var tailscale = b[0] == 100 && b[1] >= 64 && b[1] < 128;
                     var lan = b[0] == 10 || (b[0] == 172 && b[1] >= 16 && b[1] < 32) || (b[0] == 192 && b[1] == 168);
-                    list.Add((lan ? 0 : tailscale ? 1 : 2, a.Address.ToString()));
+                    var rank = lan && routed ? 0 : tailscale ? 1 : lan ? 2 : 3;
+                    list.Add((rank, a.Address.ToString(), lan && routed));
                 }
             }
         }
         catch (NetworkInformationException)
         {
         }
-        var result = list.OrderBy(x => x.rank).Select(x => x.ip).Distinct().ToList();
-        result.Add("127.0.0.1");
-        return result;
+        return list.OrderBy(x => x.rank).DistinctBy(x => x.ip).Select(x => (x.ip, x.routed)).ToList();
     }
 }

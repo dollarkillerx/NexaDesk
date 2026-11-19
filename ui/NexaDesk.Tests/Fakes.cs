@@ -222,7 +222,10 @@ public sealed class MemoryRecent(params RecentDevice[] initial) : IRecentStore
 
 public sealed class FakeAddresses(params string[] ips) : ILocalAddresses
 {
+    /// <summary>The ones on a network with a router; none known by default.</summary>
+    public string[] RoutedIps { get; init; } = [];
     public IReadOnlyList<string> Candidates() => ips.Length == 0 ? ["192.168.1.20", "127.0.0.1"] : ips;
+    public IReadOnlyCollection<string> Routed() => RoutedIps;
 }
 
 public sealed class RecordingWindows : IWindowService
