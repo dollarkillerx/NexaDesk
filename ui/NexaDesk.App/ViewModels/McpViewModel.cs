@@ -19,23 +19,49 @@ public sealed partial class McpViewModel : ObservableObject
     readonly IAgentServer _server;
     readonly ISettingsStore? _settings;
     readonly string _deviceName;
+    readonly TimeSpan _retryAfter;
+    /// <summary>The person's own flips of the switch: a retry at launch stops once there is one.</summary>
+    int _flips;
+
+    /// <summary>Tries at launch after the first, before the server stays off with its error.</summary>
+    const int MaxRetries = 3;
 
     /// <param name="path">Where nexa-mcp is: next to the app's own executable.</param>
     /// <param name="exists">Whether a file is there (a development build may not have it).</param>
     /// <param name="server">The MCP server in the core.</param>
     /// <param name="settings">Where the switch is kept (<see cref="AppSettings.AiApps"/>); it starts the server at once.</param>
     /// <param name="deviceName">What hosts are told the AI's device is called.</param>
+    /// <param name="retryAfter">At launch, the wait before trying again after a refusal, times the tries so far
+    /// (2, 4, 6 s by default).</param>
     public McpViewModel(IWindowService windows, string path, bool exists, IAgentServer? server = null,
-        ISettingsStore? settings = null, string deviceName = "")
+        ISettingsStore? settings = null, string deviceName = "", TimeSpan? retryAfter = null)
     {
         _windows = windows;
         _server = server ?? new NoAgentServer();
         _settings = settings;
         _deviceName = deviceName;
+        _retryAfter = retryAfter ?? TimeSpan.FromSeconds(2);
         Path = path;
         IsAvailable = exists;
         _server.Changed += OnSessionsChanged;
-        if (settings?.Load().AiApps == true) Turn(true);
+        if (settings?.Load().AiApps == true && !Turn(true)) _ = RetryAtLaunchAsync();
+    }
+
+    /// <summary>
+    /// The switch was on, but the server could not start at launch. After "Restart to update" the old app is
+    /// usually still serving for the second it takes to quit, so the new one is refused ("another NexaDesk already
+    /// serves AI agents") and AI apps were left with nothing to reach. Try again shortly, a few times, unless the
+    /// person flips the switch meanwhile; the switch stays on in the settings throughout.
+    /// </summary>
+    async Task RetryAtLaunchAsync()
+    {
+        var flips = _flips;
+        for (var i = 1; i <= MaxRetries; i++)
+        {
+            await Task.Delay(_retryAfter * i);
+            if (_flips != flips || Serving) return;
+            if (Turn(true)) return;
+        }
     }
 
     /// <summary>Next to the running app: Contents/MacOS/nexa-mcp in the bundle, nexa-mcp.exe on Windows.</summary>
@@ -60,11 +86,13 @@ public sealed partial class McpViewModel : ObservableObject
     partial void OnServingChanged(bool value)
     {
         if (_turning) return;
+        _flips++;
         Turn(value);
         if (_settings != null) _settings.Save(_settings.Load() with { AiApps = Serving });
     }
 
-    void Turn(bool on)
+    /// <summary>Starts or stops the server; true when it is as asked.</summary>
+    bool Turn(bool on)
     {
         _turning = true;
         try
@@ -74,13 +102,12 @@ public sealed partial class McpViewModel : ObservableObject
                 var refused = _server.Start(_deviceName);
                 StartError = refused == null ? null : L.Format("Main.AiAppsFailed", refused);
                 Serving = refused == null;
+                return refused == null;
             }
-            else
-            {
-                _server.Stop();
-                StartError = null;
-                Serving = false;
-            }
+            _server.Stop();
+            StartError = null;
+            Serving = false;
+            return true;
         }
         finally
         {

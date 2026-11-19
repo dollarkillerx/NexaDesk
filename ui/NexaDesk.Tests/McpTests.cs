@@ -84,6 +84,61 @@ public class McpTests
     }
 
     [Fact]
+    public async Task Refused_at_launch_it_tries_again_and_serves_once_the_old_app_has_quit()
+    {
+        // "Restart to update": the old app still serves for a moment, so the new one is refused at first.
+        var server = new FakeAgentServer { Refuse = "another NexaDesk already serves AI agents" };
+        var settings = new MemorySettings(new AppSettings(AiApps: true));
+        var vm = new McpViewModel(new RecordingWindows(), MacPath, true, server, settings, "Studio Mac",
+            retryAfter: TimeSpan.FromMilliseconds(20));
+        Assert.False(vm.Serving);
+        Assert.NotNull(vm.StartError);
+        server.Refuse = null;
+        await Until(() => vm.Serving);
+        Assert.True(server.IsServing);
+        Assert.Null(vm.StartError);
+        Assert.True(settings.Current.AiApps);
+    }
+
+    [Fact]
+    public async Task At_launch_it_gives_up_after_a_few_tries_and_the_switch_stays_on()
+    {
+        var server = new FakeAgentServer { Refuse = "the socket path is too long" };
+        var settings = new MemorySettings(new AppSettings(AiApps: true));
+        var vm = new McpViewModel(new RecordingWindows(), MacPath, true, server, settings,
+            retryAfter: TimeSpan.FromMilliseconds(5));
+        await Until(() => server.Starts == 4);
+        await Task.Delay(200);
+        Assert.Equal(4, server.Starts);
+        Assert.False(vm.Serving);
+        Assert.Contains("the socket path is too long", vm.StartError);
+        // Kept on, so it serves at the next launch once the cause is gone.
+        Assert.True(settings.Current.AiApps);
+    }
+
+    [Fact]
+    public async Task The_persons_own_flip_ends_the_retries()
+    {
+        var server = new FakeAgentServer { Refuse = "another NexaDesk already serves AI agents" };
+        var settings = new MemorySettings(new AppSettings(AiApps: true));
+        var vm = new McpViewModel(new RecordingWindows(), MacPath, true, server, settings,
+            retryAfter: TimeSpan.FromMilliseconds(50));
+        // They try it themselves (still refused), then the cause goes away: no retry starts it behind them.
+        vm.Serving = true;
+        Assert.False(vm.Serving);
+        server.Refuse = null;
+        await Task.Delay(500);
+        Assert.False(vm.Serving);
+        Assert.Equal(2, server.Starts);
+    }
+
+    static async Task Until(Func<bool> done)
+    {
+        for (var i = 0; i < 200 && !done(); i++) await Task.Delay(10);
+        Assert.True(done());
+    }
+
+    [Fact]
     public void What_ai_agents_operate_is_shown_and_can_be_stopped()
     {
         var server = new FakeAgentServer();

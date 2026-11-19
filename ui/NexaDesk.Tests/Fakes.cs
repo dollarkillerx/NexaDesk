@@ -223,8 +223,12 @@ public sealed class FakeAgentServer : IAgentServer
     public IReadOnlyList<AgentSessionInfo> Sessions { get; private set; } = [];
     public event Action? Changed;
 
+    /// <summary>Every call to <see cref="Start"/>, refused or not.</summary>
+    public int Starts { get; private set; }
+
     public string? Start(string deviceName)
     {
+        Starts++;
         if (Refuse != null) return Refuse;
         IsServing = true;
         StartedAs = deviceName;
