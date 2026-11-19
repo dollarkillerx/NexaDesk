@@ -699,6 +699,8 @@ Claude Code / Codex ──stdio──▶ nexa-mcp（转发）──本地套接�
 - **命令行完全不能用**：`nexa_run` 每次 15 秒后报 “did not answer”。会话里确实允许了命令行（取文件成功就说明了这一点）。
   - **判断**：Windows 11 build 26200 的伪控制台（ConPTY）启动时会向终端询问设备属性（`ESC [ c`）和光标位置（`ESC [ 6n`），并等待回答。应用的终端窗口和浏览器里的 xterm.js 会自动回答，AI 用的 shell 没有终端模拟器，没人回答，PowerShell 就一直不执行命令。
   - **改法（0.1.31）**：AI 的 shell 自己回答这几种询问（设备属性一、二，光标位置，设备状态），跨两次读取被切开的询问也能识别，每个只答一次。等待 shell 就绪从 15 秒延长到 30 秒，每 10 秒重新探测一次。仍然失败时，错误信息里带上 shell 最后输出的内容（控制字符转成可见形式），下次能直接看到原因。
+- **0.1.32 复测，真正的原因**：确认窗口允许后连上了，权限里也有 “command line”，但 `nexa_run` 30 秒后仍报 “did not answer”，而且 shell 一个字节都没输出，说明问题不在询问没人回答。取回 Windows 的 `agent.log`，里面有一行 `PS C:\Users\…> PS C:\Users\…>`：PowerShell 的输出进了 agent 自己的标准输出。应用启动 nexa-agent 时把它的标准输入、输出、错误都重定向到管道（`Platform.StartInfo`）；`nexa-term` 用 `CreateProcessW` 启动 PowerShell 时没有指定标准句柄，PowerShell 就继承了 agent 的管道，而不是用伪控制台。所以应用的“终端”窗口、浏览器终端和 AI 的命令行在 Windows 上都收不到输出。
+  - **改法（0.1.33）**：`crates/nexa-term/src/windows.rs` 设 `STARTF_USESTDHANDLES`，三个标准句柄都设为 `INVALID_HANDLE_VALUE`，PowerShell 只能用伪控制台。0.1.31 加的询问应答没有坏处，留着。
 - **应用里看不到“终端”按钮**：工具条上的“终端”只在对方允许了命令行时出现，但核心传给应用的权限里一直没有这一项（`Permissions` 只有 1–5 号字段），所以按钮从来不出现，AI 也不知道有没有命令行。补上第 6 号字段 `terminal`（`.proto`、`proto.rs`、iOS 生成代码），应用（C#）本来就读第 6 号字段。`nexa_connect` 的权限说明里现在会写 “command line”。
 - **小问题，还没修**：
   - 勾选框的勾选状态读不出来；只读输入框的文字读成空。

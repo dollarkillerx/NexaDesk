@@ -28,7 +28,7 @@ use windows_sys::Win32::{
             CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
             EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, InitializeProcThreadAttributeList,
             LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION,
-            STARTUPINFOEXW, UpdateProcThreadAttribute,
+            STARTF_USESTDHANDLES, STARTUPINFOEXW, UpdateProcThreadAttribute,
         },
     },
 };
@@ -163,6 +163,13 @@ impl Pty {
             let mut si: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
             si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
             si.lpAttributeList = attrs;
+            // No standard handles of our own: the shell must take them from the
+            // pseudo-console. Left unset, it inherits the agent's, which the app
+            // redirects to pipes, and everything it prints goes there instead.
+            si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+            si.StartupInfo.hStdInput = INVALID_HANDLE_VALUE;
+            si.StartupInfo.hStdOutput = INVALID_HANDLE_VALUE;
+            si.StartupInfo.hStdError = INVALID_HANDLE_VALUE;
             let mut command = wide(OsStr::new(&format!("\"{}\" -NoLogo", shell.display())));
             let dir = cwd.as_ref().map(|d| wide(d.as_os_str()));
             let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
