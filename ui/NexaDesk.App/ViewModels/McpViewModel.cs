@@ -4,7 +4,7 @@ using CommunityToolkit.Mvvm.Input;
 namespace NexaDesk.ViewModels;
 
 /// <summary>
-/// "AI agents (MCP)": how to give an AI on this computer (Claude Code, Claude Desktop…) NexaDesk's MCP
+/// "AI agents (MCP)": how to give an AI on this computer (Claude Code, Codex, Claude Desktop…) NexaDesk's MCP
 /// server, nexa-mcp, which ships next to the app (docs/MCP.md). The command and the JSON name its full
 /// path, ready to copy. Letting agents control this computer is the separate switch beside it.
 /// </summary>
@@ -40,13 +40,23 @@ public sealed partial class McpViewModel : ObservableObject
     public string JsonConfig =>
         "{ \"mcpServers\": { \"nexadesk\": { \"command\": " + JsonString(Path) + " } } }";
 
+    /// <summary>For Codex, in its config.toml (a TOML basic string takes a JSON string's escapes). Codex asks
+    /// before every tool call unless told otherwise; the line that stops it asking is there, commented out, for
+    /// the person to choose.</summary>
+    public string CodexConfig =>
+        "[mcp_servers.nexadesk]\n" +
+        "command = " + JsonString(Path) + "\n" +
+        "# To let Codex act without asking you each time:\n" +
+        "# default_tools_approval_mode = \"approve\"";
+
     /// <summary>The text just copied, for two seconds, so its button can say so.</summary>
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(ClaudeCopied), nameof(JsonCopied))]
+    [NotifyPropertyChangedFor(nameof(ClaudeCopied), nameof(JsonCopied), nameof(CodexCopied))]
     private string? _copied;
 
     public bool ClaudeCopied => Copied == ClaudeCommand;
     public bool JsonCopied => Copied == JsonConfig;
+    public bool CodexCopied => Copied == CodexConfig;
     int _copies;
 
     [RelayCommand]

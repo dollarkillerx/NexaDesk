@@ -665,6 +665,18 @@
                           </Panel>
                         </Button>
                       </Grid>
+                      <TextBlock Classes="label" Text="{l:T Main.McpCodex}" />
+                      <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                        <TextBox Name="McpCodexBox" IsReadOnly="True" Text="{Binding CodexConfig, Mode=OneWay}"
+                                 FontFamily="{DynamicResource MonoFont}" FontSize="12" TextWrapping="Wrap" />
+                        <Button Grid.Column="1" Classes="small" Name="McpCopyCodexButton" VerticalAlignment="Top"
+                                Command="{Binding CopyCommand}" CommandParameter="{Binding CodexConfig}">
+                          <Panel>
+                            <TextBlock Text="{l:T Main.McpCopy}" IsVisible="{Binding !CodexCopied}" />
+                            <TextBlock Text="{l:T Main.McpCopied}" IsVisible="{Binding CodexCopied}" />
+                          </Panel>
+                        </Button>
+                      </Grid>
                       <TextBlock Classes="muted" TextWrapping="Wrap" Text="{l:T Main.McpOtherWay}" />
                     </StackPanel>
                   </Expander>

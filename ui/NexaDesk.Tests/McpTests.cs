@@ -15,6 +15,11 @@ public class McpTests
         Assert.True(vm.IsAvailable);
         Assert.Equal($"claude mcp add nexadesk -- \"{MacPath}\"", vm.ClaudeCommand.Replace("\\\"", "\""));
         Assert.Equal("{ \"mcpServers\": { \"nexadesk\": { \"command\": \"" + MacPath + "\" } } }", vm.JsonConfig);
+        // Codex: its own table, and the line that lets it act without asking left for the person to choose.
+        var codex = vm.CodexConfig.Split('\n');
+        Assert.Equal("[mcp_servers.nexadesk]", codex[0]);
+        Assert.Equal($"command = \"{MacPath}\"", codex[1]);
+        Assert.Equal("# default_tools_approval_mode = \"approve\"", codex[^1]);
     }
 
     [Fact]
