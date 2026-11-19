@@ -289,6 +289,7 @@ public class HeadlessUiTests
         var main = new MainWindow { DataContext = Main() };
         main.Show();
         Pump();
+        Click(main, Find<Button>(main, "NavHostButton"));
         Click(main, Find<Button>(main, "StartHostingButton"));
         for (var i = 0; i < 50 && _link.Sent.Count == 0; i++)
         {
@@ -328,6 +329,7 @@ public class HeadlessUiTests
         var main = new MainWindow { DataContext = Main() };
         _windows.Owner = main;
         main.Show();
+        Click(main, Find<Button>(main, "NavHostButton"));
         Click(main, Find<Button>(main, "StartHostingButton"));
         var guide = Open<PermissionGuideWindow>();
         Pump();

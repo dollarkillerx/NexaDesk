@@ -281,6 +281,9 @@
       <StreamGeometry x:Key="IconConnect">M14,3.5 H20.5 V10 M20.5,3.5 L11,13 M18.5,14 V20.5 H3.5 V5.5 H10</StreamGeometry>
       <StreamGeometry x:Key="IconGlobe">M12,3 A9,9 0 1 0 12,21 A9,9 0 1 0 12,3 Z M3.5,9 H20.5 M3.5,15 H20.5 M12,3 C8.5,7 8.5,17 12,21 M12,3 C15.5,7 15.5,17 12,21</StreamGeometry>
       <StreamGeometry x:Key="IconScreens">M3.5,5 H14.5 V12.5 H3.5 Z M9.5,11.5 H20.5 V19 H9.5 Z</StreamGeometry>
+      <StreamGeometry x:Key="IconCopy">M8.5,8.5 H19.5 V19.5 H8.5 Z M15.5,8.5 V4.5 H4.5 V15.5 H8.5</StreamGeometry>
+      <StreamGeometry x:Key="IconCheck">M4.5,12.5 L9.5,17.5 L19.5,6.5</StreamGeometry>
+      <StreamGeometry x:Key="IconSliders">M3.5,6.5 H20.5 M3.5,12 H20.5 M3.5,17.5 H20.5 M8.5,4 V9 M15.5,9.5 V14.5 M10.5,15 V20</StreamGeometry>
     </ResourceDictionary>
   </Application.Resources>
 
@@ -595,6 +598,22 @@
       <Setter Property="FontSize" Value="12" />
       <Setter Property="Foreground" Value="{DynamicResource OkBrush}" />
     </Style>
+    <!-- The same as icons, where a word would take width from the value (an address row). -->
+    <Style Selector="Button.copy Path.icon.copyHint">
+      <Setter Property="Width" Value="14" />
+      <Setter Property="Height" Value="14" />
+      <Setter Property="Stroke" Value="{DynamicResource MutedBrush}" />
+      <Setter Property="Opacity" Value="0" />
+    </Style>
+    <Style Selector="Button.copy:pointerover Path.icon.copyHint">
+      <Setter Property="Opacity" Value="1" />
+    </Style>
+    <Style Selector="Button.copy Path.icon.copied">
+      <Setter Property="Width" Value="14" />
+      <Setter Property="Height" Value="14" />
+      <Setter Property="StrokeThickness" Value="2" />
+      <Setter Property="Stroke" Value="{DynamicResource OkBrush}" />
+    </Style>
     <!-- Shell header actions: full height, grey text, white under the pointer. -->
     <Style Selector="Button.shell">
       <Setter Property="Background" Value="Transparent" />
@@ -610,6 +629,61 @@
     <Style Selector="Button.shell:pressed /template/ ContentPresenter#PART_ContentPresenter">
       <Setter Property="Background" Value="#393939" />
       <Setter Property="Foreground" Value="#F4F4F4" />
+    </Style>
+    <!-- Main window: a grey sidebar with one row per page, the page on white beside it. -->
+    <Style Selector="Border.sidebar">
+      <Setter Property="Background" Value="{DynamicResource PageBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource CardBorderBrush}" />
+      <Setter Property="BorderThickness" Value="0,0,1,0" />
+    </Style>
+    <Style Selector="Border.page">
+      <Setter Property="Padding" Value="32,24,32,32" />
+      <Setter Property="MaxWidth" Value="800" />
+      <!-- Every page as wide as the window allows up to that, centred beyond it. -->
+      <Setter Property="HorizontalAlignment" Value="Stretch" />
+    </Style>
+    <Style Selector="Button.nav">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="Foreground" Value="{DynamicResource MutedBrush}" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="3,0,0,0" />
+      <Setter Property="CornerRadius" Value="0" />
+      <Setter Property="MinHeight" Value="0" />
+      <Setter Property="Padding" Value="13,11,16,11" />
+      <Setter Property="FontSize" Value="14" />
+      <Setter Property="HorizontalAlignment" Value="Stretch" />
+      <Setter Property="HorizontalContentAlignment" Value="Left" />
+    </Style>
+    <Style Selector="Button.nav:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource SubtleHoverBrush}" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+      <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+    </Style>
+    <Style Selector="Button.nav:pressed /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource CardBorderBrush}" />
+    </Style>
+    <Style Selector="Button.nav.selected /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource CardBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+    </Style>
+    <Style Selector="Button.nav Path.navIcon">
+      <Setter Property="Width" Value="18" />
+      <Setter Property="Height" Value="18" />
+      <Setter Property="Stroke" Value="{DynamicResource MutedBrush}" />
+    </Style>
+    <Style Selector="Button.nav.selected Path.navIcon, Button.nav:pointerover Path.navIcon">
+      <Setter Property="Stroke" Value="{DynamicResource TextBrush}" />
+    </Style>
+    <Style Selector="TextBlock.settingsHeading">
+      <Setter Property="FontSize" Value="14" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+    </Style>
+    <Style Selector="Border.settingsGroup">
+      <Setter Property="BorderBrush" Value="{DynamicResource CardBorderBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Padding" Value="18,16" />
     </Style>
     <!-- Modal footer: full-bleed, 64 px, label at the top left. -->
     <Style Selector="Button.footer">

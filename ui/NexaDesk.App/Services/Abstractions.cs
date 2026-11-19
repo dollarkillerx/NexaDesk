@@ -137,6 +137,10 @@ public interface ILocalAddresses
 {
     /// <summary>This machine's addresses worth listening on, best first.</summary>
     IReadOnlyList<string> Candidates();
+
+    /// <summary>Those of <see cref="Candidates"/> on a network with a router: a real LAN, not the
+    /// bridge to a virtual machine or a container. Empty when unknown.</summary>
+    IReadOnlyCollection<string> Routed() => [];
 }
 
 /// <summary>Preferences kept in settings.json. SignalServer is already normalized, or empty.

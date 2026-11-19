@@ -211,6 +211,9 @@ public class TailscaleFirstTests
                 ], TailscaleState.Running, "studio", "studio.tail1234.ts.net", ["100.101.22.7"]));
                 var w = new MainWindow { DataContext = main };
                 w.Show();
+                // Tailscale's state for hosting is on the page for letting others in.
+                main.Page = MainPage.Host;
+                HeadlessUiTests.Pump();
                 RenderTestsShim.Save(w, "main-tailscale-hosting", theme);
                 Assert.True(w.FindControl<Border>("HostTailscaleStatus")!.IsVisible);
                 Assert.False(w.FindControl<Border>("HostTailscaleAdvice")!.IsVisible);
@@ -225,8 +228,10 @@ public class TailscaleFirstTests
                 var w2 = new MainWindow { DataContext = idle };
                 w2.Show();
                 RenderTestsShim.Save(w2, "main-tailscale-absent", theme);
-                Assert.True(w2.FindControl<Border>("HostTailscaleAdvice")!.IsVisible);
                 Assert.True(w2.FindControl<Border>("ConnectTailscaleAdvice")!.IsVisible);
+                idle.Page = MainPage.Host;
+                HeadlessUiTests.Pump();
+                Assert.True(w2.FindControl<Border>("HostTailscaleAdvice")!.IsVisible);
                 w2.Close();
             }
             finally

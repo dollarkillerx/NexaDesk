@@ -101,5 +101,18 @@
   "Updates.Failed": "无法检查更新：{0}",
   "About.Source": "GitHub 源代码",
   "About.Issues": "反馈问题",
-  "About.Website": "官网"
+  "About.Website": "官网",
+  "Nav.Connect": "连接别人",
+  "Nav.Host": "让别人连我",
+  "Nav.Paired": "已配对设备",
+  "Nav.Settings": "设置",
+  "Host.SidebarOn": "允许控制：已开启",
+  "Host.SidebarOff": "允许控制：未开启",
+  "Host.SidebarStarting": "允许控制：正在开启…",
+  "Host.PairedNeedsHosting": "开启「让别人连我」后，这里会列出配对过的设备。",
+  "Settings.General": "通用",
+  "Settings.HostSection": "让别人连我",
+  "Settings.Network": "网络",
+  "Settings.KeyboardSection": "键盘与权限",
+  "Settings.AboutSection": "关于"
 }
