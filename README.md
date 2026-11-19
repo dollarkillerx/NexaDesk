@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  Lightweight, low-latency remote control: a sharp picture, a keyboard for Mac and Windows, control from any browser
+  Lightweight, low-latency remote control: a sharp picture, a keyboard for Mac and Windows, control from any browser, and AI agents that operate the computers you allow
 </p>
 
 <p align="center">
@@ -32,13 +32,14 @@
   - The pointer is drawn locally, so it moves without delay.
   - Saved devices reconnect with one tap; saved passwords are encrypted with a key the page cannot export, and one-time codes are never saved.
   - Phones: touch gestures, the on-screen keyboard, input methods, and a row of Esc, Tab, modifier and arrow keys.
-  - Off by default: turn on "Allow browsers to connect" in the main window.
+  - Off by default: turn on "Allow browsers to connect" in Settings.
 - **Command line** - Open just the host's shell, in the app (a native terminal control, the same on macOS and Windows) or in a browser (xterm.js). It is a separate permission, off by default, and the shell and everything it started end with the session. Linux and Windows machines without a desktop run the command-line host `nexa-term-host` (bash / PowerShell), see [docs/TERM_HOST.md](docs/TERM_HOST.md).
+- **AI agents (MCP)** - NexaDesk comes with an MCP server, so AI apps such as Claude Code, Codex and Claude Desktop can operate the computers you allow: they read the screen as a tree of elements and act on them, take screenshots when they need to, and run commands on the command line. NexaDesk signs in for them with the password you saved, so the AI never sees a password, code or key, and the computer being operated asks each time and shows that it is an AI. See [AI agents](#ai-agents-mcp) below.
 - **Several people at once** - Up to four people (app and browsers together) can connect to the same Mac, each allowed separately and each able to control; whoever leaves ends only their own session.
 - **Sign-in** - A one-time code (the host allows it), a fixed password (the owner's own way in, no prompt), or through a server just the device ID, which the host sees as an unverified request. The device ID can be reset at any time.
 - **Stays reachable** - Remote control is on when NexaDesk starts, also after "Restart to update", so updating a host from afar does not lock you out; once you stop it yourself, it stays off until you start it again. It can also start at login.
 - **More** - Pointer shapes, sound (Opus), file transfer, several displays, game mode (locked pointer, stronger error correction), automatic reconnect within 30 seconds, HUD and connection diagnostics.
-- **Multi-language** - English, Simplified Chinese, Japanese. Follows the system language; can be switched in the main window (applies after a restart).
+- **Multi-language** - English, Simplified Chinese, Japanese. Follows the system language; can be switched in Settings (applies after a restart).
 - **Security**
   - Mutual TLS; a device's identity is its public key.
   - First contact pairs with SPAKE2 using a one-time code or the fixed password, bound to the TLS session; the peer's key is pinned from then on. The fixed password is kept only as an Argon2id hash.
@@ -47,11 +48,14 @@
 
 ## Screenshots
 
-The main window: connect to other devices on the left (LAN and Tailscale devices are listed by themselves); allow remote control of this computer on the right, with the device ID and one-time code shown large (a click copies them), the fixed password and the addresses others can type. Follows light and dark mode.
+The main window has a page for each thing you come to do. "Connect" lists LAN and Tailscale devices by themselves, and the devices you used before, with their badges (paired, password saved, AI allowed). "Let others in" shows this computer's device ID and one-time code large (a click copies them) and the addresses others can type. "Paired devices" and "Settings" hold the rest. Follows light and dark mode.
 
 <p>
-  <img src="docs/images/main.png" width="49%" alt="Main window (light)">
-  <img src="docs/images/main-dark.png" width="49%" alt="Main window (dark)">
+  <img src="docs/images/main.png" width="49%" alt="Connect page (light)">
+  <img src="docs/images/main-dark.png" width="49%" alt="Connect page (dark)">
+</p>
+<p>
+  <img src="docs/images/host.png" width="49%" alt="Let others in: device ID, one-time code and addresses">
 </p>
 
 When someone connects, the host asks: who it is, how they proved it, their key fingerprint, and which permissions to allow. "Deny" is the default button and "Allow" only works a second after the prompt appears. The browser viewer needs no install; pick "Screen" or "Terminal" when connecting, and save devices in the browser for one-tap reconnects.
@@ -75,12 +79,19 @@ On a phone the top bar turns into icons, landscape gives the picture more room, 
   <img src="docs/images/web-phone-session.png" width="72%" alt="Controlling from a phone held sideways, with the key row">
 </p>
 
-While controlling, the toolbar sits above the picture (mode, sound, files, HUD, diagnostics) and collapses into a small tab you can drag aside. While controlled, the host shows a banner at the top, a line per person, each with its own Disconnect; it folds into a small tab that can be moved, but never hides.
+While controlling, the toolbar sits above the picture (mode, sound, files, HUD, diagnostics) and collapses into a small tab you can drag aside. While controlled, the host shows a banner at the top, a line per person or AI agent, each with its own Disconnect; it folds into a small tab that can be moved, but never hides.
 
 <p>
   <img src="docs/images/toolbar.png" width="80%" alt="Viewer toolbar"><br>
-  <img src="docs/images/banner.png" width="60%" alt="Host banner (two people connected)">
+  <img src="docs/images/banner.png" width="60%" alt="Host banner (a person and an AI agent connected)">
   <img src="docs/images/banner-folded.png" width="14%" alt="Folded banner">
+</p>
+
+AI agents: Settings → "AI agents (MCP)" turns on the MCP server for AI apps on this computer, gives the one command or JSON to add it to them, and shows which AI app is operating which device, with "Stop them all". The computer being operated asks first, and says it is an AI.
+
+<p>
+  <img src="docs/images/ai-settings.png" width="58%" alt="Settings: AI agents (MCP), one AI app operating a device">
+  <img src="docs/images/consent-ai.png" width="36%" alt="The prompt when an AI agent connects">
 </p>
 
 <sub>Devices, addresses, codes and saved connections in the screenshots are made up. Regenerate them with `scripts/screenshots.sh` after UI changes: the app's windows are rendered off screen from the real UI code by `ui/NexaDesk.Screenshots`, and the browser pages are captured by `scripts/web-screenshots.mjs` in headless Google Chrome against a demo host (desktop and phone sizes).</sub>
@@ -92,14 +103,14 @@ From [GitHub Releases](https://github.com/dollarkillerx/NexaDesk/releases/latest
 - **macOS** (Apple silicon, macOS 14+): [NexaDesk-macOS.dmg](https://github.com/dollarkillerx/NexaDesk/releases/latest/download/NexaDesk-macOS.dmg). Signed with a Developer ID and notarized by Apple.
 - **Windows** (x64, Windows 10 / 11): [NexaDesk-win-Setup.exe](https://github.com/dollarkillerx/NexaDesk/releases/latest/download/NexaDesk-win-Setup.exe). Installs per user, no administrator rights needed. Not code-signed yet: if SmartScreen appears, choose **More info → Run anyway**.
 
-Both update themselves ([Velopack](https://velopack.io)): they check GitHub Releases at start and then daily, download a new version in the background and show "Restart to update" at the bottom of the main window. They never restart by themselves, since a restart drops remote sessions.
+Both update themselves ([Velopack](https://velopack.io)): they check GitHub Releases at start and then daily, download a new version in the background and show "Restart to update" in Settings. They never restart by themselves, since a restart drops remote sessions.
 
 ## Getting Started
 
 1. Open NexaDesk on both Macs and grant Screen Recording and Accessibility when asked (and Local Network the first time on a LAN).
 2. Not on the same network? Install [Tailscale](https://tailscale.com/download) on both and sign in to the same account.
-3. On the host, under "Allow remote control", click Start. It listens on all networks by default and lists the addresses others can type (Tailscale name, LAN IP) and a one-time code.
-4. On the viewer, pick the host and type the one-time code:
+3. On the host, on the "Let others in" page, click Start. It listens on all networks by default and lists the addresses others can type (Tailscale name, LAN IP) and a one-time code.
+4. On the viewer's "Connect" page, pick the host and type the one-time code:
    - click Connect under "NexaDesk devices on the local network" or "NexaDesk devices on your Tailscale network";
    - or type its address, e.g. `192.168.1.20` or `studio.tail1234.ts.net` (default port 47800).
 5. Control starts once the host allows it. A paired device connects directly next time.
@@ -118,6 +129,22 @@ nexa-agent --listen '[::]:47800'
 
 `nexa-agent --help` lists every option, e.g. `--paired-only`, `--relay-only`, `--no-lan-discovery`.
 
+## AI agents (MCP)
+
+AI apps on your computer operate other computers through NexaDesk, the way you would: NexaDesk signs in, the computer being operated asks its person, and the AI sees and acts on the screen.
+
+1. On the computer the AI runs on, open Settings → "AI agents (MCP)" and turn on "Let AI apps on this computer use NexaDesk". Copy the command for your AI app from there, e.g. for Claude Code:
+   ```bash
+   claude mcp add nexadesk -- "/Applications/NexaDesk.app/Contents/MacOS/nexa-mcp"
+   ```
+   The same section has the JSON for Claude Desktop and other apps, and the lines for Codex's `~/.codex/config.toml`.
+2. On the "Connect" page, click Edit on a saved device and tick "Allow AI to operate". The AI can see and connect to only these devices, by name. NexaDesk signs in with the password saved for the device, or asks the person there when it is reached by device ID; the AI never sees a password, one-time code or key.
+3. On the computer to be operated, turn on "Allow AI agents to connect" in Settings. Each AI connection is still asked about, with the AI marked in the prompt and the banner, and the command line is a separate permission.
+
+Then ask the AI, e.g. "Connect to my MacBook, open Chrome and run a speed test". It reads the screen as a tree of elements (buttons, fields, rows) and acts on them, takes a screenshot when it needs to see, and can run commands on the command line. `nexa-mcp` itself only relays between the AI app and NexaDesk and keeps nothing. The design is in [docs/MCP.md](docs/MCP.md) (in Chinese).
+
+## Troubleshooting
+
 Why did a connection end? NexaDesk.app writes the host's log to `~/Library/Logs/NexaDesk/agent.log`: each session's start, end and reason, and every 5 seconds a line of stream statistics (frames, bitrate, target, Wi-Fi stalls). Past 1 MB the old log moves to `agent.log.1`.
 
 ## Self-hosting a signaling server
@@ -130,7 +157,7 @@ curl -fsSL https://raw.githubusercontent.com/dollarkillerx/NexaDesk/main/deploy/
 
 The script downloads the program (and checks its SHA-256), picks a random **signaling key**, makes a certificate, installs and starts the service, opens ufw/firewalld, and prints the server address, the key and the certificate fingerprint. Run it again to upgrade; your configuration is kept. Useful options (after `sh -s --`): `--host <ip or domain>`, `--port <n>`, `--web [password]` (also serve the browser page; the password is optional), `--key <key>`. Look at the result again with `sh install.sh --show`.
 
-Then, on every Mac or PC that should use the server, open "Advanced" in the main window, enter the server address and the key (a signaling server always needs its key), and Save. Stop and start "Allow remote control" once so the host registers. The first connection to a server with a private certificate asks you to check its fingerprint and trust it.
+Then, on every Mac or PC that should use the server, open Settings → "Advanced", enter the server address and the key (a signaling server always needs its key), and Save. Stop and start remote control once on the "Let others in" page so the host registers. The first connection to a server with a private certificate asks you to check its fingerprint and trust it.
 
 Also open TCP 443 (or your port) and UDP 3478 and 3480 in your cloud provider's security group. For a public domain with a normal certificate, use `--host your.domain` and see [docs/DEPLOY.md](docs/DEPLOY.md), which also covers manual and Docker installs, key rotation and operations.
 
@@ -198,7 +225,8 @@ Then open `https://this-mac's-LAN-address:47801` (not 127.0.0.1) in a browser, a
 | `crates/nexa-auth` | Device identity, pairing, pinning, access decisions |
 | `crates/nexa-session` | Session handshake, host and viewer session logic, file transfer, reconnect, rendezvous |
 | `crates/nexa-agent` | The host process `nexa-agent` |
-| `crates/nexa-client` | The viewer library `libnexa_client` (C ABI for the UI) |
+| `crates/nexa-client` | The viewer library `libnexa_client` (C ABI for the UI), and the MCP server for AI agents |
+| `crates/nexa-mcp` | `nexa-mcp`, which AI apps run: it relays their MCP messages to the NexaDesk app |
 | `crates/nexa-signal` | Signaling + STUN + relay server `nexa-signal` |
 | `crates/nexa-web` | Browser access: HTTPS, signaling and WebRTC (str0m), served by the host; TURN through a server |
 | `crates/nexa-web-page` | The browser page, shared by the host and the signaling server |
@@ -218,6 +246,7 @@ Then open `https://this-mac's-LAN-address:47801` (not 127.0.0.1) in a browser, a
 - [docs/DETAILED_DESIGN.md](docs/DETAILED_DESIGN.md): detailed design; each chapter ends with how the implementation differs
 - [docs/DEPLOY.md](docs/DEPLOY.md): deploying the signaling, STUN and relay server
 - [docs/WEB_CLIENT.md](docs/WEB_CLIENT.md): the browser viewer
+- [docs/MCP.md](docs/MCP.md): AI agents (MCP)
 - [docs/TERM_HOST.md](docs/TERM_HOST.md): the Linux / Windows command-line host
 - [docs/WINDOWS.md](docs/WINDOWS.md): the Windows port
 - [docs/spikes/M0-report.md](docs/spikes/M0-report.md): M0 validation report
@@ -231,4 +260,5 @@ The design documents are in Chinese.
 - **Windows**: the many problems found on real hardware, in both the host and the viewer; the host's pointer shape on the viewer, HEVC, sound, running as a service (login screen and UAC), see [docs/WINDOWS.md](docs/WINDOWS.md).
 - **Browser**: testing on iPhone / Safari and Firefox (Chrome on Android is in use); TURN over TCP/TLS for networks that block UDP; sound and file transfer.
 - **Command-line host**: running the Windows build on real hardware; running as a Windows service.
+- **AI agents**: sending and receiving files (the command line and the clipboard work); reading a Windows screen as elements (UI Automation) on real hardware.
 - **Product decisions**: how an unattended machine is first paired; what someone who only knows the ID may do; whether file permission is split by direction.

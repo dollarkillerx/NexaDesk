@@ -57,10 +57,11 @@ var temp = Directory.CreateTempSubdirectory("nexadesk-shots");
 var store = new RecentStore(Path.Combine(temp.FullName, "recent.json"));
 const string StudioKey = "5c1e9a7f03b2d84e6a1f97c2b05d3e8814a6f0c97d2b3e5a1c8f604d92e7b13a";
 store.Save([
-    new RecentDevice("studio.tail1234.ts.net:47800", Name("工作室 Mac mini", "Studio Mac mini"), StudioKey, now.AddHours(-2).ToUnixTimeSeconds()),
+    new RecentDevice("studio.tail1234.ts.net:47800", Name("工作室 Mac mini", "Studio Mac mini"), StudioKey, now.AddHours(-2).ToUnixTimeSeconds(),
+        HasPassword: true, AiAllowed: true),
     new RecentDevice("192.168.1.42:47800", Name("客厅 iMac", "Living room iMac"), "", now.AddDays(-3).ToUnixTimeSeconds()),
 ]);
-var settings = new MemorySettings(new AppSettings(SignalServer: "wss://signal.example.com:8443"));
+var settings = new MemorySettings(new AppSettings(SignalServer: "wss://signal.example.com:8443", AllowBrowsers: true, AllowAgents: true));
 var vm = new MainViewModel(client, store, link, new Process(), new Perms(), windows, new Addresses(), Name("我的 MacBook Pro", "My MacBook Pro"), () => now, settings);
 client.Raise(new ReadyEvent(0, new string('3', 64), [new KnownHost(StudioKey, Name("工作室 Mac mini", "Studio Mac mini"), 0)], ""));
 client.Raise(new TailnetDevicesEvent(0,
@@ -86,10 +87,29 @@ link.Raise(new AgentMessage.Pairings([
         new Permissions(true, true, true, true, false), (ulong)now.AddDays(-12).ToUnixTimeSeconds(), (ulong)now.AddDays(-1).ToUnixTimeSeconds(), false),
 ]));
 Pump();
+// One page per thing a person comes to do: connecting out, then letting others in.
 Shot(main, "main");
 Application.Current!.RequestedThemeVariant = ThemeVariant.Dark;
 Shot(main, "main-dark");
 Application.Current.RequestedThemeVariant = ThemeVariant.Light;
+vm.ShowPageCommand.Execute("Host");
+Shot(main, "host");
+
+// Settings → AI agents (MCP), switched on, while an AI app operates a device. The
+// section's own view-model, with the installed app's nexa-mcp and a made-up session.
+vm.ShowPageCommand.Execute("Settings");
+Pump();
+var mcpExpander = main.FindControl<Expander>("McpExpander")!;
+var agents = new AgentServer([new AgentSessionInfo("claude-code", Name("工作室 Mac mini", "Studio Mac mini"))]);
+mcpExpander.DataContext = new McpViewModel(windows, "/Applications/NexaDesk.app/Contents/MacOS/nexa-mcp", true, agents,
+    new MemorySettings(new AppSettings(AiApps: true)), Name("我的 MacBook Pro", "My MacBook Pro"));
+mcpExpander.IsExpanded = true;
+Pump();
+var settingsPage = main.FindControl<ScrollViewer>("SettingsPage")!;
+var top = mcpExpander.TranslatePoint(new Point(0, 0), (Visual)settingsPage.Content!)!.Value.Y;
+settingsPage.Offset = new Vector(0, Math.Max(0, top - 24));
+Shot(main, "ai-settings");
+vm.ShowPageCommand.Execute("Connect");
 
 link.Raise(new AgentMessage.IncomingRequest(5, Name("设计部 MacBook Air", "Design MacBook Air"), "a41c7e09b3d25f68",
     "9d4b2e71c0a83f56e1b7d9204c6a58f3b2e0d1c7a94f6e8b03d5c2a17e9b4f60", "100.92.5.110:51934", AuthKind.Code,
@@ -102,13 +122,24 @@ Shot(dialog, "consent");
 dialog.Close();
 Pump();
 
+// An AI agent asking: it says it is one, and the person decides as for anyone else.
+link.Raise(new AgentMessage.IncomingRequest(6, Name("工作室 Mac mini", "Studio Mac mini"), "6d0b9e42a1c73f58",
+    "e17a4c9b02d5f8634a1e7c90b3d2f56810c4e9a7b5d3f12e6a08c7b49d1e2f35", "100.84.17.23:50211", AuthKind.Password,
+    new Permissions(true, true, true, false, false, Terminal: true), false, false, false, false, 60_000, true, Agent: true));
+Pump();
+var agentDialog = windows.OpenWindows.OfType<ConsentDialog>().Single();
+((ConsentViewModel)agentDialog.DataContext!).Tick(DateTimeOffset.Now.AddSeconds(3));
+Shot(agentDialog, "consent-ai");
+agentDialog.Close();
+Pump();
+
 link.Raise(new AgentMessage.SessionStarted(new HostSession(9, Name("设计部 MacBook Air", "Design MacBook Air"), "a41c7e09b3d25f68",
     "9d4b2e71c0a83f56e1b7d9204c6a58f3b2e0d1c7a94f6e8b03d5c2a17e9b4f60", "100.92.5.110:51934",
     new Permissions(true, true, true, true, false))));
-// A second person at the same time: a browser with only the command line.
-link.Raise(new AgentMessage.SessionStarted(new HostSession((1UL << 48) + 1, "Chrome · Windows (browser)", "c3a0e57b19d24f68",
-    "c3a0e57b19d24f6881e2a7d40b9c56f13e8d2a07b4c1f9e65d30a8b7c2e14f95", "203.0.113.24",
-    new Permissions(false, false, false, Terminal: true))));
+// At the same time, an AI agent, shown as one.
+link.Raise(new AgentMessage.SessionStarted(new HostSession(10, Name("工作室 Mac mini", "Studio Mac mini"), "6d0b9e42a1c73f58",
+    "e17a4c9b02d5f8634a1e7c90b3d2f56810c4e9a7b5d3f12e6a08c7b49d1e2f35", "100.84.17.23:50211",
+    new Permissions(true, true, true, Terminal: true), Agent: true)));
 Pump();
 if (windows.Banner is { } banner)
 {
@@ -173,7 +204,7 @@ sealed class Process : IAgentProcess
 {
     public bool IsRunning => false;
     public event Action<AgentExit>? Exited { add { } remove { } }
-    public string? Start(string l, string n, string s, bool a, string? w = null) => null;
+    public string? Start(string l, string n, string s, bool a, string? w = null, string? k = null) => null;
     public void Kill() { }
 }
 
@@ -182,6 +213,19 @@ sealed class Perms : IPermissionProbe
     public PermissionState Check() => new(true, true);
     public void Request(PermissionKind k) { }
     public void OpenSettings(PermissionKind k) { }
+}
+
+sealed class AgentServer(IReadOnlyList<AgentSessionInfo> sessions) : IAgentServer
+{
+    public IReadOnlyList<AgentSessionInfo> Sessions { get; } = sessions;
+    public event Action? Changed;
+    public string? Start(string deviceName)
+    {
+        Changed?.Invoke();
+        return null;
+    }
+    public void Stop() { }
+    public void StopSessions() { }
 }
 
 sealed class Addresses : ILocalAddresses

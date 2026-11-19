@@ -21,6 +21,7 @@ const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replac
 // The screenshots, at most this wide: sharp on a 2x screen at the width they show.
 const IMAGES = {
   "main.png": 1600,
+  "ai-settings.png": 1600,
   "web-session.png": 1600,
   "web-phone.png": 780,
   "web-phone-session.png": 1200,
@@ -82,6 +83,7 @@ function page(lang) {
     <nav class="links" aria-label="${esc(t.nav.features)}">
       <a href="#features">${t.nav.features}</a>
       <a href="#browser">${t.nav.browser}</a>
+      <a href="#ai">${t.nav.ai}</a>
       <a href="#connect">${t.nav.connect}</a>
       <a href="#security">${t.nav.security}</a>
       <a href="#start">${t.nav.start}</a>
@@ -140,7 +142,18 @@ function page(lang) {
   </div>
 </section>
 
-<section id="connect" class="band">
+<section id="ai" class="band">
+  <div class="wrap split reverse">
+    <figure class="shot window">${img("ai-settings.png", t.shotAi, "", 1600, 1554)}<figcaption>${esc(t.shotAi)}</figcaption></figure>
+    <div>
+      <h2>${t.aiTitle}</h2>
+      <p class="section-lead">${esc(t.aiText)}</p>
+      <ul class="checks">${t.aiPoints.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>
+    </div>
+  </div>
+</section>
+
+<section id="connect" class="band alt">
   <div class="wrap">
     <h2>${t.connectTitle}</h2>
     <p class="section-lead">${esc(t.connectText)}</p>
@@ -150,7 +163,7 @@ function page(lang) {
   </div>
 </section>
 
-<section id="security" class="band alt">
+<section id="security" class="band">
   <div class="wrap split reverse">
     <figure class="shot window narrow">${img("consent.png", t.shotConsent, "", 900, 1208)}<figcaption>${esc(t.shotConsent)}</figcaption></figure>
     <div>
@@ -161,7 +174,7 @@ function page(lang) {
   </div>
 </section>
 
-<section class="band">
+<section class="band alt">
   <div class="wrap">
     <h2>${t.platformsTitle}</h2>
     <div class="table-scroll">

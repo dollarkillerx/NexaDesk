@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  轻量、低延迟的远程控制软件：画面清晰，键盘对 Mac 和 Windows 都友好，浏览器也能直接控制
+  轻量、低延迟的远程控制软件：画面清晰，键盘对 Mac 和 Windows 都友好，浏览器也能直接控制，还能让 AI 操作你允许的电脑
 </p>
 
 <p align="center">
@@ -32,13 +32,14 @@
   - 指针在浏览器本地画，移动没有延迟。
   - 连过的设备保存在浏览器里，点一下就能再连；密码用页面也导不出的密钥加密保存，一次性码从不保存。
   - 手机可用：触控手势、屏幕键盘、输入法，以及一排 Esc、Tab、修饰键和方向键。
-  - 默认关闭，在主窗口打开"允许浏览器连接"。
+  - 默认关闭，在“设置”里打开"允许浏览器连接"。
 - **命令行** - 只打开对方的 shell：应用里用原生终端控件（macOS 和 Windows 相同），浏览器里用 xterm.js。这是单独一项权限，默认不勾；会话结束时 shell 和它启动的所有进程一起结束。没有图形界面的 Linux / Windows 机器用命令行被控端 `nexa-term-host`（bash / PowerShell），见 [docs/TERM_HOST.md](docs/TERM_HOST.md)。
+- **AI 代理（MCP）** - NexaDesk 自带 MCP 服务，Claude Code、Codex、Claude Desktop 等 AI 应用可以操作你允许的电脑：把屏幕读成界面元素来操作，需要时截图，也能在命令行里运行命令。由 NexaDesk 用你保存的密码登录，AI 看不到任何密码、一次性码或密钥；被操作的电脑每次都会询问，并显示是 AI。见下文 [AI 代理](#ai-代理mcp)。
 - **多人同时连接** - 最多 4 人同时连接同一台 Mac（应用和浏览器合计），每人单独确认，都能操作，互不顶替；谁离开就只结束谁的会话。
 - **登录方式** - 一次性码（对方点允许）；固定密码（机主自己的入口，不弹确认）；经服务器时也可以只填设备 ID，对方会看到标明"无法核实身份"的请求。设备 ID 可以随时重置。
 - **随时能连上** - NexaDesk 启动时（包括"重启以更新"之后）自动开启"允许别人控制本机"，远程更新被控端不会把自己关在外面；自己点"停止"后保持关闭，直到再点"开始"。也可以设为登录时启动。
 - **其他** - 光标形状、声音（Opus）、文件收发、多显示器、游戏模式（锁定指针、更强纠错）、断线 30 秒内自动重连、HUD 与连接诊断。
-- **多语言** - English、简体中文、日本語。默认跟随系统语言，也可以在主窗口切换（重启后生效）。
+- **多语言** - English、简体中文、日本語。默认跟随系统语言，也可以在“设置”里切换（重启后生效）。
 - **安全**
   - 双向 TLS，身份就是设备公钥。
   - 首次连接用一次性码或固定密码做 SPAKE2 配对，并绑定到 TLS 会话；之后钉住对方公钥。固定密码只保存 Argon2id 的结果。
@@ -47,11 +48,14 @@
 
 ## 截图
 
-主窗口：左边连接别的设备（局域网和 Tailscale 里的设备会自动列出），右边允许别人控制本机：放大显示的设备 ID 和一次性码（点一下就复制）、固定密码和对方可输入的地址。自动跟随系统的浅色和深色。
+主窗口按要做的事分页。“连接别人”自动列出局域网和 Tailscale 里的设备，以及用过的设备和它们的标签（已配对、已保存密码、允许 AI）。“让别人连我”放大显示本机的设备 ID 和一次性码（点一下就复制）以及对方可输入的地址。“已配对设备”和“设置”放其余内容。自动跟随系统的浅色和深色。
 
 <p>
-  <img src="docs/images/main.png" width="49%" alt="主窗口（浅色）">
-  <img src="docs/images/main-dark.png" width="49%" alt="主窗口（深色）">
+  <img src="docs/images/main.png" width="49%" alt="连接别人（浅色）">
+  <img src="docs/images/main-dark.png" width="49%" alt="连接别人（深色）">
+</p>
+<p>
+  <img src="docs/images/host.png" width="49%" alt="让别人连我：设备 ID、一次性码和地址">
 </p>
 
 有人连接时，本机弹出确认窗口：显示对方是谁、怎么验证的、密钥指纹，由你勾选允许的权限。"拒绝"是默认按钮，"允许"在窗口出现一秒后才能点。浏览器端不用安装任何软件，连接时可以选"屏幕"或"终端"；连过的设备可以保存在浏览器里，下次点一下就能连上。
@@ -75,12 +79,19 @@
   <img src="docs/images/web-phone-session.png" width="72%" alt="手机横屏控制，带按键栏">
 </p>
 
-控制别人时，画面上方是工具条（模式、声音、文件、HUD、诊断），可以收起成一个能拖到一边的小标签。被控制时，本机顶部一直显示提示条，每个连接的人一行，可以单独断开；可以收起成一个能移动的小标签，但不会完全隐藏。
+控制别人时，画面上方是工具条（模式、声音、文件、HUD、诊断），可以收起成一个能拖到一边的小标签。被控制时，本机顶部一直显示提示条，每个连接的人或 AI 代理一行，可以单独断开；可以收起成一个能移动的小标签，但不会完全隐藏。
 
 <p>
   <img src="docs/images/toolbar.png" width="80%" alt="控制端工具条"><br>
-  <img src="docs/images/banner.png" width="60%" alt="被控端提示条（两人同时连接）">
+  <img src="docs/images/banner.png" width="60%" alt="被控端提示条（一个人和一个 AI 代理同时连接）">
   <img src="docs/images/banner-folded.png" width="14%" alt="收起后的提示条">
+</p>
+
+AI 代理：设置 →“AI 代理（MCP）”为本机的 AI 应用打开 MCP 服务，给出加到 AI 应用里的命令或 JSON，并显示哪个 AI 应用在操作哪台设备，可以“全部停止”。被操作的电脑会先询问，并标明是 AI。
+
+<p>
+  <img src="docs/images/ai-settings.png" width="58%" alt="设置：AI 代理（MCP），一个 AI 应用正在操作设备">
+  <img src="docs/images/consent-ai.png" width="36%" alt="AI 代理连接时的确认窗口">
 </p>
 
 <sub>截图里的设备、地址、代码和已保存的连接都是虚构的。界面改动后运行 `scripts/screenshots.sh` 重新生成：应用界面由 `ui/NexaDesk.Screenshots` 用真实的界面代码离屏渲染；浏览器页面由 `scripts/web-screenshots.mjs` 在无界面的 Google Chrome 里对演示主机截取（电脑和手机尺寸各一遍）。</sub>
@@ -92,14 +103,14 @@
 - **macOS**（Apple 芯片，macOS 14+）：[NexaDesk-macOS.dmg](https://github.com/dollarkillerx/NexaDesk/releases/latest/download/NexaDesk-macOS.dmg)，Developer ID 签名并经 Apple 公证。
 - **Windows**（x64，Windows 10 / 11）：[NexaDesk-win-Setup.exe](https://github.com/dollarkillerx/NexaDesk/releases/latest/download/NexaDesk-win-Setup.exe)，按用户安装，不需要管理员权限；还没有代码签名，SmartScreen 提示时点**更多信息 → 仍要运行**。
 
-两个版本都会自动更新（[Velopack](https://velopack.io)）：启动后和之后每天检查一次 GitHub Releases，有新版本就在后台下载，主窗口底部显示"重启以更新"。不会自动重启，因为重启会断开远程连接。
+两个版本都会自动更新（[Velopack](https://velopack.io)）：启动后和之后每天检查一次 GitHub Releases，有新版本就在后台下载，在“设置”里显示"重启以更新"。不会自动重启，因为重启会断开远程连接。
 
 ## 使用
 
 1. 两台 Mac 都打开 NexaDesk，按提示授予"屏幕录制"和"辅助功能"权限，首次在局域网使用时还要允许"本地网络"。
 2. 不在同一个局域网时，两台都安装 [Tailscale](https://tailscale.com/download) 并登录同一个账号。
-3. 被控的一台在"允许别人控制本机"里点"开始"。默认监听所有网络，窗口里会列出对方可以输入的地址（Tailscale 名称、局域网 IP）和一次性码。
-4. 控制的一台选择对方，然后输入一次性码：
+3. 被控的一台在“让别人连我”页点"开始"。默认监听所有网络，窗口里会列出对方可以输入的地址（Tailscale 名称、局域网 IP）和一次性码。
+4. 控制的一台在“连接别人”页选择对方，然后输入一次性码：
    - 在"局域网中的 NexaDesk 设备"或"Tailscale 网络中的 NexaDesk 设备"里点"连接"；
    - 也可以手动输入对方的地址，例如 `192.168.1.20` 或 `studio.tail1234.ts.net`（默认端口 47800）。
 5. 被控端确认后开始控制。配对过的设备下次可以直接连接。
@@ -118,6 +129,22 @@ nexa-agent --listen '[::]:47800'
 
 `nexa-agent --help` 列出全部选项，例如 `--paired-only`、`--relay-only`、`--no-lan-discovery`。
 
+## AI 代理（MCP）
+
+本机的 AI 应用通过 NexaDesk 操作别的电脑，和你自己操作一样：由 NexaDesk 登录，被操作的电脑会询问那边的人，AI 看着屏幕操作。
+
+1. 在 AI 所在的电脑上，打开 设置 →“AI 代理（MCP）”，勾选“让本机的 AI 应用使用 NexaDesk”。从这里复制对应 AI 应用的配置，例如 Claude Code：
+   ```bash
+   claude mcp add nexadesk -- "/Applications/NexaDesk.app/Contents/MacOS/nexa-mcp"
+   ```
+   同一处还有 Claude Desktop 等应用用的 JSON，以及 Codex 的 `~/.codex/config.toml` 配置。
+2. 在“连接别人”页，点已保存设备的“编辑”，勾选“允许 AI 操作”并保存。AI 只看得到、只连得上这些设备，按名字连接。NexaDesk 用为该设备保存的密码登录；用设备 ID 连接时，请对方允许。AI 看不到任何密码、一次性码或密钥。
+3. 在要被操作的电脑上，在“设置”里打开“允许 AI 代理连接”。每次 AI 连接仍会询问，确认窗口和提示条都标明是 AI；命令行是单独一项权限。
+
+然后对 AI 说，比如“连上我的 MacBook，打开 Chrome 测一下网速”。它把屏幕读成界面元素（按钮、输入框、列表行）来操作，需要看时才截图，还可以在命令行里运行命令。`nexa-mcp` 本身只在 AI 应用和 NexaDesk 之间转发，不保存任何东西。设计见 [docs/MCP.md](docs/MCP.md)。
+
+## 排查问题
+
 想知道连接为什么断开：NexaDesk.app 把被控端的日志写在 `~/Library/Logs/NexaDesk/agent.log`，里面有每个会话的开始、结束和原因，以及每 5 秒一行的码率统计（帧数、码率、目标、Wi‑Fi 中断）。超过 1 MB 时旧的移到 `agent.log.1`。
 
 ## 自建信令服务器
@@ -130,7 +157,7 @@ curl -fsSL https://raw.githubusercontent.com/dollarkillerx/NexaDesk/main/deploy/
 
 脚本会下载程序并校验 SHA-256，随机生成一个**信令口令**，做好证书，装好并启动服务，给 ufw / firewalld 放行端口，最后打印服务器地址、口令和证书指纹。再运行一次就是升级，配置保持不变。常用选项（写在 `sh -s --` 后面）：`--host <IP 或域名>`、`--port <端口>`、`--web [密码]`（同时提供浏览器网页，密码可不写）、`--key <口令>`。用 `sh install.sh --show` 可以重新查看结果。
 
-然后在每台要用这台服务器的 Mac 或电脑上，打开主窗口的“高级”，填服务器地址和口令（信令服务器一定要口令），点“保存”；再把“允许别人控制本机”停止后重新开始一次，被控端才会注册上去。第一次连接使用私有证书的服务器时，会让你核对证书指纹并信任。
+然后在每台要用这台服务器的 Mac 或电脑上，打开 设置 →“高级”，填服务器地址和口令（信令服务器一定要口令），点“保存”；再在“让别人连我”页停止后重新开始一次，被控端才会注册上去。第一次连接使用私有证书的服务器时，会让你核对证书指纹并信任。
 
 别忘了在云厂商的安全组里放行 TCP 443（或你选的端口）和 UDP 3478、3480。想用自己的域名和正规证书，用 `--host 你的域名`，并看 [docs/DEPLOY.md](docs/DEPLOY.md)，里面还有手工安装、Docker、换口令和运维。
 
@@ -198,7 +225,8 @@ cargo run -p nexa-web --example demo
 | `crates/nexa-auth` | 设备身份、配对、钉住、访问决策 |
 | `crates/nexa-session` | 会话握手、被控端与控制端的会话逻辑、文件传输、重连、会合 |
 | `crates/nexa-agent` | 被控端进程 `nexa-agent` |
-| `crates/nexa-client` | 控制端动态库 `libnexa_client`（C ABI，供 UI 调用） |
+| `crates/nexa-client` | 控制端动态库 `libnexa_client`（C ABI，供 UI 调用），以及给 AI 代理的 MCP 服务 |
+| `crates/nexa-mcp` | AI 应用运行的 `nexa-mcp`：把它们的 MCP 消息转给 NexaDesk 应用 |
 | `crates/nexa-signal` | 信令 + STUN + 中继服务器 `nexa-signal` |
 | `crates/nexa-web` | 浏览器访问：HTTPS、信令和 WebRTC（str0m），由被控端提供；经服务器的会话走 TURN |
 | `crates/nexa-web-page` | 浏览器端网页，由被控端和信令服务器共用 |
@@ -218,6 +246,7 @@ cargo run -p nexa-web --example demo
 - [docs/DETAILED_DESIGN.md](docs/DETAILED_DESIGN.md)：详细设计，各章末尾的"实现修订"记录了实际实现与设计的差异
 - [docs/DEPLOY.md](docs/DEPLOY.md)：部署信令、STUN 和中继服务器
 - [docs/WEB_CLIENT.md](docs/WEB_CLIENT.md)：浏览器控制端
+- [docs/MCP.md](docs/MCP.md)：AI 代理（MCP）
 - [docs/TERM_HOST.md](docs/TERM_HOST.md)：Linux / Windows 命令行被控端
 - [docs/WINDOWS.md](docs/WINDOWS.md)：Windows 版
 - [docs/spikes/M0-report.md](docs/spikes/M0-report.md)：M0 验证报告
@@ -229,4 +258,5 @@ cargo run -p nexa-web --example demo
 - **Windows**：实机测试中发现的不少问题（被控端和控制端都有）；控制端显示对方的指针形状、HEVC、声音、作为服务运行（登录界面和 UAC），见 [docs/WINDOWS.md](docs/WINDOWS.md)。
 - **浏览器端**：iPhone / Safari、Firefox 上的实测（Android 上的 Chrome 已在用）；TURN over TCP/TLS（UDP 被封的网络）；声音和文件传输。
 - **命令行被控端**：Windows 版的实机运行；作为 Windows 服务运行。
+- **AI 代理**：收发文件（命令行和剪贴板已可用）；在 Windows 真机上按界面元素读取屏幕（UI Automation）。
 - **产品决定**：无人值守机器的首次配对方式；知道 ID 的人默认能做什么；文件权限是否按方向拆开。
