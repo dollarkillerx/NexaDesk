@@ -88,6 +88,20 @@ public class AddressGroupTests
     }
 
     [AvaloniaFact]
+    public async Task Copying_one_value_leaves_the_others_clickable()
+    {
+        var main = await Hosting(new FakeAddresses(ManyIps) { RoutedIps = ["192.168.0.70"] });
+        var copy = main.Host.CopyCommand;
+        _ = copy.ExecuteAsync(main.Host.DeviceId);
+        // The ID says "copied" for two seconds; the code and every address must not grey out meanwhile.
+        Assert.Equal(main.Host.DeviceId, main.Host.Copied);
+        Assert.True(copy.CanExecute(main.Host.CodeDisplay));
+        Assert.True(copy.CanExecute(main.Host.AppAddresses.Main[0].Address));
+        _ = copy.ExecuteAsync(main.Host.CodeDisplay);
+        Assert.Equal(main.Host.CodeDisplay, main.Host.Copied);
+    }
+
+    [AvaloniaFact]
     public async Task Stopping_empties_both_groups()
     {
         var main = await Hosting(new FakeAddresses(ManyIps) { RoutedIps = ["192.168.0.70"] });

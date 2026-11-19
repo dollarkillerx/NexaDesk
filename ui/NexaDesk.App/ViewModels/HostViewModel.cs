@@ -494,7 +494,9 @@ public sealed partial class HostViewModel : ObservableObject
     /// <summary>The value just copied, for two seconds, so its row can say so.</summary>
     [ObservableProperty] private string? _copied;
 
-    [RelayCommand]
+    // Concurrent: while one value says "copied" for two seconds, every other value (they all
+    // share this command) stays clickable instead of greying out as disabled.
+    [RelayCommand(AllowConcurrentExecutions = true)]
     private async Task Copy(string? text)
     {
         if (string.IsNullOrEmpty(text)) return;
