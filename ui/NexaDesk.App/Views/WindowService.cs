@@ -1,3 +1,4 @@
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input.Platform;
 using NexaDesk.ViewModels;
@@ -47,6 +48,7 @@ public sealed class WindowService : IWindowService
             terminal = new TerminalWindow(session);
             terminal.Closed += (_, _) => terminal = null;
             Track(terminal);
+            PlaceBelow(terminal, window, toolbar.IsVisible ? toolbar : handle);
             terminal.Show();
         };
         toolbar.DiagnosticsRequested += () =>
@@ -59,6 +61,7 @@ public sealed class WindowService : IWindowService
             diagnostics = new DiagnosticsWindow { DataContext = session.Diagnostics };
             diagnostics.Closed += (_, _) => diagnostics = null;
             Track(diagnostics);
+            PlaceBelow(diagnostics, window, toolbar.IsVisible ? toolbar : handle);
             diagnostics.Show(window);
         };
         session.PropertyChanged += (_, e) =>
@@ -115,6 +118,31 @@ public sealed class WindowService : IWindowService
         window.Show();
         if (session.IsToolbarVisible) toolbar.Show(window);
         else handle.Show(window);
+    }
+
+    /// <summary>
+    /// Puts a session's own window (its terminal, its diagnostics) just below the toolbar,
+    /// centred on the session window. The toolbar floats above every window, so a title
+    /// bar opened under it could be neither seen nor dragged until the toolbar was folded.
+    /// </summary>
+    internal static void PlaceBelow(Window w, Window session, Window bar)
+    {
+        var s = session.DesktopScaling;
+        var top = (bar.IsVisible ? bar.Position.Y + (int)Math.Ceiling(bar.Bounds.Height * s) : session.Position.Y)
+            + (int)(12 * s);
+        var x = session.Position.X + (int)((session.Bounds.Width - w.Width) / 2 * s);
+        if (session.Screens.ScreenFromWindow(session)?.WorkingArea is { } area)
+        {
+            // Shorter rather than off the bottom of the screen, when it can be.
+            if (w.CanResize && !double.IsNaN(w.Height))
+            {
+                var room = (area.Bottom - top) / s - 12;
+                if (w.Height > room) w.Height = Math.Max(w.MinHeight, room);
+            }
+            x = Math.Clamp(x, area.X, Math.Max(area.X, area.Right - (int)(w.Width * s)));
+        }
+        w.WindowStartupLocation = WindowStartupLocation.Manual;
+        w.Position = new PixelPoint(x, top);
     }
 
     public void ShowServerTrust(ServerTrustViewModel trust)

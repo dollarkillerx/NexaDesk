@@ -49,3 +49,48 @@ public class TerminalWindowTests
         Assert.True(t.Disposed);
     }
 }
+
+/// <summary>A session's own windows open where their title bars can be reached, not under the toolbar.</summary>
+public class SideWindowPlacementTests
+{
+    readonly WindowService _windows = new();
+
+    T Open<T>() where T : Avalonia.Controls.Window => _windows.OpenWindows.OfType<T>().Single();
+
+    [AvaloniaFact]
+    public void The_terminal_and_diagnostics_open_below_the_toolbar_folded_or_not()
+    {
+        var vm = new SessionViewModel(new FakeSession(1),
+            new ConnectedEvent(1, Samples.HostKey, "工作室 Mac mini", new Permissions(true, true, true, Terminal: true), 2, false),
+            "192.168.1.20:47800", () => Samples.T0);
+        _windows.ShowSession(vm);
+        var window = Open<SessionWindow>();
+        var toolbar = Open<ToolbarWindow>();
+        HeadlessUiTests.Pump();
+
+        HeadlessUiTests.Click(toolbar, HeadlessUiTests.Find<Avalonia.Controls.Button>(toolbar, "TerminalButton"));
+        HeadlessUiTests.Click(toolbar, HeadlessUiTests.Find<Avalonia.Controls.Button>(toolbar, "DiagnosticsButton"));
+        var below = toolbar.Position.Y + toolbar.Bounds.Height * window.DesktopScaling;
+        foreach (var w in new Avalonia.Controls.Window[] { Open<TerminalWindow>(), Open<DiagnosticsWindow>() })
+        {
+            Assert.True(w.Position.Y >= below, $"{w.GetType().Name} at {w.Position.Y}, toolbar ends at {below}");
+            var centre = w.Position.X + w.Bounds.Width * window.DesktopScaling / 2;
+            var sessionCentre = window.Position.X + window.Bounds.Width * window.DesktopScaling / 2;
+            Assert.InRange(centre - sessionCentre, -2, 2);
+        }
+
+        // Folded: below the tab instead, still clear of it.
+        Open<TerminalWindow>().Close();
+        vm.CollapseToolbarCommand.Execute(null);
+        HeadlessUiTests.Pump();
+        var handle = Open<ToolbarHandleWindow>();
+        typeof(ToolbarWindow).GetMethod("OnTerminal", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+            .Invoke(toolbar, [null, null]);
+        HeadlessUiTests.Pump();
+        Assert.True(Open<TerminalWindow>().Position.Y >= handle.Position.Y + handle.Bounds.Height * window.DesktopScaling);
+
+        vm.DisconnectCommand.Execute(null);
+        HeadlessUiTests.Pump();
+        Assert.Empty(_windows.OpenWindows);
+    }
+}
