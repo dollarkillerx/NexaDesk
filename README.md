@@ -262,3 +262,7 @@ The design documents are in Chinese.
 - **Command-line host**: running the Windows build on real hardware; running as a Windows service.
 - **AI agents**: reading a Windows screen as elements (UI Automation), and the command line and files, on real hardware.
 - **Product decisions**: how an unattended machine is first paired; what someone who only knows the ID may do; whether file permission is split by direction.
+
+## License
+
+NexaDesk is free software under the GNU Affero General Public License, version 3 or (at your option) any later version (`AGPL-3.0-or-later`); see [LICENSE](LICENSE). If you run a modified version for others to use over a network, you must offer them its source. Code under [third_party/](third_party/) keeps its own license.

@@ -4,6 +4,7 @@ description = "Browser access to a NexaDesk host: the page, its signaling and We
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 nexa-auth = { path = "../nexa-auth" }

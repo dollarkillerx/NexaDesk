@@ -4,6 +4,7 @@ description = "The browser's half of NexaDesk pairing, compiled to WebAssembly (
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [lib]
 crate-type = ["cdylib", "rlib"]

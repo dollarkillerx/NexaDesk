@@ -3,6 +3,7 @@ name = "nexa-media"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 nexa-wire = { path = "../nexa-wire" }

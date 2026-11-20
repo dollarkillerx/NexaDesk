@@ -260,3 +260,7 @@ cargo run -p nexa-web --example demo
 - **命令行被控端**：Windows 版的实机运行；作为 Windows 服务运行。
 - **AI 代理**：在 Windows 真机上实测按界面元素读取屏幕（UI Automation）、命令行和收发文件。
 - **产品决定**：无人值守机器的首次配对方式；知道 ID 的人默认能做什么；文件权限是否按方向拆开。
+
+## 许可
+
+NexaDesk 是自由软件，采用 GNU Affero 通用公共许可证第 3 版或（由你选择）任何更新的版本（`AGPL-3.0-or-later`），见 [LICENSE](LICENSE)。如果你修改了它并通过网络提供给别人使用，必须向这些用户提供修改后的源码。[third_party/](third_party/) 下的代码保留各自的许可。

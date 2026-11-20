@@ -4,6 +4,7 @@ description = "The browser page (docs/WEB_CLIENT.md), and just enough HTTP to se
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 tokio = { version = "1", features = ["io-util"] }

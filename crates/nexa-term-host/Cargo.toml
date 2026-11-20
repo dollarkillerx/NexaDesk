@@ -4,6 +4,7 @@ description = "A command-line-only NexaDesk host for Linux, Windows and macOS: a
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "nexa-term-host"

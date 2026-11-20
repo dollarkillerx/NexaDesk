@@ -3,6 +3,7 @@ name = "nexa-mcp"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "Relays an AI app's MCP messages to NexaDesk, which serves them (docs/MCP.md §16)"
 
 [dependencies]

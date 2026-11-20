@@ -3,6 +3,7 @@ name = "nexa-opus"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "libopus, built from source: the Opus codec where the system has none (Windows)"
 
 [dependencies]
