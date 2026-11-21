@@ -10,7 +10,7 @@
   "Main.OpenLoginItems.Windows": "開啟「啟動應用」設定",
   "Main.MenuBarNote": "關閉這個視窗後，NexaDesk 仍在選單列執行：允許控制、連線確認和頂部提示列都照常工作；從選單列選「退出」才會停止。",
   "Main.MenuBarNote.Windows": "關閉這個視窗後，NexaDesk 仍在通知區域執行：允許控制、連線確認和頂部提示列都照常工作；右鍵點選通知區域裡的 NexaDesk 圖示，選「退出 NexaDesk」才會停止。",
-  "Main.Advanced": "高階：自建信令伺服器（可選）",
+  "Main.Advanced": "進階：自建信令伺服器（可選）",
   "Main.AdvancedHelp": "不用伺服器也能連線：同一區域網路直接連；不在同一網路時，推薦兩邊都用 Tailscale，它會自動打洞，打不通時自動中轉。只有不能用 Tailscale、又想按 9 位裝置 ID 連線時，才需要自建信令伺服器（部署見 docs/DEPLOY.md）。",
   "Main.SignalServer": "信令伺服器",
   "Main.SignalSecret": "存取口令",

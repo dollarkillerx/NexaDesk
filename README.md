@@ -161,7 +161,7 @@ Then, on every Mac or PC that should use the server, open Settings → "Advanced
 
 Also open TCP 443 (or your port) and UDP 3478 and 3480 in your cloud provider's security group. For a public domain with a normal certificate, use `--host your.domain` and see [docs/DEPLOY.md](docs/DEPLOY.md), which also covers manual and Docker installs, key rotation and operations.
 
-**Offering a server to everyone.** `servers.json` in this repository lists servers with their keys. In "Advanced", the switch "Pick from the published server list" (off by default) loads it, and choosing an entry fills in its address and key. The keys there are public; they only keep out people who do not know the list.
+**Offering a server to everyone.** `servers.json` in this repository lists servers with their keys. In "Advanced", choose "A published server (pick one from the project's list on GitHub)": NexaDesk loads the list, and the server you pick is used at once, its address and key filled in. The default is "No server". The keys there are public; they only keep out people who do not know the list.
 
 ## Build from Source
 
