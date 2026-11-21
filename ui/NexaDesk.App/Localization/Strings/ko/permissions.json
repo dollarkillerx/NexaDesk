@@ -1,0 +1,12 @@
+{
+  "Permissions.WindowTitle": "NexaDesk — 권한",
+  "Permissions.Request": "접근 요청",
+  "Permissions.OpenScreenRecording": "화면 기록 설정 열기",
+  "Permissions.OpenAccessibility": "손쉬운 사용 설정 열기",
+  "Permissions.Steps": "단계",
+  "Permissions.Step1": "1. ‘접근 요청’을 클릭하세요. NexaDesk가 시스템 설정 → 개인정보 보호 및 보안의 해당 목록에 추가되며, macOS가 해당 화면을 열지 묻습니다.",
+  "Permissions.Step2": "2. 해당 목록에서 NexaDesk를 켜세요. 목록에 없으면 시스템 설정을 닫았다가 다시 열거나(목록이 자동으로 새로 고쳐지지 않습니다), ‘+’를 클릭하여 NexaDesk.app을 추가하세요.",
+  "Permissions.Step3": "3. 여기로 돌아와 ‘다시 확인’을 클릭하세요.",
+  "Permissions.Recheck": "다시 확인",
+  "Permissions.Done": "완료"
+}

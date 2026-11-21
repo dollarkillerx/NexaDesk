@@ -17,7 +17,9 @@ public sealed partial class AboutViewModel(IWindowService windows)
     public static string WebsiteUrl(string language) => language switch
     {
         L.Chinese => "https://nexadesk-bq9.pages.dev/",
+        L.TraditionalChinese => "https://nexadesk-bq9.pages.dev/zh-hant/",
         L.Japanese => "https://nexadesk-bq9.pages.dev/ja/",
+        L.Korean => "https://nexadesk-bq9.pages.dev/ko/",
         _ => "https://nexadesk-bq9.pages.dev/en/",
     };
 

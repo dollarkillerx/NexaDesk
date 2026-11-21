@@ -1,0 +1,17 @@
+{
+  "Settings.Language": "언어",
+  "Settings.LanguageSystem": "시스템 설정 따르기",
+  "Settings.LanguageRestart": "NexaDesk를 재시작하면 적용됩니다",
+  "Settings.ThisDevice": "이 Mac: {0}",
+  "Trust.WindowTitle": "시그널링 서버",
+  "Trust.Title": "이 시그널링 서버를 신뢰하시겠습니까?",
+  "Trust.Intro": "{0}은(는) 자체 호스팅 서버에서 흔히 그렇듯 공인 인증 기관이 발급하지 않은 인증서를 사용합니다. 이 지문이 서버의 CA 인증서와 일치하는 경우에만 신뢰하세요(서버에서: openssl x509 -noout -fingerprint -sha256 -in <CA 인증서>).",
+  "Trust.FingerprintLabel": "인증서 지문(SHA-256)",
+  "Trust.Note": "신뢰하면 이 컴퓨터에 저장되며(signal-ca.pem) 연결과 원격 제어 모두에 사용됩니다. 원격 제어에 적용하려면 원격 제어를 껐다가 다시 켜세요.",
+  "Trust.Trust": "신뢰",
+  "Trust.DontTrust": "신뢰 안 함",
+  "Trust.Saved": "이제 이 서버를 신뢰합니다.",
+  "Trust.SavedHost": "이제 이 서버를 신뢰합니다. 사용하려면 원격 제어를 껐다가 다시 켜세요.",
+  "Trust.Failed": "서버의 인증서를 확인할 수 없습니다: {0}",
+  "Settings.ThisDevice.Windows": "이 PC: {0}"
+}

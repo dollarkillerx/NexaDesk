@@ -172,7 +172,15 @@ public partial class LocalizationTests
 
     [Theory]
     [InlineData(new[] { "zh-Hans-CN", "en-US" }, "zh-Hans")]
-    [InlineData(new[] { "zh-Hant-TW" }, "zh-Hans")]
+    [InlineData(new[] { "zh-Hant-TW" }, "zh-Hant")]
+    [InlineData(new[] { "zh-Hant-HK", "en-US" }, "zh-Hant")]
+    [InlineData(new[] { "zh-TW" }, "zh-Hant")]
+    [InlineData(new[] { "zh-HK" }, "zh-Hant")]
+    [InlineData(new[] { "zh-CN" }, "zh-Hans")]
+    [InlineData(new[] { "zh-SG" }, "zh-Hans")]
+    [InlineData(new[] { "zh" }, "zh-Hans")]
+    [InlineData(new[] { "ko-KR", "en-US" }, "ko")]
+    [InlineData(new[] { "fr-FR", "ko" }, "ko")]
     [InlineData(new[] { "ja-JP", "en-US" }, "ja")]
     [InlineData(new[] { "fr-FR", "ja-JP" }, "ja")]
     [InlineData(new[] { "en-GB" }, "en")]
@@ -210,7 +218,7 @@ public partial class LocalizationTests
         var store = new MemorySettings(new AppSettings("wss://s.example", false, ""));
         var vm = new SettingsViewModel(store);
         Assert.Equal("", vm.SelectedLanguage.Code);
-        Assert.Equal(["", "zh-Hans", "en", "ja"], vm.LanguageOptions.Select(o => o.Code));
+        Assert.Equal(["", "zh-Hans", "zh-Hant", "en", "ja", "ko"], vm.LanguageOptions.Select(o => o.Code));
         Assert.False(vm.LanguageRestartNeeded);
         vm.SelectedLanguage = vm.LanguageOptions.Single(o => o.Code == "ja");
         Assert.Equal(new AppSettings("wss://s.example", false, "ja"), store.Current);

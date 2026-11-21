@@ -1,0 +1,9 @@
+{
+  "Banner.WindowTitle": "NexaDesk — 正在被控制",
+  "Banner.Disconnect": "中斷連線",
+  "Banner.Collapse": "收起",
+  "Banner.Expand": "展開提示列",
+  "Banner.Folded": "{0} 人 · {1}",
+  "Banner.ExpandOrMove": "點選展開檢視連線者；拖動可移動位置",
+  "Banner.AgentBadge": "AI"
+}

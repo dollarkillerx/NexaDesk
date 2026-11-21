@@ -1,0 +1,9 @@
+{
+  "Banner.WindowTitle": "NexaDesk — 원격 제어 중",
+  "Banner.Disconnect": "연결 끊기",
+  "Banner.Collapse": "접기",
+  "Banner.Expand": "배너 펼치기",
+  "Banner.Folded": "{0}명 · {1}",
+  "Banner.ExpandOrMove": "클릭하면 연결된 사람을 표시하고, 드래그하면 이동합니다",
+  "Banner.AgentBadge": "AI"
+}

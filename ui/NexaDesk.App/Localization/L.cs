@@ -4,14 +4,14 @@ using System.Text.Json;
 namespace NexaDesk.Localization;
 
 /// <summary>
-/// The app's text in Simplified Chinese, English and Japanese.
+/// The app's text in Simplified Chinese, Traditional Chinese, English, Japanese and Korean.
 ///
 /// Strings live in <c>Localization/Strings/&lt;language&gt;/&lt;area&gt;.json</c>, one flat
 /// object of <c>"Area.Name": "text"</c> per file, embedded in the assembly (no satellite
 /// assemblies, so NativeAOT needs nothing special). The language is chosen once at start:
 /// the setting, else the first of macOS's preferred languages that is supported, else
-/// English. A key missing in that language falls back to English, then Chinese, then the
-/// key itself, so a gap shows up as text rather than a crash. On Windows a key's
+/// English. A key missing in that language falls back to English (Traditional Chinese reads
+/// Simplified first), then Chinese, then the key itself, so a gap shows up as text rather than a crash. On Windows a key's
 /// <c>.Windows</c> wording, where there is one, stands in for it (<see cref="WindowsSuffix"/>).
 ///
 /// Until <see cref="Use"/> or <see cref="Init"/> is called the language is Chinese, which
@@ -20,12 +20,14 @@ namespace NexaDesk.Localization;
 public static class L
 {
     public const string Chinese = "zh-Hans";
+    public const string TraditionalChinese = "zh-Hant";
     public const string English = "en";
     public const string Japanese = "ja";
+    public const string Korean = "ko";
 
     /// <summary>Every supported language, each named in itself.</summary>
     public static IReadOnlyList<(string Code, string Name)> Languages { get; } =
-        [(Chinese, "简体中文"), (English, "English"), (Japanese, "日本語")];
+        [(Chinese, "简体中文"), (TraditionalChinese, "繁體中文"), (English, "English"), (Japanese, "日本語"), (Korean, "한국어")];
 
     const string ResourcePrefix = "i18n/";
 
@@ -65,16 +67,23 @@ public static class L
         Use(IsSupported(setting) ? setting : Pick(preferred));
 
     /// <summary>
-    /// The first supported language in a macOS preference list ("zh-Hans-CN", "ja-JP", "en-GB"…).
-    /// Traditional Chinese reads Simplified rather than English: closer for most readers.
+    /// The first supported language in a macOS or Windows preference list ("zh-Hans-CN",
+    /// "zh-Hant-TW", "zh-TW", "ja-JP", "ko-KR", "en-GB"…). Chinese is Traditional when the list says so,
+    /// or names Taiwan, Hong Kong or Macau without a script; otherwise Simplified.
     /// </summary>
     public static string Pick(IEnumerable<string> preferred)
     {
         foreach (var raw in preferred)
         {
             var p = raw.Replace('_', '-').ToLowerInvariant();
+            if (p.StartsWith("zh-hant", StringComparison.Ordinal)) return TraditionalChinese;
+            if (p.StartsWith("zh-hans", StringComparison.Ordinal)) return Chinese;
+            if (p is "zh-tw" or "zh-hk" or "zh-mo" || p.StartsWith("zh-tw-", StringComparison.Ordinal)
+                || p.StartsWith("zh-hk-", StringComparison.Ordinal) || p.StartsWith("zh-mo-", StringComparison.Ordinal))
+                return TraditionalChinese;
             if (p == "zh" || p.StartsWith("zh-", StringComparison.Ordinal)) return Chinese;
             if (p == "ja" || p.StartsWith("ja-", StringComparison.Ordinal)) return Japanese;
+            if (p == "ko" || p.StartsWith("ko-", StringComparison.Ordinal)) return Korean;
             if (p == "en" || p.StartsWith("en-", StringComparison.Ordinal)) return English;
         }
         return English;
@@ -104,7 +113,9 @@ public static class L
     /// and XAML name only the plain key.
     /// </summary>
     public static string Get(string key) =>
-        Lookup(Current, key) ?? Lookup(English, key) ?? Lookup(Chinese, key) ?? key;
+        Lookup(Current, key)
+        ?? (Current == TraditionalChinese ? Lookup(Chinese, key) : null)
+        ?? Lookup(English, key) ?? Lookup(Chinese, key) ?? key;
 
     /// <summary><see cref="Get"/> with <c>{0}</c>-style placeholders filled in.</summary>
     public static string Format(string key, params object?[] args)

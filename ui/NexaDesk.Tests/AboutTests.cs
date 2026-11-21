@@ -20,7 +20,9 @@ public class AboutTests
 
     [Theory]
     [InlineData(L.Chinese, "https://nexadesk-bq9.pages.dev/")]
+    [InlineData(L.TraditionalChinese, "https://nexadesk-bq9.pages.dev/zh-hant/")]
     [InlineData(L.Japanese, "https://nexadesk-bq9.pages.dev/ja/")]
+    [InlineData(L.Korean, "https://nexadesk-bq9.pages.dev/ko/")]
     [InlineData(L.English, "https://nexadesk-bq9.pages.dev/en/")]
     public void Website_follows_the_language(string language, string url)
     {
@@ -34,7 +36,7 @@ public class AboutTests
     public void Every_link_is_one_the_browser_opener_accepts()
     {
         foreach (var url in new[] { AboutViewModel.RepositoryUrl, AboutViewModel.IssuesUrl,
-                     AboutViewModel.WebsiteUrl(L.Chinese), AboutViewModel.WebsiteUrl(L.Japanese), AboutViewModel.WebsiteUrl(L.English) })
+                     AboutViewModel.WebsiteUrl(L.Chinese), AboutViewModel.WebsiteUrl(L.TraditionalChinese), AboutViewModel.WebsiteUrl(L.Japanese), AboutViewModel.WebsiteUrl(L.Korean), AboutViewModel.WebsiteUrl(L.English) })
             Assert.NotNull(NexaDesk.Views.WindowService.OpenUrlCommand(url, windows: false));
     }
 }

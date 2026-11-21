@@ -1,0 +1,4 @@
+/* macOS shows these in its permission prompts. Copied into the bundle by scripts/package-macos.sh. */
+"NSScreenCaptureUsageDescription" = "NexaDesk는 ‘원격 제어 허용’을 켜고 연결을 수락한 후 상대방이 이 Mac을 볼 수 있도록 화면을 기록합니다.";
+"NSAccessibilityUsageDescription" = "NexaDesk는 다른 컴퓨터를 제어할 때 모든 키(Cmd+Tab 포함)를 캡처하고, 허용한 경우 상대방의 키보드와 마우스 입력을 이 Mac에서 실행하기 위해 ‘손쉬운 사용’ 권한이 필요합니다.";
+"NSLocalNetworkUsageDescription" = "NexaDesk는 LAN에 있는 다른 컴퓨터를 찾아 연결하고 그 연결을 수락하기 위해 로컬 네트워크를 사용합니다.";

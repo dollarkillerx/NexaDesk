@@ -1,0 +1,12 @@
+{
+  "Permissions.WindowTitle": "NexaDesk — 權限",
+  "Permissions.Request": "請求授權",
+  "Permissions.OpenScreenRecording": "開啟「螢幕錄製」設定",
+  "Permissions.OpenAccessibility": "開啟「輔助使用」設定",
+  "Permissions.Steps": "步驟",
+  "Permissions.Step1": "1. 點「請求授權」：NexaDesk 會出現在「系統設定 → 隱私權與安全性」的對應列表裡，並彈出系統提示，從提示裡開啟系統設定。",
+  "Permissions.Step2": "2. 在列表裡開啟 NexaDesk 的開關。沒看到的話，關掉系統設定再開啟（列表不會自動重新整理），或點「+」新增 NexaDesk.app。",
+  "Permissions.Step3": "3. 回到這裡點「重新檢查」。",
+  "Permissions.Recheck": "重新檢查",
+  "Permissions.Done": "完成"
+}
