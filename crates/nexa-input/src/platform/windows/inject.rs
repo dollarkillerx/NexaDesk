@@ -1,26 +1,42 @@
 //! Injection with SendInput: the same contract as the macOS injector (the agent wraps
 //! both in `InputSink`). Keys go by scan code, so the Windows keyboard layout gives
 //! them meaning as it would a local keyboard's; text goes as Unicode.
+//!
+//! Windows can turn injected input away without a word: SendInput refuses it while a
+//! window of an administrator program is in front, or the secure desktop (UAC, the lock
+//! screen) is up; and a click on such a window is dropped on the way even when SendInput
+//! took it. Both are written to the agent log, so "the pointer moves but clicks do
+//! nothing" can be told from a bug.
 
 use std::{
     collections::BTreeSet,
     time::{Duration, Instant},
 };
 
-use windows::Win32::UI::{
-    Input::KeyboardAndMouse::{
-        INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT,
-        KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, KEYEVENTF_UNICODE,
-        MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN,
-        MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
-        MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL,
-        MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT, SendInput, VIRTUAL_KEY,
+use windows::Win32::{
+    Foundation::{CloseHandle, GetLastError, HANDLE, HWND, POINT},
+    Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation},
+    System::Threading::{
+        GetCurrentProcess, GetCurrentProcessId, OpenProcess, OpenProcessToken, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
     },
-    WindowsAndMessaging::{
-        GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-        SM_YVIRTUALSCREEN,
+    UI::{
+        Input::KeyboardAndMouse::{
+            INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT,
+            KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, KEYEVENTF_UNICODE,
+            MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN,
+            MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
+            MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL,
+            MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT, SendInput, VIRTUAL_KEY,
+        },
+        WindowsAndMessaging::{
+            GetCursorPos, GetForegroundWindow, GetSystemMetrics, GetWindowThreadProcessId,
+            SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+            WindowFromPoint,
+        },
     },
 };
+use windows::core::PWSTR;
 
 use super::scancode::scancode_of;
 use crate::Hid;
@@ -30,6 +46,8 @@ const SYNC_TIMEOUT: Duration = Duration::from_secs(3);
 /// XBUTTON1 and XBUTTON2 in `mouseData`.
 const XBUTTON1: i32 = 1;
 const XBUTTON2: i32 = 2;
+/// A problem that comes back with every event is logged once per this long.
+const LOG_EVERY: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
 pub struct Injector {
@@ -37,14 +55,117 @@ pub struct Injector {
     held_buttons: BTreeSet<u32>,
     last_sync: Option<Instant>,
     pub dropped_keys: u64,
+    /// Whether the agent runs as administrator, which no window can turn away.
+    elevated: Option<bool>,
+    refused: Throttle,
+    unreachable_click: Throttle,
 }
 
-fn send(inputs: &[INPUT]) {
-    if inputs.is_empty() {
-        return;
+/// One log line now and then for a problem that repeats.
+#[derive(Default)]
+struct Throttle {
+    last: Option<Instant>,
+    quiet: u64,
+}
+
+impl Throttle {
+    /// `Some` when a line may be written now: how many went unwritten since the last.
+    fn ready(&mut self, now: Instant) -> Option<u64> {
+        if self
+            .last
+            .is_some_and(|t| now.saturating_duration_since(t) < LOG_EVERY)
+        {
+            self.quiet += 1;
+            return None;
+        }
+        self.last = Some(now);
+        Some(std::mem::take(&mut self.quiet))
     }
-    // SAFETY: well-formed INPUT records of the documented size.
-    unsafe { SendInput(inputs, size_of::<INPUT>() as i32) };
+}
+
+fn more_since(quiet: u64) -> String {
+    if quiet == 0 {
+        String::new()
+    } else {
+        format!(" ({quiet} more since the last line)")
+    }
+}
+
+/// The program a window belongs to, and whether it runs as administrator (`None`:
+/// its rights cannot be read, which is usual for one that does).
+struct Owner {
+    pid: u32,
+    name: String,
+    elevated: Option<bool>,
+}
+
+impl std::fmt::Display for Owner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let rights = match self.elevated {
+            Some(true) => "runs as administrator",
+            Some(false) => "does not run as administrator",
+            None => "rights not readable, usually one that runs as administrator",
+        };
+        write!(f, "{} (process {}, {rights})", self.name, self.pid)
+    }
+}
+
+fn token_elevated(process: HANDLE) -> Option<bool> {
+    let mut token = HANDLE::default();
+    // SAFETY: a process handle we hold; the token handle is closed below.
+    unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) }.ok()?;
+    let mut elevation = TOKEN_ELEVATION::default();
+    let mut len = 0;
+    // SAFETY: a buffer of the size stated, for the class that fills it.
+    let read = unsafe {
+        GetTokenInformation(
+            token,
+            TokenElevation,
+            Some((&raw mut elevation).cast()),
+            size_of::<TOKEN_ELEVATION>() as u32,
+            &mut len,
+        )
+    };
+    // SAFETY: the token opened above.
+    let _ = unsafe { CloseHandle(token) };
+    read.ok()?;
+    Some(elevation.TokenIsElevated != 0)
+}
+
+fn owner_of(window: HWND) -> Option<Owner> {
+    if window.is_invalid() {
+        return None;
+    }
+    let mut pid = 0;
+    // SAFETY: plain queries on a window handle and a process handle closed below.
+    unsafe {
+        GetWindowThreadProcessId(window, Some(&mut pid));
+        if pid == 0 {
+            return None;
+        }
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut path = [0u16; 260];
+        let mut len = path.len() as u32;
+        let name = QueryFullProcessImageNameW(
+            process,
+            PROCESS_NAME_WIN32,
+            PWSTR(path.as_mut_ptr()),
+            &mut len,
+        )
+        .ok()
+        .map(|()| {
+            let path = String::from_utf16_lossy(&path[..len as usize]);
+            path.rsplit('\\').next().unwrap_or_default().to_owned()
+        })
+        .unwrap_or_else(|| "?".to_owned());
+        let elevated = token_elevated(process);
+        let _ = CloseHandle(process);
+        Some(Owner {
+            pid,
+            name,
+            elevated,
+        })
+    }
 }
 
 fn key_input(scan: u16, flags: KEYBD_EVENT_FLAGS) -> INPUT {
@@ -123,7 +244,74 @@ fn button_flags(button: u32, down: bool) -> Option<(MOUSE_EVENT_FLAGS, i32)> {
 
 impl Injector {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            // SAFETY: the pseudo handle of this process, which needs no closing.
+            elevated: token_elevated(unsafe { GetCurrentProcess() }),
+            ..Self::default()
+        }
+    }
+
+    /// Sends, and logs what Windows refused and which program was in front then.
+    fn send(&mut self, what: &str, inputs: &[INPUT]) {
+        if inputs.is_empty() {
+            return;
+        }
+        // SAFETY: well-formed INPUT records of the documented size.
+        let sent = unsafe { SendInput(inputs, size_of::<INPUT>() as i32) } as usize;
+        if sent >= inputs.len() {
+            return;
+        }
+        // SAFETY: read straight after the call that set it.
+        let error = unsafe { GetLastError() }.0;
+        let Some(quiet) = self.refused.ready(Instant::now()) else {
+            return;
+        };
+        // SAFETY: a plain query.
+        let front = owner_of(unsafe { GetForegroundWindow() })
+            .map_or_else(|| "no window".to_owned(), |o| o.to_string());
+        eprintln!(
+            "nexa-agent: input: Windows refused {} of {} events ({what}), error {error}; in front: {front}{}",
+            inputs.len() - sent,
+            inputs.len(),
+            more_since(quiet),
+        );
+    }
+
+    /// A press on a window of an administrator program is dropped by Windows unless
+    /// the agent runs as administrator too, though SendInput reports it sent.
+    fn check_click_target(&mut self, at: Option<(f64, f64)>, now: Instant) {
+        if self.elevated == Some(true) {
+            return;
+        }
+        let point = match at {
+            Some((x, y)) => POINT {
+                x: x.round() as i32,
+                y: y.round() as i32,
+            },
+            None => {
+                let mut p = POINT::default();
+                // SAFETY: a plain query into a local.
+                if unsafe { GetCursorPos(&mut p) }.is_err() {
+                    return;
+                }
+                p
+            }
+        };
+        // SAFETY: plain queries.
+        let Some(owner) = owner_of(unsafe { WindowFromPoint(point) }) else {
+            return;
+        };
+        if owner.elevated == Some(false) || owner.pid == unsafe { GetCurrentProcessId() } {
+            return;
+        }
+        if let Some(quiet) = self.unreachable_click.ready(now) {
+            eprintln!(
+                "nexa-agent: input: a click at ({}, {}) is on a window of {owner}; Windows does not pass clicks from NexaDesk to a program that runs as administrator unless NexaDesk does too{}",
+                point.x,
+                point.y,
+                more_since(quiet),
+            );
+        }
     }
 
     pub fn key(&mut self, hid: Hid, down: bool, repeat: bool, now: Instant) {
@@ -141,7 +329,10 @@ impl Injector {
         if !down {
             flags |= KEYEVENTF_KEYUP;
         }
-        send(&[key_input(code & 0xff, flags)]);
+        self.send(
+            if down { "key down" } else { "key up" },
+            &[key_input(code & 0xff, flags)],
+        );
         if down {
             self.held_keys.insert(hid.0);
         } else {
@@ -151,11 +342,11 @@ impl Injector {
 
     /// `x`, `y`: desktop pixels.
     pub fn move_absolute(&mut self, x: f64, y: f64) {
-        send(&[absolute_move(x, y)]);
+        self.send("pointer move", &[absolute_move(x, y)]);
     }
 
     pub fn move_relative(&mut self, dx: i32, dy: i32) {
-        send(&[mouse_input(dx, dy, 0, MOUSEEVENTF_MOVE)]);
+        self.send("pointer move", &[mouse_input(dx, dy, 0, MOUSEEVENTF_MOVE)]);
     }
 
     pub fn button(&mut self, button: u32, down: bool, at: Option<(f64, f64)>, now: Instant) {
@@ -170,7 +361,10 @@ impl Injector {
             inputs.push(absolute_move(x, y));
         }
         inputs.push(mouse_input(0, 0, data, flags));
-        send(&inputs);
+        self.send(if down { "button down" } else { "button up" }, &inputs);
+        if down {
+            self.check_click_target(at, now);
+        }
         if down {
             self.held_buttons.insert(button);
         } else {
@@ -188,7 +382,7 @@ impl Injector {
             // Windows' horizontal wheel is right-positive.
             inputs.push(mouse_input(0, 0, -dx, MOUSEEVENTF_HWHEEL));
         }
-        send(&inputs);
+        self.send("wheel", &inputs);
     }
 
     pub fn text(&mut self, text: &str) {
@@ -197,7 +391,7 @@ impl Injector {
             inputs.push(key_input(unit, KEYEVENTF_UNICODE));
             inputs.push(key_input(unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP));
         }
-        send(&inputs);
+        self.send("text", &inputs);
     }
 
     /// A new press after a quiet period starts a fresh 3 s window, as on macOS. Without
@@ -278,6 +472,17 @@ mod tests {
         injector.restart_timeout_if_idle(t1);
         injector.held_buttons.insert(0);
         assert!(!injector.timed_out(t1 + Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn a_repeating_problem_is_logged_once_per_interval_with_a_count() {
+        let t0 = Instant::now();
+        let mut throttle = Throttle::default();
+        assert_eq!(throttle.ready(t0), Some(0));
+        assert_eq!(throttle.ready(t0 + Duration::from_secs(1)), None);
+        assert_eq!(throttle.ready(t0 + Duration::from_secs(9)), None);
+        assert_eq!(throttle.ready(t0 + LOG_EVERY), Some(2));
+        assert_eq!(throttle.ready(t0 + LOG_EVERY * 3), Some(0));
     }
 
     #[test]
