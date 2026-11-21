@@ -2,11 +2,13 @@
 //! both in `InputSink`). Keys go by scan code, so the Windows keyboard layout gives
 //! them meaning as it would a local keyboard's; text goes as Unicode.
 //!
-//! Windows can turn injected input away without a word: SendInput refuses it while a
-//! window of an administrator program is in front, or the secure desktop (UAC, the lock
-//! screen) is up; and a click on such a window is dropped on the way even when SendInput
-//! took it. Both are written to the agent log, so "the pointer moves but clicks do
-//! nothing" can be told from a bug.
+//! Windows drops injected input without a word when it would reach a program that runs
+//! as administrator and the agent does not: all of it (pointer, clicks, keys) while such
+//! a program is in front, and a click on one of its windows. SendInput still reports
+//! every event sent (seen on Windows 11 with Task Manager in front, the pointer staying
+//! where it was), so the agent looks for itself on each press and writes what it finds
+//! to the agent log; when SendInput does report events it did not send, that is logged
+//! too. So "the pointer moves but clicks do nothing" can be told from a bug.
 
 use std::{
     collections::BTreeSet,
@@ -58,7 +60,10 @@ pub struct Injector {
     /// Whether the agent runs as administrator, which no window can turn away.
     elevated: Option<bool>,
     refused: Throttle,
+    admin_in_front: Throttle,
     unreachable_click: Throttle,
+    /// The last window seen in front, and its program if that is one input cannot reach.
+    front: Option<(usize, Option<String>)>,
 }
 
 /// One log line now and then for a problem that repeats.
@@ -277,6 +282,46 @@ impl Injector {
         );
     }
 
+    /// Whether input from this agent cannot reach `owner`'s windows: it runs as
+    /// administrator, or its rights cannot be read, and the agent does not.
+    fn out_of_reach(&self, owner: &Owner) -> bool {
+        // SAFETY: a plain query.
+        self.elevated != Some(true)
+            && owner.elevated != Some(false)
+            && owner.pid != unsafe { GetCurrentProcessId() }
+    }
+
+    /// On a press: while a program that runs as administrator is in front, Windows
+    /// drops everything this agent sends. True when that is so.
+    fn check_front(&mut self, now: Instant) -> bool {
+        if self.elevated == Some(true) {
+            return false;
+        }
+        // SAFETY: a plain query.
+        let window = unsafe { GetForegroundWindow() };
+        let key = window.0 as usize;
+        let blocking = match &self.front {
+            Some((k, blocking)) if *k == key => blocking.clone(),
+            _ => {
+                let blocking = owner_of(window)
+                    .filter(|o| self.out_of_reach(o))
+                    .map(|o| o.to_string());
+                self.front = Some((key, blocking.clone()));
+                blocking
+            }
+        };
+        let Some(owner) = blocking else {
+            return false;
+        };
+        if let Some(quiet) = self.admin_in_front.ready(now) {
+            eprintln!(
+                "nexa-agent: input: {owner} is in front; Windows drops all input from NexaDesk (pointer, clicks, keys) while a program that runs as administrator is in front, unless NexaDesk runs as administrator too{}",
+                more_since(quiet),
+            );
+        }
+        true
+    }
+
     /// A press on a window of an administrator program is dropped by Windows unless
     /// the agent runs as administrator too, though SendInput reports it sent.
     fn check_click_target(&mut self, at: Option<(f64, f64)>, now: Instant) {
@@ -301,7 +346,7 @@ impl Injector {
         let Some(owner) = owner_of(unsafe { WindowFromPoint(point) }) else {
             return;
         };
-        if owner.elevated == Some(false) || owner.pid == unsafe { GetCurrentProcessId() } {
+        if !self.out_of_reach(&owner) {
             return;
         }
         if let Some(quiet) = self.unreachable_click.ready(now) {
@@ -333,6 +378,9 @@ impl Injector {
             if down { "key down" } else { "key up" },
             &[key_input(code & 0xff, flags)],
         );
+        if down && !repeat {
+            self.check_front(now);
+        }
         if down {
             self.held_keys.insert(hid.0);
         } else {
@@ -362,7 +410,8 @@ impl Injector {
         }
         inputs.push(mouse_input(0, 0, data, flags));
         self.send(if down { "button down" } else { "button up" }, &inputs);
-        if down {
+        // One line per press: an administrator program in front explains it already.
+        if down && !self.check_front(now) {
             self.check_click_target(at, now);
         }
         if down {

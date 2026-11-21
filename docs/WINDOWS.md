@@ -41,7 +41,7 @@
 | 编码 | Media Foundation 硬件编码器（NVENC / Quick Sync / AMF 都通过它），零拷贝 D3D11 纹理（已做：`windows/hwenc.rs`、`windows/gpu.rs`） | 不用分别对接三家显卡 SDK；没有硬件编码器时退回 MF 软件 H.264 |
 | 解码 | Media Foundation（DXVA），输出 D3D11 纹理 | 同上 |
 | 显示 | D3D11 交换链，挂在界面给的 HWND 子窗口上 | 对应 Metal 的 CAMetalLayer 做法，渲染线程不经过界面 |
-| 输入注入 | SendInput：按键用扫描码（HID → Set 1），文字用 KEYEVENTF_UNICODE，鼠标用虚拟桌面绝对坐标；Windows 拒收的输入（管理员程序在前台、UAC 或锁屏的安全桌面），以及点在管理员程序窗口上、会被系统悄悄丢掉的点击，都写进 agent.log（同类问题 10 秒一行） | 和 macOS 一样按物理键传 |
+| 输入注入 | SendInput：按键用扫描码（HID → Set 1），文字用 KEYEVENTF_UNICODE，鼠标用虚拟桌面绝对坐标。被控端没以管理员身份运行时，Windows 会悄悄丢掉送往管理员程序的输入：管理员程序在前台时丢掉全部输入（指针、点击、按键），点在管理员程序窗口上的点击也会丢；SendInput 照样报“已发出”（Windows 11 上任务管理器在前台时实测，指针不动）。所以每次按下按键或鼠标时自己查一下前台窗口和点击处的窗口，查到就写进 agent.log；SendInput 报告没发出的输入也记。同类问题 10 秒一行 | 和 macOS 一样按物理键传 |
 | 按键采集 | 低级键盘钩子 WH_KEYBOARD_LL | 才能截到 Win 键、Alt+Tab 这类系统组合键 |
 | 游戏模式 | Raw Input + ClipCursor | 相对移动 |
 | 剪贴板 | Win32 剪贴板：文字、HTML（CF_HTML）、PNG / DIB | 和 macOS 端互通的格式 |
