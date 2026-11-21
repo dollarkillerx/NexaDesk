@@ -260,7 +260,6 @@ cargo run -p nexa-web --example demo
 - **Windows**：実機で見つかった多くの問題（操作される側・操作する側とも）、操作する側での相手のポインター形状の表示、HEVC、音声、サービスとしての実行（ログイン画面と UAC）。[docs/WINDOWS.md](docs/WINDOWS.md) を参照してください。
 - **ブラウザ**：iPhone / Safari、Firefox での実測（Android の Chrome は使用中）、UDP が遮断されたネットワーク向けの TURN over TCP/TLS、音声とファイル転送。
 - **コマンドライン版ホスト**：Windows 版の実機での動作、Windows サービスとしての実行。
-- **AI エージェント**：Windows 実機での画面要素の読み取り（UI Automation）、コマンドライン、ファイル送受信の確認。
 - **製品としての判断**：無人のマシンを最初にどうペアリングするか、ID だけを知っている人に既定で何を許すか、ファイルの権限を方向ごとに分けるか。
 
 ## ライセンス

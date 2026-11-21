@@ -258,7 +258,6 @@ cargo run -p nexa-web --example demo
 - **Windows**：实机测试中发现的不少问题（被控端和控制端都有）；控制端显示对方的指针形状、HEVC、声音、作为服务运行（登录界面和 UAC），见 [docs/WINDOWS.md](docs/WINDOWS.md)。
 - **浏览器端**：iPhone / Safari、Firefox 上的实测（Android 上的 Chrome 已在用）；TURN over TCP/TLS（UDP 被封的网络）；声音和文件传输。
 - **命令行被控端**：Windows 版的实机运行；作为 Windows 服务运行。
-- **AI 代理**：在 Windows 真机上实测按界面元素读取屏幕（UI Automation）、命令行和收发文件。
 - **产品决定**：无人值守机器的首次配对方式；知道 ID 的人默认能做什么；文件权限是否按方向拆开。
 
 ## 许可

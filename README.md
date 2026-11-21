@@ -260,7 +260,6 @@ The design documents are in Chinese.
 - **Windows**: the many problems found on real hardware, in both the host and the viewer; the host's pointer shape on the viewer, HEVC, sound, running as a service (login screen and UAC), see [docs/WINDOWS.md](docs/WINDOWS.md).
 - **Browser**: testing on iPhone / Safari and Firefox (Chrome on Android is in use); TURN over TCP/TLS for networks that block UDP; sound and file transfer.
 - **Command-line host**: running the Windows build on real hardware; running as a Windows service.
-- **AI agents**: reading a Windows screen as elements (UI Automation), and the command line and files, on real hardware.
 - **Product decisions**: how an unattended machine is first paired; what someone who only knows the ID may do; whether file permission is split by direction.
 
 ## License
