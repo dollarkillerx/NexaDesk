@@ -48,6 +48,28 @@ const GITHUB_MARK =
 
 const MARK = { yes: "✓", beta: "β", soon: "…", "—": "—" };
 
+// What search engines read about the app: free, open-source software for macOS and Windows.
+// "<" is escaped so no text can close the script element.
+const jsonLd = (lang, t) =>
+  JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    name: "NexaDesk",
+    description: t.description,
+    url: `${SITE}${lang.path}`,
+    inLanguage: lang.code,
+    applicationCategory: "UtilitiesApplication",
+    applicationSubCategory: "Remote desktop",
+    operatingSystem: "macOS 14+, Windows 10, Windows 11",
+    license: "https://www.gnu.org/licenses/agpl-3.0.html",
+    isAccessibleForFree: true,
+    offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+    downloadUrl: `${REPO}/releases/latest`,
+    codeRepository: REPO,
+    image: `${SITE}/img/main.png`,
+    keywords: t.keywords,
+  }).replace(/</g, "\\u003c");
+
 function page(lang) {
   const t = TEXT[lang.code];
   const up = lang.path === "/" ? "" : "../";
@@ -64,6 +86,7 @@ function page(lang) {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${esc(t.title)}</title>
   <meta name="description" content="${esc(t.description)}">
+  <meta name="keywords" content="${esc(t.keywords)}">
   <meta name="color-scheme" content="light dark">
   <meta property="og:title" content="${esc(t.title)}">
   <meta property="og:description" content="${esc(t.description)}">
@@ -75,6 +98,7 @@ function page(lang) {
   <link rel="icon" href="${up}icon.png">
   <link rel="stylesheet" href="${up}style.css">
   <script src="${up}site.js" defer></script>
+  <script type="application/ld+json">${jsonLd(lang, t)}</script>
 </head>
 <body>
 <header class="top">
