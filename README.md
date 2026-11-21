@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <strong>English</strong> | <a href="./README.zh-CN.md">简体中文</a> | <a href="./README.ja-JP.md">日本語</a>
+  <strong>English</strong> | <a href="./README.zh-CN.md">简体中文</a> | <a href="./README.zh-TW.md">繁體中文</a> | <a href="./README.ja-JP.md">日本語</a> | <a href="./README.ko-KR.md">한국어</a>
 </p>
 
 ## Features
@@ -39,7 +39,7 @@
 - **Sign-in** - A one-time code (the host allows it), a fixed password (the owner's own way in, no prompt), or through a server just the device ID, which the host sees as an unverified request. The device ID can be reset at any time.
 - **Stays reachable** - Remote control is on when NexaDesk starts, also after "Restart to update", so updating a host from afar does not lock you out; once you stop it yourself, it stays off until you start it again. It can also start at login.
 - **More** - Pointer shapes, sound (Opus), file transfer, several displays, game mode (locked pointer, stronger error correction), automatic reconnect within 30 seconds, HUD and connection diagnostics.
-- **Multi-language** - English, Simplified Chinese, Japanese. Follows the system language; can be switched in Settings (applies after a restart).
+- **Multi-language** - English, Simplified Chinese, Traditional Chinese, Japanese, Korean. Follows the system language; can be switched in Settings (applies after a restart).
 - **Security**
   - Mutual TLS; a device's identity is its public key.
   - First contact pairs with SPAKE2 using a one-time code or the fixed password, bound to the TLS session; the peer's key is pinned from then on. The fixed password is kept only as an Argon2id hash.
