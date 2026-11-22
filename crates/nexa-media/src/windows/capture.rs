@@ -23,7 +23,7 @@ use std::{
 
 use windows::{
     Win32::{
-        Foundation::HMODULE,
+        Foundation::{E_ACCESSDENIED, HMODULE},
         Graphics::{
             Direct3D::D3D_DRIVER_TYPE_UNKNOWN,
             Direct3D11::{
@@ -155,9 +155,18 @@ impl Duplication {
             if let Ok(m) = device.cast::<ID3D11Multithread>() {
                 let _ = m.SetMultithreadProtected(true);
             }
-            let dup = output
-                .DuplicateOutput(&device)
-                .map_err(os("DuplicateOutput"))?;
+            // E_ACCESSDENIED: a secure desktop (UAC, the lock screen) is up, which only
+            // SYSTEM may duplicate. It goes away when the desktop comes back.
+            let dup = output.DuplicateOutput(&device).map_err(|e| {
+                if e.code() == E_ACCESSDENIED {
+                    MediaError::Unavailable(format!(
+                        "DuplicateOutput: OS status {} (a secure desktop: UAC or the lock screen)",
+                        e.code().0
+                    ))
+                } else {
+                    os("DuplicateOutput")(e)
+                }
+            })?;
             (device, context, dup)
         };
         // SAFETY: a valid duplication.

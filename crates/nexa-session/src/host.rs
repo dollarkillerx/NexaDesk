@@ -128,6 +128,11 @@ pub const IDLE_REFRESH_AFTER: [Duration; 4] = [
 
 const MAX_QUEUED_FRAMES: usize = 2;
 
+/// How often a rebuild is tried again while the display cannot be captured for now
+/// ([`MediaError::Unavailable`]: a UAC prompt or the lock screen on Windows). The
+/// session stays up on its last picture meanwhile.
+pub const UNAVAILABLE_RETRY: Duration = Duration::from_millis(500);
+
 /// Sends media datagrams and gives each its `tx_seq` at the moment it is sent, so
 /// sequence order is send order even with video and audio on different threads. The
 /// viewer's feedback would otherwise report a shard still being paced as lost when an
@@ -557,6 +562,8 @@ fn run_encoder(
     } = pipeline;
     let mut interval = frame_interval(fps.load(Relaxed));
     let mut pending_rebuild: Option<RebuildReason> = None;
+    // Set while the display cannot be captured for now: the next try.
+    let mut retry_at: Option<Instant> = None;
     let mut recovery = SenderRecovery::new();
     let mut next_id = 0u32;
     let mut last: Option<(NativeImage, Instant)> = None;
@@ -602,6 +609,14 @@ fn run_encoder(
             }
         }
 
+        if let Some(at) = retry_at {
+            let now = Instant::now();
+            if now < at {
+                // Short naps, so commands and a stop are still seen.
+                thread::sleep((at - now).min(Duration::from_millis(50)));
+                continue;
+            }
+        }
         if let Some(reason) = pending_rebuild.take() {
             let Some(rebuilder) = rebuilder.as_mut() else {
                 return;
@@ -609,9 +624,17 @@ fn run_encoder(
             // The old stages go first: the new capture may need the display to itself.
             drop(std::mem::replace(&mut capturer, Box::new(Released)));
             drop(std::mem::replace(&mut encoder, Box::new(Released)));
-            let Ok(new) = rebuilder.rebuild(reason) else {
-                return;
+            let new = match rebuilder.rebuild(reason) {
+                Ok(new) => new,
+                // The display comes back by itself; a newer request replaces this one.
+                Err(MediaError::Unavailable(_)) => {
+                    pending_rebuild = Some(reason);
+                    retry_at = Some(Instant::now() + UNAVAILABLE_RETRY);
+                    continue;
+                }
+                Err(_) => return,
             };
+            retry_at = None;
             capturer = new.capturer;
             encoder = new.encoder;
             interval = frame_interval(new.fps);
@@ -868,4 +891,184 @@ fn run_back(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use nexa_media::{CpuFrame, EncodedMeta, EncoderCaps, FrameId, Recovery};
+
+    use super::*;
+
+    /// Delivers small frames; the first look reports the display lost if asked.
+    struct Screen {
+        lost: bool,
+    }
+
+    impl Capturer for Screen {
+        fn next(&mut self, _: Duration) -> nexa_media::Result<CaptureEvent> {
+            if std::mem::take(&mut self.lost) {
+                return Ok(CaptureEvent::AccessLost);
+            }
+            thread::sleep(Duration::from_millis(5));
+            Ok(CaptureEvent::Frame(CapturedFrame {
+                image: NativeImage::Cpu(Arc::new(CpuFrame {
+                    width: 2,
+                    height: 2,
+                    y: vec![0; 4],
+                    uv: vec![0; 2],
+                })),
+                captured_at: Instant::now(),
+                dirty: Vec::new(),
+            }))
+        }
+    }
+
+    struct Plain;
+
+    impl Encoder for Plain {
+        fn caps(&self) -> EncoderCaps {
+            EncoderCaps::default()
+        }
+        fn encode(
+            &mut self,
+            _: &CapturedFrame,
+            frame_id: FrameId,
+            opts: EncodeOpts,
+            out: &mut Vec<u8>,
+        ) -> nexa_media::Result<EncodedMeta> {
+            out.push(0);
+            Ok(EncodedMeta {
+                frame_id,
+                key: opts.force_key,
+                recovery_point: false,
+            })
+        }
+        fn set_bitrate(&mut self, _: u32) -> nexa_media::Result<()> {
+            Ok(())
+        }
+        fn invalidate_from(&mut self, _: FrameId) -> nexa_media::Result<Recovery> {
+            Ok(Recovery::Idr)
+        }
+        fn on_frame_acked(&mut self, _: FrameId) {}
+        fn force_idr(&mut self) {}
+    }
+
+    struct Collect(Arc<Mutex<Vec<EncodedFrame>>>);
+
+    impl FrameSink for Collect {
+        fn has_room(&self) -> bool {
+            true
+        }
+        fn push(&mut self, frame: EncodedFrame) {
+            self.0.lock().unwrap().push(frame);
+        }
+    }
+
+    /// Fails the first `failing` tries with `error`, then gives a working screen.
+    struct Rebuilds {
+        failing: u32,
+        error: MediaError,
+        tries: Arc<AtomicU32>,
+    }
+
+    impl StreamRebuilder for Rebuilds {
+        fn rebuild(&mut self, _: RebuildReason) -> nexa_media::Result<Rebuilt> {
+            if self.tries.fetch_add(1, Relaxed) < self.failing {
+                return Err(self.error.clone());
+            }
+            Ok(Rebuilt {
+                capturer: Box::new(Screen { lost: false }),
+                encoder: Box::new(Plain),
+                mode: Mode::Game,
+                fps: 60,
+            })
+        }
+    }
+
+    struct Running {
+        frames: Arc<Mutex<Vec<EncodedFrame>>>,
+        tries: Arc<AtomicU32>,
+        stop: Arc<AtomicBool>,
+        thread: JoinHandle<()>,
+    }
+
+    /// The capture thread on a display that is lost at once, with `rebuilds` failing.
+    fn lose_display(failing: u32, error: MediaError) -> Running {
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let tries = Arc::new(AtomicU32::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let pipeline = Pipeline {
+            capturer: Box::new(Screen { lost: true }),
+            encoder: Box::new(Plain),
+            rebuilder: Some(Box::new(Rebuilds {
+                failing,
+                error,
+                tries: tries.clone(),
+            })),
+            rate: Arc::new(Mutex::new(RateController::new(
+                RateConfig {
+                    initial_bps: 10_000_000,
+                    min_bps: 300_000,
+                    max_bps: 100_000_000,
+                },
+                Mode::Game,
+                Instant::now(),
+            ))),
+            fps: Arc::new(AtomicU32::new(60)),
+        };
+        // Kept open so the thread never sees its commands end.
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        std::mem::forget(cmd_tx);
+        let (sink, s) = (Box::new(Collect(frames.clone())), stop.clone());
+        let thread = thread::spawn(move || {
+            run_encoder(
+                pipeline,
+                sink,
+                cmd_rx,
+                Instant::now(),
+                s,
+                Arc::new(HostStats::default()),
+            )
+        });
+        Running {
+            frames,
+            tries,
+            stop,
+            thread,
+        }
+    }
+
+    fn wait_for(what: impl Fn() -> bool) -> bool {
+        let until = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < until {
+            if what() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
+    #[test]
+    fn a_display_unavailable_for_now_is_tried_again_until_it_is_back() {
+        // A UAC prompt up for two tries: the stream waits, then carries on.
+        let started = Instant::now();
+        let run = lose_display(2, MediaError::Unavailable("a secure desktop".into()));
+        assert!(wait_for(|| !run.frames.lock().unwrap().is_empty()));
+        assert_eq!(run.tries.load(Relaxed), 3);
+        assert!(started.elapsed() >= UNAVAILABLE_RETRY * 2);
+        assert!(!run.thread.is_finished());
+        // The first frame after the wait starts a new picture.
+        assert_ne!(run.frames.lock().unwrap()[0].flags & flags::IDR, 0);
+        run.stop.store(true, Relaxed);
+        run.thread.join().unwrap();
+    }
+
+    #[test]
+    fn any_other_rebuild_failure_still_ends_the_stream() {
+        let run = lose_display(1, MediaError::Other("the encoder went away".into()));
+        assert!(wait_for(|| run.thread.is_finished()));
+        assert_eq!(run.tries.load(Relaxed), 1);
+        assert!(run.frames.lock().unwrap().is_empty());
+    }
 }

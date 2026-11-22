@@ -702,6 +702,7 @@ match encoder.invalidate_from(first_lost):
 - `AcquireNextFrame` 后立即 `CopyResource` 到内部纹理池（4 张），然后 `ReleaseFrame`。
 - `LastPresentTime == 0` 表示只有鼠标更新，不编码。
 - `DXGI_ERROR_ACCESS_LOST`：重建；连续失败回退 GDI（只保活，不追求性能）。
+- 重建时 `DuplicateOutput` 返回 `E_ACCESSDENIED`：安全桌面（UAC、锁屏）在前台，不以 SYSTEM 运行时截不到。报 `MediaError::Unavailable`，采集线程每 0.5 s 重试，会话保持在最后一帧，不结束。
 - **多 GPU**：采集和编码必须在驱动该显示器的适配器上；混合显卡笔记本上独显若不驱动屏幕，使用核显 QSV 或跨适配器拷贝。
 - BGRA→NV12 用 `ID3D11VideoProcessor`（BT.709，走视频引擎，受游戏 3D 负载影响较小）。4:4:4 模式把 BGRA 直接送编码器。
 - 游戏模式：`IDXGIDevice::SetGPUThreadPriority(7)`、`D3DKMTSetProcessSchedulingPriorityClass`，后者需验证权限要求。
@@ -1281,7 +1282,7 @@ HudWindow（同上，鼠标穿透）
 | 编码器失败 | 依次回退：同后端重建 → 下一个硬编 → 软编；通知 HUD |
 | 解码器失败 | 请求 IDR；连续失败则重新协商编解码 |
 | 交换链丢失（设备移除） | 重建 D3D 设备，解码器重置，请求 IDR |
-| 采集 `AccessLost` | 重绑桌面，重建采集，请求 IDR |
+| 采集 `AccessLost` | 重绑桌面，重建采集，请求 IDR；暂时截不到（`Unavailable`，如安全桌面）则定时重试，会话不断开 |
 | QUIC 断开 | 进入 Reconnecting，保留窗口，释放远端按键 |
 | 被控端退出会话 | 正常关闭帧 + 原因 |
 

@@ -96,7 +96,7 @@
 
 - **没有 Windows 机器就无法验收**：截屏、编码、输入这些只能在真机上确认。
 - **硬件编码器差异**：各家显卡驱动的 MF 编码器对低延迟参数的支持不一样，可能需要按厂商调参，最后退回软件编码。
-- **UAC 和锁屏**：第 6 阶段之前，遇到 UAC 弹窗或锁屏时画面会停住、操作无效，这是 Windows 的安全限制。
+- **UAC 和锁屏**：第 6 阶段之前，被控端看不到也操作不了 UAC 弹窗和锁屏，这是 Windows 的安全限制：它们在安全桌面上，只有 SYSTEM 能截取（`DuplicateOutput` 返回 E_ACCESSDENIED，-2147024891），输入也到不了。以前截屏一失效就只重建一次，这时安全桌面还在，重建失败，会话就断开了。现在这种失败算“暂时截不到”（`MediaError::Unavailable`），截屏线程每 0.5 秒再试一次（`nexa-session/src/host.rs` 的 `UNAVAILABLE_RETRY`），会话停在最后一帧，UAC 关掉或解锁后画面自动恢复；`agent.log` 里会记下开始等待（`capture: the screen cannot be captured for now …`）和恢复（`capture: the screen can be captured again after N s`）。别的重建失败照旧结束会话。UAC 弹窗开着时新发起的连接还是连不上（一开始就截不到屏幕）。
 - **安装包签名**：不签名也能装，但会被 SmartScreen 拦一下。
 
 ## 6. 已经决定的

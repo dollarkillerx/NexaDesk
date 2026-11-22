@@ -32,6 +32,10 @@ pub enum MediaError {
     Other(String),
     #[error("not supported: {0}")]
     Unsupported(&'static str),
+    /// The display cannot be captured for now but may come back by itself: on Windows,
+    /// a secure desktop (a UAC prompt, the lock screen) that only SYSTEM may duplicate.
+    #[error("unavailable for now: {0}")]
+    Unavailable(String),
     /// A backend skipped this frame on purpose. Nothing was produced, the
     /// reference chain is intact, and the next frame can proceed normally.
     #[error("frame dropped")]

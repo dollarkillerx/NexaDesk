@@ -313,6 +313,8 @@ struct Rebuilder {
     display_id: Arc<AtomicU32>,
     control: mpsc::UnboundedSender<ControlBody>,
     failed: mpsc::UnboundedSender<String>,
+    /// Since when the display could not be captured for now, while it cannot.
+    unavailable_since: Option<Instant>,
 }
 
 impl StreamRebuilder for Rebuilder {
@@ -325,7 +327,8 @@ impl StreamRebuilder for Rebuilder {
         }
         let view = *self.view.lock().unwrap_or_else(|e| e.into_inner());
         let mut built = self.builder.build(self.mode, self.fps, self.display, view);
-        if built.is_err() && (self.mode, self.fps, self.display) != previous {
+        let unavailable = matches!(built, Err(MediaError::Unavailable(_)));
+        if built.is_err() && !unavailable && (self.mode, self.fps, self.display) != previous {
             // The viewer asked for something this host cannot do (a display that
             // went away, say): stay on what worked rather than end the session.
             (self.mode, self.fps, self.display) = previous;
@@ -333,6 +336,12 @@ impl StreamRebuilder for Rebuilder {
         }
         match built {
             Ok(p) => {
+                if let Some(since) = self.unavailable_since.take() {
+                    eprintln!(
+                        "nexa-agent: capture: the screen can be captured again after {:.1} s",
+                        since.elapsed().as_secs_f64()
+                    );
+                }
                 let (mode, fps) = (self.mode, p.config.fps);
                 self.display_id.store(p.display_id, Relaxed);
                 let _ = self.control.send(ControlBody::Config(p.config));
@@ -342,6 +351,18 @@ impl StreamRebuilder for Rebuilder {
                     mode,
                     fps,
                 })
+            }
+            // The capture thread tries again; the session stays on its last picture.
+            Err(e @ MediaError::Unavailable(_)) => {
+                if self.unavailable_since.is_none() {
+                    self.unavailable_since = Some(Instant::now());
+                    eprintln!(
+                        "nexa-agent: capture: the screen cannot be captured for now ({e}); \
+                         the session waits on its last picture, and input does not reach the \
+                         screen until it is back"
+                    );
+                }
+                Err(e)
             }
             Err(e) => {
                 let _ = self.failed.send(e.to_string());
@@ -700,6 +721,7 @@ pub(crate) async fn run(
                 display_id: display_id.clone(),
                 control: ctl_tx.clone(),
                 failed: failed_tx,
+                unavailable_since: None,
             })),
             thread_init: env.platform.thread_init(),
         },
