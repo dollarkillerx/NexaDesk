@@ -99,7 +99,8 @@ enum SignalState { SIGNAL_OFF = 0; SIGNAL_CONNECTING = 1; SIGNAL_ONLINE = 2; SIG
 
 enum AuthKind { AUTH_UNSPECIFIED = 0; AUTH_PAIRED = 1; AUTH_CODE = 2; AUTH_PASSWORD = 3; AUTH_REQUEST = 4; }
 
-// Someone wants a session. Answer with Decide; no answer within timeout_ms denies.
+// Someone wants a session. Answer with Decide; no answer within timeout_ms denies,
+// unless allow_unless_denied.
 message IncomingRequest {
   uint64 req_id = 1;
   string device_name = 2;        // sanitized, as typed by the requester
@@ -116,6 +117,7 @@ message IncomingRequest {
   bool input_available = 13;
   bool browser = 14;             // a web browser: view and control only, never saved
   bool agent = 15;               // an AI agent says it is asking: the dialog says so
+  bool allow_unless_denied = 16; // no answer within timeout_ms allows instead
 }
 // The request is over: answered, timed out, or the requester went away.
 message RequestClosed { uint64 req_id = 1; string reason = 2; }

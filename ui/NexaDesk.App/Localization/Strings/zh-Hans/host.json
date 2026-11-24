@@ -17,7 +17,7 @@
   "Host.RotateCode": "换一个代码",
   "Host.ClickToCopy": "点击复制",
   "Host.Copied": "已复制",
-  "Host.ConfirmNote": "用一次性码连接时，你会看到确认窗口；用固定密码连接则直接进入，顶部提示条照常显示。",
+  "Host.ConfirmNote": "用一次性码或固定密码连接都直接进入，并获得全部权限；只有不填码、只凭设备 ID 的请求才会请你确认。顶部提示条照常显示。",
   "Host.NoAccessibility": "本机未授予“辅助功能”权限：对方只能查看，不能操作键盘鼠标。",
   "Host.HowToGrant": "查看如何授予…",
   "Host.PermissionGuide": "权限设置指引…",
@@ -43,7 +43,7 @@
   "Host.ListenEverywhereSummary": "所有网络（局域网和 Tailscale），端口 {0}",
   "Host.ListenOnSummary": "只在 {0}",
   "Host.Starting": "正在启动…",
-  "Host.HostingState": "已开启：对方输入设备 ID 或下面任一地址，再输入一次性码（需你确认）或固定密码（直接进入）即可连接",
+  "Host.HostingState": "已开启：对方输入设备 ID 或下面任一地址，再输入一次性码或固定密码（直接进入），或者不填（需你确认）即可连接",
   "Host.StoppedState": "未开启：别人无法连接本机",
   "Host.StoppedState.Windows": "未开启：别人无法连接本机",
   "Host.ListenHint": "格式应为 IP:端口",
@@ -93,7 +93,7 @@
   "Host.FewerAddresses": "收起其他地址",
   "Host.FixedPassword": "固定密码",
   "Host.PasswordOff": "未设置。对方只能用上面的一次性码连接。",
-  "Host.PasswordOn": "已设置。对方输入固定密码可直接连接，不用你确认；输入一次性码时仍会请你确认。",
+  "Host.PasswordOn": "已设置。对方输入固定密码和一次性码一样，直接连接，不用你确认。",
   "Host.SetPassword": "设置",
   "Host.ChangePassword": "更改",
   "Host.ClearPassword": "清除",
@@ -118,5 +118,5 @@
   "Host.ResetIdFailed": "无法重置设备 ID：{0}",
   "Host.UsingTerminal": "「{0}」正在使用本机命令行",
   "Host.UsingTerminal.Windows": "「{0}」正在使用本机命令行",
-  "Host.NoPairedDevices": "还没有保存的设备。用固定密码登录不会保存设备；要保存，请用一次性码连接，并在允许时勾选“保存这台设备”：之后它就不用再输入代码，也可以再设置为不经询问直接连接。"
+  "Host.NoPairedDevices": "还没有保存的设备。用一次性码或固定密码登录会直接进入，不会保存设备。只有在确认窗口里（连接会接管正在进行的会话时）才能勾选“保存这台设备”。"
 }

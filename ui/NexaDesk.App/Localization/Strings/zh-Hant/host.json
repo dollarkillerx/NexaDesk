@@ -17,7 +17,7 @@
   "Host.RotateCode": "換一個程式碼",
   "Host.ClickToCopy": "點選複製",
   "Host.Copied": "已複製",
-  "Host.ConfirmNote": "用一次性碼連線時，你會看到確認視窗；用固定密碼連線則直接進入，頂部提示列照常顯示。",
+  "Host.ConfirmNote": "用一次性碼或固定密碼連線都直接進入，並取得全部權限；只有不填碼、只憑裝置 ID 的請求才會請你確認。頂部提示列照常顯示。",
   "Host.NoAccessibility": "本機未授予「輔助使用」權限：對方只能檢視，不能操作鍵盤滑鼠。",
   "Host.HowToGrant": "檢視如何授予…",
   "Host.PermissionGuide": "權限設定指引…",
@@ -43,7 +43,7 @@
   "Host.ListenEverywhereSummary": "所有網路（區域網路和 Tailscale），埠 {0}",
   "Host.ListenOnSummary": "只在 {0}",
   "Host.Starting": "正在啟動…",
-  "Host.HostingState": "已開啟：對方輸入裝置 ID 或下面任一地址，再輸入一次性碼（需你確認）或固定密碼（直接進入）即可連線",
+  "Host.HostingState": "已開啟：對方輸入裝置 ID 或下面任一地址，再輸入一次性碼或固定密碼（直接進入），或者不填（需你確認）即可連線",
   "Host.StoppedState": "未開啟：別人無法連線本機",
   "Host.StoppedState.Windows": "未開啟：別人無法連線本機",
   "Host.ListenHint": "格式應為 IP:埠",
@@ -93,7 +93,7 @@
   "Host.FewerAddresses": "收起其他地址",
   "Host.FixedPassword": "固定密碼",
   "Host.PasswordOff": "未設定。對方只能用上面的一次性碼連線。",
-  "Host.PasswordOn": "已設定。對方輸入固定密碼可直接連線，不用你確認；輸入一次性碼時仍會請你確認。",
+  "Host.PasswordOn": "已設定。對方輸入固定密碼和一次性碼一樣，直接連線，不用你確認。",
   "Host.SetPassword": "設定",
   "Host.ChangePassword": "更改",
   "Host.ClearPassword": "清除",
@@ -118,5 +118,5 @@
   "Host.ResetIdFailed": "無法重置裝置 ID：{0}",
   "Host.UsingTerminal": "「{0}」正在使用本機命令列",
   "Host.UsingTerminal.Windows": "「{0}」正在使用本機命令列",
-  "Host.NoPairedDevices": "還沒有儲存的裝置。用固定密碼登入不會儲存裝置；要儲存，請用一次性碼連線，並在允許時勾選「儲存這台裝置」：之後它就不用再輸入程式碼，也可以再設定為不經詢問直接連線。"
+  "Host.NoPairedDevices": "還沒有儲存的裝置。用一次性碼或固定密碼登入會直接進入，不會儲存裝置。只有在確認視窗裡（連線會接管正在進行的工作階段時）才能勾選「儲存這台裝置」。"
 }

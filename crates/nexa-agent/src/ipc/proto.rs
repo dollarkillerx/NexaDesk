@@ -291,6 +291,9 @@ pub struct IncomingRequest {
     /// An AI agent says it is asking (docs/MCP.md §4): the dialog says so.
     #[prost(bool, tag = "15")]
     pub agent: bool,
+    /// No answer within `timeout_ms` allows: the dialog is a chance to deny.
+    #[prost(bool, tag = "16")]
+    pub allow_unless_denied: bool,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -599,6 +602,7 @@ mod tests {
             input_available: true,
             browser: false,
             agent: false,
+            allow_unless_denied: true,
         }));
         let status = AgentToUi::from(AgentBody::Status(Status {
             version: 1,
@@ -651,7 +655,7 @@ mod tests {
         );
         assert_eq!(
             hex(&incoming.encode_to_vec()),
-            "12290807 1203e78e8b 1a0164 22026162 2a09312e322e332e343a35 3002 3a020801 4001 5801 60e0d403 6801"
+            "122c0807 1203e78e8b 1a0164 22026162 2a09312e322e332e343a35 3002 3a020801 4001 5801 60e0d403 6801 800101"
                 .replace(' ', "")
         );
         let allow = UiToAgent::from(UiBody::SetAllowAgents(SetAllowAgents { allow: true }));

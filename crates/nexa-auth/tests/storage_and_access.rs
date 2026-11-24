@@ -33,10 +33,13 @@ fn every_policy() -> Vec<AccessPolicy> {
     let mut all = Vec::new();
     for password_enabled in [false, true] {
         for save_password_pairing in [false, true] {
-            all.push(AccessPolicy {
-                password_enabled,
-                save_password_pairing,
-            });
+            for code_asks in [false, true] {
+                all.push(AccessPolicy {
+                    password_enabled,
+                    save_password_pairing,
+                    code_asks,
+                });
+            }
         }
     }
     all

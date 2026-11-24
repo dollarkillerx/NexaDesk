@@ -21,7 +21,7 @@ public class ProtoTests
     [Fact]
     public void Incoming_request_decodes_from_the_rust_golden_bytes()
     {
-        var bytes = Bytes("12290807 1203e78e8b 1a0164 22026162 2a09312e322e332e343a35 3002 3a020801 4001 5801 60e0d403 6801");
+        var bytes = Bytes("122c0807 1203e78e8b 1a0164 22026162 2a09312e322e332e343a35 3002 3a020801 4001 5801 60e0d403 6801 800101");
         var r = Assert.IsType<AgentMessage.IncomingRequest>(AgentMessage.Decode(bytes));
         Assert.Equal(7ul, r.ReqId);
         Assert.Equal("王", r.DeviceName);
@@ -34,6 +34,7 @@ public class ProtoTests
         Assert.True(r.Takeover);
         Assert.Equal(60_000u, r.TimeoutMs);
         Assert.True(r.InputAvailable);
+        Assert.True(r.AllowUnlessDenied);
     }
 
     // AI agents (docs/MCP.md §4): the same golden bytes as golden_encodings in Rust.

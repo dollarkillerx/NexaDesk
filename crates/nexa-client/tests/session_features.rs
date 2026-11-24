@@ -208,6 +208,8 @@ async fn host(p: Permissions) -> Host {
             web: None,
             web_tls: None,
             password: None,
+            // The tests here choose what the dialog grants, so the code asks.
+            code_asks: true,
             listen: "127.0.0.1:0".parse().unwrap(),
             device_name: "feature host".into(),
             os: Os::Macos,

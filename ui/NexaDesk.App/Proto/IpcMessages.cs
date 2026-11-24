@@ -129,7 +129,8 @@ public abstract record AgentMessage
 
     public sealed record IncomingRequest(ulong ReqId, string DeviceName, string DeviceId, string DeviceKey,
         string Remote, AuthKind Auth, Permissions Perms, bool OfferSave, bool SaveDefault, bool OfferSkipNextTime,
-        bool Takeover, uint TimeoutMs, bool InputAvailable, bool Browser = false, bool Agent = false) : AgentMessage;
+        bool Takeover, uint TimeoutMs, bool InputAvailable, bool Browser = false, bool Agent = false,
+        bool AllowUnlessDenied = false) : AgentMessage;
 
     public sealed record SessionStarted(HostSession Session) : AgentMessage;
     public sealed record SessionEnded(ulong Id, string DeviceName, string Reason) : AgentMessage;
@@ -249,7 +250,7 @@ public abstract record AgentMessage
         var auth = AuthKind.Unspecified;
         var perms = Permissions.None;
         bool offerSave = false, saveDefault = false, offerSkip = false, takeover = false, input = false, browser = false,
-            agent = false;
+            agent = false, byDefault = false;
         uint timeout = 0;
         var r = new ProtoReader(data);
         while (r.Next(out var f))
@@ -271,11 +272,12 @@ public abstract record AgentMessage
                 case 13: input = r.Bool(); break;
                 case 14: browser = r.Bool(); break;
                 case 15: agent = r.Bool(); break;
+                case 16: byDefault = r.Bool(); break;
                 default: r.Skip(); break;
             }
         }
         return new IncomingRequest(id, name, did, key, remote, auth, perms, offerSave, saveDefault, offerSkip, takeover, timeout, input, browser,
-            agent);
+            agent, byDefault);
     }
 
     static SessionEnded DecodeEnded(ReadOnlySpan<byte> data)

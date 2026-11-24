@@ -64,9 +64,12 @@ pub struct AgentConfig {
     /// The page's certificate. Without one the page is served over plain HTTP, which
     /// only tests should do.
     pub web_tls: Option<nexa_web::WebTls>,
-    /// A fixed password viewers and browsers may use instead of the one-time code.
-    /// Every connection is still put to the person at this Mac.
+    /// A fixed password viewers and browsers may use instead of the one-time code. It
+    /// lets in with everything, without asking.
     pub password: Option<Arc<nexa_auth::HostPassword>>,
+    /// Put the one-time code to the person too (`AccessPolicy::code_asks`). Off in the
+    /// app: the code lets in with everything.
+    pub code_asks: bool,
 }
 
 #[derive(Debug, Error)]
@@ -575,7 +578,10 @@ pub async fn start(
                 code: code.clone(),
                 password: password.clone().map(|p| (p, password_guard.clone())),
             },
-            policy: AccessPolicy::default(),
+            policy: AccessPolicy {
+                code_asks: config.code_asks,
+                ..AccessPolicy::default()
+            },
             consent: ui.clone(),
             limiter: PairLimiter::default(),
             input_available: {

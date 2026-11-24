@@ -273,6 +273,7 @@ impl Consent for IpcHub {
             input_available: self.input_available(),
             browser: request.peer.is_browser(),
             agent: request.agent,
+            allow_unless_denied: request.allow_unless_denied,
         };
         {
             let mut state = lock(&self.state);
@@ -301,6 +302,9 @@ impl Consent for IpcHub {
                 break (ConsentAnswer::deny(), "cancelled");
             }
             let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() && request.allow_unless_denied {
+                break (ConsentAnswer::by_default(request), "allowed by default");
+            }
             if left.is_zero() {
                 break (ConsentAnswer::deny(), "timed out");
             }

@@ -34,7 +34,9 @@ use nexa_auth::{DeviceIdentity, PairingStore, PeerPolicy, client_config, tls::SE
 use nexa_net::vsock::bind_media_socket;
 use nexa_session::{
     SessionError,
-    handshake::{Timeouts, ViewerAccepted, ViewerAuth, ViewerConfig, viewer_handshake},
+    handshake::{
+        AGENT_DENY_WINDOW, Timeouts, ViewerAccepted, ViewerAuth, ViewerConfig, viewer_handshake,
+    },
     proto::{CloseReason, ControlBody, RejectReason, StreamRequest},
 };
 use nexa_wire::{
@@ -108,6 +110,8 @@ async fn rig_with(fallback: Option<Arc<FakeUi>>, tweak: impl FnOnce(&mut IpcConf
             web: None,
             web_tls: None,
             password: None,
+            // The tests here choose what the dialog grants, so the code asks.
+            code_asks: true,
             listen: "127.0.0.1:0".parse().unwrap(),
             device_name: "fake host".into(),
             os: Os::Macos,
@@ -249,6 +253,15 @@ fn viewer(
     rig: &Rig,
     me: DeviceIdentity,
 ) -> tokio::task::JoinHandle<(Endpoint, Connection, Result<ViewerAccepted, SessionError>)> {
+    viewer_as(rig, me, false)
+}
+
+/// [`viewer`], saying it is an AI agent when `agent`.
+fn viewer_as(
+    rig: &Rig,
+    me: DeviceIdentity,
+    agent: bool,
+) -> tokio::task::JoinHandle<(Endpoint, Connection, Result<ViewerAccepted, SessionError>)> {
     let addr = rig.host.agent.local_addr();
     let code = rig.host.agent.current_code().to_string();
     tokio::spawn(async move {
@@ -261,8 +274,12 @@ fn viewer(
                 os: Os::Macos,
                 caps: caps(),
                 auth: ViewerAuth::Code(Zeroizing::new(code)),
-                timeouts: timeouts(),
-                agent: false,
+                // Long enough for an agent's window to deny it.
+                timeouts: Timeouts {
+                    consent: AGENT_DENY_WINDOW + CONSENT,
+                    ..timeouts()
+                },
+                agent,
             },
         )
         .await;
@@ -615,6 +632,48 @@ async fn an_unanswered_request_times_out_as_a_denial() {
     assert_eq!(closed.reason, "timed out");
     let (_ep, _conn, result) = v.await.unwrap();
     assert_eq!(rejected(&result), RejectReason::ConsentDenied);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_agent_nobody_denies_in_time_is_allowed_with_everything() {
+    let rig = rig().await;
+    rig.host.agent.set_allow_agents(true);
+    let (mut ui, _) = rig.hello().await;
+
+    // Denied in time: out.
+    let v = viewer_as(&rig, DeviceIdentity::generate(), true);
+    let req = ui.incoming().await;
+    assert!(req.agent && req.allow_unless_denied);
+    assert_eq!(u128::from(req.timeout_ms), AGENT_DENY_WINDOW.as_millis());
+    ui.send(UiBody::Decide(Decide {
+        req_id: req.req_id,
+        ..Decide::default()
+    }))
+    .await;
+    let (_ep, _conn, result) = v.await.unwrap();
+    assert_eq!(rejected(&result), RejectReason::ConsentDenied);
+
+    // Not answered: in, with everything the dialog proposed.
+    let started = Instant::now();
+    let v = viewer_as(&rig, DeviceIdentity::generate(), true);
+    let req = ui.incoming().await;
+    // Most of the window, so the wait for the close fits in one read.
+    tokio::time::sleep(AGENT_DENY_WINDOW - Duration::from_secs(3)).await;
+    let closed = ui
+        .until("RequestClosed", |b| match b {
+            AgentBody::RequestClosed(c) => Some(c),
+            _ => None,
+        })
+        .await;
+    assert_eq!(closed.req_id, req.req_id);
+    assert_eq!(closed.reason, "allowed by default");
+    assert!(started.elapsed() >= AGENT_DENY_WINDOW);
+    let (_ep, _conn, result) = v.await.unwrap();
+    let granted = result.unwrap().accept.perms.unwrap();
+    assert!(
+        granted.view && granted.clipboard && granted.file && granted.terminal,
+        "{granted:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

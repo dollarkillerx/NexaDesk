@@ -632,6 +632,7 @@ mod demo {
                     web: None,
                     web_tls: None,
                     password: Some(Arc::new(HostPassword::create(PASSWORD).expect("password"))),
+                    code_asks: false,
                 },
                 identity,
                 store,

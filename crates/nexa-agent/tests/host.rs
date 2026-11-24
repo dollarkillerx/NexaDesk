@@ -1200,12 +1200,18 @@ async fn an_allowed_agent_is_put_to_the_person_as_one_and_acknowledged() {
     assert!(accepted.accept.agent_ack);
     let asked = common::lock(&ui.asked)[0].clone();
     assert!(asked.agent);
+    // Everything is proposed, and the person only has to deny in time.
     let proposed = &asked.prompt.perms;
-    assert!(proposed.view && proposed.input, "{proposed:?}");
     assert!(
-        !proposed.clipboard && !proposed.file && !proposed.audio && !proposed.terminal,
+        proposed.view
+            && proposed.input
+            && proposed.clipboard
+            && proposed.file
+            && proposed.audio
+            && proposed.terminal,
         "{proposed:?}"
     );
+    assert!(asked.allow_unless_denied, "it proved itself with the code");
     assert!(!asked.prompt.offer_skip_next_time);
     begin_stream(&mut accepted).await;
     until("the session is shown as an agent's", WAIT, || {
@@ -1214,6 +1220,69 @@ async fn an_allowed_agent_is_put_to_the_person_as_one_and_acknowledged() {
             .any(|e| matches!(e, AgentEvent::SessionStarted(s) if s.agent))
     })
     .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_one_time_code_lets_a_person_in_with_everything_unasked() {
+    let ui = FakeUi::denying();
+    let h = common::host_as_shipped(ui.clone(), timeouts(), None).await;
+    let me = DeviceIdentity::generate();
+    let (_ep, _conn, result) = connect_with_code(&h, &me).await;
+    let accepted = result.unwrap();
+    assert_eq!(ui.prompts(), 0, "nobody is asked about the code");
+    let granted = accepted.accept.perms.unwrap();
+    assert!(
+        granted.view
+            && granted.input
+            && granted.clipboard
+            && granted.file
+            && granted.audio
+            && granted.terminal,
+        "{granted:?}"
+    );
+    until("session running", WAIT, || h.agent.session_active()).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn without_a_secret_the_person_is_still_asked() {
+    let ui = FakeUi::denying();
+    let h = common::host_as_shipped(ui.clone(), timeouts(), None).await;
+    let me = DeviceIdentity::generate();
+    let (_ep, conn) = dial(&h, &me, PeerPolicy::Pinned(h.agent.public_key())).await;
+    let result = viewer_handshake(&conn.unwrap(), viewer_config(&me, ViewerAuth::Request)).await;
+    assert!(result.is_err(), "denied by the person");
+    assert_eq!(ui.prompts(), 1);
+    assert!(!common::lock(&ui.asked)[0].allow_unless_denied);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_agent_with_a_secret_gets_a_window_to_deny_and_one_without_waits_for_allow() {
+    let ui = FakeUi::denying();
+    let h = common::host_as_shipped(ui.clone(), timeouts(), Some("correct horse battery")).await;
+    h.agent.set_allow_agents(true);
+    for auth in [
+        code_of(&h),
+        ViewerAuth::Password(Zeroizing::new("correct horse battery".to_owned())),
+    ] {
+        let me = DeviceIdentity::generate();
+        let (_ep, conn) = dial(&h, &me, PeerPolicy::AcceptUnknown).await;
+        // The fake person denies: a secret does not let an agent past a "no".
+        let result = viewer_handshake(&conn.unwrap(), agent_config(&me, auth)).await;
+        assert!(result.is_err());
+        let asked = common::lock(&ui.asked).last().unwrap().clone();
+        assert!(asked.agent && asked.allow_unless_denied);
+        assert!(asked.prompt.perms.terminal && asked.prompt.perms.file);
+    }
+    let me = DeviceIdentity::generate();
+    let (_ep, conn) = dial(&h, &me, PeerPolicy::Pinned(h.agent.public_key())).await;
+    let result = viewer_handshake(&conn.unwrap(), agent_config(&me, ViewerAuth::Request)).await;
+    assert!(result.is_err());
+    let asked = common::lock(&ui.asked).last().unwrap().clone();
+    assert!(
+        asked.agent && !asked.allow_unless_denied,
+        "only a device ID: the person must allow it"
+    );
+    assert_eq!(ui.prompts(), 3);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

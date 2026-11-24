@@ -11,6 +11,8 @@ namespace NexaDesk.ViewModels;
 /// Deny, Enter or Escape (Deny has focus and is the default), closing the window, the
 /// countdown, and the agent closing the request. Allow is disabled for the first
 /// second so a click or key meant for something else cannot hit it.
+/// An AI agent that proved itself (<see cref="AllowUnlessDenied"/>) is the exception:
+/// the countdown running out allows it, with what is ticked; everything else still denies.
 /// </summary>
 public sealed partial class ConsentViewModel : ObservableObject
 {
@@ -38,6 +40,8 @@ public sealed partial class ConsentViewModel : ObservableObject
     public bool IsDevice => !_req.Browser;
     /// <summary>An AI agent says it is asking (docs/MCP.md §4.2): not a person at another computer.</summary>
     public bool IsAgent => _req.Agent && !_req.Browser;
+    /// <summary>The countdown allows instead of denying: the dialog is a chance to say no.</summary>
+    public bool AllowUnlessDenied => _req.AllowUnlessDenied;
     public string Headline => L.Format(
         IsBrowser ? "Consent.HeadlineBrowser" : IsAgent ? "Consent.HeadlineAgent" : "Consent.Headline", DeviceName);
     public string InputNote => InputAvailable ? L.Get("Consent.InputAvailable") : L.Get("Consent.InputUnavailable");
@@ -49,7 +53,8 @@ public sealed partial class ConsentViewModel : ObservableObject
     [ObservableProperty] private bool _allowClipboard;
     /// <summary>Off unless the request proposes it (a device saved with sound).</summary>
     [ObservableProperty] private bool _allowAudio;
-    /// <summary>Always starts unticked, even for a device saved with it: files are opt-in each time.</summary>
+    /// <summary>Starts unticked, even for a device saved with it: files are opt-in each time. An AI
+    /// agent is the exception: it is proposed everything.</summary>
     [ObservableProperty] private bool _allowFile;
     /// <summary>A shell on this Mac. Always starts unticked; offered to browsers and to AI agents (nexa-mcp's
     /// nexa_run), the viewers that can open one.</summary>
@@ -73,7 +78,7 @@ public sealed partial class ConsentViewModel : ObservableObject
 
     [ObservableProperty] private string? _outcome;
 
-    public string CountdownText => L.Format("Consent.Countdown", SecondsLeft);
+    public string CountdownText => L.Format(AllowUnlessDenied ? "Consent.CountdownAllow" : "Consent.Countdown", SecondsLeft);
 
     public ConsentViewModel(AgentMessage.IncomingRequest req, IAgentLink link, DateTimeOffset now)
     {
@@ -84,6 +89,7 @@ public sealed partial class ConsentViewModel : ObservableObject
         _allowClipboard = req.Perms.Clipboard;
         _allowAudio = req.Perms.Audio;
         _allowTerminal = req.Perms.Terminal;
+        _allowFile = req.Agent && !req.Browser && req.Perms.File;
         _saveDevice = req.OfferSave && req.SaveDefault;
         _skipNextTime = false;
         MarkShown(now);
@@ -104,7 +110,9 @@ public sealed partial class ConsentViewModel : ObservableObject
         if (IsFinished) return;
         IsArmed = now - _shownAt >= ArmDelay;
         SecondsLeft = Math.Max(0, (int)Math.Ceiling((_deadline - now).TotalSeconds));
-        if (now >= _deadline) Finish(UiRequest.Decide.Deny(ReqId), L.Get("Consent.TimedOut"));
+        if (now < _deadline) return;
+        if (AllowUnlessDenied) Finish(Decision(byPerson: false), L.Get("Consent.AllowedByDefault"));
+        else Finish(UiRequest.Decide.Deny(ReqId), L.Get("Consent.TimedOut"));
     }
 
     bool CanAllow() => IsArmed && !IsFinished;
@@ -113,12 +121,19 @@ public sealed partial class ConsentViewModel : ObservableObject
     private void Allow()
     {
         if (!CanAllow()) return;
+        Finish(Decision(byPerson: true), L.Get("Consent.Allowed"));
+    }
+
+    /// <summary>Allows, with what is ticked. Saving the device needs the person to click Allow.</summary>
+    UiRequest.Decide Decision(bool byPerson)
+    {
         var perms = IsBrowser
             ? new Permissions(View: true, Input: AllowInput && InputAvailable, Clipboard: AllowClipboard, File: false, Audio: false,
                 Terminal: AllowTerminal)
             : new Permissions(View: true, Input: AllowInput && InputAvailable, Clipboard: AllowClipboard,
                 File: AllowFile, Audio: AllowAudio, Terminal: IsAgent && AllowTerminal);
-        Finish(new UiRequest.Decide(ReqId, true, perms, OfferSave && SaveDevice, OfferSkipNextTime && SkipNextTime), L.Get("Consent.Allowed"));
+        return new UiRequest.Decide(ReqId, true, perms, byPerson && OfferSave && SaveDevice,
+            byPerson && OfferSkipNextTime && SkipNextTime);
     }
 
     [RelayCommand]
@@ -135,6 +150,7 @@ public sealed partial class ConsentViewModel : ObservableObject
         Outcome = reason switch
         {
             "timed out" => L.Get("Consent.TimedOut"),
+            "allowed by default" => L.Get("Consent.AllowedByDefault"),
             "cancelled" => L.Get("Consent.Cancelled"),
             _ => reason,
         };

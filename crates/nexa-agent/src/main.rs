@@ -425,6 +425,7 @@ fn run() -> Result<(), String> {
         web,
         web_tls,
         password: load_password()?,
+        code_asks: false,
     };
     // Held until exit: dropping it removes the socket.
     let mut _ipc = None;

@@ -504,6 +504,8 @@ async fn host() -> Host {
             web: None,
             web_tls: None,
             password: Some(Arc::new(nexa_auth::HostPassword::create(PASSWORD).unwrap())),
+            // The tests here choose what the dialog grants, so the code asks.
+            code_asks: true,
             listen: "127.0.0.1:0".parse().unwrap(),
             device_name: "weak host".into(),
             os: Os::Macos,

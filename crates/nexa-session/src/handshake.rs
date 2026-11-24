@@ -118,9 +118,17 @@ pub struct ConsentRequest {
     pub agent: bool,
     /// Accepting ends the session that is running now.
     pub takeover: bool,
+    /// No answer within the timeout allows, with the proposed permissions: an AI agent
+    /// that proved itself gets [`AGENT_DENY_WINDOW`] for the person to deny it. Deny,
+    /// closing the dialog, the requester leaving or the UI going away still deny.
+    pub allow_unless_denied: bool,
     /// Set if the connection goes away; stop asking when it does.
     pub cancelled: Arc<AtomicBool>,
 }
+
+/// How long the person has to deny an AI agent that proved itself (a one-time code, the
+/// fixed password or a saved pairing) before it is let in.
+pub const AGENT_DENY_WINDOW: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConsentAnswer {
@@ -131,6 +139,16 @@ pub struct ConsentAnswer {
 }
 
 impl ConsentAnswer {
+    /// Nobody answered a request that allows unless denied: what it proposed.
+    pub fn by_default(request: &ConsentRequest) -> Self {
+        Self {
+            allow: true,
+            perms: request.prompt.perms.clone(),
+            save: false,
+            skip_next_time: false,
+        }
+    }
+
     pub fn deny() -> Self {
         Self {
             allow: false,
@@ -475,7 +493,11 @@ async fn ask_person(
     let cancelled = Arc::new(AtomicBool::new(false));
     request.cancelled = cancelled.clone();
     let consent = cfg.consent.clone();
-    let wait = cfg.timeouts.consent;
+    let wait = if request.allow_unless_denied {
+        AGENT_DENY_WINDOW
+    } else {
+        cfg.timeouts.consent
+    };
     let asked = tokio::task::spawn_blocking(move || consent.ask(&request, wait));
     let limit = wait + Duration::from_secs(2);
     tokio::select! {
@@ -585,16 +607,24 @@ pub async fn host_handshake_from(
     }
 
     let takeover = session_active();
-    // The fixed password is the owner's own way in, so nobody has to be at the host to
-    // click Allow. The banner still shows the session, and a running session is never
-    // taken over without asking.
-    // An AI agent is always put to the person, whatever secret it holds (§4.2).
-    let by_password = auth == AuthKind::Password
+    // A secret (the fixed password or the one-time code shown at the host) is let in
+    // with everything, so nobody has to be at the host to click Allow; only a request
+    // with no secret is put to the person. The banner still shows the session, and a
+    // running session is never taken over without asking.
+    let by_secret = (auth == AuthKind::Password
+        || (auth == AuthKind::Code && !cfg.policy.code_asks))
         && !agent
         && !takeover
         && matches!(decision, AccessDecision::NeedsConsent(_));
+    // An AI agent is always shown to the person (docs/MCP.md §4.2). One that proved
+    // itself (a secret or a saved pairing) is let in with everything unless the person
+    // denies it within AGENT_DENY_WINDOW; one with only a device ID waits for Allow.
+    let allow_unless_denied = agent
+        && !takeover
+        && auth != AuthKind::Request
+        && matches!(decision, AccessDecision::NeedsConsent(_));
     let prompt = match (&decision, takeover) {
-        _ if by_password => None,
+        _ if by_secret => None,
         (AccessDecision::Deny(reason), _) => {
             return Err(refuse(conn, control, refusal_of_deny(*reason)).await);
         }
@@ -607,9 +637,8 @@ pub async fn host_handshake_from(
         }),
         (AccessDecision::Allow { .. }, false) => None,
     };
-    // For an agent the dialog proposes seeing and using the keyboard and mouse, and
-    // nothing more; "don't ask again" is not offered (it can be set for the device in
-    // the list of paired devices).
+    // For an agent the dialog proposes everything; "don't ask again" is not offered (it
+    // can be set for the device in the list of paired devices).
     let prompt = prompt.map(|p| if agent { agent_prompt(p) } else { p });
 
     let mut answer = None;
@@ -625,6 +654,7 @@ pub async fn host_handshake_from(
                 prompt,
                 agent,
                 takeover,
+                allow_unless_denied,
                 cancelled: Arc::new(AtomicBool::new(false)),
             },
         )
@@ -643,10 +673,10 @@ pub async fn host_handshake_from(
     let mut perms = match (&decision, &answer) {
         (_, Some(a)) => a.perms.clone(),
         (AccessDecision::Allow { perms }, None) => perms.clone(),
-        // The owner, by the fixed password: everything a person at the host could
-        // grant, their own command line too, as in a browser. (A first contact's
-        // proposal is view-only, which left the owner unable to use the mouse.)
-        (AccessDecision::NeedsConsent(_), None) if by_password => owner_perms(),
+        // By a secret: everything a person at the host could grant, the command line
+        // too, as in a browser. (A first contact's proposal is view-only, which left
+        // the owner unable to use the mouse.)
+        (AccessDecision::NeedsConsent(_), None) if by_secret => owner_perms(),
         _ => unreachable!("every other decision returned above or produced an answer"),
     };
     perms.input &= (cfg.input_available)();
@@ -695,23 +725,16 @@ pub async fn host_handshake_from(
     })
 }
 
-/// What the dialog proposes to an AI agent: view and control, nothing else.
+/// What the dialog proposes to an AI agent: everything, as a secret grants.
 fn agent_prompt(p: ConsentPrompt) -> ConsentPrompt {
     ConsentPrompt {
-        perms: Permissions {
-            view: true,
-            input: true,
-            clipboard: false,
-            file: false,
-            audio: false,
-            terminal: false,
-        },
+        perms: owner_perms(),
         offer_skip_next_time: false,
         ..p
     }
 }
 
-/// What the fixed password grants: it is the owner's own way in.
+/// What a secret (the fixed password, the one-time code) grants.
 fn owner_perms() -> Permissions {
     Permissions {
         view: true,

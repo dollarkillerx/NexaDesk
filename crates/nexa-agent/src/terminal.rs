@@ -243,12 +243,29 @@ impl Consent for TerminalUi {
         terminal.say("  y = allow as proposed   v = view only   c = view + clipboard");
         terminal.say("  i = view + input        a = view + input + clipboard");
         terminal.say("  add s to also share sound (e.g. as)   anything else = deny");
-        terminal.say(&format!("Allow? (answer within {} s)", timeout.as_secs()));
+        if request.allow_unless_denied {
+            terminal.say(&format!(
+                "Allow? (no answer within {} s allows as proposed)",
+                timeout.as_secs()
+            ));
+        } else {
+            terminal.say(&format!("Allow? (answer within {} s)", timeout.as_secs()));
+        }
 
         let (tx, rx) = mpsc::sync_channel(4);
         *lock(&terminal.pending) = Some(tx);
         let answer = (|| {
-            let line = terminal.reply(&rx, deadline, &request.cancelled)?;
+            let Some(line) = terminal.reply(&rx, deadline, &request.cancelled) else {
+                // Nobody answered in time: allowed, unless the request or the terminal went.
+                let unanswered = request.allow_unless_denied
+                    && !request.cancelled.load(Relaxed)
+                    && terminal.alive.load(Relaxed)
+                    && Instant::now() >= deadline;
+                if unanswered {
+                    terminal.say("No answer: allowed as proposed.");
+                }
+                return unanswered.then(|| ConsentAnswer::by_default(request));
+            };
             let granted = parse_grant(&line, &request.prompt.perms)?;
             let mut answer = ConsentAnswer {
                 allow: true,

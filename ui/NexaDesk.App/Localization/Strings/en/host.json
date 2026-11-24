@@ -17,7 +17,7 @@
   "Host.RotateCode": "New code",
   "Host.ClickToCopy": "Click to copy",
   "Host.Copied": "Copied",
-  "Host.ConfirmNote": "With the one-time code you see a confirmation window; with the fixed password they get straight in, and the banner shows the session as usual.",
+  "Host.ConfirmNote": "With the one-time code or the fixed password they get straight in, with every permission; only a request with just the device ID asks you. The banner shows the session as usual.",
   "Host.NoAccessibility": "This Mac has not granted the Accessibility permission: the other person can only watch, not use the keyboard and mouse.",
   "Host.HowToGrant": "How to grant it…",
   "Host.PermissionGuide": "Permission setup guide…",
@@ -43,7 +43,7 @@
   "Host.ListenEverywhereSummary": "All networks (local network and Tailscale), port {0}",
   "Host.ListenOnSummary": "Only on {0}",
   "Host.Starting": "Starting…",
-  "Host.HostingState": "On: the other person enters the device ID or any address below, then the one-time code (you confirm) or the fixed password (straight in)",
+  "Host.HostingState": "On: the other person enters the device ID or any address below, then the one-time code or the fixed password (straight in), or nothing (you confirm)",
   "Host.StoppedState": "Off: nobody can connect to this Mac",
   "Host.StoppedState.Windows": "Off: nobody can connect to this PC",
   "Host.ListenHint": "Use the form IP:port",
@@ -93,7 +93,7 @@
   "Host.FewerAddresses": "Hide the other addresses",
   "Host.FixedPassword": "Fixed password",
   "Host.PasswordOff": "Not set. People can connect only with the one-time code above.",
-  "Host.PasswordOn": "Set. The fixed password gets straight in without asking you; the one-time code still asks you to confirm.",
+  "Host.PasswordOn": "Set. The fixed password, like the one-time code, gets straight in without asking you.",
   "Host.SetPassword": "Set",
   "Host.ChangePassword": "Change",
   "Host.ClearPassword": "Clear",
@@ -118,5 +118,5 @@
   "Host.ResetIdFailed": "Could not reset the device ID: {0}",
   "Host.UsingTerminal": "“{0}” is using this Mac's command line",
   "Host.UsingTerminal.Windows": "“{0}” is using this PC's command line",
-  "Host.NoPairedDevices": "No saved devices yet. Signing in with the fixed password never saves a device. To save one, connect with the one-time code and tick \"Remember this device\" when allowing it: it then needs no code, and you can later let it connect without asking."
+  "Host.NoPairedDevices": "No saved devices yet. Signing in with the one-time code or the fixed password lets the other person straight in and never saves a device. A device can only be saved from a confirmation window, when its connection would take over a running session."
 }

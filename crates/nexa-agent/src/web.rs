@@ -153,9 +153,13 @@ impl WebHost for AgentWeb {
         if !self.ui.can_present() || over {
             return BrowserAnswer::DENY;
         }
-        // The fixed password is the owner's own way in: nobody has to click Allow. The
-        // banner still shows the session.
-        if r.auth == BrowserAuth::Password {
+        // A secret (the fixed password, the one-time code) lets the browser in: nobody
+        // has to click Allow. The banner still shows the session.
+        let code_asks = self
+            .shared
+            .upgrade()
+            .is_some_and(|s| s.host.policy.code_asks);
+        if r.auth == BrowserAuth::Password || (r.auth == BrowserAuth::Code && !code_asks) {
             return BrowserAnswer {
                 allow: true,
                 input: r.input_available,
@@ -188,6 +192,7 @@ impl WebHost for AgentWeb {
                 offer_skip_next_time: false,
             },
             takeover: false,
+            allow_unless_denied: false,
             cancelled: r.cancelled.clone(),
         };
         let answer = self.ui.ask(&request, timeout);

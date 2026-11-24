@@ -653,7 +653,23 @@ pub async fn host_full(
     listen: std::net::SocketAddr,
     password: Option<Arc<nexa_auth::HostPassword>>,
 ) -> Host {
-    host_built(ui, timeouts, signal, listen, password, Os::Macos).await
+    host_built(ui, timeouts, signal, listen, password, Os::Macos, true).await
+}
+
+/// An agent as the app runs it: the one-time code lets in with everything, unasked.
+#[allow(dead_code)]
+pub async fn host_as_shipped(ui: Arc<FakeUi>, timeouts: Timeouts, password: Option<&str>) -> Host {
+    let stored = password.map(|p| Arc::new(nexa_auth::HostPassword::create(p).unwrap()));
+    host_built(
+        ui,
+        timeouts,
+        None,
+        "127.0.0.1:0".parse().unwrap(),
+        stored,
+        Os::Macos,
+        false,
+    )
+    .await
 }
 
 /// An agent that tells viewers it runs `os`: the viewer picks its keymap by it.
@@ -666,6 +682,7 @@ pub async fn host_as(ui: Arc<FakeUi>, os: Os) -> Host {
         "127.0.0.1:0".parse().unwrap(),
         None,
         os,
+        true,
     )
     .await
 }
@@ -677,6 +694,7 @@ async fn host_built(
     listen: std::net::SocketAddr,
     password: Option<Arc<nexa_auth::HostPassword>>,
     os: Os,
+    code_asks: bool,
 ) -> Host {
     let dir = tempfile::tempdir().unwrap();
     let identity = DeviceIdentity::generate();
@@ -689,6 +707,8 @@ async fn host_built(
             web: None,
             web_tls: None,
             password,
+            // Most tests here choose what the dialog grants, so the code asks.
+            code_asks,
             listen,
             device_name: "fake host".into(),
             os,

@@ -52,7 +52,7 @@ public class AgentAccessTests
     }
 
     [Fact]
-    public void An_agents_request_says_so_and_proposes_view_and_control_only()
+    public void An_agents_request_says_so()
     {
         var req = Samples.Request(input: true) with { Agent = true, DeviceName = "Mac mini (AI agent)" };
         var link = new FakeLink();
@@ -64,6 +64,44 @@ public class AgentAccessTests
         Assert.False(new ConsentViewModel(Samples.Request(), link, Samples.T0).IsAgent);
         // A browser never counts as an agent, whatever the flag says.
         Assert.False(new ConsentViewModel(req with { Browser = true }, link, Samples.T0).IsAgent);
+    }
+
+    [Fact]
+    public void An_agent_that_proved_itself_is_allowed_with_everything_unless_denied_in_time()
+    {
+        var all = new Permissions(View: true, Input: true, Clipboard: true, File: true, Audio: true, Terminal: true);
+        var req = Samples.Request(input: true, timeoutMs: 10_000) with
+        {
+            Agent = true, Auth = AuthKind.Password, Perms = all, AllowUnlessDenied = true,
+        };
+        var link = new FakeLink();
+        var vm = new ConsentViewModel(req, link, Samples.T0);
+        Assert.Equal(L.Format("Consent.CountdownAllow", 9), vm.CountdownText);
+        vm.Tick(Samples.T0.AddSeconds(5));
+        Assert.Empty(link.Sent);
+        // Nobody denied it: allowed, with everything, and nothing saved for later.
+        vm.Tick(Samples.T0.AddSeconds(9));
+        var decided = Assert.IsType<UiRequest.Decide>(Assert.Single(link.Sent));
+        Assert.True(decided.Allow);
+        Assert.Equal(all, decided.Perms);
+        Assert.False(decided.Save);
+        Assert.Equal(L.Get("Consent.AllowedByDefault"), vm.Outcome);
+
+        // Deny in time, or close the window: denied.
+        var denied = new ConsentViewModel(req, link, Samples.T0);
+        denied.DenyCommand.Execute(null);
+        Assert.False(Assert.IsType<UiRequest.Decide>(link.Sent[^1]).Allow);
+        var closed = new ConsentViewModel(req, link, Samples.T0);
+        closed.OnWindowClosed();
+        Assert.False(Assert.IsType<UiRequest.Decide>(link.Sent[^1]).Allow);
+        // Unticking something before the time is up is kept.
+        var fewer = new ConsentViewModel(req, link, Samples.T0) { AllowTerminal = false };
+        fewer.Tick(Samples.T0.AddSeconds(9));
+        Assert.False(Assert.IsType<UiRequest.Decide>(link.Sent[^1]).Perms.Terminal);
+        // Any other request still says no when the time is up.
+        var person = new ConsentViewModel(Samples.Request(timeoutMs: 10_000), link, Samples.T0);
+        person.Tick(Samples.T0.AddSeconds(9));
+        Assert.False(Assert.IsType<UiRequest.Decide>(link.Sent[^1]).Allow);
     }
 
     [Fact]

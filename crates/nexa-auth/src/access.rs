@@ -31,6 +31,10 @@ pub struct AccessPolicy {
     pub password_enabled: bool,
     /// §9.3: whether "save as paired" is pre-ticked after a password exchange.
     pub save_password_pairing: bool,
+    /// Whether the one-time code is still put to the person. Off (the default), the code
+    /// lets in with everything, as the fixed password does; only a request with no
+    /// secret asks.
+    pub code_asks: bool,
 }
 
 impl Default for AccessPolicy {
@@ -38,6 +42,7 @@ impl Default for AccessPolicy {
         Self {
             password_enabled: true,
             save_password_pairing: true,
+            code_asks: false,
         }
     }
 }

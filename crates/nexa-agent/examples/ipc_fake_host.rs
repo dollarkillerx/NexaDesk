@@ -55,6 +55,8 @@ async fn main() {
             web: None,
             web_tls: None,
             password: None,
+            // The app's tests answer its dialog, so the code asks.
+            code_asks: true,
             listen: "127.0.0.1:0".parse().unwrap(),
             device_name: "fake host".into(),
             os: Os::Macos,

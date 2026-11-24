@@ -17,7 +17,7 @@
   "Host.RotateCode": "새 코드",
   "Host.ClickToCopy": "클릭하여 복사",
   "Host.Copied": "복사됨",
-  "Host.ConfirmNote": "일회용 코드로 연결하면 확인 창이 표시되고, 고정 비밀번호로 연결하면 바로 들어오며 배너에는 평소처럼 세션이 표시됩니다.",
+  "Host.ConfirmNote": "일회용 코드나 고정 비밀번호로 연결하면 모든 권한으로 바로 들어옵니다. 코드 없이 기기 ID만으로 요청할 때만 확인을 요청합니다. 배너에는 평소처럼 세션이 표시됩니다.",
   "Host.NoAccessibility": "이 Mac에 손쉬운 사용 권한이 허용되지 않았습니다. 상대방은 화면을 보기만 할 수 있고 키보드와 마우스는 사용할 수 없습니다.",
   "Host.HowToGrant": "허용하는 방법…",
   "Host.PermissionGuide": "권한 설정 안내…",
@@ -43,7 +43,7 @@
   "Host.ListenEverywhereSummary": "모든 네트워크(로컬 네트워크 및 Tailscale), 포트 {0}",
   "Host.ListenOnSummary": "{0}에서만",
   "Host.Starting": "시작하는 중…",
-  "Host.HostingState": "켜짐: 상대방이 기기 ID 또는 아래 주소 중 하나를 입력한 다음 일회용 코드(사용자가 확인) 또는 고정 비밀번호(바로 연결)를 입력합니다",
+  "Host.HostingState": "켜짐: 상대방이 기기 ID 또는 아래 주소 중 하나를 입력한 다음 일회용 코드나 고정 비밀번호(바로 연결)를 입력하거나, 아무것도 입력하지 않습니다(사용자가 확인)",
   "Host.StoppedState": "꺼짐: 아무도 이 Mac에 연결할 수 없습니다",
   "Host.StoppedState.Windows": "꺼짐: 아무도 이 PC에 연결할 수 없습니다",
   "Host.ListenHint": "IP:포트 형식으로 입력하세요",
@@ -93,7 +93,7 @@
   "Host.FewerAddresses": "다른 주소 숨기기",
   "Host.FixedPassword": "고정 비밀번호",
   "Host.PasswordOff": "설정되지 않았습니다. 위의 일회용 코드로만 연결할 수 있습니다.",
-  "Host.PasswordOn": "설정되었습니다. 고정 비밀번호로는 묻지 않고 바로 연결되며, 일회용 코드는 계속 확인을 요청합니다.",
+  "Host.PasswordOn": "설정되었습니다. 고정 비밀번호도 일회용 코드와 마찬가지로 묻지 않고 바로 연결됩니다.",
   "Host.SetPassword": "설정",
   "Host.ChangePassword": "변경",
   "Host.ClearPassword": "지우기",
@@ -118,5 +118,5 @@
   "Host.ResetIdFailed": "기기 ID를 재설정할 수 없습니다: {0}",
   "Host.UsingTerminal": "“{0}”이(가) 이 Mac의 명령줄을 사용하고 있습니다",
   "Host.UsingTerminal.Windows": "“{0}”이(가) 이 PC의 명령줄을 사용하고 있습니다",
-  "Host.NoPairedDevices": "아직 저장된 기기가 없습니다. 고정 비밀번호로 로그인하면 기기가 저장되지 않습니다. 기기를 저장하려면 일회용 코드로 연결하고 허용할 때 ‘이 기기 기억’를 선택하세요. 그러면 다음부터 코드가 필요 없으며, 나중에 묻지 않고 연결하도록 설정할 수도 있습니다."
+  "Host.NoPairedDevices": "아직 저장된 기기가 없습니다. 일회용 코드나 고정 비밀번호로 로그인하면 바로 연결되며 기기는 저장되지 않습니다. 기기는 실행 중인 세션을 이어받는 연결의 확인 창에서만 저장할 수 있습니다."
 }
