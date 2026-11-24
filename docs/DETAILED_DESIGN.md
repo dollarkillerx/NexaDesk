@@ -584,6 +584,10 @@ M0 实测：若只按编码码率计算，120 fps 下每帧固定摊 4.17 ms，�
 - **本机**：控制端和被控端用不同的设备密钥，无法按指纹排除本机，所以宣告的地址全是本机地址的主机不列出。
 - **开关**：`--relay-only` 时不宣告，因为它不能透露直连地址。`--no-lan-discovery` 关闭宣告。App 设置“在局域网中显示本机”默认开启，下次开始共享时生效。控制端每 2 秒把变化的列表推给 UI（事件 `Lan`，编号 43）。
 - **macOS**：Info.plist 声明了 `NSBonjourServices`（`_nexadesk._udp`）和本地网络用途说明。真实组播测试（`discovery::tests::a_host_is_heard_and_then_forgotten`）默认忽略：它需要能承载组播的网络，并会触发“本地网络”权限提示。
+- **认出已保存的电脑（0.1.41）**：以前只按完全相同的地址、而且已配对才认得，所以按设备 ID 保存、存了密码的电脑出现在局域网里时，点“连接”仍要输码。现在用保存的公钥算出设备 ID（SHA-256(`nexa/1 device id` ‖ 公钥) 的前 16 字节，和 `DevicePublicKey::device_id` 相同），和 TXT 里的 `id` 比对，地址变了也认得；认不出再按地址比对。
+  - 桌面端（`ConnectViewModel.SavedFor`、`DeviceIdOf`）：有保存密码或已配对的，行上显示“已保存密码”或“已配对”，排在前面，点“连接”就在当前局域网地址上用保存的密码或配对登录。按设备 ID 保存的，连上后仍记在设备 ID 下，不会变成局域网地址（设备 ID 哪里都能用）。别的电脑按“输入码”，在这一行里输入一次性码或密码。Tailscale 列表里的电脑没有设备 ID，按地址比对，地址相同且存了密码的也一键连接。
+  - 列表为空时这一栏不再隐藏：显示“正在查找…”和找不到的常见原因（对方的两个开关、同一网络；Mac 上的“本地网络”权限；Windows 上的“公用网络”）。
+  - iOS（`LanBrowser.deviceId(ofHostKey:)`、`Screens.pairedHost(for:)`）：已配对的显示锁形图标、排在前面，点一下在当前地址用配对登录。iOS 不保存密码。TXT 检查和 Rust 一致：`v=1`，`id` 为 32 位小写十六进制，否则不列出。
 
 ## 5. 被控端进程
 
@@ -952,6 +956,14 @@ on_up(k):
 - **字符模式**：布局不同时建议开启。无 Ctrl/Alt/Cmd 的可打印键发 `TextInput`，依赖 `ToUnicodeEx` / `UCKeyTranslate` 解析。
 - **本地输入法**：组字在本地，提交后发 `TextInput`。
 - **IME 键映射**：`英数 ↔ 無変換`（IME 关），`かな ↔ 変換`（IME 开），作为可选规则组。
+
+- **输入法跟随（0.1.41，Mac 控制 Mac）**：会话期间，本机输入法一变（Caps Lock、Globe 键、⌃Space、菜单栏都算），就把新输入法的 ID（如 `com.apple.inputmethod.SCIM.ITABC`）放进有序的输入流发给被控端（`InputBody::InputSource`，字段 6），被控端选中同一个，之后打的字不会跑到切换前面。
+  - 控制端：在主线程监听 `kTISNotifySelectedKeyboardInputSourceChanged`，回调里读当前输入法（macOS 14 起 TIS 只能在主线程调用）。`nexa-client/src/real.rs` 的 `InputSourceWatcher`。
+  - Caps Lock：按下后它和之后的按键先等 0.3 秒。这期间本机输入法变了，说明这一下是用来切换的，不再把 Caps Lock 发过去，否则对方会进入大写锁定；没变就照常发出（`nexa-client/src/input.rs` 的 `decide_caps`）。
+  - 捕获开始后 0.5 秒内的变化不算（窗口自己的输入法回来了）；0.5 秒内重复的同一个输入法只发一次。
+  - 被控端：主线程被运行时占着，所以每次切换时起一个帮手进程（`nexa-agent select-input-source <ID>`），在它的主线程里用 `TISSelectInputSource` 选中，等它结束（通常约 60 毫秒，最多 2 秒）再处理后面的按键。只选已启用的输入法；对方没有的记一行日志。ID 先校验格式再交给帮手。`agent.log` 里每次切换都有一行 `input source: selected …`。
+  - 旧版被控端不认识这个字段，直接忽略。Windows 被控端暂时也忽略，以后可以对应到输入法的中英状态。
+  - 手动检查：`cargo run -p nexa-input --example input_source [ID]` 打印（并可选中）当前输入法。
 
 ### 7.7 实现修订
 

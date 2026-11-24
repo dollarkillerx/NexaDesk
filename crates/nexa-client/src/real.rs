@@ -54,6 +54,105 @@ fn forward(events: std::sync::mpsc::Receiver<CaptureEvent>, tx: Sender<InputCmd>
         });
 }
 
+/// Follows this Mac's keyboard input source: the system posts a distributed
+/// notification on every change, however it was made (Caps Lock, the Globe key, ⌃Space,
+/// the menu bar). TIS asserts that it is read on the main thread, so the observer is
+/// added and removed there, and its callback runs there.
+struct InputSourceWatcher(usize);
+
+/// What the observer's callback reaches, by pointer, for as long as it is registered.
+struct SourceWatch {
+    tx: Sender<InputCmd>,
+}
+
+type CFNotificationCenterRef = *const c_void;
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFNotificationCenterGetDistributedCenter() -> CFNotificationCenterRef;
+    fn CFNotificationCenterAddObserver(
+        center: CFNotificationCenterRef,
+        observer: *const c_void,
+        callback: extern "C" fn(
+            CFNotificationCenterRef,
+            *mut c_void,
+            *const c_void,
+            *const c_void,
+            *const c_void,
+        ),
+        name: *const c_void,
+        object: *const c_void,
+        suspension: isize,
+    );
+    fn CFNotificationCenterRemoveObserver(
+        center: CFNotificationCenterRef,
+        observer: *const c_void,
+        name: *const c_void,
+        object: *const c_void,
+    );
+}
+
+/// CFNotificationSuspensionBehaviorDeliverImmediately.
+const DELIVER_IMMEDIATELY: isize = 4;
+
+extern "C" fn on_input_source_changed(
+    _center: CFNotificationCenterRef,
+    observer: *mut c_void,
+    _name: *const c_void,
+    _object: *const c_void,
+    _info: *const c_void,
+) {
+    if observer.is_null() {
+        return;
+    }
+    // SAFETY: the observer is the `SourceWatch` registered with this callback, freed only
+    // after it is removed, on this same (main) thread.
+    let watch = unsafe { &*observer.cast::<SourceWatch>() };
+    if let Some(id) = nexa_input::platform::macos::current_input_source() {
+        let _ = watch.tx.send(InputCmd::InputSource(id));
+    }
+}
+
+impl InputSourceWatcher {
+    fn start(tx: Sender<InputCmd>) -> Self {
+        let watch = Box::into_raw(Box::new(SourceWatch { tx })) as usize;
+        DispatchQueue::main().exec_async(move || {
+            // SAFETY: registered on the main thread, so the callback runs there too; the
+            // pointer stays valid until `drop` removes it, also on the main thread.
+            unsafe {
+                CFNotificationCenterAddObserver(
+                    CFNotificationCenterGetDistributedCenter(),
+                    watch as *const c_void,
+                    on_input_source_changed,
+                    nexa_input::platform::macos::input_source_changed_notification(),
+                    std::ptr::null(),
+                    DELIVER_IMMEDIATELY,
+                );
+            }
+        });
+        Self(watch)
+    }
+}
+
+impl Drop for InputSourceWatcher {
+    fn drop(&mut self) {
+        let watch = self.0;
+        DispatchQueue::main().exec_async(move || {
+            // SAFETY: after the observer is removed nothing reaches the pointer, which is
+            // the box `start` made.
+            unsafe {
+                CFNotificationCenterRemoveObserver(
+                    CFNotificationCenterGetDistributedCenter(),
+                    watch as *const c_void,
+                    nexa_input::platform::macos::input_source_changed_notification(),
+                    std::ptr::null(),
+                );
+                drop(Box::from_raw(watch as *mut SourceWatch));
+            }
+        });
+    }
+}
+
 /// Starts the tap the first time capture is switched on.
 struct TapSource {
     tx: Sender<InputCmd>,
@@ -180,6 +279,10 @@ impl Deps for RealDeps {
 
     fn key_source(&self, tx: Sender<InputCmd>) -> Box<dyn KeySource> {
         Box::new(TapSource { tx, tap: None })
+    }
+
+    fn input_source_watcher(&self, tx: Sender<InputCmd>) -> Option<Box<dyn Send>> {
+        Some(Box::new(InputSourceWatcher::start(tx)))
     }
 
     fn fallback_key_source(&self, tx: Sender<InputCmd>) -> Option<Box<dyn KeySource>> {

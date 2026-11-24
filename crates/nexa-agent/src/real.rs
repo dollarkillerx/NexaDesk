@@ -74,6 +74,74 @@ impl<T: EventTarget + Send> InputSink for InjectorSink<T> {
     fn release_all(&mut self, now: Instant) {
         self.0.release_all(now);
     }
+    fn input_source(&mut self, id: &str) {
+        select_input_source(id);
+    }
+}
+
+/// How long the keys typed after a switch wait for it. The helper takes about 60 ms;
+/// the first start of a newly installed binary took a second.
+const SELECT_LIMIT: Duration = Duration::from_secs(2);
+
+/// Selects the input source the viewer's person switched to. TIS asserts that it runs
+/// on a main thread, and this one's is taken by the runtime, so a helper (this program,
+/// `select-input-source`) does it. Waiting for it keeps the switch in order with the keys
+/// typed after it.
+fn select_input_source(id: &str) {
+    use std::process::{Command, Stdio};
+    if !nexa_input::platform::macos::is_input_source_id(id) {
+        eprintln!("nexa-agent: input source: ignored a malformed ID");
+        return;
+    }
+    let started = Instant::now();
+    let child = std::env::current_exe().and_then(|exe| {
+        Command::new(exe)
+            .arg("select-input-source")
+            .arg(id)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+    });
+    let mut child = match child {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("nexa-agent: input source: could not start the helper: {e}");
+            return;
+        }
+    };
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => {
+                eprintln!(
+                    "nexa-agent: input source: selected {id} in {} ms",
+                    started.elapsed().as_millis()
+                );
+                return;
+            }
+            Ok(Some(_)) => {
+                let mut why = String::new();
+                if let Some(mut err) = child.stderr.take() {
+                    use std::io::Read;
+                    let _ = err.read_to_string(&mut why);
+                }
+                eprintln!(
+                    "nexa-agent: input source: could not select {id}: {}",
+                    why.trim()
+                );
+                return;
+            }
+            Ok(None) if started.elapsed() < SELECT_LIMIT => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok(None) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                eprintln!("nexa-agent: input source: selecting {id} took too long; stopped");
+                return;
+            }
+        }
+    }
 }
 
 struct GeneralClipboard(MacClipboardBackend);

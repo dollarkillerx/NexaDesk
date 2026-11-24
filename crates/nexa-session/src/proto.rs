@@ -243,6 +243,18 @@ pub enum InputBody {
     /// it asks for next waits for the action (`nexa_session::agent`).
     #[prost(message, tag = "5")]
     Mark(InputMark),
+    /// The viewer's person switched input source (ABC, Pinyin, …): the host selects the
+    /// same one, in order with the keys typed after it. A host that cannot ignores it.
+    #[prost(message, tag = "6")]
+    InputSource(InputSourceSelect),
+}
+
+#[derive(Clone, PartialEq, Eq, Message)]
+pub struct InputSourceSelect {
+    /// The macOS input source ID, e.g. `com.apple.keylayout.ABC` or
+    /// `com.apple.inputmethod.SCIM.ITABC`.
+    #[prost(string, tag = "1")]
+    pub id: String,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Message)]
@@ -253,7 +265,7 @@ pub struct InputMark {
 
 #[derive(Clone, PartialEq, Message)]
 pub struct InputMsg {
-    #[prost(oneof = "InputBody", tags = "1, 2, 3, 4, 5")]
+    #[prost(oneof = "InputBody", tags = "1, 2, 3, 4, 5, 6")]
     pub body: Option<InputBody>,
 }
 

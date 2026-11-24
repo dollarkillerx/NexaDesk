@@ -16,11 +16,12 @@ use std::{
 use bytes::Bytes;
 use nexa_clip::{EventClass, GateStats, Gen, InputGate, ReleaseReason};
 use nexa_input::{
-    FocusClass, Output, PhysButton, PhysKey, PhysWheel, RewriteMode, Rewriter, hid::Hid,
+    FocusClass, Output, PhysButton, PhysKey, PhysWheel, RewriteMode, Rewriter,
+    hid::{self, Hid},
 };
 use nexa_session::{
     clip::{ClipHandle, PasteNeed},
-    proto::{InputBody, InputMark, InputMsg},
+    proto::{InputBody, InputMark, InputMsg, InputSourceSelect},
 };
 use nexa_wire::{
     control::{ButtonEvent, KeyEvent, KeyStateSync, TextInput},
@@ -42,6 +43,14 @@ const RESEND_AFTER: [Duration; 2] = [Duration::from_millis(20), Duration::from_m
 /// Longest a paste may wait to learn whether the clipboard still has to arrive.
 const PASTE_QUERY_LIMIT: Duration = Duration::from_millis(30);
 const IDLE_WAIT: Duration = Duration::from_millis(100);
+/// How long a Caps Lock press, and the keys after it, wait to learn whether it switched
+/// the input source (macOS "Use Caps Lock to switch", a short press) or locked capitals.
+const CAPS_DECIDE: Duration = Duration::from_millis(300);
+/// After capture starts, an input-source change is the system's (a window's own source
+/// coming back with it), not the person's.
+const SOURCE_SETTLE: Duration = Duration::from_millis(500);
+/// The same source heard twice this close together is one switch.
+const SOURCE_REPEAT: Duration = Duration::from_millis(500);
 
 /// Everything the input thread reacts to.
 pub enum InputCmd {
@@ -71,7 +80,16 @@ pub enum InputCmd {
     PasteAnswered(u64, Option<Gen>),
     /// An agent's mark (`InputBody::Mark`): the host notes when it gets this far.
     Mark(u64),
+    /// This Mac's input source changed (`Deps::input_source_watcher`): its ID.
+    InputSource(String),
     Stop,
+}
+
+/// What waits behind a Caps Lock press until it is known whether that press switched
+/// the input source.
+enum Held {
+    Key(PhysKey),
+    Text(String),
 }
 
 /// Where the stream is drawn inside the view, to turn view pixels into stream pixels.
@@ -194,6 +212,10 @@ pub struct InputThreadConfig {
     pub cursor: Arc<Mutex<CursorState>>,
     /// Filled in when the thread ends.
     pub lock_stats: Arc<Mutex<LockStats>>,
+    /// Follows this Mac's input source (`Deps::input_source_watcher`), sending
+    /// `InputCmd::InputSource`; kept for as long as the thread runs. With it, Caps Lock
+    /// waits to learn whether it switched the source.
+    pub input_sources: Option<Box<dyn Send>>,
 }
 
 struct InputState {
@@ -211,6 +233,13 @@ struct InputState {
     lock_stats: LockStats,
     /// What the clipboard was last told about a paste being held.
     paste_waiting: bool,
+    /// When capture last started.
+    activated_at: Instant,
+    /// A Caps Lock press and what came after it, until `caps_until`.
+    held: Vec<Held>,
+    caps_until: Option<Instant>,
+    /// The input source last sent, and when.
+    last_source: Option<(String, Instant)>,
 }
 
 /// Game mode's pointer lock (§7.4). Held only while in game mode with input
@@ -403,6 +432,12 @@ impl InputState {
         if active == self.active {
             return;
         }
+        if !active {
+            // Leaving capture: what waited behind Caps Lock goes as it was.
+            self.decide_caps(None, now);
+        } else {
+            self.activated_at = now;
+        }
         self.active = active;
         if !active {
             // The mouse comes back before anything else.
@@ -516,9 +551,18 @@ impl InputState {
                 self.pointer.current.y = y;
             }
             InputCmd::Key(key) if self.active => {
-                let outputs = self.cfg.rewriter.on_key(key, self.focus);
-                self.emit(outputs, now);
+                if self.cfg.input_sources.is_some() && key.hid == hid::key::CAPS_LOCK && !key.repeat
+                {
+                    self.caps_until.get_or_insert(now + CAPS_DECIDE);
+                }
+                if self.caps_until.is_some() {
+                    self.held.push(Held::Key(key));
+                } else {
+                    let outputs = self.cfg.rewriter.on_key(key, self.focus);
+                    self.emit(outputs, now);
+                }
             }
+            InputCmd::InputSource(id) => self.on_input_source(id, now),
             InputCmd::ExactKey(key) if self.active => {
                 let outputs = self.cfg.rewriter.on_exact_key(key);
                 self.emit(outputs, now);
@@ -568,6 +612,9 @@ impl InputState {
                 self.ordered(InputBody::Mark(InputMark { id }), now, &mut released);
                 self.flush(&mut released);
             }
+            InputCmd::Text(utf8) if self.active && self.caps_until.is_some() => {
+                self.held.push(Held::Text(utf8));
+            }
             InputCmd::Text(utf8) if self.active => {
                 let mut released = Vec::new();
                 self.ordered(InputBody::Text(TextInput { utf8 }), now, &mut released);
@@ -613,8 +660,58 @@ impl InputState {
         }
     }
 
+    /// This Mac's input source changed: the host selects the same one. A Caps Lock press
+    /// waiting to be decided was the switch, not a capitals lock, so it is not sent.
+    fn on_input_source(&mut self, id: String, now: Instant) {
+        if !self.active || now < self.activated_at + SOURCE_SETTLE {
+            return;
+        }
+        let repeated = self
+            .last_source
+            .as_ref()
+            .is_some_and(|(last, at)| *last == id && now < *at + SOURCE_REPEAT);
+        if repeated {
+            return;
+        }
+        self.decide_caps(Some(id), now);
+    }
+
+    /// Ends a Caps Lock wait: with the source it switched to, the press is dropped and
+    /// the switch goes first; without one, everything goes as it was.
+    fn decide_caps(&mut self, switched: Option<String>, now: Instant) {
+        self.caps_until = None;
+        let held = std::mem::take(&mut self.held);
+        if let Some(id) = &switched {
+            self.last_source = Some((id.clone(), now));
+            let mut released = Vec::new();
+            self.ordered(
+                InputBody::InputSource(InputSourceSelect { id: id.clone() }),
+                now,
+                &mut released,
+            );
+            self.flush(&mut released);
+        }
+        for h in held {
+            match h {
+                Held::Key(k) if switched.is_some() && k.hid == hid::key::CAPS_LOCK => {}
+                Held::Key(k) => {
+                    let outputs = self.cfg.rewriter.on_key(k, self.focus);
+                    self.emit(outputs, now);
+                }
+                Held::Text(utf8) => {
+                    let mut released = Vec::new();
+                    self.ordered(InputBody::Text(TextInput { utf8 }), now, &mut released);
+                    self.flush(&mut released);
+                }
+            }
+        }
+    }
+
     fn wait_time(&self, now: Instant) -> Duration {
         let mut next = now + IDLE_WAIT;
+        if let Some(d) = self.caps_until {
+            next = next.min(d);
+        }
         if let Some(d) = self.gate.next_deadline() {
             next = next.min(d);
         }
@@ -628,6 +725,9 @@ impl InputState {
     }
 
     fn poll_timers(&mut self, now: Instant) {
+        if self.caps_until.is_some_and(|d| now >= d) {
+            self.decide_caps(None, now);
+        }
         let mut released = Vec::new();
         self.gate.poll(now, &mut released);
         self.flush(&mut released);
@@ -689,6 +789,10 @@ pub fn spawn(cfg: InputThreadConfig, rx: Receiver<InputCmd>) -> JoinHandle<Recei
         game: GameLock::default(),
         lock_stats: LockStats::default(),
         paste_waiting: false,
+        activated_at: Instant::now(),
+        held: Vec::new(),
+        caps_until: None,
+        last_source: None,
     };
     thread::Builder::new()
         .name("input-capture".into())

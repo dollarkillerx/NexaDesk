@@ -76,6 +76,12 @@ pub trait Deps: Send + Sync + 'static {
     fn is_agent(&self) -> bool {
         false
     }
+    /// Follows this machine's keyboard input source while the session lives: each change
+    /// is sent as `InputCmd::InputSource` with the source's ID, so the host can select the
+    /// same one (macOS only). The returned guard stops it when dropped.
+    fn input_source_watcher(&self, _tx: Sender<InputCmd>) -> Option<Box<dyn Send>> {
+        None
+    }
     /// A capture that works without Accessibility. Called on the main thread.
     fn fallback_key_source(&self, tx: Sender<InputCmd>) -> Option<Box<dyn KeySource>>;
     fn clipboard(&self) -> Result<Box<dyn ClipPlatform>, String>;

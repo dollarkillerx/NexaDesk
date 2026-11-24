@@ -131,6 +131,9 @@ impl InputSink for TrackingSink {
     fn apply_key_state(&mut self, pressed: &[u32], now: Instant) {
         self.inner.apply_key_state(pressed, now);
     }
+    fn input_source(&mut self, id: &str) {
+        self.inner.input_source(id);
+    }
     fn poll_timeout(&mut self, now: Instant) {
         self.inner.poll_timeout(now);
     }

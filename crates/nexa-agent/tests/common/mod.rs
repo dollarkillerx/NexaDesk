@@ -200,6 +200,7 @@ pub enum Injected {
     Text(String),
     Sync(Vec<u32>),
     ReleaseAll,
+    InputSource(String),
 }
 
 #[derive(Clone, Default)]
@@ -245,6 +246,9 @@ impl InputSink for FakeSink {
     fn poll_timeout(&mut self, _: Instant) {}
     fn release_all(&mut self, _: Instant) {
         lock(&self.0.0).push(Injected::ReleaseAll);
+    }
+    fn input_source(&mut self, id: &str) {
+        lock(&self.0.0).push(Injected::InputSource(id.to_owned()));
     }
 }
 

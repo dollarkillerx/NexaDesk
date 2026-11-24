@@ -9,6 +9,7 @@ mod capture;
 mod flags;
 mod focus;
 mod inject;
+mod input_source;
 mod pointer;
 mod tap;
 
@@ -18,6 +19,10 @@ pub use capture::{
 };
 pub use focus::{FocusWatcher, TERMINAL_BUNDLE_IDS, classify_bundle_id};
 pub use inject::{EventTarget, INJECTED_EVENT_MARKER, Injector, InjectorError, PidTarget};
+pub use input_source::{
+    current_input_source, input_source_changed_notification, is_input_source_id,
+    select_input_source,
+};
 pub use pointer::{MouseAssociation, PointerAccumulator, PointerCapture};
 
 #[cfg(not(test))]

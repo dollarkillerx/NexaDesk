@@ -87,6 +87,10 @@ impl Deps for FakeDeps {
     fn fallback_key_source(&self, _: Sender<InputCmd>) -> Option<Box<dyn KeySource>> {
         None
     }
+    /// As on a Mac: the tests send `InputCmd::InputSource` through the key channel.
+    fn input_source_watcher(&self, _: Sender<InputCmd>) -> Option<Box<dyn Send>> {
+        Some(Box::new(()))
+    }
     fn clipboard(&self) -> Result<Box<dyn ClipPlatform>, String> {
         Ok(Box::new(self.probe.clip.clone()))
     }
@@ -552,6 +556,89 @@ async fn keys_reach_the_host_in_order_and_capture_stops_with_the_session() {
         h.platform.injected.all().contains(&Injected::ReleaseAll)
     })
     .await;
+}
+
+/// Switching input source on this Mac (Caps Lock, the Globe key, the menu bar) selects
+/// the same source on the host, in order with the keys typed after it. A Caps Lock press
+/// that switched is not also sent as a capitals lock; one that did not is sent, late.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_host_follows_this_macs_input_source_and_caps_lock_is_not_doubled() {
+    let h = make_host(perms(true, true, false)).await;
+    let (viewer, session) = connected(&h, 1).await;
+    activate(&viewer, session).await;
+    let pinyin = "com.apple.inputmethod.SCIM.ITABC";
+    // Just after capture starts, a change is the window's own source coming back.
+    viewer
+        .keys()
+        .send(InputCmd::InputSource(pinyin.into()))
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+
+    // Caps Lock, a letter typed at once, then the switch the press made.
+    viewer.press(key::CAPS_LOCK, true);
+    viewer.press(key::CAPS_LOCK, false);
+    viewer.press(key::A, true);
+    viewer.press(key::A, false);
+    viewer
+        .keys()
+        .send(InputCmd::InputSource(pinyin.into()))
+        .unwrap();
+    until("switch and letter injected", WAIT, || {
+        h.platform.injected.keys().len() == 2
+    })
+    .await;
+    let seen: Vec<Injected> = h
+        .platform
+        .injected
+        .all()
+        .into_iter()
+        .filter(|i| matches!(i, Injected::Key { .. } | Injected::InputSource(_)))
+        .collect();
+    assert!(
+        matches!(&seen[..], [Injected::InputSource(id), Injected::Key { hid: a, down: true, .. }, Injected::Key { down: false, .. }] if id == pinyin && *a == key::A.0),
+        "the switch first, then the letter, and no Caps Lock: {seen:?}"
+    );
+
+    // A Caps Lock that switched nothing locks capitals: it goes, after a moment.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    viewer.press(key::CAPS_LOCK, true);
+    viewer.press(key::CAPS_LOCK, false);
+    viewer.press(key::B, true);
+    viewer.press(key::B, false);
+    until("caps lock and letter injected", WAIT, || {
+        h.platform.injected.keys().len() == 6
+    })
+    .await;
+    assert_eq!(
+        h.platform.injected.keys()[2..],
+        [
+            (key::CAPS_LOCK.0, true),
+            (key::CAPS_LOCK.0, false),
+            (key::B.0, true),
+            (key::B.0, false)
+        ]
+    );
+    // The same source again so soon is one switch, not two.
+    let switches = || {
+        h.platform
+            .injected
+            .all()
+            .iter()
+            .filter(|i| matches!(i, Injected::InputSource(_)))
+            .count()
+    };
+    let abc = "com.apple.keylayout.ABC";
+    viewer
+        .keys()
+        .send(InputCmd::InputSource(abc.into()))
+        .unwrap();
+    viewer
+        .keys()
+        .send(InputCmd::InputSource(abc.into()))
+        .unwrap();
+    until("ABC selected", WAIT, || switches() == 2).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(switches(), 2);
 }
 
 /// The iOS viewer counts as a Mac, so its keys follow the Mac→Windows rules. The

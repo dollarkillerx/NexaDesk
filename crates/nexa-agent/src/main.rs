@@ -33,6 +33,12 @@ fn main() {
         Some("set-password") => return finish(set_password()),
         Some("clear-password") => return finish(clear_password()),
         Some("reset-device-id") => return finish(reset_device_id()),
+        // Run by the agent itself: TIS wants a main thread, and the agent's is taken.
+        #[cfg(target_os = "macos")]
+        Some("select-input-source") => {
+            let id = std::env::args().nth(2).unwrap_or_default();
+            return finish(nexa_input::platform::macos::select_input_source(&id));
+        }
         _ => {}
     }
     if let Err(message) = run() {

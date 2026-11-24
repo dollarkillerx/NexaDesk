@@ -1374,6 +1374,7 @@ fn start_input(
             },
             cursor: session.cursor.clone(),
             lock_stats: session.lock_stats.clone(),
+            input_sources: core.deps.input_source_watcher(tx.clone()),
         },
         rx,
     );
