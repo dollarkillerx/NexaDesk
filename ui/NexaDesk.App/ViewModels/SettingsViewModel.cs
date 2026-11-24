@@ -24,10 +24,13 @@ public sealed partial class SettingsViewModel : ObservableObject
     readonly IServerDirectory? _directory;
     readonly IServerProbe _probe;
 
+    readonly IElevation _elevation;
+
     public SettingsViewModel(ISettingsStore store, ISavedPasswords? passwords = null, IServerDirectory? directory = null,
-        IServerProbe? probe = null)
+        IServerProbe? probe = null, IElevation? elevation = null)
     {
         _store = store;
+        _elevation = elevation ?? new NoElevation();
         _passwords = passwords;
         _directory = directory;
         _probe = probe ?? new NoProbe();
@@ -41,6 +44,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         _announceOnLan = loaded.AnnounceOnLan;
         _allowBrowsers = loaded.AllowBrowsers;
         _allowAgents = loaded.AllowAgents;
+        _runAsAdministrator = loaded.RunAsAdministrator;
         _startupLanguage = loaded.Language;
         LanguageOptions = [new LanguageOption("", L.Get("Settings.LanguageSystem")), .. L.Languages.Select(l => new LanguageOption(l.Code, l.Name))];
         _selectedLanguage = LanguageOptions.FirstOrDefault(o => o.Code == loaded.Language) ?? LanguageOptions[0];
@@ -69,6 +73,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         AllowBrowsers = AllowBrowsers,
         UseServerList = UseServerList,
         AllowAgents = AllowAgents,
+        RunAsAdministrator = RunAsAdministrator,
     });
 
     /// <summary>
@@ -192,6 +197,52 @@ public sealed partial class SettingsViewModel : ObservableObject
     /// </summary>
     [ObservableProperty]
     private bool _allowAgents;
+
+    /// <summary>Windows: the "Run as administrator" option is offered.</summary>
+    public bool ShowRunAsAdministrator => _elevation.IsSupported;
+
+    /// <summary>
+    /// Windows only: run NexaDesk as administrator, so the host can click and type into programs
+    /// that run as administrator (<see cref="IElevation"/>). Switched on, it restarts NexaDesk
+    /// elevated at once, which asks Windows (the UAC prompt); a no leaves it off. Opened by hand
+    /// later, NexaDesk asks again; started at login it does not, as nobody may be there to answer.
+    /// Switched off, it applies at the next start.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(RunAsAdministratorStatus))]
+    private bool _runAsAdministrator;
+
+    /// <summary>Why turning it on did not work (the UAC prompt was declined, say); null otherwise.</summary>
+    [ObservableProperty] private string? _runAsAdministratorError;
+
+    /// <summary>Whether this copy runs elevated, and what the setting will do.</summary>
+    public string? RunAsAdministratorStatus =>
+        !_elevation.IsSupported ? null
+        : _elevation.IsElevated ? L.Get(RunAsAdministrator ? "Main.RunAsAdminActive" : "Main.RunAsAdminOffLater")
+        : RunAsAdministrator ? L.Get("Main.RunAsAdminNotYet")
+        : null;
+
+    /// <summary>The elevated copy has started: this one should quit for it.</summary>
+    public event Action? QuitForElevatedCopy;
+
+    bool _reverting;
+
+    partial void OnRunAsAdministratorChanged(bool value)
+    {
+        Persist();
+        if (_reverting) return;
+        RunAsAdministratorError = null;
+        if (!value || !_elevation.IsSupported || _elevation.IsElevated) return;
+        if (_elevation.StartElevatedCopy() is { } why)
+        {
+            RunAsAdministratorError = why;
+            _reverting = true;
+            RunAsAdministrator = false;
+            _reverting = false;
+            return;
+        }
+        QuitForElevatedCopy?.Invoke();
+    }
 
     /// <summary>Raised after AllowAgents is saved.</summary>
     public event Action<bool>? AgentsChanged;

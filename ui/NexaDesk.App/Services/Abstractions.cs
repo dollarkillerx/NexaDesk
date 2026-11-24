@@ -151,10 +151,11 @@ public interface ILocalAddresses
 /// ResumeHosting: remote control is turned on at start. On by default (a fresh install, or a
 /// settings.json from before this field); the person stopping it switches it off until they
 /// start it again, and quitting or restarting to update leaves it as it was.
-/// AllowAgents: AI agents (nexa-mcp, docs/MCP.md §4.2) may ask to connect; off by default.</summary>
+/// AllowAgents: AI agents (nexa-mcp, docs/MCP.md §4.2) may ask to connect; off by default.
+/// RunAsAdministrator: Windows only, NexaDesk asks to run as administrator when opened (<see cref="IElevation"/>).</summary>
 public sealed record AppSettings(string SignalServer = "", bool AnnounceOnLan = true, string Language = "",
     bool AllowBrowsers = false, bool ResumeHosting = true, bool UseServerList = false, bool AllowAgents = false,
-    bool AiApps = false);
+    bool AiApps = false, bool RunAsAdministrator = false);
 
 /// <summary>An AI agent operating a device through NexaDesk: which AI app, which device.</summary>
 public sealed record AgentSessionInfo(string Client, string Device);

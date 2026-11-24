@@ -569,6 +569,15 @@
                     <CheckBox Name="AllowAgentsBox" Content="{l:T Main.AllowAgents}" IsChecked="{Binding Settings.AllowAgents}" />
                     <TextBlock Classes="muted" TextWrapping="Wrap" Margin="28,0,0,0" Text="{l:T Main.AllowAgentsTip}" />
                   </StackPanel>
+                  <!-- Windows: so the host can click and type into programs that run as administrator. -->
+                  <StackPanel Name="RunAsAdminSection" Spacing="2" IsVisible="{Binding Settings.ShowRunAsAdministrator}">
+                    <CheckBox Name="RunAsAdminBox" Content="{l:T Main.RunAsAdmin}" IsChecked="{Binding Settings.RunAsAdministrator}" />
+                    <TextBlock Classes="muted" TextWrapping="Wrap" Margin="28,0,0,0" Text="{l:T Main.RunAsAdminTip}" />
+                    <TextBlock Classes="muted" TextWrapping="Wrap" Margin="28,0,0,0" Text="{Binding Settings.RunAsAdministratorStatus}"
+                               IsVisible="{Binding Settings.RunAsAdministratorStatus, Converter={x:Static ObjectConverters.IsNotNull}}" />
+                    <TextBlock Classes="errorText" TextWrapping="Wrap" Margin="28,0,0,0" Text="{Binding Settings.RunAsAdministratorError}"
+                               IsVisible="{Binding Settings.RunAsAdministratorError, Converter={x:Static ObjectConverters.IsNotNull}}" />
+                  </StackPanel>
                   <StackPanel DataContext="{Binding Host}" x:DataType="vm:HostViewModel">
                     <!-- Stopped: where to listen. Every network by default; one address is the exception. -->
                     <Expander Name="ListenExpander" HorizontalAlignment="Stretch">

@@ -19,11 +19,25 @@ static class Program
         velopack.Run();
         CrashLog.Install();
         // Windows, unlike macOS, starts a second copy of an app: hand over to the running one.
-        if (OperatingSystem.IsWindows() && !SingleInstance.TryBecomeFirst()) return 0;
+        // The elevated copy that "Run as administrator" starts waits for this one to quit instead.
+        var elevatedRestart = args.Contains("--elevated-restart");
+        if (OperatingSystem.IsWindows() && !SingleInstance.TryBecomeFirst(waitForPrevious: elevatedRestart)) return 0;
         App.StartInBackground = OperatingSystem.IsWindows() && args.Contains(RunKeyLoginItem.BackgroundArg);
         // Before any window: text is looked up when views are built.
         var settings = new SettingsStore(Path.Combine(AgentLink.DefaultDataDir(), "settings.json")).Load();
         L.Init(settings.Language, SystemLanguages.Preferred());
+#pragma warning disable CA1416 // inside the IsWindows check
+        // "Run as administrator": opened by hand, NexaDesk asks Windows (the UAC prompt) and makes
+        // way for the elevated copy. Not at login: nobody may be there to answer, and remote control
+        // must start all the same. A no carries on without administrator rights.
+        if (OperatingSystem.IsWindows() && settings.RunAsAdministrator && !elevatedRestart && !App.StartInBackground
+            && !WindowsElevation.IsProcessElevated())
+        {
+            SingleInstance.Release();
+            if (WindowsElevation.Start(["--elevated-restart", .. args]) == null) return 0;
+            if (!SingleInstance.TryBecomeFirst()) return 0;
+        }
+#pragma warning restore CA1416
         return BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
     }
 
@@ -46,14 +60,44 @@ static class SingleInstance
     static Mutex? _mutex;
     static EventWaitHandle? _show;
 
-    /// <summary>True for the first copy; a later one wakes the first and gets false.</summary>
-    public static bool TryBecomeFirst()
+    /// <summary>True for the first copy; a later one wakes the first and gets false. With
+    /// <paramref name="waitForPrevious"/>, a copy that is quitting for this one is waited for.</summary>
+    public static bool TryBecomeFirst(bool waitForPrevious = false)
     {
-        _mutex = new Mutex(initiallyOwned: true, MutexName, out var first);
-        _show = new EventWaitHandle(false, EventResetMode.AutoReset, ShowEventName);
-        if (first) return true;
-        _show.Set();
-        return false;
+        try
+        {
+            _mutex = new Mutex(initiallyOwned: true, MutexName, out var first);
+            _show = new EventWaitHandle(false, EventResetMode.AutoReset, ShowEventName);
+            if (first) return true;
+            if (waitForPrevious)
+            {
+                try
+                {
+                    if (_mutex.WaitOne(TimeSpan.FromSeconds(20))) return true;
+                }
+                catch (AbandonedMutexException)
+                {
+                    return true; // it quit without letting go: it is ours now
+                }
+            }
+            _show.Set();
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // A copy running as administrator owns them, and this one may not touch them.
+            return false;
+        }
+    }
+
+    /// <summary>Lets the next copy be first: this one is making way for an elevated one.</summary>
+    public static void Release()
+    {
+        try { _mutex?.ReleaseMutex(); } catch (ApplicationException) { }
+        _mutex?.Dispose();
+        _show?.Dispose();
+        _mutex = null;
+        _show = null;
     }
 
     /// <summary>Calls <paramref name="show"/> (on a background thread) whenever another copy asks.</summary>

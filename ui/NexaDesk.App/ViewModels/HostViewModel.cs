@@ -1093,14 +1093,14 @@ public sealed partial class MainViewModel : ObservableObject
         Func<DateTimeOffset>? now = null, ISettingsStore? settings = null, ILoginItem? loginItem = null,
         IKeymapService? keymap = null, IViewerPrefs? viewerPrefs = null, ISavedPasswords? passwords = null,
         IAppUpdater? updater = null, IServerTrust? serverTrust = null, IServerDirectory? serverDirectory = null, IServerProbe? serverProbe = null,
-        IAgentServer? agentServer = null)
+        IAgentServer? agentServer = null, IElevation? elevation = null)
     {
         _keymap = keymap;
         _core = core;
         DeviceName = deviceName;
         settings ??= new MemorySettings();
         _settings = settings;
-        Settings = new SettingsViewModel(settings, passwords, serverDirectory, serverProbe);
+        Settings = new SettingsViewModel(settings, passwords, serverDirectory, serverProbe, elevation);
         Tailscale = new TailscaleViewModel(windows);
         Connect = new ConnectViewModel(core, recent, windows, now, () => Settings.SavedServer, Tailscale, viewerPrefs, passwords,
             () => Settings.SavedSecret);
@@ -1120,6 +1120,8 @@ public sealed partial class MainViewModel : ObservableObject
         LoginItem = new LoginItemViewModel(loginItem ?? new NoLoginItem());
         Tray = new TrayViewModel(Host);
         Updates = new UpdatesViewModel(updater ?? NullAppUpdater.Instance, () => Tray.QuitCommand.Execute(null));
+        // Quitting as for an update: remote control resumes in the elevated copy.
+        Settings.QuitForElevatedCopy += () => Tray.QuitCommand.Execute(null);
         About = new AboutViewModel(windows);
         Mcp = McpViewModel.ForThisApp(windows, agentServer, settings, deviceName);
         ServerTrust = new ServerTrustFlow(serverTrust ?? new NoServerTrust(), windows);

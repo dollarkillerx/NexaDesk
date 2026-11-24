@@ -96,6 +96,12 @@
 
 - **没有 Windows 机器就无法验收**：截屏、编码、输入这些只能在真机上确认。
 - **硬件编码器差异**：各家显卡驱动的 MF 编码器对低延迟参数的支持不一样，可能需要按厂商调参，最后退回软件编码。
+- **以管理员身份运行（可选，0.1.43）**：被控端没以管理员身份运行时，Windows 会丢掉发往管理员程序（任务管理器、安装程序、需要管理员权限的设置）的点击和按键（见上表“输入注入”）。设置里新增“以管理员身份运行”，默认关闭（`settings.json` 的 `RunAsAdministrator`，`Services/Elevation.cs`）。
+  - 打开时立刻以管理员身份重新启动 NexaDesk（`runas`，会弹 UAC 确认），旧的这份像更新时那样退出，“允许控制”照旧恢复；新的一份带 `--elevated-restart`，等旧的退出后再接手（单实例互斥量最多等 20 秒）。选了“否”就保持关闭，并写明原因。
+  - 之后自己打开 NexaDesk 时都会请求；开机自动启动（`--background`）时不请求，因为那时可能没人确认，而远程控制必须照常开始，这时设置里会写明“当前没有以管理员身份运行”。
+  - 整个 NexaDesk（界面、被控端 nexa-agent）都以管理员身份运行，所以对方打开的命令行也是管理员的。管理员窗口里，从资源管理器拖文件进来会被 Windows 挡住，可以用“发送文件”。
+  - 管理员身份的那份持有的互斥量和事件，普通身份的 NexaDesk 打不开：这时再双击 NexaDesk 不会弹出窗口，从通知区域图标打开即可。
+  - UAC 弹窗和锁屏仍然操作不了，那需要以 SYSTEM 运行的服务（第 6 阶段）。
 - **UAC 和锁屏**：第 6 阶段之前，被控端看不到也操作不了 UAC 弹窗和锁屏，这是 Windows 的安全限制：它们在安全桌面上，只有 SYSTEM 能截取（`DuplicateOutput` 返回 E_ACCESSDENIED，-2147024891），输入也到不了。以前截屏一失效就只重建一次，这时安全桌面还在，重建失败，会话就断开了。现在这种失败算“暂时截不到”（`MediaError::Unavailable`），截屏线程每 0.5 秒再试一次（`nexa-session/src/host.rs` 的 `UNAVAILABLE_RETRY`），会话停在最后一帧，UAC 关掉或解锁后画面自动恢复；`agent.log` 里会记下开始等待（`capture: the screen cannot be captured for now …`）和恢复（`capture: the screen can be captured again after N s`）。别的重建失败照旧结束会话。UAC 弹窗开着时新发起的连接还是连不上（一开始就截不到屏幕）。
 - **安装包签名**：不签名也能装，但会被 SmartScreen 拦一下。
 
