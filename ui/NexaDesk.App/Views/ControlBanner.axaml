@@ -19,7 +19,8 @@
   </Window.Styles>
   <StackPanel>
     <!-- Folded: one small tab for everyone, still saying sessions are running and for how long.
-         A click unfolds it; dragging moves it (code-behind tells the two apart). -->
+         A click unfolds it; dragging moves it (code-behind tells the two apart); × hides it
+         until someone new connects or the menu bar shows it again. -->
     <Border Name="ExpandBannerButton" IsVisible="{Binding IsCollapsed}" Cursor="Hand"
             ToolTip.Tip="{l:T Banner.ExpandOrMove}" MinHeight="28" Padding="12,0" Background="Transparent"
             BorderBrush="#FF832B" BorderThickness="0,0,0,3">
@@ -27,6 +28,9 @@
         <Ellipse Width="8" Height="8" Fill="#FF832B" VerticalAlignment="Center" />
         <TextBlock Name="FoldedText" Text="{Binding FoldedText}" Foreground="#F4F4F4" FontFamily="{DynamicResource MonoFont}" FontSize="12" VerticalAlignment="Center" />
         <TextBlock Text="▾" Foreground="#C6C6C6" FontSize="12" VerticalAlignment="Center" />
+        <Button Name="HideBannerButton" Content="×" Command="{Binding HideCommand}" ToolTip.Tip="{l:T Banner.HideTip}"
+                Background="Transparent" BorderThickness="0" Padding="4,0" MinHeight="0" FontSize="14"
+                Foreground="#C6C6C6" VerticalAlignment="Center" Cursor="Hand" />
       </StackPanel>
     </Border>
     <!-- Unfolded: a row per person, one fold button for all. Orange 40 is the one loud colour. -->

@@ -42,6 +42,7 @@
   "App.LibraryError": "Could not load libnexa_client: {0}",
   "Tray.Open": "Open NexaDesk",
   "Tray.Disconnect": "End current session",
+  "Tray.ShowBanner": "Show the session indicator",
   "Tray.Quit": "Quit NexaDesk (stops remote control)",
   "Tray.HostingAt": "Remote control on · {0}",
   "Tray.HostingId": "Remote control on · ID {0}",

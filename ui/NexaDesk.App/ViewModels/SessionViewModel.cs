@@ -15,6 +15,11 @@ public interface IWindowService
     /// <summary>One banner per person connected, stacked at the top of the screen.</summary>
     void ShowBanner(BannerViewModel banner);
     void HideBanner(BannerViewModel banner);
+    /// <summary>The banner's × hid it for the sessions running now (a new one shows it again).</summary>
+    bool BannersHidden => false;
+    /// <summary>Shows the hidden banner again (the menu bar's "Show indicator").</summary>
+    void ShowBanners() { }
+    event Action? BannersHiddenChanged { add { } remove { } }
     void ShowPermissionGuide(PermissionGuideViewModel guide);
     void ShowDiagnostics(DiagnosticsViewModel diagnostics);
     void ShowKeyboardSettings(KeyboardSettingsViewModel settings);

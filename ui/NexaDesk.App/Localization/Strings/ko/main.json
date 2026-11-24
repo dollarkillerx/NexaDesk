@@ -42,6 +42,7 @@
   "App.LibraryError": "libnexa_client를 불러올 수 없습니다: {0}",
   "Tray.Open": "NexaDesk 열기",
   "Tray.Disconnect": "현재 세션 종료",
+  "Tray.ShowBanner": "세션 표시 보이기",
   "Tray.Quit": "NexaDesk 종료(원격 제어 중지)",
   "Tray.HostingAt": "원격 제어 켜짐 · {0}",
   "Tray.HostingId": "원격 제어 켜짐 · ID {0}",

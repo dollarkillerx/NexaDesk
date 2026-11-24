@@ -215,6 +215,42 @@ public class HeadlessUiTests
         Assert.Empty(_windows.OpenWindows.OfType<ControlBanner>());
     }
 
+    /// <summary>The folded tab covered the top of the screen a remote viewer looks at: its ×
+    /// hides it until someone new connects, and the menu bar offers it back.</summary>
+    [AvaloniaFact]
+    public void The_folded_banner_can_be_hidden_until_someone_new_connects()
+    {
+        var first = new BannerViewModel(Samples.Session(7), _link, DateTimeOffset.Now);
+        _windows.ShowBanner(first);
+        var banner = Open<ControlBanner>();
+        var tray = new TrayViewModel(new HostViewModel(_link, new FakeProcess(), new FakePermissions(), _windows,
+            new FakeAddresses(), "Mac"), _windows);
+        _windows.BannerStack.IsCollapsed = true;
+        Pump();
+        RenderTestsShim.Save(banner, "banner-tab", Avalonia.Styling.ThemeVariant.Dark);
+        Assert.False(tray.ShowBannerCommand.CanExecute(null));
+
+        Click(banner, Find<Button>(banner, "HideBannerButton"));
+        Assert.False(banner.IsVisible, "hidden");
+        Assert.True(_windows.BannersHidden);
+        Assert.True(tray.BannerHidden);
+        Assert.True(tray.ShowBannerCommand.CanExecute(null));
+
+        // The menu bar shows it again.
+        tray.ShowBannerCommand.Execute(null);
+        Pump();
+        Assert.True(banner.IsVisible);
+        Assert.False(tray.BannerHidden);
+
+        // Hidden again, someone new connecting brings it back: nobody is controlled unseen.
+        Click(banner, Find<Button>(banner, "HideBannerButton"));
+        Assert.False(banner.IsVisible);
+        _windows.ShowBanner(new BannerViewModel(Samples.Session(8), _link, DateTimeOffset.Now));
+        Pump();
+        Assert.True(banner.IsVisible);
+        Assert.False(_windows.BannersHidden);
+    }
+
     [AvaloniaFact]
     public void Several_people_share_one_banner_and_one_fold()
     {

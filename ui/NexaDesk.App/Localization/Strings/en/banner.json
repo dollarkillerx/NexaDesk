@@ -5,5 +5,7 @@
   "Banner.Expand": "Show the banner",
   "Banner.Folded": "{0} people · {1}",
   "Banner.ExpandOrMove": "Click to show who is connected; drag to move",
+  "Banner.HideTip": "Hide this indicator (it comes back when someone else connects; the menu bar icon can show it again)",
+  "Banner.HideTip.Windows": "Hide this indicator (it comes back when someone else connects; the notification-area icon can show it again)",
   "Banner.AgentBadge": "AI"
 }

@@ -5,5 +5,7 @@
   "Banner.Expand": "展開提示列",
   "Banner.Folded": "{0} 人 · {1}",
   "Banner.ExpandOrMove": "點選展開檢視連線者；拖動可移動位置",
+  "Banner.HideTip": "隱藏這個提示列（有新的連線時會重新出現；也可以從選單列圖示重新顯示）",
+  "Banner.HideTip.Windows": "隱藏這個提示列（有新的連線時會重新出現；也可以從通知區域圖示重新顯示）",
   "Banner.AgentBadge": "AI"
 }

@@ -42,6 +42,7 @@
   "App.LibraryError": "libnexa_clientを読み込めません：{0}",
   "Tray.Open": "NexaDeskを開く",
   "Tray.Disconnect": "現在のセッションを切断",
+  "Tray.ShowBanner": "セッションのインジケータを表示",
   "Tray.Quit": "NexaDeskを終了（操作の許可を停止）",
   "Tray.HostingAt": "操作を許可中 · {0}",
   "Tray.HostingId": "操作を許可中 · ID {0}",

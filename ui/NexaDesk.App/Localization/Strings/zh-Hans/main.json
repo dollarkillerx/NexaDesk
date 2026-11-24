@@ -42,6 +42,7 @@
   "App.LibraryError": "无法加载 libnexa_client：{0}",
   "Tray.Open": "打开 NexaDesk",
   "Tray.Disconnect": "断开当前会话",
+  "Tray.ShowBanner": "显示会话提示条",
   "Tray.Quit": "退出 NexaDesk（停止允许控制）",
   "Tray.HostingAt": "允许控制中 · {0}",
   "Tray.HostingId": "允许控制中 · ID {0}",

@@ -49,10 +49,25 @@ public sealed partial class BannerStackViewModel : ObservableObject
     };
 
     public BannerStackViewModel() =>
-        Sessions.CollectionChanged += (_, _) => OnPropertyChanged(nameof(FoldedText));
+        Sessions.CollectionChanged += (_, e) =>
+        {
+            OnPropertyChanged(nameof(FoldedText));
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add) IsHidden = false;
+        };
 
     [RelayCommand]
     private void ToggleCollapsed() => IsCollapsed = !IsCollapsed;
+
+    /// <summary>
+    /// The folded tab's ×: hidden for the sessions running now. It covered the top of the screen
+    /// a remote viewer was looking at. Someone new connecting shows it again (§9.3: nobody is
+    /// controlled unseen), and the menu bar still says a session is running, can show it again
+    /// and can disconnect.
+    /// </summary>
+    [ObservableProperty] private bool _isHidden;
+
+    [RelayCommand]
+    private void Hide() => IsHidden = true;
 
     public void Tick(DateTimeOffset now)
     {
@@ -1118,7 +1133,7 @@ public sealed partial class MainViewModel : ObservableObject
         _permissions = permissions;
         _windows = windows;
         LoginItem = new LoginItemViewModel(loginItem ?? new NoLoginItem());
-        Tray = new TrayViewModel(Host);
+        Tray = new TrayViewModel(Host, windows);
         Updates = new UpdatesViewModel(updater ?? NullAppUpdater.Instance, () => Tray.QuitCommand.Execute(null));
         // Quitting as for an update: remote control resumes in the elevated copy.
         Settings.QuitForElevatedCopy += () => Tray.QuitCommand.Execute(null);

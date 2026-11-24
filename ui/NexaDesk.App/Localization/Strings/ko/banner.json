@@ -5,5 +5,7 @@
   "Banner.Expand": "배너 펼치기",
   "Banner.Folded": "{0}명 · {1}",
   "Banner.ExpandOrMove": "클릭하면 연결된 사람을 표시하고, 드래그하면 이동합니다",
+  "Banner.HideTip": "이 표시를 숨기기(새 연결이 있으면 다시 나타나며, 메뉴 막대 아이콘에서도 다시 표시할 수 있음)",
+  "Banner.HideTip.Windows": "이 표시를 숨기기(새 연결이 있으면 다시 나타나며, 알림 영역 아이콘에서도 다시 표시할 수 있음)",
   "Banner.AgentBadge": "AI"
 }

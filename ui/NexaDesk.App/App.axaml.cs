@@ -196,10 +196,12 @@ static class MenuBar
         var show = new NativeMenuItem { Header = L.Get("Tray.Open"), Command = vm.ShowCommand };
         var hosting = new NativeMenuItem { Header = vm.HostingLabel, Command = vm.ToggleHostingCommand };
         var disconnect = new NativeMenuItem { Header = L.Get("Tray.Disconnect"), Command = vm.DisconnectCommand };
+        // Only while the banner's × has it hidden.
+        var banner = new NativeMenuItem { Header = L.Get("Tray.ShowBanner"), Command = vm.ShowBannerCommand, IsVisible = vm.BannerHidden };
         var quit = new NativeMenuItem { Header = L.Get("Tray.Quit"), Command = vm.QuitCommand };
         var menu = new NativeMenu();
         foreach (var item in new NativeMenuItemBase[]
-                 { status, new NativeMenuItemSeparator(), show, hosting, disconnect, new NativeMenuItemSeparator(), quit })
+                 { status, new NativeMenuItemSeparator(), show, banner, hosting, disconnect, new NativeMenuItemSeparator(), quit })
             menu.Items.Add(item);
         // macOS: a template image the menu bar tints; Windows: the app icon in colour.
         var icon = OperatingSystem.IsWindows() ? "avares://NexaDesk/Assets/app.ico" : "avares://NexaDesk/Assets/tray.png";
@@ -215,6 +217,7 @@ static class MenuBar
         {
             status.Header = vm.StatusText;
             hosting.Header = vm.HostingLabel;
+            banner.IsVisible = vm.BannerHidden;
             tray.ToolTipText = vm.ToolTip;
         };
         TrayIcon.SetIcons(app, [tray]);

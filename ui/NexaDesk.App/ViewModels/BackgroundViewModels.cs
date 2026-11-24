@@ -65,10 +65,18 @@ public sealed partial class LoginItemViewModel : ObservableObject
 public sealed partial class TrayViewModel : ObservableObject
 {
     readonly HostViewModel _host;
+    readonly IWindowService? _windows;
 
-    public TrayViewModel(HostViewModel host)
+    public TrayViewModel(HostViewModel host, IWindowService? windows = null)
     {
         _host = host;
+        _windows = windows;
+        if (windows != null)
+            windows.BannersHiddenChanged += () =>
+            {
+                BannerHidden = windows.BannersHidden;
+                ShowBannerCommand.NotifyCanExecuteChanged();
+            };
         host.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName is nameof(HostViewModel.State) or nameof(HostViewModel.DeviceId) or nameof(HostViewModel.Banner))
@@ -85,6 +93,13 @@ public sealed partial class TrayViewModel : ObservableObject
     [ObservableProperty] private string _toolTip = "NexaDesk";
     [ObservableProperty] private string _hostingLabel = "";
     [ObservableProperty] private bool _hasSession;
+    /// <summary>The banner's × hid it: the menu offers it back.</summary>
+    [ObservableProperty] private bool _bannerHidden;
+
+    bool CanShowBanner() => BannerHidden;
+
+    [RelayCommand(CanExecute = nameof(CanShowBanner))]
+    private void ShowBanner() => _windows?.ShowBanners();
 
     void Update()
     {

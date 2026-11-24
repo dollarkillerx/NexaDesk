@@ -42,6 +42,7 @@
   "App.LibraryError": "無法載入 libnexa_client：{0}",
   "Tray.Open": "開啟 NexaDesk",
   "Tray.Disconnect": "中斷目前工作階段",
+  "Tray.ShowBanner": "顯示工作階段提示列",
   "Tray.Quit": "退出 NexaDesk（停止允許控制）",
   "Tray.HostingAt": "允許控制中 · {0}",
   "Tray.HostingId": "允許控制中 · ID {0}",

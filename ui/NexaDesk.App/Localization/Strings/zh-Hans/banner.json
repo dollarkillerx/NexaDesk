@@ -5,5 +5,7 @@
   "Banner.Expand": "展开提示条",
   "Banner.Folded": "{0} 人 · {1}",
   "Banner.ExpandOrMove": "点击展开查看连接者；拖动可移动位置",
+  "Banner.HideTip": "隐藏这个提示条（有新的连接时会重新出现；也可以从菜单栏图标重新显示）",
+  "Banner.HideTip.Windows": "隐藏这个提示条（有新的连接时会重新出现；也可以从通知区域图标重新显示）",
   "Banner.AgentBadge": "AI"
 }

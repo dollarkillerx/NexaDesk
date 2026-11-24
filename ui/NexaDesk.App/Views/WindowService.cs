@@ -22,6 +22,19 @@ public sealed class WindowService : IWindowService
     public ControlBanner? Banner => _banner;
     public BannerStackViewModel BannerStack => _stack;
 
+    public WindowService() =>
+        _stack.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName != nameof(BannerStackViewModel.IsHidden)) return;
+            if (_stack.IsHidden) _banner?.Hide();
+            else _banner?.Show();
+            BannersHiddenChanged?.Invoke();
+        };
+
+    public bool BannersHidden => _banner != null && _stack.IsHidden;
+    public void ShowBanners() => _stack.IsHidden = false;
+    public event Action? BannersHiddenChanged;
+
     void Track(Window w)
     {
         _open.Add(w);
@@ -185,8 +198,9 @@ public sealed class WindowService : IWindowService
         _banner.MayClose = true;
         _banner.Close();
         _banner = null;
-        // The next first session starts unfolded.
+        // The next first session starts unfolded, and shown.
         _stack.IsCollapsed = false;
+        _stack.IsHidden = false;
     }
 
     public void ShowPermissionGuide(PermissionGuideViewModel guide)
