@@ -1,3 +1,4 @@
+using NexaDesk.Localization;
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
 using Avalonia.Styling;
@@ -29,12 +30,23 @@ public class LanDiscoveryTests
             try
             {
                 var client = new FakeClient();
-                var main = new MainViewModel(client, new MemoryRecent(), new FakeLink(), new FakeProcess(), new FakePermissions(),
+                var recent = new MemoryRecent(new RecentDevice("192.168.1.5:47800", "工作室 Mac mini", Samples.HostKey,
+                    Samples.T0.ToUnixTimeSeconds() - 60));
+                var main = new MainViewModel(client, recent, new FakeLink(), new FakeProcess(), new FakePermissions(),
                     new RecordingWindows(), new FakeAddresses("192.168.1.35", "100.101.22.7"), "王小明的 MacBook Pro", () => Samples.T0);
-                client.Raise(new ReadyEvent(0, Samples.ViewerKey, [], ""));
+                client.Raise(new ReadyEvent(0, Samples.ViewerKey, [new KnownHost(Samples.HostKey, "工作室 Mac mini", 0)], ""));
+                // Empty first: looking, and why nothing may be found.
+                client.Raise(new LanDevicesEvent(0, []));
+                var empty = new MainWindow { DataContext = main };
+                empty.Show();
+                RenderTestsShim.Save(empty, "main-lan-empty", theme);
+                Assert.True(empty.FindControl<StackPanel>("LanEmpty")!.IsVisible);
+                empty.Close();
                 client.Raise(new LanDevicesEvent(0, [
-                    new LanDevice("工作室 Mac mini", "192.168.1.20:47800", "macos", "0123456789abcdef0123456789abcdef"),
+                    new LanDevice("会议室 PC", "192.168.1.31:47800", "windows", "0123456789abcdef0123456789abcdef"),
+                    new LanDevice("工作室 Mac mini", "192.168.1.20:47800", "macos", HostDeviceId),
                 ]));
+                main.Connect.Lan[1].IsEnteringCode = true;
                 client.Raise(new TailnetDevicesEvent(0, [
                     new TailnetDevice("家里的 iMac", "100.64.0.2:47800", false, "macOS", "imac.tail1234.ts.net"),
                 ]));
@@ -63,37 +75,139 @@ public class LanDiscoveryTests
         Assert.Equal(new LanDevice("a", "", "", ""), Assert.Single(withExtra.Devices));
     }
 
+    /// <summary>nexa-auth's DevicePublicKey::device_id of Samples.HostKey.</summary>
+    const string HostDeviceId = "30e9e595e05745406321cb47c3e68adc";
+
     [Fact]
-    public void Lan_devices_fill_the_address_or_connect_a_paired_one()
+    public void A_hosts_device_id_is_made_from_its_key_as_the_core_makes_it()
+    {
+        Assert.Equal(HostDeviceId, ConnectViewModel.DeviceIdOf(Samples.HostKey));
+        Assert.Equal("", ConnectViewModel.DeviceIdOf("not hex"));
+    }
+
+    [Fact]
+    public void The_lan_section_shows_while_looking_and_says_why_nothing_is_found()
     {
         var client = new FakeClient();
+        var vm = new ConnectViewModel(client, new MemoryRecent(), new RecordingWindows(), () => Samples.T0);
+        Assert.False(vm.ShowLan, "hidden until the core is looking");
+        client.Raise(new LanDevicesEvent(0, []));
+        Assert.True(vm.ShowLan);
+        Assert.True(vm.LanEmpty);
+        client.Raise(new LanDevicesEvent(0, [new LanDevice("a", "192.168.1.6:47800", "", "")]));
+        Assert.True(vm.ShowLan);
+        Assert.False(vm.LanEmpty);
+    }
+
+    [Fact]
+    public void A_saved_host_is_known_by_its_device_id_at_a_new_address_and_connects_in_one_click()
+    {
+        var client = new FakeClient();
+        // Paired at an address it no longer has.
         var recent = new MemoryRecent(
             new RecentDevice("192.168.1.5:47800", "studio", Samples.HostKey, Samples.T0.ToUnixTimeSeconds() - 60));
         var vm = new ConnectViewModel(client, recent, new RecordingWindows(), () => Samples.T0);
-        Assert.False(vm.HasLan);
         client.Raise(new ReadyEvent(0, Samples.ViewerKey, [new KnownHost(Samples.HostKey, "studio", 0)], ""));
         client.Raise(new LanDevicesEvent(0, [
-            new LanDevice("studio", "192.168.1.5:47800", "macos", "0123456789abcdef0123456789abcdef"),
-            new LanDevice("", "192.168.1.6:47800", "", "fedcba9876543210fedcba9876543210"),
+            new LanDevice("aaa unknown", "192.168.1.9:47800", "", "fedcba9876543210fedcba9876543210"),
+            new LanDevice("studio", "192.168.1.77:47800", "macos", HostDeviceId),
         ]));
-        Assert.True(vm.HasLan);
-        Assert.Equal("192.168.1.5:47800 · macos", vm.Lan[0].Detail);
-        Assert.Equal("192.168.1.6:47800", vm.Lan[1].Name);
-
-        var focused = false;
-        vm.FocusCodeRequested += () => focused = true;
-        vm.Lan[1].ConnectCommand.Execute(null);
-        Assert.Empty(client.Requests);
-        Assert.Equal("192.168.1.6:47800", vm.Address);
-        Assert.True(focused);
+        // Saved ones first, with what they have.
+        Assert.Equal("studio", vm.Lan[0].Name);
+        Assert.True(vm.Lan[0].IsPaired && vm.Lan[0].OneClick);
+        Assert.Equal(L.Get("Connect.Paired"), vm.Lan[0].Badge);
+        Assert.False(vm.Lan[1].HasBadge);
+        Assert.True(vm.Lan[1].NeedsCode);
 
         vm.Lan[0].ConnectCommand.Execute(null);
         var req = Assert.Single(client.Requests);
-        Assert.Equal("192.168.1.5:47800", req.Address);
+        Assert.Equal("192.168.1.77:47800", req.Address);
         Assert.Equal(new ConnectAuth.KnownHost(Samples.HostKey), req.Auth);
+    }
 
-        client.Raise(new LanDevicesEvent(0, []));
-        Assert.False(vm.HasLan);
+    [Fact]
+    public async Task A_saved_password_signs_in_at_the_lan_address()
+    {
+        var client = new FakeClient();
+        var passwords = new MemorySavedPasswords();
+        passwords.Kept[Samples.HostKey] = "correct horse battery";
+        var recent = new MemoryRecent(new RecentDevice("123456789", "studio", Samples.HostKey,
+            Samples.T0.ToUnixTimeSeconds() - 60, "", HasPassword: true));
+        var vm = new ConnectViewModel(client, recent, new RecordingWindows(), () => Samples.T0, passwords: passwords);
+        client.Raise(new LanDevicesEvent(0, [new LanDevice("studio", "192.168.1.77:47800", "macos", HostDeviceId)]));
+        Assert.Equal(L.Get("Connect.PasswordSaved"), vm.Lan[0].Badge);
+        await vm.Lan[0].ConnectCommand.ExecuteAsync(null);
+        var req = Assert.Single(client.Requests);
+        Assert.Equal("192.168.1.77:47800", req.Address);
+        Assert.Equal(new ConnectAuth.Password("correct horse battery"), req.Auth);
+    }
+
+    [Fact]
+    public async Task A_host_saved_by_device_id_stays_filed_under_it_after_a_lan_connection()
+    {
+        var client = new FakeClient();
+        var passwords = new MemorySavedPasswords();
+        passwords.Kept[Samples.HostKey] = "correct horse battery";
+        var recent = new MemoryRecent(new RecentDevice("370794910", "GitrhubXnoMac-mini", Samples.HostKey,
+            Samples.T0.ToUnixTimeSeconds() - 60, "", HasPassword: true));
+        var vm = new ConnectViewModel(client, recent, new RecordingWindows(), () => Samples.T0, passwords: passwords);
+        client.Raise(new LanDevicesEvent(0, [new LanDevice("GitrhubXnoMac-mini", "192.168.0.70:47800", "macos", HostDeviceId)]));
+        await vm.Lan[0].ConnectCommand.ExecuteAsync(null);
+        var req = Assert.Single(client.Requests);
+        Assert.Equal("192.168.0.70:47800", req.Address);
+        client.Raise(new ConnectedEvent(req.Tag, Samples.HostKey, "GitrhubXnoMac-mini", new Permissions(true, true, true), 2, false));
+        // Still one entry, still the device ID (it works from anywhere), password kept.
+        var entry = Assert.Single(vm.Recent);
+        Assert.Equal("370794910", entry.Device.Address);
+        Assert.True(entry.HasPassword);
+    }
+
+    [Fact]
+    public async Task A_listed_address_saved_with_a_password_connects_in_one_click()
+    {
+        var client = new FakeClient();
+        var passwords = new MemorySavedPasswords();
+        passwords.Kept[Samples.HostKey] = "correct horse battery";
+        var recent = new MemoryRecent(new RecentDevice("100.104.200.119:47800", "mini", Samples.HostKey,
+            Samples.T0.ToUnixTimeSeconds() - 60, "", HasPassword: true));
+        var vm = new ConnectViewModel(client, recent, new RecordingWindows(), () => Samples.T0, passwords: passwords);
+        client.Raise(new TailnetDevicesEvent(0, [new TailnetDevice("mini", "100.104.200.119:47800", true, "macOS", "mini.ts.net")]));
+        vm.Tailnet[0].ConnectCommand.Execute(null);
+        await Task.Yield();
+        var req = Assert.Single(client.Requests);
+        Assert.Equal(new ConnectAuth.Password("correct horse battery"), req.Auth);
+    }
+
+    [Fact]
+    public async Task An_unknown_host_takes_its_code_in_its_own_row()
+    {
+        var client = new FakeClient();
+        var vm = new ConnectViewModel(client, new MemoryRecent(), new RecordingWindows(), () => Samples.T0);
+        client.Raise(new LanDevicesEvent(0, [new LanDevice("", "192.168.1.6:47800", "", "fedcba9876543210fedcba9876543210")]));
+        var row = vm.Lan[0];
+        Assert.Equal("192.168.1.6:47800", row.Name);
+        await row.ConnectCommand.ExecuteAsync(null);
+        Assert.True(row.IsEnteringCode);
+        Assert.Empty(client.Requests);
+        Assert.Equal("", vm.Address);
+
+        row.Code = "nope";
+        Assert.False(row.ConnectWithCodeCommand.CanExecute(null));
+        row.Code = "K7QM-2XPA";
+        row.ConnectWithCodeCommand.Execute(null);
+        var req = Assert.Single(client.Requests);
+        Assert.Equal("192.168.1.6:47800", req.Address);
+        Assert.IsType<ConnectAuth.Code>(req.Auth);
+        Assert.False(row.IsEnteringCode);
+        Assert.Equal("", row.Code);
+
+        // Cancelling closes the box without connecting.
+        await row.ConnectCommand.ExecuteAsync(null);
+        row.Code = "K7QM";
+        row.CancelCodeCommand.Execute(null);
+        Assert.False(row.IsEnteringCode);
+        Assert.Equal("", row.Code);
+        Assert.Single(client.Requests);
     }
 
     [Fact]

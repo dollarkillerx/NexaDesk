@@ -77,14 +77,21 @@ struct ConnectView: View {
                         Text("Looking for computers sharing NexaDesk on this network…")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
-                    ForEach(lan.hosts) { host in
+                    // Paired ones first: a tap connects them.
+                    ForEach(lan.hosts.sorted { (pairedHost(for: $0) != nil ? 0 : 1) < (pairedHost(for: $1) != nil ? 0 : 1) }) { host in
+                        let paired = pairedHost(for: host)
                         Button {
                             pick(host)
                         } label: {
                             HStack {
                                 Image(systemName: host.os.lowercased().contains("win") ? "pc" : "desktopcomputer")
                                     .foregroundStyle(.secondary)
-                                Text(host.name).foregroundStyle(.primary)
+                                Text(paired?.title ?? host.name).foregroundStyle(.primary)
+                                if paired != nil {
+                                    Image(systemName: "lock.fill").imageScale(.small)
+                                        .foregroundStyle(.secondary)
+                                        .accessibilityLabel("Paired")
+                                }
                                 Spacer()
                                 if resolving == host.id { ProgressView() }
                             }
@@ -322,16 +329,28 @@ struct ConnectView: View {
         }
     }
 
-    /// A host heard on the LAN: its address goes in the form, then the code or password.
+    /// The saved host a heard one is, if it is paired: by the device ID its key gives, so a
+    /// new address on the LAN is still known (the desktop's ConnectViewModel.SavedFor).
+    private func pairedHost(for host: LanHost) -> RecentHost? {
+        recents.hosts.first {
+            core.pairedKeys.contains($0.hostKey) && LanBrowser.deviceId(ofHostKey: $0.hostKey) == host.id
+        }
+    }
+
+    /// A host heard on the LAN: a paired one connects at the address it has now; any other
+    /// has its address put in the form, then the code or password.
     private func pick(_ host: LanHost) {
         resolving = host.id
         Task {
             let resolved = await LanBrowser.resolve(host)
             resolving = nil
             if let resolved {
-                // Paired before at this address: no code needed (the desktop's UseAddress).
-                if let known = recents.hosts.first(where: { $0.address == resolved && core.pairedKeys.contains($0.hostKey) }) {
-                    open(known)
+                if let known = pairedHost(for: host)
+                    ?? recents.hosts.first(where: { $0.address == resolved && core.pairedKeys.contains($0.hostKey) }) {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    address = resolved
+                    core.connect(address: resolved, signalServer: "", serverPassword: "", secret: "",
+                                 knownHost: known.hostKey)
                     return
                 }
                 address = resolved

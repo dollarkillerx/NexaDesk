@@ -1,9 +1,10 @@
+import CryptoKit
 import Foundation
 import Network
 
 /// A NexaDesk host announced on this network.
 struct LanHost: Identifiable, Equatable {
-    let id: String          // the host's device ID (TXT `id`), else the service name
+    let id: String          // the host's device ID (TXT `id`): 32 lowercase hex
     let name: String        // TXT `n`
     let os: String          // TXT `os`
     let endpoint: NWEndpoint
@@ -45,20 +46,45 @@ final class LanBrowser: ObservableObject {
         hosts = []
     }
 
+    /// A record the core would take (crates/nexa-net/src/discovery.rs): format 1 and a
+    /// device ID of 32 lowercase hex digits. Anything else is not a NexaDesk host.
+    nonisolated static func host(fromTXT txt: [String: String], serviceName: String, endpoint: NWEndpoint) -> LanHost? {
+        guard txt["v"] == "1", let id = txt["id"], isDeviceId(id) else { return nil }
+        // A display name is the peer's own text: no control characters, and short.
+        let name = (txt["n"] ?? serviceName).filter { !$0.isNewline && $0.unicodeScalars.allSatisfy { !CharacterSet.controlCharacters.contains($0) } }
+        return LanHost(id: id, name: String(name.prefix(64)), os: txt["os"] ?? "", endpoint: endpoint)
+    }
+
+    nonisolated static func isDeviceId(_ s: String) -> Bool {
+        s.count == 32 && s.allSatisfy { ("0"..."9").contains($0) || ("a"..."f").contains($0) }
+    }
+
+    /// A host's device ID from its public key (hex), as nexa-auth's `DevicePublicKey::device_id`:
+    /// the first 16 bytes of SHA-256("nexa/1 device id" ‖ key), in lowercase hex. Nil for a key
+    /// that is not hex. It is how a saved host is known again when its address has changed.
+    nonisolated static func deviceId(ofHostKey hex: String) -> String? {
+        guard hex.count % 2 == 0, !hex.isEmpty else { return nil }
+        var key = Data(capacity: hex.count / 2)
+        var at = hex.startIndex
+        while at < hex.endIndex {
+            let next = hex.index(at, offsetBy: 2)
+            guard let byte = UInt8(hex[at..<next], radix: 16) else { return nil }
+            key.append(byte)
+            at = next
+        }
+        var hasher = SHA256()
+        hasher.update(data: Data("nexa/1 device id".utf8))
+        hasher.update(data: key)
+        return hasher.finalize().prefix(16).map { String(format: "%02x", $0) }.joined()
+    }
+
     nonisolated private static func host(from result: NWBrowser.Result) -> LanHost? {
         guard case let .service(serviceName, _, _, _) = result.endpoint else { return nil }
         var txt: [String: String] = [:]
         if case let .bonjour(record) = result.metadata {
             txt = record.dictionary
         }
-        // A display name is the peer's own text: no control characters, and short.
-        let name = (txt["n"] ?? serviceName).filter { !$0.isNewline && $0.unicodeScalars.allSatisfy { !CharacterSet.controlCharacters.contains($0) } }
-        return LanHost(
-            id: txt["id"] ?? serviceName,
-            name: String(name.prefix(64)),
-            os: txt["os"] ?? "",
-            endpoint: result.endpoint
-        )
+        return host(fromTXT: txt, serviceName: serviceName, endpoint: result.endpoint)
     }
 
     /// The host's address and port, for `ConnectRequest.address`: IPv4 if it has one,

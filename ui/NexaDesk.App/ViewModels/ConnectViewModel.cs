@@ -92,16 +92,59 @@ public sealed partial class TailnetDeviceViewModel(ConnectViewModel owner, Tailn
     private void Connect() => owner.UseTailnet(this);
 }
 
-/// <summary>A NexaDesk host heard on the LAN (§4.11). Unverified: connecting checks it as for a typed address.</summary>
-public sealed partial class LanDeviceViewModel(ConnectViewModel owner, LanDevice device) : ObservableObject
+/// <summary>A NexaDesk host heard on the LAN (§4.11). Unverified: connecting checks it as for a typed address.
+/// <paramref name="saved"/> is the saved connection it matches, by device ID (so a new IP address is still
+/// recognised) or else by address. A saved one with a kept password or a pairing connects in one click; any
+/// other takes its code in the row itself.</summary>
+public sealed partial class LanDeviceViewModel(ConnectViewModel owner, LanDevice device, RecentDevice? saved, bool paired)
+    : ObservableObject
 {
     public LanDevice Device { get; } = device;
-    public string Name => string.IsNullOrWhiteSpace(Device.Name) ? Device.Address : Device.Name;
+    public RecentDevice? Saved { get; } = saved;
+    public bool IsPaired { get; } = paired;
+    public bool HasPassword => Saved is { HasPassword: true };
+    /// <summary>Signs in by itself: a kept password or a pairing.</summary>
+    public bool OneClick => HasPassword || IsPaired;
+    public bool NeedsCode => !OneClick;
+    public string Name => Saved is { Label.Length: > 0 } s ? s.Label
+        : string.IsNullOrWhiteSpace(Device.Name) ? Device.Address : Device.Name;
     public string Address => Device.Address;
     public string Detail => string.IsNullOrEmpty(Device.Os) ? Device.Address : $"{Device.Address} · {Device.Os}";
+    /// <summary>"已保存密码" or "已配对"; null when it is not saved.</summary>
+    public string? Badge => HasPassword ? L.Get("Connect.PasswordSaved") : IsPaired ? L.Get("Connect.Paired") : null;
+    public bool HasBadge => Badge != null;
+
+    /// <summary>The code box in the row is open.</summary>
+    [ObservableProperty] private bool _isEnteringCode;
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(ConnectWithCodeCommand))]
+    private string _code = "";
 
     [RelayCommand]
-    private void Connect() => owner.UseAddress(Device.Address);
+    private async Task Connect()
+    {
+        if (OneClick && Saved != null) await owner.ConnectSavedAsync(Saved, IsPaired, Device.Address);
+        else IsEnteringCode = true;
+    }
+
+    bool CanConnectWithCode() => Texts.SignInFor(Code) != null;
+
+    [RelayCommand(CanExecute = nameof(CanConnectWithCode))]
+    private void ConnectWithCode()
+    {
+        if (Texts.SignInFor(Code) is not { } signIn) return;
+        owner.ConnectLan(Device.Address, signIn);
+        Code = "";
+        IsEnteringCode = false;
+    }
+
+    [RelayCommand]
+    private void CancelCode()
+    {
+        Code = "";
+        IsEnteringCode = false;
+    }
 }
 
 /// <summary>"连接到设备": address, one-time code, recent devices, and the attempt in flight.</summary>
@@ -115,6 +158,9 @@ public sealed partial class ConnectViewModel : ObservableObject
     string? _passwordToKeep;
     /// <summary>The saved connection whose kept password this attempt uses.</summary>
     RecentDevice? _usingKept;
+    /// <summary>The saved connection this attempt reaches at another address (heard on the LAN or the
+    /// tailnet). A device ID it was saved under stays its address: it works from anywhere.</summary>
+    RecentDevice? _savedElsewhere;
     readonly IWindowService _windows;
     readonly Func<DateTimeOffset> _now;
     readonly Func<string> _signalServer;
@@ -133,6 +179,12 @@ public sealed partial class ConnectViewModel : ObservableObject
     public bool HasTailnet => Tailnet.Count > 0;
     public ObservableCollection<LanDeviceViewModel> Lan { get; } = new();
     public bool HasLan => Lan.Count > 0;
+    /// <summary>The core is looking (it has sent a list, even an empty one): the section shows, with
+    /// "looking…" and why nothing may be found while the list is empty.</summary>
+    public bool ShowLan => _lanHeard != null;
+    public bool LanEmpty => _lanHeard != null && Lan.Count == 0;
+    /// <summary>The last list the core sent; null until it sends one.</summary>
+    IReadOnlyList<LanDevice>? _lanHeard;
     public IReadOnlyCollection<SessionViewModel> Sessions => _sessions.Values;
 
     /// <summary>This Mac's Tailscale; recommended for anything beyond the LAN.</summary>
@@ -219,6 +271,7 @@ public sealed partial class ConnectViewModel : ObservableObject
 
     void RebuildRecent()
     {
+        RebuildLan();
         Recent.Clear();
         var now = _now();
         foreach (var r in _recent)
@@ -228,6 +281,43 @@ public sealed partial class ConnectViewModel : ObservableObject
     }
 
     bool IsPaired(string key) => key.Length > 0 && _paired.Contains(key);
+
+    /// <summary>The LAN list with what is saved for each, saved ones first.</summary>
+    void RebuildLan()
+    {
+        if (_lanHeard == null) return;
+        var rows = _lanHeard.Select(d =>
+            {
+                var saved = SavedFor(d);
+                return new LanDeviceViewModel(this, d, saved, saved != null && IsPaired(saved.HostKey));
+            })
+            .OrderBy(r => r.OneClick ? 0 : r.Saved != null ? 1 : 2)
+            .ThenBy(r => r.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        Lan.Clear();
+        foreach (var r in rows) Lan.Add(r);
+        OnPropertyChanged(nameof(HasLan));
+        OnPropertyChanged(nameof(ShowLan));
+        OnPropertyChanged(nameof(LanEmpty));
+    }
+
+    /// <summary>The saved connection a heard host is: by the device ID its key gives, else by address.</summary>
+    RecentDevice? SavedFor(LanDevice d) =>
+        _recent.FirstOrDefault(r => r.HostKey.Length > 0 && d.DeviceId.Length > 0
+                                    && string.Equals(DeviceIdOf(r.HostKey), d.DeviceId, StringComparison.OrdinalIgnoreCase))
+        ?? _recent.FirstOrDefault(r => r.Address == d.Address);
+
+    /// <summary>A host's device ID from its public key, as nexa-auth's <c>DevicePublicKey::device_id</c>:
+    /// the first 16 bytes of SHA-256("nexa/1 device id" ‖ key), in lowercase hex. Empty for a key that is not hex.</summary>
+    internal static string DeviceIdOf(string hostKeyHex)
+    {
+        byte[] key;
+        try { key = Convert.FromHexString(hostKeyHex); }
+        catch (FormatException) { return ""; }
+        var prefix = System.Text.Encoding.ASCII.GetBytes("nexa/1 device id");
+        var digest = System.Security.Cryptography.SHA256.HashData([.. prefix, .. key]);
+        return Convert.ToHexString(digest, 0, 16).ToLowerInvariant();
+    }
 
     bool CanConnect() => !IsConnecting && Texts.NormalizeTarget(Address) != null && SignIn() != null;
 
@@ -255,6 +345,35 @@ public sealed partial class ConnectViewModel : ObservableObject
         if (address == null || signIn == null) return;
         Start(address, signIn);
         if (IsConnecting && RememberPassword && signIn is ConnectAuth.Password p) _passwordToKeep = p.Value;
+    }
+
+    /// <summary>A saved connection heard on the LAN, at the address it is at now: its kept password,
+    /// else its pairing.</summary>
+    internal async Task ConnectSavedAsync(RecentDevice saved, bool paired, string address)
+    {
+        if (IsConnecting) return;
+        if (saved.HasPassword && await _passwords.LoadAsync(saved.PasswordAccount) is { } kept)
+        {
+            if (IsConnecting) return;
+            Start(address, new ConnectAuth.Password(kept));
+            if (IsConnecting) (_usingKept, _savedElsewhere) = (saved, saved);
+            return;
+        }
+        if (paired && saved.HostKey.Length > 0)
+        {
+            Start(address, new ConnectAuth.KnownHost(saved.HostKey));
+            if (IsConnecting) _savedElsewhere = saved;
+            return;
+        }
+        FillForCode(address);
+    }
+
+    /// <summary>A LAN host with the code or password typed in its row.</summary>
+    internal void ConnectLan(string address, ConnectAuth signIn)
+    {
+        if (IsConnecting) return;
+        Error = null;
+        Start(address, signIn);
     }
 
     internal async Task ConnectRecentAsync(RecentDeviceViewModel device)
@@ -323,16 +442,23 @@ public sealed partial class ConnectViewModel : ObservableObject
     /// <summary>A tailnet device: a paired one connects at once, anything else needs its code.</summary>
     internal void UseTailnet(TailnetDeviceViewModel device) => UseAddress(device.Address);
 
-    /// <summary>A listed ip:port: a paired one connects at once, anything else needs its code.</summary>
+    /// <summary>A listed ip:port: one saved at this address with a kept password or a pairing connects at
+    /// once, anything else needs its code.</summary>
     internal void UseAddress(string address)
     {
         if (IsConnecting) return;
-        var known = _recent.FirstOrDefault(r => r.Address == address && IsPaired(r.HostKey));
+        var known = _recent.FirstOrDefault(r => r.Address == address && (r.HasPassword || IsPaired(r.HostKey)));
         if (known != null)
         {
-            Start(known.Address, new ConnectAuth.KnownHost(known.HostKey));
+            _ = ConnectSavedAsync(known, IsPaired(known.HostKey), address);
             return;
         }
+        FillForCode(address);
+    }
+
+    /// <summary>The address in the form, and the cursor in the code box.</summary>
+    void FillForCode(string address)
+    {
         Address = address;
         Code = "";
         Error = null;
@@ -384,6 +510,7 @@ public sealed partial class ConnectViewModel : ObservableObject
         ProgressText = "";
         _passwordToKeep = null;
         _usingKept = null;
+        _savedElsewhere = null;
     }
 
     public void OnClientEvent(ClientEvent ev)
@@ -403,9 +530,8 @@ public sealed partial class ConnectViewModel : ObservableObject
         }
         if (ev is LanDevicesEvent lan)
         {
-            Lan.Clear();
-            foreach (var d in lan.Devices) Lan.Add(new LanDeviceViewModel(this, d));
-            OnPropertyChanged(nameof(HasLan));
+            _lanHeard = lan.Devices;
+            RebuildLan();
             return;
         }
         if (_pending is { } p && p.Tag == ev.Tag)
@@ -423,6 +549,7 @@ public sealed partial class ConnectViewModel : ObservableObject
         _paired.Clear();
         foreach (var h in ready.Hosts) _paired.Add(h.Key);
         foreach (var r in Recent) r.IsPaired = IsPaired(r.HostKey);
+        RebuildLan();
     }
 
     void OnPendingEvent((ulong Tag, ISession Session, string Address) p, ClientEvent ev)
@@ -463,6 +590,7 @@ public sealed partial class ConnectViewModel : ObservableObject
                 if (d.Reason == DisconnectReason.SignalServer && ServerTrustFlow.IsCertificateProblem(d.Message))
                     SignalCertificateProblem?.Invoke(_signalServer());
                 _usingKept = null;
+                _savedElsewhere = null;
                 break;
             case WarningEvent w:
                 ProgressText = Messages.Warning(w);
@@ -504,6 +632,10 @@ public sealed partial class ConnectViewModel : ObservableObject
 
     void Remember(string address, ConnectedEvent c)
     {
+        // Reached on the LAN or the tailnet, it stays filed under the device ID it was saved with.
+        if (_savedElsewhere is { } saved && saved.HostKey == c.HostKey && Texts.NormalizeDeviceId(saved.Address) != null)
+            address = saved.Address;
+        _savedElsewhere = null;
         if (c.PairedNow && c.HostKey.Length > 0) _paired.Add(c.HostKey);
         // The person's name for it and its kept password stay with it.
         var before = _recent.FirstOrDefault(r => r.Address == address || (c.HostKey.Length > 0 && r.HostKey == c.HostKey));
