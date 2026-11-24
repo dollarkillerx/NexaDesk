@@ -9,7 +9,8 @@ using NexaDesk.ViewModels;
 namespace NexaDesk.Views;
 
 /// <summary>
-/// The session toolbar (§10.3): an owned, borderless, topmost window kept at the top
+/// The session toolbar (§10.3): an owned, borderless window (not topmost: it covered the main
+/// window and every other app) kept at the top
 /// centre of the session window, because nothing can be drawn over the native video.
 /// </summary>
 public partial class ToolbarWindow : Window

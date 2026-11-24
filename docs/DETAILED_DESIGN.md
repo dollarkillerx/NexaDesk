@@ -965,6 +965,8 @@ on_up(k):
   - 旧版被控端不认识这个字段，直接忽略。Windows 被控端暂时也忽略，以后可以对应到输入法的中英状态。
   - 手动检查：`cargo run -p nexa-input --example input_source [ID]` 打印（并可选中）当前输入法。
   - 修订（0.1.42）：0.1.41 里捕获会吞掉所有按键，包括 🌐 Globe 键。被吞掉后本机根本不切换，也就没有变化可跟随，按了两边都没反应（日语键盘 MacBook 控制英文键盘 Mac mini 时实测）。现在切换输入法的键（Caps Lock、Globe/Fn、日语键盘的英数和かな）在捕获时也交给本机系统处理（`capture.rs` 的 `switches_input_source`），本机切换后，被控端跟着选中同一个。Caps Lock、英数、かな照旧也作为按键发给被控端，Windows 被控端的输入法要用。Globe 键在系统设置里如果设成“显示表情与符号”，会在本机弹出表情面板。
+  - 修订（0.1.43）：0.1.42 实测仍然不行。MacBook 的 `viewer.log` 显示，在会话窗口里按 🌐 时，系统的输入法切换小窗口会短暂抢走会话窗口的键盘焦点，切换没有生效，MacBook 始终停在简体拼音，没有东西可跟随。改为：这几个键照旧被捕获（不交给本机），在被控端做它们本来的事——🌐 单独按下再松开：切到下一个输入法（本机的 🌐 设成“切换输入法”时才这样，`AppleFnUsageType` 为 1 或未设）；英数：切到英文布局（优先 ABC 这类 `keylayout`）；かな：切到日语输入法（第一个语言为 `ja`、不是 ASCII 的，即平假名）。`InputSourceSelect.action`（字段 2：`Select`、`Next`、`Ascii`、`Japanese`）。被控端的帮手是 `nexa-agent input-source next|ascii|japanese|<ID>`，在主线程里列出已启用、可选的键盘输入法（`TISCreateInputSourceList`），算出目标再选中，打印选中后的输入法，`agent.log` 记为 `input source: <动作>: now <ID> (N ms)`。英数、かな 照旧也作为按键发出，给 Windows 被控端用。在 Mac mini 上实测：かな → 日语，英数 → ABC，🌐 依次 → 拼音 → 日语 → ABC。0.1.41/0.1.42 的被控端不认识这几个动作。
+
 
 ### 7.7 实现修订
 
@@ -1218,7 +1220,7 @@ public sealed class VideoHost : NativeControlHost
 SessionWindow（无透明）
  └─ VideoHost（填满）
 
-ToolbarWindow（Owner = SessionWindow，无边框，Topmost，跟随位置）
+ToolbarWindow（Owner = SessionWindow，无边框，跟随位置；0.1.43 起不再 Topmost：收起后的小标签和工具条原来浮在所有窗口之上，挡住主窗口和别的应用，现在只在自己的会话窗口之上，随它一起退到后面；小标签上加了 ×，可以隐藏，按 ⌃⌥⌘G / Ctrl+Alt+G 重新打开工具条）
 HudWindow（同上，鼠标穿透）
 ```
 

@@ -74,6 +74,7 @@
   "Toolbar.MenuSession": "Session",
   "Toolbar.Collapse": "Fold",
   "Toolbar.ExpandOrMove": "Click to unfold the toolbar ({0}); drag to move",
+  "Toolbar.HideTab": "Hide this tab ({0} brings the toolbar back)",
   "Toolbar.CollapseTip": "Folds the toolbar into a small tab. Click the tab, press {0}, or use the Session menu to unfold it.",
   "Toolbar.MenuExpand": "Unfold Toolbar",
   "Toolbar.MenuCollapse": "Fold Toolbar"

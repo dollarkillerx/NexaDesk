@@ -74,6 +74,7 @@
   "Toolbar.MenuSession": "工作階段",
   "Toolbar.Collapse": "收起",
   "Toolbar.ExpandOrMove": "點選展開工具列（{0}）；拖動可移動位置",
+  "Toolbar.HideTab": "隱藏這個標籤（按 {0} 可重新開啟工具列）",
   "Toolbar.CollapseTip": "把工具列收起成一個小標籤：點標籤、按 {0}，或用選單列的「工作階段」選單都能展開。",
   "Toolbar.MenuExpand": "展開工具列",
   "Toolbar.MenuCollapse": "收起工具列"

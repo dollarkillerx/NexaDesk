@@ -74,6 +74,7 @@
   "Toolbar.MenuSession": "会话",
   "Toolbar.Collapse": "收起",
   "Toolbar.ExpandOrMove": "点击展开工具条（{0}）；拖动可移动位置",
+  "Toolbar.HideTab": "隐藏这个标签（按 {0} 可重新打开工具条）",
   "Toolbar.CollapseTip": "把工具条收起成一个小标签：点标签、按 {0}，或用菜单栏的“会话”菜单都能展开。",
   "Toolbar.MenuExpand": "展开工具条",
   "Toolbar.MenuCollapse": "收起工具条"

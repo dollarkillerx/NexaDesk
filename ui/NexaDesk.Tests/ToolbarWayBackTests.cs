@@ -91,6 +91,44 @@ public class ToolbarWayBackTests
         Assert.Empty(_windows.OpenWindows);
     }
 
+    /// <summary>The tab covered the main window and other apps; now its × hides it, and the
+    /// shortcut brings the toolbar back. Neither window is topmost any more.</summary>
+    [AvaloniaFact]
+    public void The_tab_can_be_hidden_and_neither_toolbar_window_covers_other_apps()
+    {
+        var vm = Session(new FakeSession(13));
+        _windows.ShowSession(vm);
+        var window = Open<SessionWindow>();
+        var toolbar = Open<ToolbarWindow>();
+        var handle = Open<ToolbarHandleWindow>();
+        window.Activate();
+        Pump();
+        Assert.False(toolbar.Topmost);
+        Assert.False(handle.Topmost);
+        Assert.Same(window, handle.Owner ?? window);
+
+        vm.CollapseToolbarCommand.Execute(null);
+        Pump();
+        Assert.True(handle.IsVisible);
+        RenderTestsShim.Save(handle, "toolbar-tab", Avalonia.Styling.ThemeVariant.Dark);
+        var hide = Find<Button>(handle, "HideTabButton");
+        Assert.Equal(vm.HideTabTip, ToolTip.GetTip(hide));
+        Assert.Contains(SessionViewModel.ShowToolbarKeys, vm.HideTabTip);
+        Click(handle, hide);
+        Assert.True(vm.IsTabHidden);
+        Assert.False(handle.IsVisible, "hidden");
+        Assert.False(toolbar.IsVisible);
+
+        // The shortcut (or the menu) brings the toolbar back; folded again, the tab shows.
+        vm.ShowToolbarCommand.Execute(null);
+        Pump();
+        Assert.True(toolbar.IsVisible);
+        Assert.False(vm.IsTabHidden);
+        vm.CollapseToolbarCommand.Execute(null);
+        Pump();
+        Assert.True(handle.IsVisible);
+    }
+
     [AvaloniaFact]
     public void Dragging_the_tab_moves_it_keeps_it_folded_and_it_follows_the_window()
     {

@@ -79,6 +79,11 @@ public sealed class WindowService : IWindowService
                 else if (!session.IsHudVisible) hud?.Close();
                 return;
             }
+            if (e.PropertyName == nameof(SessionViewModel.IsTabHidden))
+            {
+                if (session.IsTabHidden) handle.Hide();
+                return;
+            }
             if (e.PropertyName != nameof(SessionViewModel.IsToolbarVisible)) return;
             if (session.IsToolbarVisible && !toolbar.IsVisible)
             {
@@ -122,8 +127,8 @@ public sealed class WindowService : IWindowService
 
     /// <summary>
     /// Puts a session's own window (its terminal, its diagnostics) just below the toolbar,
-    /// centred on the session window. The toolbar floats above every window, so a title
-    /// bar opened under it could be neither seen nor dragged until the toolbar was folded.
+    /// centred on the session window. The toolbar stays above the session window and what it
+    /// owns, so a title bar opened under it could be neither seen nor dragged until it was folded.
     /// </summary>
     internal static void PlaceBelow(Window w, Window session, Window bar)
     {

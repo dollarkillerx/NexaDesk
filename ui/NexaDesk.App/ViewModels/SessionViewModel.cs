@@ -79,6 +79,21 @@ public sealed partial class SessionViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(IsToolbarCollapsed))]
     private bool _isToolbarVisible = true;
 
+    /// <summary>The folded tab was closed (its ×): nothing of the toolbar shows until the
+    /// shortcut, or the menu, brings the toolbar back. Folding it again shows the tab again.</summary>
+    [ObservableProperty] private bool _isTabHidden;
+
+    partial void OnIsToolbarVisibleChanged(bool value)
+    {
+        if (value) IsTabHidden = false;
+    }
+
+    /// <summary>The tab's ×: how the toolbar comes back.</summary>
+    public string HideTabTip => L.Format("Toolbar.HideTab", ShowToolbarKeys);
+
+    [RelayCommand]
+    private void HideTab() => IsTabHidden = true;
+
     /// <summary>The toolbar is folded into a small tab (host name and ▾) that unfolds it.</summary>
     public bool IsToolbarCollapsed => !IsToolbarVisible;
     /// <summary>The key that releases the keyboard and shows the toolbar, as this platform writes it.</summary>

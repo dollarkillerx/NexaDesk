@@ -74,6 +74,7 @@
   "Toolbar.MenuSession": "セッション",
   "Toolbar.Collapse": "たたむ",
   "Toolbar.ExpandOrMove": "クリックでツールバーを開く（{0}）、ドラッグで移動",
+  "Toolbar.HideTab": "このタブを隠す（{0} でツールバーを再表示）",
   "Toolbar.CollapseTip": "ツールバーを小さなタブにたたみます。タブをクリックするか、{0} を押すか、「セッション」メニューから開けます。",
   "Toolbar.MenuExpand": "ツールバーを開く",
   "Toolbar.MenuCollapse": "ツールバーをたたむ"
