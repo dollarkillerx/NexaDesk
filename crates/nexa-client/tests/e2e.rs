@@ -641,6 +641,61 @@ async fn the_host_follows_this_macs_input_source_and_caps_lock_is_not_doubled() 
     assert_eq!(switches(), 2);
 }
 
+/// 🌐, 英数 and かな on this Mac become what that key does on the host, in order with the
+/// keys around them (they did nothing in 0.1.41 and 0.1.42).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn switching_keys_switch_the_hosts_input_source_in_order() {
+    let h = make_host(perms(true, true, false)).await;
+    let (viewer, session) = connected(&h, 1).await;
+    activate(&viewer, session).await;
+    viewer.press(key::A, true);
+    viewer.press(key::A, false);
+    viewer
+        .keys()
+        .send(InputCmd::SwitchInputSource(
+            nexa_input::SwitchAction::Japanese,
+        ))
+        .unwrap();
+    viewer.press(key::B, true);
+    viewer.press(key::B, false);
+    viewer
+        .keys()
+        .send(InputCmd::SwitchInputSource(nexa_input::SwitchAction::Next))
+        .unwrap();
+    until("keys and switches injected", WAIT, || {
+        h.platform
+            .injected
+            .all()
+            .iter()
+            .filter(|i| matches!(i, Injected::InputSource(_)))
+            .count()
+            == 2
+    })
+    .await;
+    let seen: Vec<String> = h
+        .platform
+        .injected
+        .all()
+        .into_iter()
+        .filter_map(|i| match i {
+            Injected::Key {
+                hid, down: true, ..
+            } => Some(format!("key {hid}")),
+            Injected::InputSource(what) => Some(what),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            format!("key {}", key::A.0),
+            "Japanese".to_owned(),
+            format!("key {}", key::B.0),
+            "Next".to_owned()
+        ]
+    );
+}
+
 /// The iOS viewer counts as a Mac, so its keys follow the Mac→Windows rules. The
 /// shortcut panel spells its Windows shortcuts for the host and sends them exact:
 /// ⊞+D arrived as Ctrl+D before.

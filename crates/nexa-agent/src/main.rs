@@ -34,10 +34,22 @@ fn main() {
         Some("clear-password") => return finish(clear_password()),
         Some("reset-device-id") => return finish(reset_device_id()),
         // Run by the agent itself: TIS wants a main thread, and the agent's is taken.
+        // Prints the input source selected afterwards. (`select-input-source <id>` is
+        // what 0.1.41 and 0.1.42 ran.)
         #[cfg(target_os = "macos")]
-        Some("select-input-source") => {
-            let id = std::env::args().nth(2).unwrap_or_default();
-            return finish(nexa_input::platform::macos::select_input_source(&id));
+        Some(cmd @ ("input-source" | "select-input-source")) => {
+            use nexa_input::{
+                SwitchAction,
+                platform::macos::{select_input_source, switch_input_source},
+            };
+            let arg = std::env::args().nth(2).unwrap_or_default();
+            let done = match (cmd, arg.as_str()) {
+                ("input-source", "next") => switch_input_source(SwitchAction::Next),
+                ("input-source", "ascii") => switch_input_source(SwitchAction::Ascii),
+                ("input-source", "japanese") => switch_input_source(SwitchAction::Japanese),
+                (_, id) => select_input_source(id).map(|()| id.to_owned()),
+            };
+            return finish(done.map(|now| println!("{now}")));
         }
         _ => {}
     }

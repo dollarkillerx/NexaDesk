@@ -16,12 +16,12 @@ use std::{
 use bytes::Bytes;
 use nexa_clip::{EventClass, GateStats, Gen, InputGate, ReleaseReason};
 use nexa_input::{
-    FocusClass, Output, PhysButton, PhysKey, PhysWheel, RewriteMode, Rewriter,
+    FocusClass, Output, PhysButton, PhysKey, PhysWheel, RewriteMode, Rewriter, SwitchAction,
     hid::{self, Hid},
 };
 use nexa_session::{
     clip::{ClipHandle, PasteNeed},
-    proto::{InputBody, InputMark, InputMsg, InputSourceSelect},
+    proto::{InputBody, InputMark, InputMsg, InputSourceAction, InputSourceSelect},
 };
 use nexa_wire::{
     control::{ButtonEvent, KeyEvent, KeyStateSync, TextInput},
@@ -82,6 +82,8 @@ pub enum InputCmd {
     Mark(u64),
     /// This Mac's input source changed (`Deps::input_source_watcher`): its ID.
     InputSource(String),
+    /// A key that switches input source (🌐, 英数, かな): the host does what it does there.
+    SwitchInputSource(SwitchAction),
     Stop,
 }
 
@@ -563,6 +565,26 @@ impl InputState {
                 }
             }
             InputCmd::InputSource(id) => self.on_input_source(id, now),
+            InputCmd::SwitchInputSource(action) if self.active => {
+                // After what came before it, a held Caps Lock included.
+                self.decide_caps(None, now);
+                let action = match action {
+                    SwitchAction::Next => InputSourceAction::Next,
+                    SwitchAction::Ascii => InputSourceAction::Ascii,
+                    SwitchAction::Japanese => InputSourceAction::Japanese,
+                };
+                nexa_media::diag!("input source: {action:?} sent");
+                let mut released = Vec::new();
+                self.ordered(
+                    InputBody::InputSource(InputSourceSelect {
+                        id: String::new(),
+                        action: action as i32,
+                    }),
+                    now,
+                    &mut released,
+                );
+                self.flush(&mut released);
+            }
             InputCmd::ExactKey(key) if self.active => {
                 let outputs = self.cfg.rewriter.on_exact_key(key);
                 self.emit(outputs, now);
@@ -640,7 +662,8 @@ impl InputState {
             | InputCmd::Warped(..)
             | InputCmd::Button(..)
             | InputCmd::Wheel(..)
-            | InputCmd::Text(_) => {}
+            | InputCmd::Text(_)
+            | InputCmd::SwitchInputSource(_) => {}
         }
         true
     }
@@ -704,7 +727,10 @@ impl InputState {
             self.last_source = Some((id.clone(), now));
             let mut released = Vec::new();
             self.ordered(
-                InputBody::InputSource(InputSourceSelect { id: id.clone() }),
+                InputBody::InputSource(InputSourceSelect {
+                    id: id.clone(),
+                    action: InputSourceAction::Select as i32,
+                }),
                 now,
                 &mut released,
             );

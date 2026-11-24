@@ -247,8 +247,12 @@ impl InputSink for FakeSink {
     fn release_all(&mut self, _: Instant) {
         lock(&self.0.0).push(Injected::ReleaseAll);
     }
-    fn input_source(&mut self, id: &str) {
-        lock(&self.0.0).push(Injected::InputSource(id.to_owned()));
+    fn input_source(&mut self, change: &nexa_session::proto::InputSourceSelect) {
+        let what = match change.action() {
+            nexa_session::proto::InputSourceAction::Select => change.id.clone(),
+            other => format!("{other:?}"),
+        };
+        lock(&self.0.0).push(Injected::InputSource(what));
     }
 }
 

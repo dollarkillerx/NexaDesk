@@ -46,6 +46,7 @@ fn forward(events: std::sync::mpsc::Receiver<CaptureEvent>, tx: Sender<InputCmd>
                     CaptureEvent::HostKey => InputCmd::HostKey,
                     CaptureEvent::Interrupted => InputCmd::Interrupted,
                     CaptureEvent::Text(c) => InputCmd::Text(c.to_string()),
+                    CaptureEvent::SwitchInputSource(a) => InputCmd::SwitchInputSource(a),
                 };
                 if tx.send(cmd).is_err() {
                     return; // dropping `events` makes the tap stop swallowing keys
@@ -154,6 +155,14 @@ impl Drop for InputSourceWatcher {
     }
 }
 
+/// What capture needs to know about this Mac: whether its 🌐 key switches input source.
+fn capture_config() -> KeyCaptureConfig {
+    KeyCaptureConfig {
+        globe_switches: nexa_input::platform::macos::globe_changes_input_source(),
+        ..KeyCaptureConfig::default()
+    }
+}
+
 /// Starts the tap the first time capture is switched on.
 struct TapSource {
     tx: Sender<InputCmd>,
@@ -166,11 +175,10 @@ impl KeySource for TapSource {
             if !active {
                 return Ok(());
             }
-            let (tap, events) =
-                KeyCapture::start(KeyCaptureConfig::default()).map_err(|e| match e {
-                    CaptureError::PermissionDenied => KeySourceError::PermissionDenied,
-                    CaptureError::Setup => KeySourceError::Failed,
-                })?;
+            let (tap, events) = KeyCapture::start(capture_config()).map_err(|e| match e {
+                CaptureError::PermissionDenied => KeySourceError::PermissionDenied,
+                CaptureError::Setup => KeySourceError::Failed,
+            })?;
             forward(events, self.tx.clone());
             self.tap = Some(tap);
         }
@@ -291,7 +299,7 @@ impl Deps for RealDeps {
             return None;
         }
         let mtm = MainThreadMarker::new()?;
-        let (monitor, events) = LocalKeyMonitor::install(KeyCaptureConfig::default(), mtm)?;
+        let (monitor, events) = LocalKeyMonitor::install(capture_config(), mtm)?;
         forward(events, tx);
         Some(Box::new(MonitorSource(Some(SendMonitor(monitor)))))
     }

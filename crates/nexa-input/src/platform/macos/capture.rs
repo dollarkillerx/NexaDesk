@@ -21,6 +21,7 @@ use smallvec::SmallVec;
 use super::flags::{collapsed_mods, is_down_in_flags};
 use super::inject::INJECTED_EVENT_MARKER;
 use super::tap::{TapError, TapHandler, TapSpec, TapThread};
+use crate::SwitchAction;
 use crate::hid::{Hid, ModSet, key};
 use crate::keytable::mac_to_hid;
 use crate::rewriter::PhysKey;
@@ -31,18 +32,8 @@ const MAC_FUNCTION: u16 = 0x3F;
 const MAC_JIS_EISU: u16 = 0x66;
 const MAC_JIS_KANA: u16 = 0x68;
 
-/// Keys that switch input source on this Mac: Caps Lock (when set to), the Globe key,
-/// and a Japanese keyboard's 英数 and かな. They also reach this Mac's system while
-/// captured, so it switches here; the session then selects the same source on the host
-/// (nexa-client's input-source following). Swallowed, the Globe key switched nothing on
-/// either side. Caps Lock, 英数 and かな still go to the host as keys as well, for a
-/// Windows host's input method.
-fn switches_input_source(keycode: u16) -> bool {
-    matches!(
-        keycode,
-        MAC_CAPS_LOCK | MAC_FUNCTION | MAC_JIS_EISU | MAC_JIS_KANA
-    )
-}
+/// The Fn/Globe key is down (NSEventModifierFlagFunction).
+const FLAG_FUNCTION: u64 = 0x80_0000;
 /// NSEvent and CGEvent modifier flags share these bits.
 const FLAG_CTRL: u64 = 0x40000;
 const FLAG_ALT: u64 = 0x80000;
@@ -86,6 +77,10 @@ pub enum CaptureEvent {
     Interrupted,
     /// A symbol key: the character it types on this keyboard, to be typed as text.
     Text(char),
+    /// A key that switches input source was pressed: the 🌐 key on its own, 英数 or
+    /// かな. The host does what that key does there. (Passed to this Mac instead, the 🌐
+    /// key's popup took the keyboard from the session window and nothing switched.)
+    SwitchInputSource(SwitchAction),
 }
 
 /// The local-only chord from §7.4.
@@ -116,6 +111,9 @@ impl Default for HostKey {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct KeyCaptureConfig {
     pub host_key: HostKey,
+    /// The 🌐 key changes input source here (`globe_changes_input_source`), so on its
+    /// own it asks the host to switch to its next one.
+    pub globe_switches: bool,
     /// Whether input is captured from the start. Normally false until the
     /// assembly layer calls `set_active`.
     pub start_active: bool,
@@ -177,6 +175,9 @@ pub(super) struct KeyFilter {
     typed: BTreeSet<Hid>,
     /// The host key's main key while physically down; none of it is forwarded.
     swallowing: Option<Hid>,
+    globe_switches: bool,
+    /// 🌐 is down and nothing else has been pressed with it.
+    globe_alone: bool,
 }
 
 impl KeyFilter {
@@ -188,7 +189,14 @@ impl KeyFilter {
             held_keys: BTreeSet::new(),
             typed: BTreeSet::new(),
             swallowing: None,
+            globe_switches: false,
+            globe_alone: false,
         }
+    }
+
+    pub(super) fn with_globe(mut self, switches: bool) -> Self {
+        self.globe_switches = switches;
+        self
     }
 
     fn clear(&mut self) {
@@ -196,6 +204,7 @@ impl KeyFilter {
         self.held_keys.clear();
         self.typed.clear();
         self.swallowing = None;
+        self.globe_alone = false;
     }
 
     /// Records a change of session state. Called from `set_active` rather than
@@ -222,18 +231,29 @@ impl KeyFilter {
         match raw.kind {
             RawKind::FlagsChanged => self.on_flags_changed(raw, out),
             RawKind::KeyDown | RawKind::KeyUp => {
+                if raw.kind == RawKind::KeyDown {
+                    // 🌐 with another key is a shortcut, not a switch.
+                    self.globe_alone = false;
+                }
                 if let Some(hid) = mac_to_hid(raw.keycode) {
                     self.on_key(raw, hid, out);
                 }
+                // 英数 and かな also go as keys, for a Windows host's input method.
+                if raw.kind == RawKind::KeyDown && !raw.autorepeat {
+                    match raw.keycode {
+                        MAC_JIS_EISU => {
+                            out.push(CaptureEvent::SwitchInputSource(SwitchAction::Ascii))
+                        }
+                        MAC_JIS_KANA => {
+                            out.push(CaptureEvent::SwitchInputSource(SwitchAction::Japanese));
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
-        // While active, every key belongs to the session, mapped or not, but for the
-        // input-source keys, which this Mac must see too.
-        if switches_input_source(raw.keycode) {
-            Verdict::Pass
-        } else {
-            Verdict::Swallow
-        }
+        // While active, every key belongs to the session, mapped or not.
+        Verdict::Swallow
     }
 
     fn on_flags_changed(&mut self, raw: RawKey, out: &mut Events) {
@@ -243,9 +263,21 @@ impl KeyFilter {
             emit_key(out, key::CAPS_LOCK, false, false);
             return;
         }
+        if raw.keycode == MAC_FUNCTION {
+            // 🌐 pressed and released on its own switches input source.
+            let down = raw.flags & FLAG_FUNCTION != 0;
+            if down {
+                self.globe_alone = true;
+            } else if std::mem::take(&mut self.globe_alone) && self.globe_switches {
+                out.push(CaptureEvent::SwitchInputSource(SwitchAction::Next));
+            }
+            return;
+        }
         let Some(hid) = mac_to_hid(raw.keycode).filter(|h| h.is_modifier()) else {
-            return; // Fn and other flag-only keys have no HID usage.
+            return; // other flag-only keys have no HID usage.
         };
+        // A modifier with 🌐 makes a shortcut too.
+        self.globe_alone = false;
         let down = is_down_in_flags(hid, raw.flags).unwrap_or(!self.held_mods.contains(hid));
         match (down, self.held_mods.contains(hid)) {
             (true, false) => {
@@ -330,7 +362,7 @@ impl KeyCore {
     fn new(config: KeyCaptureConfig, tx: Sender<CaptureEvent>) -> Self {
         let core = Self {
             active: AtomicBool::new(false),
-            filter: Mutex::new(KeyFilter::new(config.host_key)),
+            filter: Mutex::new(KeyFilter::new(config.host_key).with_globe(config.globe_switches)),
             tx,
         };
         core.set_active(config.start_active);
@@ -750,25 +782,66 @@ mod tests {
         assert_eq!(rig.active(up(key::A, 0)), vec![]);
     }
 
-    #[test]
-    fn the_globe_key_reaches_this_mac_and_nothing_goes_to_the_host() {
-        let mut filter = KeyFilter::new(HostKey::default());
-        let fn_key = RawKey {
+    fn globe(down: bool) -> RawKey {
+        RawKey {
             kind: RawKind::FlagsChanged,
             keycode: 0x3F,
-            flags: 0x800000,
+            flags: if down { FLAG_FUNCTION } else { 0 },
             autorepeat: false,
             text: None,
-        };
+        }
+    }
+
+    #[test]
+    fn the_globe_key_alone_asks_the_host_to_switch() {
+        let mut filter = KeyFilter::new(HostKey::default()).with_globe(true);
         let mut out = Events::new();
-        assert_eq!(filter.process(fn_key, true, &mut out), Verdict::Pass);
+        assert_eq!(
+            filter.process(globe(true), true, &mut out),
+            Verdict::Swallow
+        );
+        assert!(out.is_empty(), "nothing on the way down");
+        assert_eq!(
+            filter.process(globe(false), true, &mut out),
+            Verdict::Swallow
+        );
+        assert_eq!(
+            &out[..],
+            &[CaptureEvent::SwitchInputSource(SwitchAction::Next)]
+        );
+
+        // 🌐 with a key is a shortcut, not a switch.
+        let mut out = Events::new();
+        filter.process(globe(true), true, &mut out);
+        let f = RawKey {
+            kind: RawKind::KeyDown,
+            keycode: 0x03,
+            flags: FLAG_FUNCTION,
+            autorepeat: false,
+            text: Some('f'),
+        };
+        filter.process(f, true, &mut out);
+        filter.process(globe(false), true, &mut out);
+        assert!(
+            !out.contains(&CaptureEvent::SwitchInputSource(SwitchAction::Next)),
+            "{out:?}"
+        );
+
+        // Set to emoji or dictation on this Mac: the key does nothing to the host.
+        let mut other = KeyFilter::new(HostKey::default());
+        let mut out = Events::new();
+        other.process(globe(true), true, &mut out);
+        other.process(globe(false), true, &mut out);
         assert!(out.is_empty());
     }
 
     #[test]
-    fn input_source_keys_reach_this_mac_and_still_go_to_the_host() {
+    fn eisu_and_kana_ask_for_english_and_japanese_and_still_go_as_keys() {
         let mut filter = KeyFilter::new(HostKey::default());
-        for (keycode, hid) in [(0x68, key::LANG1), (0x66, key::LANG2)] {
+        for (keycode, hid, action) in [
+            (0x68, key::LANG1, SwitchAction::Japanese),
+            (0x66, key::LANG2, SwitchAction::Ascii),
+        ] {
             let mut out = Events::new();
             let down = RawKey {
                 kind: RawKind::KeyDown,
@@ -777,31 +850,15 @@ mod tests {
                 autorepeat: false,
                 text: None,
             };
-            assert_eq!(filter.process(down, true, &mut out), Verdict::Pass);
-            assert_eq!(&out[..], &[key_ev(hid, true, false)]);
+            assert_eq!(filter.process(down, true, &mut out), Verdict::Swallow);
+            assert_eq!(
+                &out[..],
+                &[
+                    key_ev(hid, true, false),
+                    CaptureEvent::SwitchInputSource(action)
+                ]
+            );
         }
-        let caps = RawKey {
-            kind: RawKind::FlagsChanged,
-            keycode: 0x39,
-            flags: 0x10000,
-            autorepeat: false,
-            text: None,
-        };
-        let mut out = Events::new();
-        assert_eq!(filter.process(caps, true, &mut out), Verdict::Pass);
-        assert_eq!(out.len(), 2, "a Caps Lock tap goes to the host as before");
-        // Any other key stays the session's alone.
-        let a = RawKey {
-            kind: RawKind::KeyDown,
-            keycode: 0x00,
-            flags: 0,
-            autorepeat: false,
-            text: Some('a'),
-        };
-        assert_eq!(
-            filter.process(a, true, &mut Events::new()),
-            Verdict::Swallow
-        );
     }
 
     #[test]
@@ -842,16 +899,12 @@ mod tests {
     fn caps_lock_toggle_becomes_a_tap() {
         let mut rig = Rig::new();
         let event = raw(RawKind::FlagsChanged, key::CAPS_LOCK, 0x10000, false);
-        // It reaches this Mac too, which may switch input source on it.
         assert_eq!(
-            rig.feed(event, true),
-            (
-                Verdict::Pass,
-                vec![
-                    key_ev(key::CAPS_LOCK, true, false),
-                    key_ev(key::CAPS_LOCK, false, false),
-                ]
-            )
+            rig.active(event),
+            vec![
+                key_ev(key::CAPS_LOCK, true, false),
+                key_ev(key::CAPS_LOCK, false, false),
+            ]
         );
     }
 

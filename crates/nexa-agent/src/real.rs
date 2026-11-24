@@ -74,8 +74,8 @@ impl<T: EventTarget + Send> InputSink for InjectorSink<T> {
     fn release_all(&mut self, now: Instant) {
         self.0.release_all(now);
     }
-    fn input_source(&mut self, id: &str) {
-        select_input_source(id);
+    fn input_source(&mut self, change: &nexa_session::proto::InputSourceSelect) {
+        change_input_source(change);
     }
 }
 
@@ -83,23 +83,34 @@ impl<T: EventTarget + Send> InputSink for InjectorSink<T> {
 /// the first start of a newly installed binary took a second.
 const SELECT_LIMIT: Duration = Duration::from_secs(2);
 
-/// Selects the input source the viewer's person switched to. TIS asserts that it runs
-/// on a main thread, and this one's is taken by the runtime, so a helper (this program,
-/// `select-input-source`) does it. Waiting for it keeps the switch in order with the keys
-/// typed after it.
-fn select_input_source(id: &str) {
+/// Changes input source as the viewer asks: the source its person switched to, or what
+/// a switching key (🌐, 英数, かな) does here. TIS asserts that it runs on a main thread,
+/// and this one's is taken by the runtime, so a helper (this program, `input-source`)
+/// does it and prints the source then selected. Waiting for it keeps the switch in order
+/// with the keys typed after it.
+fn change_input_source(change: &nexa_session::proto::InputSourceSelect) {
+    use nexa_session::proto::InputSourceAction;
+    use std::io::Read;
     use std::process::{Command, Stdio};
-    if !nexa_input::platform::macos::is_input_source_id(id) {
-        eprintln!("nexa-agent: input source: ignored a malformed ID");
-        return;
-    }
+    let arg = match change.action() {
+        InputSourceAction::Select => {
+            if !nexa_input::platform::macos::is_input_source_id(&change.id) {
+                eprintln!("nexa-agent: input source: ignored a malformed ID");
+                return;
+            }
+            change.id.as_str()
+        }
+        InputSourceAction::Next => "next",
+        InputSourceAction::Ascii => "ascii",
+        InputSourceAction::Japanese => "japanese",
+    };
     let started = Instant::now();
     let child = std::env::current_exe().and_then(|exe| {
         Command::new(exe)
-            .arg("select-input-source")
-            .arg(id)
+            .arg("input-source")
+            .arg(arg)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
     });
@@ -112,23 +123,23 @@ fn select_input_source(id: &str) {
     };
     loop {
         match child.try_wait() {
-            Ok(Some(status)) if status.success() => {
-                eprintln!(
-                    "nexa-agent: input source: selected {id} in {} ms",
-                    started.elapsed().as_millis()
-                );
-                return;
-            }
-            Ok(Some(_)) => {
-                let mut why = String::new();
-                if let Some(mut err) = child.stderr.take() {
-                    use std::io::Read;
-                    let _ = err.read_to_string(&mut why);
+            Ok(Some(status)) => {
+                let (mut out, mut why) = (String::new(), String::new());
+                if let Some(mut o) = child.stdout.take() {
+                    let _ = o.read_to_string(&mut out);
                 }
-                eprintln!(
-                    "nexa-agent: input source: could not select {id}: {}",
-                    why.trim()
-                );
+                if let Some(mut e) = child.stderr.take() {
+                    let _ = e.read_to_string(&mut why);
+                }
+                let ms = started.elapsed().as_millis();
+                if status.success() {
+                    eprintln!(
+                        "nexa-agent: input source: {arg}: now {} ({ms} ms)",
+                        out.trim()
+                    );
+                } else {
+                    eprintln!("nexa-agent: input source: {arg}: failed: {}", why.trim());
+                }
                 return;
             }
             Ok(None) if started.elapsed() < SELECT_LIMIT => {
@@ -137,7 +148,7 @@ fn select_input_source(id: &str) {
             Ok(None) | Err(_) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                eprintln!("nexa-agent: input source: selecting {id} took too long; stopped");
+                eprintln!("nexa-agent: input source: {arg}: took too long; stopped");
                 return;
             }
         }

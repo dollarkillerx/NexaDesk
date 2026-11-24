@@ -36,9 +36,9 @@ pub trait InputSink: Send {
     fn wheel(&mut self, dx: i32, dy: i32);
     fn text(&mut self, text: &str);
     fn apply_key_state(&mut self, pressed: &[u32], now: Instant);
-    /// Selects the input source the viewer's person switched to (`InputBody::InputSource`).
-    /// Hosts that cannot do nothing.
-    fn input_source(&mut self, _id: &str) {}
+    /// Changes input source as the viewer asks (`InputBody::InputSource`). Hosts that
+    /// cannot do nothing.
+    fn input_source(&mut self, _change: &crate::proto::InputSourceSelect) {}
     fn poll_timeout(&mut self, now: Instant);
     fn release_all(&mut self, now: Instant);
 }
@@ -203,7 +203,7 @@ fn dispatch(
         }
         InjectEvent::Input(InputBody::Button(b)) => state.button(&b, map, sink, now),
         InjectEvent::Input(InputBody::Text(TextInput { utf8 })) => sink.text(&utf8),
-        InjectEvent::Input(InputBody::InputSource(s)) => sink.input_source(&s.id),
+        InjectEvent::Input(InputBody::InputSource(s)) => sink.input_source(&s),
         InjectEvent::Input(InputBody::Sync(KeyStateSync { pressed, .. })) => {
             sink.apply_key_state(&pressed, now);
         }

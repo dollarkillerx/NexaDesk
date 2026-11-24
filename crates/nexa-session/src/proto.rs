@@ -243,18 +243,35 @@ pub enum InputBody {
     /// it asks for next waits for the action (`nexa_session::agent`).
     #[prost(message, tag = "5")]
     Mark(InputMark),
-    /// The viewer's person switched input source (ABC, Pinyin, …): the host selects the
-    /// same one, in order with the keys typed after it. A host that cannot ignores it.
+    /// A change of input source on the host, in order with the keys typed after it: the
+    /// one the viewer's person switched to, or what a switching key (🌐, 英数, かな) does
+    /// there. A host that cannot ignores it.
     #[prost(message, tag = "6")]
     InputSource(InputSourceSelect),
 }
 
 #[derive(Clone, PartialEq, Eq, Message)]
 pub struct InputSourceSelect {
-    /// The macOS input source ID, e.g. `com.apple.keylayout.ABC` or
+    /// With `Select`: the macOS input source ID, e.g. `com.apple.keylayout.ABC` or
     /// `com.apple.inputmethod.SCIM.ITABC`.
     #[prost(string, tag = "1")]
     pub id: String,
+    #[prost(enumeration = "InputSourceAction", tag = "2")]
+    pub action: i32,
+}
+
+/// What [`InputSourceSelect`] asks of the host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Enumeration)]
+#[repr(i32)]
+pub enum InputSourceAction {
+    /// The source named by `id`.
+    Select = 0,
+    /// The next one, as the host's own 🌐 key does.
+    Next = 1,
+    /// An English layout (ABC), as 英数 does.
+    Ascii = 2,
+    /// The Japanese input method, as かな does.
+    Japanese = 3,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Message)]
