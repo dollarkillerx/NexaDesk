@@ -663,7 +663,17 @@ impl InputState {
     /// This Mac's input source changed: the host selects the same one. A Caps Lock press
     /// waiting to be decided was the switch, not a capitals lock, so it is not sent.
     fn on_input_source(&mut self, id: String, now: Instant) {
-        if !self.active || now < self.activated_at + SOURCE_SETTLE {
+        // In viewer.log: when following does not work, where it stopped shows here.
+        if !self.active {
+            nexa_media::diag!(
+                "input source: {id}, not sent: this session does not have the keyboard"
+            );
+            return;
+        }
+        if now < self.activated_at + SOURCE_SETTLE {
+            nexa_media::diag!(
+                "input source: {id}, not sent: the window has only just taken the keyboard"
+            );
             return;
         }
         let repeated = self
@@ -673,6 +683,15 @@ impl InputState {
         if repeated {
             return;
         }
+        let after_caps = self.caps_until.is_some();
+        nexa_media::diag!(
+            "input source: {id}, sent{}",
+            if after_caps {
+                " (the Caps Lock press before it is not)"
+            } else {
+                ""
+            }
+        );
         self.decide_caps(Some(id), now);
     }
 

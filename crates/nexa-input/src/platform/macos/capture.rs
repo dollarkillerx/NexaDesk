@@ -26,6 +26,23 @@ use crate::keytable::mac_to_hid;
 use crate::rewriter::PhysKey;
 
 const MAC_CAPS_LOCK: u16 = 0x39;
+/// Fn, the Globe key on newer keyboards.
+const MAC_FUNCTION: u16 = 0x3F;
+const MAC_JIS_EISU: u16 = 0x66;
+const MAC_JIS_KANA: u16 = 0x68;
+
+/// Keys that switch input source on this Mac: Caps Lock (when set to), the Globe key,
+/// and a Japanese keyboard's 英数 and かな. They also reach this Mac's system while
+/// captured, so it switches here; the session then selects the same source on the host
+/// (nexa-client's input-source following). Swallowed, the Globe key switched nothing on
+/// either side. Caps Lock, 英数 and かな still go to the host as keys as well, for a
+/// Windows host's input method.
+fn switches_input_source(keycode: u16) -> bool {
+    matches!(
+        keycode,
+        MAC_CAPS_LOCK | MAC_FUNCTION | MAC_JIS_EISU | MAC_JIS_KANA
+    )
+}
 /// NSEvent and CGEvent modifier flags share these bits.
 const FLAG_CTRL: u64 = 0x40000;
 const FLAG_ALT: u64 = 0x80000;
@@ -210,8 +227,13 @@ impl KeyFilter {
                 }
             }
         }
-        // While active, every key belongs to the session, mapped or not.
-        Verdict::Swallow
+        // While active, every key belongs to the session, mapped or not, but for the
+        // input-source keys, which this Mac must see too.
+        if switches_input_source(raw.keycode) {
+            Verdict::Pass
+        } else {
+            Verdict::Swallow
+        }
     }
 
     fn on_flags_changed(&mut self, raw: RawKey, out: &mut Events) {
@@ -729,8 +751,8 @@ mod tests {
     }
 
     #[test]
-    fn unmapped_keys_are_swallowed_silently() {
-        let mut rig = Rig::new();
+    fn the_globe_key_reaches_this_mac_and_nothing_goes_to_the_host() {
+        let mut filter = KeyFilter::new(HostKey::default());
         let fn_key = RawKey {
             kind: RawKind::FlagsChanged,
             keycode: 0x3F,
@@ -738,7 +760,48 @@ mod tests {
             autorepeat: false,
             text: None,
         };
-        assert_eq!(rig.active(fn_key), vec![]);
+        let mut out = Events::new();
+        assert_eq!(filter.process(fn_key, true, &mut out), Verdict::Pass);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn input_source_keys_reach_this_mac_and_still_go_to_the_host() {
+        let mut filter = KeyFilter::new(HostKey::default());
+        for (keycode, hid) in [(0x68, key::LANG1), (0x66, key::LANG2)] {
+            let mut out = Events::new();
+            let down = RawKey {
+                kind: RawKind::KeyDown,
+                keycode,
+                flags: 0,
+                autorepeat: false,
+                text: None,
+            };
+            assert_eq!(filter.process(down, true, &mut out), Verdict::Pass);
+            assert_eq!(&out[..], &[key_ev(hid, true, false)]);
+        }
+        let caps = RawKey {
+            kind: RawKind::FlagsChanged,
+            keycode: 0x39,
+            flags: 0x10000,
+            autorepeat: false,
+            text: None,
+        };
+        let mut out = Events::new();
+        assert_eq!(filter.process(caps, true, &mut out), Verdict::Pass);
+        assert_eq!(out.len(), 2, "a Caps Lock tap goes to the host as before");
+        // Any other key stays the session's alone.
+        let a = RawKey {
+            kind: RawKind::KeyDown,
+            keycode: 0x00,
+            flags: 0,
+            autorepeat: false,
+            text: Some('a'),
+        };
+        assert_eq!(
+            filter.process(a, true, &mut Events::new()),
+            Verdict::Swallow
+        );
     }
 
     #[test]
@@ -779,12 +842,16 @@ mod tests {
     fn caps_lock_toggle_becomes_a_tap() {
         let mut rig = Rig::new();
         let event = raw(RawKind::FlagsChanged, key::CAPS_LOCK, 0x10000, false);
+        // It reaches this Mac too, which may switch input source on it.
         assert_eq!(
-            rig.active(event),
-            vec![
-                key_ev(key::CAPS_LOCK, true, false),
-                key_ev(key::CAPS_LOCK, false, false),
-            ]
+            rig.feed(event, true),
+            (
+                Verdict::Pass,
+                vec![
+                    key_ev(key::CAPS_LOCK, true, false),
+                    key_ev(key::CAPS_LOCK, false, false),
+                ]
+            )
         );
     }
 

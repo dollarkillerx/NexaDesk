@@ -117,6 +117,7 @@ impl InputSourceWatcher {
     fn start(tx: Sender<InputCmd>) -> Self {
         let watch = Box::into_raw(Box::new(SourceWatch { tx })) as usize;
         DispatchQueue::main().exec_async(move || {
+            nexa_media::diag!("input source: following this Mac's");
             // SAFETY: registered on the main thread, so the callback runs there too; the
             // pointer stays valid until `drop` removes it, also on the main thread.
             unsafe {

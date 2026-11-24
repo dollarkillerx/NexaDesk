@@ -964,6 +964,7 @@ on_up(k):
   - 被控端：主线程被运行时占着，所以每次切换时起一个帮手进程（`nexa-agent select-input-source <ID>`），在它的主线程里用 `TISSelectInputSource` 选中，等它结束（通常约 60 毫秒，最多 2 秒）再处理后面的按键。只选已启用的输入法；对方没有的记一行日志。ID 先校验格式再交给帮手。`agent.log` 里每次切换都有一行 `input source: selected …`。
   - 旧版被控端不认识这个字段，直接忽略。Windows 被控端暂时也忽略，以后可以对应到输入法的中英状态。
   - 手动检查：`cargo run -p nexa-input --example input_source [ID]` 打印（并可选中）当前输入法。
+  - 修订（0.1.42）：0.1.41 里捕获会吞掉所有按键，包括 🌐 Globe 键。被吞掉后本机根本不切换，也就没有变化可跟随，按了两边都没反应（日语键盘 MacBook 控制英文键盘 Mac mini 时实测）。现在切换输入法的键（Caps Lock、Globe/Fn、日语键盘的英数和かな）在捕获时也交给本机系统处理（`capture.rs` 的 `switches_input_source`），本机切换后，被控端跟着选中同一个。Caps Lock、英数、かな照旧也作为按键发给被控端，Windows 被控端的输入法要用。Globe 键在系统设置里如果设成“显示表情与符号”，会在本机弹出表情面板。
 
 ### 7.7 实现修订
 
