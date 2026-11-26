@@ -32,6 +32,8 @@ impl WinCursorSource {
 
 impl CursorSource for WinCursorSource {
     fn sample(&mut self) -> CursorSample {
+        // The cursor of the desktop receiving input (docs/WINDOWS_SERVICE.md §4).
+        super::desktop::follow_input_desktop(false);
         let mut info = CURSORINFO {
             cbSize: size_of::<CURSORINFO>() as u32,
             ..Default::default()

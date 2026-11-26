@@ -20,6 +20,8 @@ mod real;
 #[cfg(windows)]
 #[path = "real_windows.rs"]
 mod real;
+#[cfg(windows)]
+mod session_launch;
 #[cfg(any(target_os = "macos", windows))]
 mod terminal;
 #[cfg(windows)]
@@ -33,6 +35,8 @@ fn main() {
         Some("set-password") => return finish(set_password()),
         Some("clear-password") => return finish(clear_password()),
         Some("reset-device-id") => return finish(reset_device_id()),
+        #[cfg(windows)]
+        Some("run-in-session") => return finish(run_in_session()),
         // Run by the agent itself: TIS wants a main thread, and the agent's is taken.
         // Prints the input source selected afterwards. (`select-input-source <id>` is
         // what 0.1.41 and 0.1.42 ran.)
@@ -57,6 +61,48 @@ fn main() {
         eprintln!("nexa-agent: {message}");
         std::process::exit(1);
     }
+}
+
+/// `nexa-agent run-in-session [--session <id>] [--console | --log <file>] -- <agent arguments>`:
+/// starts this program as SYSTEM in a user's session (the console's by default), to try the
+/// host on the secure desktop before the service exists (docs/WINDOWS_SERVICE.md §3, §7).
+/// Must itself run as SYSTEM, e.g. from a scheduled task with `/ru SYSTEM`.
+#[cfg(windows)]
+fn run_in_session() -> Result<(), String> {
+    use session_launch::{Output, active_console_session, is_system};
+    if !is_system() {
+        return Err("run-in-session must run as SYSTEM (a scheduled task with /ru SYSTEM)".into());
+    }
+    let mut args = std::env::args().skip(2);
+    let (mut session, mut log, mut console) = (None, None, false);
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--" => break,
+            "--console" => console = true,
+            "--session" | "--log" => {
+                let value = args.next().ok_or(format!("{a} needs a value"))?;
+                if a == "--session" {
+                    session = Some(value.parse::<u32>().map_err(|e| format!("--session: {e}"))?);
+                } else {
+                    log = Some(std::path::PathBuf::from(value));
+                }
+            }
+            other => return Err(format!("unknown option {other}; the agent's own go after --")),
+        }
+    }
+    let rest: Vec<String> = args.collect();
+    let session = session
+        .or_else(active_console_session)
+        .ok_or("no session is attached to the console")?;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let output = match (&log, console) {
+        (Some(path), false) => Output::Log(path),
+        (None, _) => Output::Console,
+        (Some(_), true) => return Err("--console or --log, not both".into()),
+    };
+    let pid = session_launch::run_in_session(session, &exe, &rest, output)?;
+    println!("started {} as SYSTEM in session {session}: pid {pid}", exe.display());
+    Ok(())
 }
 
 #[cfg(any(target_os = "macos", windows))]

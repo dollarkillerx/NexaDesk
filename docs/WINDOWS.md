@@ -88,7 +88,7 @@
 
    **几个人同时看同一块屏幕**（最多 4 人，应用和浏览器一起算）：以前每个会话各建一个 DXGI 复制，第二个会话的 `DuplicateOutput` 失败（E_INVALIDARG，日志里是 `DuplicateOutput: OS status -2147024809`），第二个人一连上就断开。现在每块屏幕只有一个复制，在自己的线程上取画面，复制到一张共用的桌面纹理（`nexa-media/src/fanout.rs`，`windows/capture.rs` 的 `Duplication`）；每个会话从这里拿最新的桌面，再按自己的大小、帧率、要不要画指针，各自走 GPU 或 CPU 路径缩放和编码。最后一个会话离开时复制才释放，释放完才返回，所以重建时“先释放旧的”照旧有效；只是自己重建的会话会接着用别人还在用的那个复制。模式变化、UAC、锁屏让复制失效时，每个会话都收到 AccessLost、各自重建，再共用新建的那一个。取画面的线程不在 `AcquireNextFrame` 里等（超时 0，没有新画面就睡 2 ms）：在和硬件编码器共用的设备上反复等，编码器会饿死（“the hardware encoder stopped asking for frames”，NVIDIA 显卡上实测）。显示器保持唤醒也改由这个线程持有。macOS 不受影响（ScreenCaptureKit 允许多个流）。在 Windows 11 + NVIDIA 显卡的电脑上验证过：一个人、两个人同时（各自尺寸）、一个人反复重建而另一个人一直在看，GPU 编码都正常（`cargo test -p nexa-media --test windows_capture -- --ignored --nocapture`，需要真的屏幕）。
 5. **安装包**（完成，见第 3 节）：Velopack 安装包和免安装 zip；以后加自动更新和（可选）签名。
-6. **以后再做**：作为 Windows 服务运行，才能在登录界面、锁屏和 UAC 弹窗时也能控制（普通用户进程看不到安全桌面）；ARM64 版。
+6. **以后再做**：作为 Windows 服务运行，才能在登录界面、锁屏和 UAC 弹窗时也能控制（普通用户进程看不到安全桌面），方案见 [WINDOWS_SERVICE.md](WINDOWS_SERVICE.md)；ARM64 版。
 
 阶段 2 和 3 互不依赖，可以按你更需要的方向先做。
 

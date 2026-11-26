@@ -9,6 +9,7 @@ mod audio;
 mod capture;
 mod cursor;
 mod decoder;
+mod desktop;
 mod encoder;
 mod gpu;
 mod hwenc;
@@ -35,6 +36,7 @@ pub use audio::{OpusDecoder, OpusEncoder, Render as AudioRender, WasapiLoopback,
 pub use capture::DxgiCapturer;
 pub use cursor::WinCursorSource;
 pub use decoder::MfDecoder;
+pub use desktop::follow_input_desktop;
 pub use encoder::MfEncoder;
 pub use gpu::{GpuFrame, viewer_device};
 pub use hwenc::{HwEncoder, WinEncoder, encoder, hardware_h264};

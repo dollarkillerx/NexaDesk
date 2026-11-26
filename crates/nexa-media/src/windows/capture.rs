@@ -116,6 +116,9 @@ unsafe impl Sync for Device {}
 impl Duplication {
     /// Duplicates display `index` (`Display::id - 1`).
     fn open(index: u32) -> Result<Self> {
+        // The duplication is of the desktop this thread is on: the one receiving input now
+        // (a UAC prompt's, when this host runs as SYSTEM; docs/WINDOWS_SERVICE.md §4).
+        super::desktop::follow_input_desktop(true);
         // SAFETY: DXGI and D3D11 constructors with valid arguments; every out pointer
         // is a local that lives through the call.
         let (device, context, dup) = unsafe {

@@ -16,37 +16,48 @@ use nexa_media::{
 use nexa_session::{clip::ClipPlatform, input::InputSink};
 
 use nexa_agent::{Platform, ScreenInfo};
+use nexa_media::windows::follow_input_desktop;
 
 pub struct RealPlatform;
 
 struct InjectorSink(Injector);
 
+/// Input goes to the desktop receiving it now: a UAC prompt's or the lock screen's when this
+/// host runs as SYSTEM (docs/WINDOWS_SERVICE.md §4). Otherwise nothing changes.
 impl InputSink for InjectorSink {
     fn key(&mut self, hid: u32, down: bool, repeat: bool, now: Instant) {
+        follow_input_desktop(false);
         self.0.key(Hid(hid), down, repeat, now);
     }
     fn move_absolute(&mut self, x: f64, y: f64) {
+        follow_input_desktop(false);
         self.0.move_absolute(x, y);
     }
     fn move_relative(&mut self, dx: i32, dy: i32) {
+        follow_input_desktop(false);
         self.0.move_relative(dx, dy);
     }
     fn button(&mut self, button: u32, down: bool, at: Option<(f64, f64)>, now: Instant) {
+        follow_input_desktop(false);
         self.0.button(button, down, at, now);
     }
     fn wheel(&mut self, dx: i32, dy: i32) {
+        follow_input_desktop(false);
         self.0.wheel(dx, dy);
     }
     fn text(&mut self, text: &str) {
+        follow_input_desktop(false);
         self.0.text(text);
     }
     fn apply_key_state(&mut self, pressed: &[u32], now: Instant) {
+        follow_input_desktop(false);
         self.0.apply_key_state(pressed, now);
     }
     fn poll_timeout(&mut self, now: Instant) {
         self.0.poll_timeout(now);
     }
     fn release_all(&mut self, now: Instant) {
+        follow_input_desktop(false);
         self.0.release_all(now);
     }
 }
