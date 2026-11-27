@@ -11,6 +11,8 @@
 //! a no-op: it already is the user.
 
 #[cfg(windows)]
+pub mod launch;
+#[cfg(windows)]
 mod windows;
 #[cfg(windows)]
 pub use windows::*;

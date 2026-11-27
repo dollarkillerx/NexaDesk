@@ -1,6 +1,6 @@
 # Windows 系统服务：在 UAC 弹窗和锁屏时也能控制
 
-> 状态（2026-11-27）：第 1 期（跟随输入桌面）已写好，并在真机（Windows 11，build 26300）上验证：用计划任务以 SYSTEM 身份经 `run-in-session` 启动被控端，从 Mac 连上后 UAC 弹窗能看到、能点。第 2 期（§5，以用户身份做事）已写好：新 crate `nexa-user`（`is_system`、`UserToken::of_session`、`as_user`、`user_folder`），命令行、收发文件、DPAPI 密钥、配对记录、数据和下载目录都改为以会话用户身份进行；同一台机器上以 SYSTEM 运行时，数据目录和 `device-key` 的所有者是用户、用户能解开，收到的文件所有者是用户。第 3–5 期未实现。对应 [WINDOWS.md](WINDOWS.md) 第 6 阶段、[DETAILED_DESIGN.md](DETAILED_DESIGN.md) §5.1。
+> 状态（2026-11-27）：第 1 期（跟随输入桌面）已写好，并在真机（Windows 11，build 26300）上验证：用计划任务以 SYSTEM 身份经 `run-in-session` 启动被控端，从 Mac 连上后 UAC 弹窗能看到、能点。第 2 期（§5，以用户身份做事）已写好：新 crate `nexa-user`（`is_system`、`UserToken::of_session`、`as_user`、`user_folder`），命令行、收发文件、DPAPI 密钥、配对记录、数据和下载目录都改为以会话用户身份进行；同一台机器上以 SYSTEM 运行时，数据目录和 `device-key` 的所有者是用户、用户能解开，收到的文件所有者是用户。第 3 期（§3，服务 `crates/nexa-service`）已写好并在真机上验证：安装到 Program Files、以 LocalSystem 运行，用户经控制管道请它在自己的会话里以 SYSTEM 启动被控端，UAC 弹窗能看到能点，查看端按 Ctrl+Alt+Del 由服务 `SendSAS` 发出，客户端断开后被控端随即结束，卸载后服务、目录、注册表都恢复。第 4、5 期未实现。对应 [WINDOWS.md](WINDOWS.md) 第 6 阶段、[DETAILED_DESIGN.md](DETAILED_DESIGN.md) §5.1。
 
 ## 1. 要解决的问题
 
@@ -44,9 +44,9 @@ nexa-agent.exe（SYSTEM 身份，在用户会话里）
 - **控制管道**：DACL 只允许 `INTERACTIVE`（本机交互登录的用户）连接，拒绝远程。每个请求先用 `GetNamedPipeClientProcessId` + `ProcessIdToSessionId` 确认请求方所在的会话，只能为**自己的会话**启动被控端。
 - **启动被控端**：在目标会话里找 `winlogon.exe`（`WTSEnumerateProcessesW`，核对 `SessionId`），`OpenProcessToken` → `DuplicateTokenEx`（主令牌）→ `CreateProcessAsUserW`，桌面 `winsta0\default`，`CREATE_NO_WINDOW`。这是 RustDesk 的 `GetSessionUserTokenWin`/`LaunchProcessWin` 的做法，也是 DETAILED_DESIGN §5.1 原来写的；winlogon 在没人登录时也在控制台会话里，以后做登录界面时不用换。找不到 winlogon 时退回“复制服务自己的令牌并 `SetTokenInformation(TokenSessionId)`”（需要 SE_TCB，LocalSystem 有）。参数和环境（信令服务器的接入密钥）由应用经管道传来，不上命令行。
 - **参数白名单**：服务只转发已知的参数（`--listen`、`--name`、`--signal`、`--web`、`--no-lan-discovery`、`--allow-agents`、`--consent ui`）。`--downloads` 这类路径参数不收：路径由被控端按该用户的身份自己算（§5）。
-- **生命周期**：每个会话最多一个被控端；被控端崩溃 3 秒后重启（1 分钟内超过 5 次就停下并记日志）；`WTS_SESSION_LOGOFF` 时结束；服务停止时结束所有被控端。和 RustDesk 的 `run_service` 一样，循环里定时检查活动会话和被控端是否还在（`GetExitCodeProcess`），不只依赖会话通知。
+- **生命周期**（实现时改了）：被控端跟着请求它的那条管道连接走。应用开着连接，被控端就一直运行；连接断开（应用退出、崩溃、用户注销）时服务立即结束它；服务停止时结束所有被控端。被控端的标准输出和错误由服务逐行转给应用（`{"line":…}`），退出时发 `{"exited":{"code":…}}`，所以应用照旧写 agent.log、照旧在被控端退出时处理（重启或报错），服务自己不重启被控端。
 - **Ctrl+Alt+Del**：只有服务能发（`SendSAS(FALSE)`，sas.dll）。被控端收到查看端的 Ctrl+Alt+Del（工具条按钮或组合键）后，经控制管道请服务发送。`SoftwareSASGeneration` 不是 1 或 3 时（被组策略改了），发送前临时设为 1、发完恢复，同 RustDesk 的 `send_sas`。
-- **版本**：管道握手里交换版本号。应用和服务版本不一致时，应用不用服务（退回现在的用户身份被控端），设置里显示“系统服务需要更新”和一个按钮（UAC 确认后更新服务目录里的文件）。以管理员身份打开的应用会自动更新它。
+- **版本**：管道只交换协议版本（`"hello"` → `{"hello":{"protocol":1}}`）；程序是否一致由应用直接比较 Program Files 里的 `nexa-agent.exe` 和自己那份（用户可读）。应用和服务版本不一致时，应用不用服务（退回现在的用户身份被控端），设置里显示“系统服务需要更新”和一个按钮（UAC 确认后更新服务目录里的文件）。以管理员身份打开的应用会自动更新它。
 
 ## 4. 被控端跟随输入桌面
 

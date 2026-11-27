@@ -20,13 +20,83 @@ use nexa_media::windows::follow_input_desktop;
 
 pub struct RealPlatform;
 
-struct InjectorSink(Injector);
+struct InjectorSink(Injector, CtrlAltDel);
+
+/// Ctrl+Alt+Del from the viewer. SendInput cannot make it (Windows keeps the sequence for
+/// itself), so a host running as SYSTEM asks the NexaDesk service, which may
+/// (docs/WINDOWS_SERVICE.md §3). Anyone else's host just types the keys, as before.
+#[derive(Default)]
+struct CtrlAltDel {
+    /// The Ctrl and Alt keys held, by HID usage.
+    held: Vec<u16>,
+}
+
+impl CtrlAltDel {
+    const KEYBOARD: u32 = 0x07;
+    const CTRL: [u16; 2] = [0xE0, 0xE4];
+    const ALT: [u16; 2] = [0xE2, 0xE6];
+    /// Delete, and the keypad's Delete.
+    const DELETE: [u16; 2] = [0x4C, 0x63];
+
+    fn key(&mut self, hid: u32, down: bool) {
+        if hid >> 16 != Self::KEYBOARD {
+            return;
+        }
+        let usage = hid as u16;
+        if Self::CTRL.contains(&usage) || Self::ALT.contains(&usage) {
+            self.held.retain(|&u| u != usage);
+            if down {
+                self.held.push(usage);
+            }
+        } else if down
+            && Self::DELETE.contains(&usage)
+            && self.held.iter().any(|u| Self::CTRL.contains(u))
+            && self.held.iter().any(|u| Self::ALT.contains(u))
+            && nexa_user::is_system()
+        {
+            // Off the input thread: the service answers in a moment.
+            let _ = std::thread::Builder::new()
+                .name("ctrl-alt-del".into())
+                .spawn(ask_service_for_sas);
+        }
+    }
+
+    fn set(&mut self, pressed: &[u32]) {
+        self.held.clear();
+        for &hid in pressed {
+            self.key(hid, true);
+        }
+    }
+}
+
+/// Asks the service (nexa-service, its `\\.\pipe\nexadesk-service`) to send Ctrl+Alt+Del.
+fn ask_service_for_sas() {
+    use std::io::{BufRead, BufReader, Write};
+    let result = (|| -> std::io::Result<String> {
+        let mut pipe = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(r"\\.\pipe\nexadesk-service")?;
+        pipe.write_all(b"\"sas\"\n")?;
+        let mut answer = String::new();
+        BufReader::new(pipe).read_line(&mut answer)?;
+        Ok(answer.trim().to_owned())
+    })();
+    match result {
+        Ok(answer) if answer == "\"done\"" => eprintln!("nexa-agent: sent Ctrl+Alt+Del"),
+        Ok(answer) => eprintln!("nexa-agent: Ctrl+Alt+Del not sent: {answer}"),
+        Err(e) => eprintln!("nexa-agent: Ctrl+Alt+Del not sent: the service: {e}"),
+    }
+}
 
 /// Input goes to the desktop receiving it now: a UAC prompt's or the lock screen's when this
 /// host runs as SYSTEM (docs/WINDOWS_SERVICE.md §4). Otherwise nothing changes.
 impl InputSink for InjectorSink {
     fn key(&mut self, hid: u32, down: bool, repeat: bool, now: Instant) {
         follow_input_desktop(false);
+        if !repeat {
+            self.1.key(hid, down);
+        }
         self.0.key(Hid(hid), down, repeat, now);
     }
     fn move_absolute(&mut self, x: f64, y: f64) {
@@ -51,6 +121,7 @@ impl InputSink for InjectorSink {
     }
     fn apply_key_state(&mut self, pressed: &[u32], now: Instant) {
         follow_input_desktop(false);
+        self.1.set(pressed);
         self.0.apply_key_state(pressed, now);
     }
     fn poll_timeout(&mut self, now: Instant) {
@@ -58,6 +129,7 @@ impl InputSink for InjectorSink {
     }
     fn release_all(&mut self, now: Instant) {
         follow_input_desktop(false);
+        self.1.set(&[]);
         self.0.release_all(now);
     }
 }
@@ -166,7 +238,10 @@ impl Platform for RealPlatform {
     }
 
     fn input_sink(&self) -> Result<Box<dyn InputSink>, String> {
-        Ok(Box::new(InjectorSink(Injector::new())))
+        Ok(Box::new(InjectorSink(
+            Injector::new(),
+            CtrlAltDel::default(),
+        )))
     }
 
     fn clipboard(&self) -> Result<Box<dyn ClipPlatform>, String> {

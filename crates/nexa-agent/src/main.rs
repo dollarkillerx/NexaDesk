@@ -20,8 +20,6 @@ mod real;
 #[cfg(windows)]
 #[path = "real_windows.rs"]
 mod real;
-#[cfg(windows)]
-mod session_launch;
 #[cfg(any(target_os = "macos", windows))]
 mod terminal;
 #[cfg(windows)]
@@ -69,7 +67,7 @@ fn main() {
 /// Must itself run as SYSTEM, e.g. from a scheduled task with `/ru SYSTEM`.
 #[cfg(windows)]
 fn run_in_session() -> Result<(), String> {
-    use session_launch::{Output, active_console_session};
+    use nexa_user::launch::{Output, active_console_session, launch_in_session, open_append};
     if !nexa_user::is_system() {
         return Err("run-in-session must run as SYSTEM (a scheduled task with /ru SYSTEM)".into());
     }
@@ -95,13 +93,19 @@ fn run_in_session() -> Result<(), String> {
         .or_else(active_console_session)
         .ok_or("no session is attached to the console")?;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let output = match (&log, console) {
-        (Some(path), false) => Output::Log(path),
-        (None, _) => Output::Console,
+    let log = match (&log, console) {
+        (Some(path), false) => Some(open_append(path).map_err(|e| format!("the log: {e}"))?),
+        (None, _) => None,
         (Some(_), true) => return Err("--console or --log, not both".into()),
     };
-    let pid = session_launch::run_in_session(session, &exe, &rest, output)?;
-    println!("started {} as SYSTEM in session {session}: pid {pid}", exe.display());
+    let output = log.as_ref().map_or(Output::Console, Output::To);
+    let child = launch_in_session(session, &exe, &rest, &[], output)
+        .map_err(|e| format!("starting it in session {session}: {e}"))?;
+    println!(
+        "started {} as SYSTEM in session {session}: pid {}",
+        exe.display(),
+        child.pid
+    );
     Ok(())
 }
 

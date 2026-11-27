@@ -1592,6 +1592,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexa-service"
+version = "0.1.0"
+dependencies = [
+ "nexa-user",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "nexa-session"
 version = "0.1.0"
 dependencies = [
