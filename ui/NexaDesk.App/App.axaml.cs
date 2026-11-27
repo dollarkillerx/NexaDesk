@@ -99,8 +99,20 @@ public partial class App : Application
             var quitting = false;
             void Show()
             {
+                // Windows: a window already open stays where it is for Show and Activate,
+                // behind other programs (Windows does not let a program in the background
+                // take the focus) and, after a while hidden, without having drawn itself:
+                // asked from another copy or the tray, nothing appeared. Minimised and
+                // restored it draws and comes back; Topmost on and off puts it above the
+                // others even where it may not take the focus.
+                if (OperatingSystem.IsWindows() && main.IsVisible) main.WindowState = WindowState.Minimized;
                 main.Show();
                 main.WindowState = WindowState.Normal;
+                if (OperatingSystem.IsWindows())
+                {
+                    main.Topmost = true;
+                    main.Topmost = false;
+                }
                 main.Activate();
             }
             main.Closing += (_, e) =>

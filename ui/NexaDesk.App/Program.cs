@@ -67,6 +67,12 @@ static class SingleInstance
     static Mutex? _mutex;
     static EventWaitHandle? _show;
 
+    /// <summary>ASFW_ANY: whichever process sets the foreground next.</summary>
+    const int AnyProcess = -1;
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    static extern bool AllowSetForegroundWindow(int processId);
+
     /// <summary>True for the first copy; a later one wakes the first and gets false. With
     /// <paramref name="waitForPrevious"/>, a copy that is quitting for this one is waited for.</summary>
     public static bool TryBecomeFirst(bool waitForPrevious = false)
@@ -87,6 +93,9 @@ static class SingleInstance
                     return true; // it quit without letting go: it is ours now
                 }
             }
+            // The copy the person just opened may bring a window to the front; the running
+            // one, in the background, may not. Passed on, so its window comes up in front.
+            if (OperatingSystem.IsWindows()) AllowSetForegroundWindow(AnyProcess);
             _show.Set();
             return false;
         }
