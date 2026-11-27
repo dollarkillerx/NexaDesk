@@ -15,6 +15,7 @@ mod gpu;
 mod hwenc;
 mod power;
 mod present;
+mod priority;
 mod screenshot;
 
 use nexa_wire::control::{Caps, Chroma, Codec, CodecCap};
@@ -37,6 +38,7 @@ pub use capture::DxgiCapturer;
 pub use cursor::WinCursorSource;
 pub use decoder::MfDecoder;
 pub use desktop::follow_input_desktop;
+pub use priority::media_thread;
 pub use encoder::MfEncoder;
 pub use gpu::{GpuFrame, viewer_device};
 pub use hwenc::{HwEncoder, WinEncoder, encoder, hardware_h264};

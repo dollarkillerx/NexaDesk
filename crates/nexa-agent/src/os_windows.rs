@@ -61,13 +61,51 @@ pub fn local_names() -> Vec<String> {
 }
 
 /// Physical pixels everywhere: desktop duplication, the cursor and SendInput agree only
-/// when the process is per-monitor DPI aware.
+/// when the process is per-monitor DPI aware. And no slowing down (`run_promptly`).
 pub fn prepare() {
     use windows_sys::Win32::UI::HiDpi::{
         DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
     };
     // SAFETY: called once, before any window or display call.
     unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+    run_promptly();
+}
+
+/// The host has no window and runs in the background, which Windows 11 slows down: it
+/// puts such a process in efficiency mode (lower clocks) and ignores its timer requests,
+/// so short waits round up to the 15.6 ms tick. Streaming hosts opt out, as this does:
+/// no power throttling, 1 ms timers, and above-normal priority, so typing and the
+/// picture do not wait behind other programs. The media threads also register with
+/// MMCSS (`nexa_media::media_thread`).
+fn run_promptly() {
+    use windows_sys::Win32::{
+        Media::timeBeginPeriod,
+        System::Threading::{
+            ABOVE_NORMAL_PRIORITY_CLASS, GetCurrentProcess,
+            PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION, PROCESS_POWER_THROTTLING_STATE,
+            ProcessPowerThrottling, SetPriorityClass, SetProcessInformation,
+        },
+    };
+    let state = PROCESS_POWER_THROTTLING_STATE {
+        Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        // These two are controlled here, and both off.
+        ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+            | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+        StateMask: 0,
+    };
+    // SAFETY: this process's pseudo handle and a structure of the size given; failures
+    // (an older Windows) leave things as they were.
+    unsafe {
+        SetProcessInformation(
+            GetCurrentProcess(),
+            ProcessPowerThrottling,
+            (&state as *const PROCESS_POWER_THROTTLING_STATE).cast(),
+            size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+        );
+        timeBeginPeriod(1);
+        SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
+    }
 }
 
 /// Nothing to grant on Windows: capture and input need no permission. A process can

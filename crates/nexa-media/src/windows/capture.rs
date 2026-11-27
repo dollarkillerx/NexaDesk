@@ -35,8 +35,8 @@ use windows::{
             Dxgi::Common::DXGI_SAMPLE_DESC,
             Dxgi::{
                 CreateDXGIFactory1, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_WAIT_TIMEOUT,
-                DXGI_OUTDUPL_FRAME_INFO, IDXGIFactory1, IDXGIOutput1, IDXGIOutputDuplication,
-                IDXGIResource,
+                DXGI_OUTDUPL_FRAME_INFO, IDXGIDevice, IDXGIFactory1, IDXGIOutput1,
+                IDXGIOutputDuplication, IDXGIResource,
             },
         },
     },
@@ -158,6 +158,13 @@ impl Duplication {
             if let Ok(m) = device.cast::<ID3D11Multithread>() {
                 let _ = m.SetMultithreadProtected(true);
             }
+            // Duplication and encoding go ahead of other programs' GPU work (a playing
+            // video, a busy app), as streaming hosts set it: otherwise frames come late
+            // and unevenly. Positive values need SYSTEM's or an administrator's rights;
+            // without them it stays as it was.
+            if let Ok(d) = device.cast::<IDXGIDevice>() {
+                let _ = d.SetGPUThreadPriority(7);
+            }
             // E_ACCESSDENIED: a secure desktop (UAC, the lock screen) is up, which only
             // SYSTEM may duplicate. It goes away when the desktop comes back.
             let dup = output.DuplicateOutput(&device).map_err(|e| {
@@ -219,6 +226,8 @@ impl Source for Duplication {
     }
 
     fn acquire(&mut self, timeout: Duration) -> Update<Desktop> {
+        // The pump's thread, scheduled as media work (`priority`).
+        super::priority::media_thread();
         // The display stays on for as long as anyone watches it.
         self.awake.get_or_insert_with(DisplayAwake::hold);
         let mut info = DXGI_OUTDUPL_FRAME_INFO::default();

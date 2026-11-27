@@ -76,6 +76,11 @@ pub struct HostStats {
     pub capture_lost: AtomicU64,
     /// Frames the encoder finished after their own encode call (`Encoder::take_ready`).
     pub late_frames: AtomicU64,
+    /// Keys shown (`crate::typing`): how many, and the time from each key going in to the
+    /// picture that shows it, in µs: the sum and the longest since the last look.
+    pub typed: AtomicU64,
+    pub typed_us: AtomicU64,
+    pub typed_max_us: AtomicU64,
 }
 
 enum Cmd {
@@ -593,6 +598,8 @@ fn run_encoder(
     stop: Arc<AtomicBool>,
     stats: Arc<HostStats>,
 ) {
+    // Scheduled as media work (MMCSS on Windows): frames go on time.
+    nexa_media::media_thread();
     let Pipeline {
         mut capturer,
         mut encoder,
@@ -688,8 +695,16 @@ fn run_encoder(
             continue;
         }
 
+        // An idle refresh, not a new picture (`flags::REPEAT`).
+        let mut repeat = false;
         let frame = match capturer.next(interval * 2) {
             Ok(CaptureEvent::Frame(f)) => {
+                if let Some(d) = crate::typing::picture(f.captured_at) {
+                    let us = d.as_micros() as u64;
+                    stats.typed.fetch_add(1, Relaxed);
+                    stats.typed_us.fetch_add(us, Relaxed);
+                    stats.typed_max_us.fetch_max(us, Relaxed);
+                }
                 last = Some((f.image.clone(), f.captured_at));
                 last_content = Instant::now();
                 refresh_step = 0;
@@ -723,6 +738,7 @@ fn run_encoder(
                     refresh_step += 1;
                     stats.idle_refreshes.fetch_add(1, Relaxed);
                 }
+                repeat = true;
                 CapturedFrame {
                     image,
                     captured_at,
@@ -765,6 +781,9 @@ fn run_encoder(
                 }
                 if recovery_pending || meta.recovery_point {
                     f |= flags::RECOVERY_POINT;
+                }
+                if repeat {
+                    f |= flags::REPEAT;
                 }
                 sink.push(EncodedFrame {
                     frame_id: next_id,
@@ -817,6 +836,8 @@ fn run_tx(
     stop: Arc<AtomicBool>,
     stats: Arc<HostStats>,
 ) {
+    // Scheduled as media work (MMCSS on Windows): frames go on time.
+    nexa_media::media_thread();
     let mut packetizer = Packetizer::default();
     let mut throttle = EncoderThrottle::new();
     let mut last_capture_us: Option<u32> = None;
@@ -1251,6 +1272,54 @@ mod tests {
         assert!(stats.late_frames.load(Relaxed) >= 1);
         stop.store(true, Relaxed);
         thread.join().unwrap();
+    }
+
+    #[test]
+    fn refreshes_of_a_still_screen_are_marked_as_repeats() {
+        // A viewer's latency figures leave them out: they carry their original's
+        // capture time, and counted as 100-300 ms of delay that was not there.
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let pipeline = Pipeline {
+            capturer: Box::new(FiveThenStill(0)),
+            encoder: Box::new(Plain),
+            rebuilder: None,
+            rate: Arc::new(Mutex::new(RateController::new(
+                RateConfig {
+                    initial_bps: 10_000_000,
+                    min_bps: 300_000,
+                    max_bps: 100_000_000,
+                },
+                Mode::Game,
+                Instant::now(),
+            ))),
+            fps: Arc::new(AtomicU32::new(60)),
+        };
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        std::mem::forget(cmd_tx);
+        let (sink, s) = (Box::new(Collect(frames.clone())), stop.clone());
+        let thread = thread::spawn(move || {
+            run_encoder(
+                pipeline,
+                sink,
+                cmd_rx,
+                Instant::now(),
+                s,
+                Arc::new(HostStats::default()),
+            )
+        });
+        // Five pictures, then the refresh 100 ms into the still screen.
+        assert!(wait_for(|| frames.lock().unwrap().len() >= 6));
+        stop.store(true, Relaxed);
+        thread.join().unwrap();
+        let repeats: Vec<bool> = frames
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|f| f.flags & flags::REPEAT != 0)
+            .collect();
+        assert_eq!(repeats[..5], [false; 5]);
+        assert!(repeats[5..].iter().all(|r| *r), "{repeats:?}");
     }
 
     #[test]

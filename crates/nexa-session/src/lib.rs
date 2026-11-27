@@ -20,6 +20,7 @@ pub mod reconnect;
 pub mod rendezvous;
 pub mod terminal;
 pub mod transfer;
+pub mod typing;
 pub mod viewer;
 
 use std::time::{Duration, Instant};

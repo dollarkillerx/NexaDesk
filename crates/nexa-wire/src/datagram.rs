@@ -47,6 +47,11 @@ fn u64_at(b: &[u8], o: usize) -> u64 {
 pub mod flags {
     pub const IDR: u8 = 1 << 0;
     pub const RECOVERY_POINT: u8 = 1 << 1;
+    /// An idle refresh: the last picture encoded again on a still screen, with its
+    /// original capture time (the sender's pacing counts it as covering no time). Not
+    /// a measure of delay: viewers leave it out of their latency figures. Viewers that
+    /// do not know the bit ignore it.
+    pub const REPEAT: u8 = 1 << 2;
 }
 
 /// §3.2 VideoShard header.

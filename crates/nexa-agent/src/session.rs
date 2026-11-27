@@ -442,6 +442,8 @@ async fn log_stream(media: Arc<HostMedia>, session: u64, (w, h, fps): (u32, u32,
             s.idrs.load(Relaxed),
             // Frames a hardware encoder finished late, sent when they came out.
             s.late_frames.load(Relaxed),
+            s.typed.load(Relaxed),
+            s.typed_us.load(Relaxed),
         )
     };
     let mut last = read();
@@ -464,7 +466,7 @@ async fn log_stream(media: Arc<HostMedia>, session: u64, (w, h, fps): (u32, u32,
             format!("{:.1} Mbit/s", l as f64 / 1e6)
         });
         eprintln!(
-            "nexa-agent: session {session} stream {w}x{h}@{fps}: {:.1} frames/s, {:.1} skipped/s, encode {encode_ms:.1} ms, sent {sent:.2} Mbit/s, target {:.2} Mbit/s, encoder {:.2} Mbit/s, link {link}, queue {:.0} ms, loss {:.1}%, {} radio stalls, {} repairs, {} key frames asked, round trip {} ms, {} late frames",
+            "nexa-agent: session {session} stream {w}x{h}@{fps}: {:.1} frames/s, {:.1} skipped/s, encode {encode_ms:.1} ms, sent {sent:.2} Mbit/s, target {:.2} Mbit/s, encoder {:.2} Mbit/s, link {link}, queue {:.0} ms, loss {:.1}%, {} radio stalls, {} repairs, {} key frames asked, round trip {} ms, {} late frames, typing {}",
             frames as f64 / secs,
             skipped as f64 / secs,
             rate.target_bps as f64 / 1e6,
@@ -476,6 +478,19 @@ async fn log_stream(media: Arc<HostMedia>, session: u64, (w, h, fps): (u32, u32,
             now.5 - last.5,
             media.round_trip().as_millis(),
             now.6 - last.6,
+            {
+                let keys = now.7 - last.7;
+                let max = s.typed_max_us.swap(0, Relaxed);
+                if keys == 0 {
+                    "no keys".to_owned()
+                } else {
+                    format!(
+                        "{:.0} ms on average, {:.0} ms at most ({keys} keys)",
+                        (now.8 - last.8) as f64 / keys as f64 / 1e3,
+                        max as f64 / 1e3
+                    )
+                }
+            },
         );
         last = now;
         last_stalls = rate.stalls;

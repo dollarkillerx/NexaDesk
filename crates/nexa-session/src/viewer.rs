@@ -16,7 +16,9 @@ use nexa_net::{
     recovery::{Decision, ReceiverRecovery},
     shard::{Assembler, AssemblerEvent, CompleteFrame},
 };
-use nexa_wire::datagram::{self, AudioHeader, Clock, ReportKind, VideoReport, VideoShardHeader};
+use nexa_wire::datagram::{
+    self, AudioHeader, Clock, ReportKind, VideoReport, VideoShardHeader, flags,
+};
 use quinn::Connection;
 
 use crate::{feedback::FeedbackBuilder, latency::LatencyStats, mailbox::Mailbox};
@@ -363,7 +365,10 @@ fn run_rx(
                     }
                     Decision::Decode(f) => {
                         let id = f.frame_id;
-                        if let Some((first, complete)) = f.arrival {
+                        // A repeat carries its original's capture time: no measure of delay.
+                        if let Some((first, complete)) = f.arrival
+                            && f.flags & flags::REPEAT == 0
+                        {
                             latency.on_complete(id, f.capture_ts_us, first, complete);
                         }
                         match decode.try_send(f) {

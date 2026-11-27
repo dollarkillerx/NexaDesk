@@ -46,6 +46,14 @@ pub type Result<T> = std::result::Result<T, MediaError>;
 
 pub type FrameId = u32;
 
+/// Has the system schedule the calling thread as time-critical media work: capture,
+/// encode and send. On Windows that is MMCSS (`windows::media_thread`); elsewhere nothing
+/// is needed.
+pub fn media_thread() {
+    #[cfg(windows)]
+    windows::media_thread();
+}
+
 /// A platform image handle. Cheap to clone: it only retains the underlying surface.
 #[derive(Clone)]
 pub enum NativeImage {

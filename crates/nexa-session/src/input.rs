@@ -203,6 +203,11 @@ fn dispatch(
         InjectEvent::Pointer(p) => state.apply(p, map, sink),
         InjectEvent::Input(InputBody::Key(KeyEvent { hid, down, repeat })) => {
             sink.key(hid, down, repeat, now);
+            // The keyboard page's modifiers (0xE0-0xE7) draw nothing.
+            let modifier = hid >> 16 == 0x07 && (0xE0..=0xE7).contains(&(hid & 0xFFFF));
+            if down && !repeat && !modifier {
+                crate::typing::key_down(Instant::now());
+            }
         }
         InjectEvent::Input(InputBody::Button(b)) => state.button(&b, map, sink, now),
         InjectEvent::Input(InputBody::Text(TextInput { utf8 })) => sink.text(&utf8),
