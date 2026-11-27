@@ -26,11 +26,11 @@
             BorderBrush="#FF832B" BorderThickness="0,0,0,3">
       <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
         <Ellipse Width="8" Height="8" Fill="#FF832B" VerticalAlignment="Center" />
-        <TextBlock Name="FoldedText" Text="{Binding FoldedText}" Foreground="#F4F4F4" FontFamily="{DynamicResource MonoFont}" FontSize="12" VerticalAlignment="Center" />
-        <TextBlock Text="▾" Foreground="#C6C6C6" FontSize="12" VerticalAlignment="Center" />
+        <TextBlock Name="FoldedText" Text="{Binding FoldedText}" Foreground="#F2F2F2" FontFamily="{DynamicResource MonoFont}" FontSize="12" VerticalAlignment="Center" />
+        <TextBlock Text="▾" Foreground="#B4B4B4" FontSize="12" VerticalAlignment="Center" />
         <Button Name="HideBannerButton" Content="×" Command="{Binding HideCommand}" ToolTip.Tip="{l:T Banner.HideTip}"
                 Background="Transparent" BorderThickness="0" Padding="4,0" MinHeight="0" FontSize="14"
-                Foreground="#C6C6C6" VerticalAlignment="Center" Cursor="Hand" />
+                Foreground="#B4B4B4" VerticalAlignment="Center" Cursor="Hand" />
       </StackPanel>
     </Border>
     <!-- Unfolded: a row per person, one fold button for all. Orange 40 is the one loud colour. -->
@@ -44,20 +44,20 @@
                   <Ellipse Classes="dot" Classes.agent="{Binding IsAgent}" Width="10" Height="10" VerticalAlignment="Center" Margin="0,0,14,0" />
                   <StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center">
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                      <Border Name="AgentBadge" IsVisible="{Binding IsAgent}" Background="#BE95FF" CornerRadius="2" Padding="6,0"
+                      <Border Name="AgentBadge" IsVisible="{Binding IsAgent}" Background="#BE95FF" CornerRadius="999" Padding="8,0"
                               VerticalAlignment="Center">
-                        <TextBlock Text="{l:T Banner.AgentBadge}" Foreground="#161616" FontWeight="SemiBold" FontSize="12" />
+                        <TextBlock Text="{l:T Banner.AgentBadge}" Foreground="#141414" FontWeight="SemiBold" FontSize="12" />
                       </Border>
-                      <TextBlock Name="HeadlineText" Text="{Binding Headline}" Foreground="#F4F4F4" FontWeight="SemiBold" FontSize="14"
+                      <TextBlock Name="HeadlineText" Text="{Binding Headline}" Foreground="#F2F2F2" FontWeight="SemiBold" FontSize="14"
                                  TextTrimming="CharacterEllipsis" />
                     </StackPanel>
-                    <TextBlock Foreground="#C6C6C6" FontSize="12" LetterSpacing="0.32" TextTrimming="CharacterEllipsis">
+                    <TextBlock Foreground="#B4B4B4" FontSize="12" LetterSpacing="0.32" TextTrimming="CharacterEllipsis">
                       <Run Text="{Binding PermsText}" />
                       <Run Text=" · " />
                       <Run Text="{Binding Detail}" />
                     </TextBlock>
                   </StackPanel>
-                  <TextBlock Grid.Column="2" Text="{Binding DurationText}" Foreground="#F4F4F4" FontFamily="{DynamicResource MonoFont}"
+                  <TextBlock Grid.Column="2" Text="{Binding DurationText}" Foreground="#F2F2F2" FontFamily="{DynamicResource MonoFont}"
                              VerticalAlignment="Center" Margin="12,0,12,0" />
                   <Button Grid.Column="3" Name="BannerDisconnectButton" Classes="danger" MinHeight="48" MinWidth="112"
                           Content="{l:T Banner.Disconnect}" Command="{Binding DisconnectCommand}" />
@@ -76,7 +76,7 @@
           </DataTemplate>
         </ItemsControl.ItemTemplate>
       </ItemsControl>
-      <Button Grid.Column="1" Name="CollapseBannerButton" Classes="quiet" VerticalAlignment="Stretch" Padding="14,0"
+      <Button Grid.Column="1" Name="CollapseBannerButton" Classes="quiet" VerticalAlignment="Stretch" Padding="14,0" CornerRadius="0"
               Content="{l:T Banner.Collapse}" Command="{Binding ToggleCollapsedCommand}" ToolTip.Tip="{l:T Banner.Collapse}" />
     </Grid>
   </StackPanel>

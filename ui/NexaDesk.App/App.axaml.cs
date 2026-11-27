@@ -22,6 +22,7 @@ public partial class App : Application
     public override void Initialize()
     {
         AvaloniaXamlLoader.Load(this);
+        ArcLook.Apply(this);
         UseFontsFor(this, Localization.L.Current);
     }
 
@@ -36,19 +37,18 @@ public partial class App : Application
         var japanese = language == Localization.L.Japanese;
         var traditional = language == Localization.L.TraditionalChinese;
         var korean = language == Localization.L.Korean;
-        // IBM Plex first (the IBM Design Language typeface) when it is installed; Latin falls
-        // back to Helvetica Neue (Segoe UI on Windows) and Han to the system font for the
-        // language, in list order.
+        // Inter first for Latin, as Arc sets type (embedded: AppBuilder.WithInterFont); Han, kana
+        // and Hangul fall through to the system font for the language, in list order.
         app.Resources["UiFont"] = new Avalonia.Media.FontFamily(
-            japanese ? "IBM Plex Sans JP, IBM Plex Sans, Helvetica Neue, Hiragino Sans, Hiragino Kaku Gothic ProN, Segoe UI, Yu Gothic UI, Meiryo UI, PingFang SC, Microsoft YaHei UI, sans-serif"
-            : traditional ? "IBM Plex Sans, Helvetica Neue, PingFang TC, Heiti TC, Segoe UI, Microsoft JhengHei UI, sans-serif"
-            : korean ? "IBM Plex Sans KR, IBM Plex Sans, Helvetica Neue, Apple SD Gothic Neo, Segoe UI, Malgun Gothic, sans-serif"
-            : "IBM Plex Sans, Helvetica Neue, PingFang SC, Hiragino Sans GB, Heiti SC, Segoe UI, Microsoft YaHei UI, sans-serif");
+            japanese ? "fonts:Inter#Inter, Hiragino Sans, Hiragino Kaku Gothic ProN, Yu Gothic UI, Meiryo UI, PingFang SC, Microsoft YaHei UI, sans-serif"
+            : traditional ? "fonts:Inter#Inter, PingFang TC, Heiti TC, Microsoft JhengHei UI, sans-serif"
+            : korean ? "fonts:Inter#Inter, Apple SD Gothic Neo, Malgun Gothic, sans-serif"
+            : "fonts:Inter#Inter, PingFang SC, Hiragino Sans GB, Heiti SC, Microsoft YaHei UI, sans-serif");
         app.Resources["MonoFont"] = new Avalonia.Media.FontFamily(
-            japanese ? "IBM Plex Mono, Menlo, SF Mono, Hiragino Sans, Cascadia Mono, Consolas, Yu Gothic UI, monospace"
-            : traditional ? "IBM Plex Mono, Menlo, SF Mono, PingFang TC, Cascadia Mono, Consolas, Microsoft JhengHei UI, monospace"
-            : korean ? "IBM Plex Mono, Menlo, SF Mono, Apple SD Gothic Neo, Cascadia Mono, Consolas, Malgun Gothic, monospace"
-            : "IBM Plex Mono, Menlo, SF Mono, PingFang SC, Cascadia Mono, Consolas, Microsoft YaHei UI, monospace");
+            japanese ? "SF Mono, Menlo, Hiragino Sans, Cascadia Mono, Consolas, Yu Gothic UI, monospace"
+            : traditional ? "SF Mono, Menlo, PingFang TC, Cascadia Mono, Consolas, Microsoft JhengHei UI, monospace"
+            : korean ? "SF Mono, Menlo, Apple SD Gothic Neo, Cascadia Mono, Consolas, Malgun Gothic, monospace"
+            : "SF Mono, Menlo, PingFang SC, Cascadia Mono, Consolas, Microsoft YaHei UI, monospace");
     }
 
     public override void OnFrameworkInitializationCompleted()

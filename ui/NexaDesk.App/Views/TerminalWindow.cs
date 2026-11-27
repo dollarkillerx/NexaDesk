@@ -28,7 +28,7 @@ public sealed class TerminalWindow : Window
         Height = 540;
         MinWidth = 360;
         MinHeight = 200;
-        Background = new SolidColorBrush(Color.Parse("#161616"));
+        Background = new SolidColorBrush(Color.Parse("#141414"));
         View = new TerminalView();
         if (this.TryFindResource("MonoFont", out var mono) && mono is FontFamily font) View.FontFamily = font;
         Content = View;

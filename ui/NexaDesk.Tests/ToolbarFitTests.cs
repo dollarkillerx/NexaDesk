@@ -51,6 +51,52 @@ public class ToolbarFitTests
         }
     }
 
+    /// <summary>
+    /// Every language, in its own fonts (Japanese, Korean and Chinese are wider than English):
+    /// the toolbar keeps collapse and disconnect in reach, and the main window and settings
+    /// render (ui/out/lang-*.png) to look at.
+    /// </summary>
+    [AvaloniaTheory]
+    [InlineData(L.English)]
+    [InlineData(L.Japanese)]
+    [InlineData(L.Korean)]
+    [InlineData(L.TraditionalChinese)]
+    [InlineData(L.Chinese)]
+    public void Every_language_fits(string language)
+    {
+        var app = Application.Current!;
+        using (L.Scoped(language))
+        {
+            App.UseFontsFor(app, language);
+            try
+            {
+                var vm = new SessionViewModel(new FakeSession(1), Everything(1), "192.168.0.13:47810", () => Samples.T0);
+                var t = new ToolbarWindow { DataContext = vm, MinWidth = 980, MaxWidth = 980 };
+                t.Show();
+                Dispatcher.UIThread.RunJobs();
+                Inside(t, "CollapseToolbarButton");
+                Inside(t, "ToolbarDisconnectButton");
+                Inside(t, "FullScreenButton");
+                Inside(t, "LockScreenButton");
+                RenderTestsShim.Save(t, $"lang-{language}-toolbar", ThemeVariant.Dark);
+                t.Close();
+
+                var main = new MainViewModel(new FakeClient(), new MemoryRecent(), new FakeLink(), new FakeProcess(), new FakePermissions(),
+                    new RecordingWindows(), new FakeAddresses("192.168.1.35", "127.0.0.1"), "MacBook Pro", () => Samples.T0);
+                var w = new MainWindow { DataContext = main };
+                w.Show();
+                RenderTestsShim.Save(w, $"lang-{language}-main", ThemeVariant.Light);
+                main.ShowPageCommand.Execute("Settings");
+                RenderTestsShim.Save(w, $"lang-{language}-settings", ThemeVariant.Light);
+                w.Close();
+            }
+            finally
+            {
+                App.UseFontsFor(app, L.Current);
+            }
+        }
+    }
+
     [Fact]
     public void The_lock_button_asks_the_host_to_lock_its_screen()
     {

@@ -21,10 +21,10 @@
       <Ellipse Width="8" Height="8" VerticalAlignment="Center" Fill="{DynamicResource WarnBrush}" IsVisible="{Binding IsReconnecting}" />
       <TextBlock Name="FoldedHostName" Text="{Binding HostName}" FontSize="12" MaxWidth="160" TextTrimming="CharacterEllipsis"
                  VerticalAlignment="Center" />
-      <TextBlock Text="▾" Foreground="#C6C6C6" FontSize="12" VerticalAlignment="Center" />
+      <TextBlock Text="▾" Foreground="#B4B4B4" FontSize="12" VerticalAlignment="Center" />
       <Button Name="HideTabButton" Content="×" Command="{Binding HideTabCommand}" ToolTip.Tip="{Binding HideTabTip}"
               Background="Transparent" BorderThickness="0" Padding="4,0" MinHeight="0" FontSize="14"
-              Foreground="#C6C6C6" VerticalAlignment="Center" Cursor="Hand" />
+              Foreground="#B4B4B4" VerticalAlignment="Center" Cursor="Hand" />
     </StackPanel>
   </Border>
 </Window>

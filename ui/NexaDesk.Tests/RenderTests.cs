@@ -475,6 +475,22 @@ public class RenderTests
     }
 
     [AvaloniaFact]
+    public void Main_window_settings_page()
+    {
+        foreach (var theme in Themes())
+            WithTheme(theme, () =>
+            {
+                var vm = SampleMain(new FakeClient(), new FakeLink(), new RecordingWindows());
+                vm.ShowPageCommand.Execute("Settings");
+                // Tall enough for the whole page.
+                var w = new MainWindow { DataContext = vm, Height = 1500 };
+                w.Show();
+                Save(w, "main-settings", theme);
+                w.Close();
+            });
+    }
+
+    [AvaloniaFact]
     public void Main_window_with_login_and_menu_bar_settings()
     {
         foreach (var theme in Themes())

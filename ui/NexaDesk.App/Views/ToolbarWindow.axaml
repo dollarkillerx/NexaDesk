@@ -97,7 +97,7 @@
       </Grid>
       <TextBlock Grid.Row="3" Name="WarningText" Text="{Binding Warning}" Foreground="{DynamicResource WarnBrush}"
                  TextWrapping="Wrap" FontSize="12" Margin="0,4,0,0" IsVisible="{Binding HasWarning}" />
-      <Border Grid.Row="4" Name="TransferPanel" Background="{DynamicResource CardBrush}" Padding="16,10" Margin="0,8,8,0" IsVisible="{Binding Transfers.HasItems}">
+      <Border Grid.Row="4" Name="TransferPanel" Background="{DynamicResource CardBrush}" CornerRadius="12" Padding="16,10" Margin="0,8,8,0" IsVisible="{Binding Transfers.HasItems}">
         <views:TransferListView DataContext="{Binding Transfers}" />
       </Border>
     </Grid>
