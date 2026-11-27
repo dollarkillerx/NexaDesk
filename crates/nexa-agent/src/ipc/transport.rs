@@ -137,6 +137,16 @@ mod windows {
     /// Only the pipe's owner (the user running the agent) may open it.
     const OWNER_ONLY: &str = "D:P(A;;GA;;;OW)";
 
+    /// Who may open the pipe. A host running as SYSTEM (started by the NexaDesk service,
+    /// docs/WINDOWS_SERVICE.md §6) owns it as SYSTEM, and the app runs as the user signed
+    /// in to the session: that user, by SID, and SYSTEM. Anyone else's host: the owner.
+    fn access() -> io::Result<String> {
+        match nexa_user::UserToken::of_session()? {
+            Some(user) => Ok(format!("D:P(A;;GA;;;SY)(A;;GA;;;{})", user.sid_string()?)),
+            None => Ok(OWNER_ONLY.to_owned()),
+        }
+    }
+
     /// The pipe for a data directory: `\\.\pipe\nexadesk-<FNV-1a of the path>`. The
     /// app computes the same name from the same directory.
     pub fn pipe_name(dir: &Path) -> String {
@@ -161,7 +171,7 @@ mod windows {
     }
 
     fn create(name: &str, first: bool) -> io::Result<NamedPipeServer> {
-        let wide: Vec<u16> = OWNER_ONLY.encode_utf16().chain(Some(0)).collect();
+        let wide: Vec<u16> = access()?.encode_utf16().chain(Some(0)).collect();
         let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
         // SAFETY: a NUL-terminated SDDL string; `descriptor` is written on success.
         let ok = unsafe {
@@ -199,7 +209,7 @@ mod windows {
         /// A second agent on the same data directory is refused: the pipe exists.
         pub(in crate::ipc) fn bind(config: &IpcConfig) -> Result<(Self, Cleanup), IpcError> {
             let dir = config.path.parent().unwrap_or(Path::new("."));
-            std::fs::create_dir_all(dir).map_err(io_err(dir))?;
+            nexa_user::as_user(|| std::fs::create_dir_all(dir)).map_err(io_err(dir))?;
             let name = pipe_name(dir);
             let next = create(&name, true).map_err(|e| {
                 if e.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {

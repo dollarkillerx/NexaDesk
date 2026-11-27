@@ -13,12 +13,12 @@ use std::{
 
 use windows_sys::{
     Win32::{
-        Foundation::{ERROR_NO_TOKEN, HANDLE},
+        Foundation::{ERROR_NO_TOKEN, HANDLE, LocalFree},
         Security::{
-            AdjustTokenPrivileges, GetTokenInformation, ImpersonateLoggedOnUser, IsWellKnownSid,
-            LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, RevertToSelf, SE_PRIVILEGE_ENABLED,
-            TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_USER, TokenUser,
-            WinLocalSystemSid,
+            AdjustTokenPrivileges, Authorization::ConvertSidToStringSidW, GetTokenInformation,
+            ImpersonateLoggedOnUser, IsWellKnownSid, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW,
+            RevertToSelf, SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES,
+            TOKEN_QUERY, TOKEN_USER, TokenUser, WinLocalSystemSid,
         },
         System::{
             Com::CoTaskMemFree,
@@ -154,6 +154,43 @@ impl UserToken {
 
     pub fn raw(&self) -> HANDLE {
         self.0.as_raw_handle()
+    }
+
+    /// The user's SID as text (`S-1-5-21-…`), for an access list in SDDL.
+    pub fn sid_string(&self) -> io::Result<String> {
+        let mut buf = [0u64; 32];
+        let mut len = 0u32;
+        // SAFETY: a buffer of the size given; TOKEN_USER and its SID fit in it.
+        if unsafe {
+            GetTokenInformation(
+                self.raw(),
+                TokenUser,
+                buf.as_mut_ptr().cast(),
+                size_of_val(&buf) as u32,
+                &mut len,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: GetTokenInformation wrote a TOKEN_USER at the start of `buf`.
+        let user = unsafe { &*buf.as_ptr().cast::<TOKEN_USER>() };
+        let mut text: *mut u16 = ptr::null_mut();
+        // SAFETY: a SID inside `buf`; `text` is allocated by the call and freed below.
+        if unsafe { ConvertSidToStringSidW(user.User.Sid, &mut text) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: a NUL-terminated string the call returned.
+        let sid = unsafe {
+            let mut n = 0;
+            while *text.add(n) != 0 {
+                n += 1;
+            }
+            String::from_utf16_lossy(std::slice::from_raw_parts(text, n))
+        };
+        // SAFETY: allocated by ConvertSidToStringSidW.
+        unsafe { LocalFree(text.cast()) };
+        Ok(sid)
     }
 
     /// The user's environment, as a new logon would have it, for CreateProcessAsUserW

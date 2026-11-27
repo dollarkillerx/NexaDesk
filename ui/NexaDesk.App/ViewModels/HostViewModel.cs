@@ -343,6 +343,10 @@ public sealed partial class HostViewModel : ObservableObject
 
     public void OnServerChanged() => OnPropertyChanged(nameof(RestartNeeded));
 
+    /// <summary>The NexaDesk service was installed, updated or removed (Windows): a running host
+    /// starts again, through the service or not.</summary>
+    public Task OnSystemServiceChanged() => RestartHosting();
+
     /// <summary>The AI agent setting changed: the running agent takes it at once.</summary>
     public void OnAgentsChanged()
     {
@@ -1108,14 +1112,14 @@ public sealed partial class MainViewModel : ObservableObject
         Func<DateTimeOffset>? now = null, ISettingsStore? settings = null, ILoginItem? loginItem = null,
         IKeymapService? keymap = null, IViewerPrefs? viewerPrefs = null, ISavedPasswords? passwords = null,
         IAppUpdater? updater = null, IServerTrust? serverTrust = null, IServerDirectory? serverDirectory = null, IServerProbe? serverProbe = null,
-        IAgentServer? agentServer = null, IElevation? elevation = null)
+        IAgentServer? agentServer = null, IElevation? elevation = null, ISystemService? systemService = null)
     {
         _keymap = keymap;
         _core = core;
         DeviceName = deviceName;
         settings ??= new MemorySettings();
         _settings = settings;
-        Settings = new SettingsViewModel(settings, passwords, serverDirectory, serverProbe, elevation);
+        Settings = new SettingsViewModel(settings, passwords, serverDirectory, serverProbe, elevation, systemService);
         Tailscale = new TailscaleViewModel(windows);
         Connect = new ConnectViewModel(core, recent, windows, now, () => Settings.SavedServer, Tailscale, viewerPrefs, passwords,
             () => Settings.SavedSecret);
@@ -1130,6 +1134,8 @@ public sealed partial class MainViewModel : ObservableObject
         Settings.AnnounceChanged += _ => Host.OnServerChanged();
         Settings.BrowsersChanged += _ => Host.OnServerChanged();
         Settings.AgentsChanged += _ => Host.OnAgentsChanged();
+        Settings.SystemServiceChanged += () => _ = Host.OnSystemServiceChanged();
+        _ = Settings.RefreshSystemService();
         _permissions = permissions;
         _windows = windows;
         LoginItem = new LoginItemViewModel(loginItem ?? new NoLoginItem());

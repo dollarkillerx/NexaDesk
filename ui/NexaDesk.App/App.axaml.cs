@@ -74,8 +74,9 @@ public partial class App : Application
                     : L.Format("App.LibraryError", e.Message);
             }
             var windows = new WindowService();
+            ISystemService? systemService = OperatingSystem.IsWindows() ? new WindowsSystemService() : null;
             var vm = new MainViewModel(core, new RecentStore(Path.Combine(dataDir, "recent.json")),
-                new AgentLink(Path.Combine(dataDir, Ipc.SocketName), ui), new AgentProcess(ui),
+                new AgentLink(Path.Combine(dataDir, Ipc.SocketName), ui), new AgentProcess(ui, systemService),
                 OperatingSystem.IsWindows() ? new NoPermissionsNeeded() : new MacPermissions(),
                 windows, new LocalAddresses(), deviceName, settings: new SettingsStore(Path.Combine(dataDir, "settings.json")),
                 loginItem: OperatingSystem.IsWindows() ? new RunKeyLoginItem() : new SmAppServiceLoginItem(), keymap: new NativeKeymap(dataDir),
@@ -84,7 +85,7 @@ public partial class App : Application
                 serverTrust: new NativeServerTrust(),
                 serverDirectory: new ServerDirectory(ServerDirectory.DefaultUrl, Path.Combine(dataDir, "servers.json")),
                 serverProbe: new ServerProbe(), agentServer: new NativeAgentServer(dataDir),
-                elevation: OperatingSystem.IsWindows() ? new WindowsElevation() : null);
+                elevation: OperatingSystem.IsWindows() ? new WindowsElevation() : null, systemService: systemService);
             if (startupError != null) vm.Connect.IdentityError = startupError;
             var main = new MainWindow { DataContext = vm };
             if (OperatingSystem.IsWindows())

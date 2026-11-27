@@ -578,6 +578,18 @@
                     <TextBlock Classes="errorText" TextWrapping="Wrap" Margin="28,0,0,0" Text="{Binding Settings.RunAsAdministratorError}"
                                IsVisible="{Binding Settings.RunAsAdministratorError, Converter={x:Static ObjectConverters.IsNotNull}}" />
                   </StackPanel>
+                  <!-- Windows: the NexaDesk service, so UAC prompts and the lock screen can be used too. -->
+                  <StackPanel Name="SystemServiceSection" Spacing="2" IsVisible="{Binding Settings.ShowSystemService}">
+                    <CheckBox Name="SystemServiceBox" Content="{l:T Main.SystemService}" IsChecked="{Binding Settings.UseSystemService}"
+                              IsEnabled="{Binding Settings.CanChangeSystemService}" />
+                    <TextBlock Classes="muted" TextWrapping="Wrap" Margin="28,0,0,0" Text="{l:T Main.SystemServiceTip}" />
+                    <TextBlock Classes="muted" TextWrapping="Wrap" Margin="28,0,0,0" Text="{Binding Settings.SystemServiceStatus}"
+                               IsVisible="{Binding Settings.SystemServiceStatus, Converter={x:Static ObjectConverters.IsNotNull}}" />
+                    <Button Name="UpdateSystemServiceButton" Margin="28,4,0,0" Content="{l:T Main.SystemServiceUpdate}"
+                            Command="{Binding Settings.UpdateSystemServiceCommand}" IsVisible="{Binding Settings.SystemServiceNeedsUpdate}" />
+                    <TextBlock Classes="errorText" TextWrapping="Wrap" Margin="28,0,0,0" Text="{Binding Settings.SystemServiceError}"
+                               IsVisible="{Binding Settings.SystemServiceError, Converter={x:Static ObjectConverters.IsNotNull}}" />
+                  </StackPanel>
                   <StackPanel DataContext="{Binding Host}" x:DataType="vm:HostViewModel">
                     <!-- Stopped: where to listen. Every network by default; one address is the exception. -->
                     <Expander Name="ListenExpander" HorizontalAlignment="Stretch">

@@ -1,6 +1,6 @@
 # Windows 系统服务：在 UAC 弹窗和锁屏时也能控制
 
-> 状态（2026-11-27）：第 1 期（跟随输入桌面）已写好，并在真机（Windows 11，build 26300）上验证：用计划任务以 SYSTEM 身份经 `run-in-session` 启动被控端，从 Mac 连上后 UAC 弹窗能看到、能点。第 2 期（§5，以用户身份做事）已写好：新 crate `nexa-user`（`is_system`、`UserToken::of_session`、`as_user`、`user_folder`），命令行、收发文件、DPAPI 密钥、配对记录、数据和下载目录都改为以会话用户身份进行；同一台机器上以 SYSTEM 运行时，数据目录和 `device-key` 的所有者是用户、用户能解开，收到的文件所有者是用户。第 3 期（§3，服务 `crates/nexa-service`）已写好并在真机上验证：安装到 Program Files、以 LocalSystem 运行，用户经控制管道请它在自己的会话里以 SYSTEM 启动被控端，UAC 弹窗能看到能点，查看端按 Ctrl+Alt+Del 由服务 `SendSAS` 发出，客户端断开后被控端随即结束，卸载后服务、目录、注册表都恢复。第 4、5 期未实现。对应 [WINDOWS.md](WINDOWS.md) 第 6 阶段、[DETAILED_DESIGN.md](DETAILED_DESIGN.md) §5.1。
+> 状态（2026-11-27）：第 1 期（跟随输入桌面）已写好，并在真机（Windows 11，build 26300）上验证：用计划任务以 SYSTEM 身份经 `run-in-session` 启动被控端，从 Mac 连上后 UAC 弹窗能看到、能点。第 2 期（§5，以用户身份做事）已写好：新 crate `nexa-user`（`is_system`、`UserToken::of_session`、`as_user`、`user_folder`），命令行、收发文件、DPAPI 密钥、配对记录、数据和下载目录都改为以会话用户身份进行；同一台机器上以 SYSTEM 运行时，数据目录和 `device-key` 的所有者是用户、用户能解开，收到的文件所有者是用户。第 3 期（§3，服务 `crates/nexa-service`）已写好并在真机上验证：安装到 Program Files、以 LocalSystem 运行，用户经控制管道请它在自己的会话里以 SYSTEM 启动被控端，UAC 弹窗能看到能点，查看端按 Ctrl+Alt+Del 由服务 `SendSAS` 发出，客户端断开后被控端随即结束，卸载后服务、目录、注册表都恢复。第 4 期（§6，应用接入）已写好，还没在真机上用安装包验证：设置里的“在 UAC 弹窗和锁屏时也能控制（安装系统服务）”（`SystemService.cs`、`SettingsViewModel`），装好且与应用自带的程序一致时 `AgentProcess` 经服务启动被控端、转回输出、断开即结束，服务不可用时照旧自己启动；SYSTEM 被控端的 IPC 管道允许会话用户（按 SID）连接；卸载 NexaDesk 时尝试卸载服务；打包带上 `nexa-service.exe`。第 5 期（发版）未做。对应 [WINDOWS.md](WINDOWS.md) 第 6 阶段、[DETAILED_DESIGN.md](DETAILED_DESIGN.md) §5.1。
 
 ## 1. 要解决的问题
 
@@ -84,7 +84,7 @@ SYSTEM 身份的被控端，凡是会让远程的人“借 SYSTEM 做事”的�
 - 开始“允许控制”时：服务在、版本一致 → 请服务启动被控端；否则照旧自己启动。停止时请服务结束它（现在是 `Kill`，SYSTEM 进程用户结束不了）。
 - 和被控端的 IPC 管道：被控端以 SYSTEM 创建时，管道 DACL 允许“该会话的用户”而不是“所有者”（现在是 `D:P(A;;GA;;;OW)`），并加中等完整性标签，否则普通身份的应用连不上。
 - 卸载 NexaDesk（Velopack 的卸载钩子以用户身份运行）删不掉服务：钩子里尝试以管理员身份运行 `nexa-service.exe uninstall`，被拒绝时在说明里写明怎样手动删除。
-- 0.1.43 的“以管理员身份运行”在装了服务后就没必要了，设置里提示二选一。
+- 和 0.1.43 的“以管理员身份运行”合成一个选项“可以操作管理员窗口、UAC 弹窗和锁屏（安装系统服务）”：SYSTEM 被控端本来就能操作以管理员身份运行的窗口。有服务（`nexa-service.exe` 在应用旁边）时旧选项不再显示，除非以前开着；以前开着的人下次以管理员身份打开 NexaDesk 时，无须再确认就装好服务并关掉旧选项（装不上就保留旧选项）。差别：远程命令行不再是管理员身份，需要时对方可以自己在 UAC 弹窗里提升。
 
 ## 7. 分期
 

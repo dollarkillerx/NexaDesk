@@ -25,12 +25,14 @@ public sealed partial class SettingsViewModel : ObservableObject
     readonly IServerProbe _probe;
 
     readonly IElevation _elevation;
+    readonly ISystemService _service;
 
     public SettingsViewModel(ISettingsStore store, ISavedPasswords? passwords = null, IServerDirectory? directory = null,
-        IServerProbe? probe = null, IElevation? elevation = null)
+        IServerProbe? probe = null, IElevation? elevation = null, ISystemService? systemService = null)
     {
         _store = store;
         _elevation = elevation ?? new NoElevation();
+        _service = systemService ?? new NoSystemService();
         _passwords = passwords;
         _directory = directory;
         _probe = probe ?? new NoProbe();
@@ -198,8 +200,13 @@ public sealed partial class SettingsViewModel : ObservableObject
     [ObservableProperty]
     private bool _allowAgents;
 
-    /// <summary>Windows: the "Run as administrator" option is offered.</summary>
-    public bool ShowRunAsAdministrator => _elevation.IsSupported;
+    /// <summary>
+    /// Windows: the "Run as administrator" option is offered. The NexaDesk service does what it
+    /// did and more (a SYSTEM host can use elevated windows, UAC prompts and the lock screen),
+    /// so where the service is there, it shows only while still switched on from before, to
+    /// be seen and switched off; <see cref="RefreshSystemService"/> moves it over by itself.
+    /// </summary>
+    public bool ShowRunAsAdministrator => _elevation.IsSupported && (!_service.IsSupported || RunAsAdministrator);
 
     /// <summary>
     /// Windows only: run NexaDesk as administrator, so the host can click and type into programs
@@ -209,7 +216,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     /// Switched off, it applies at the next start.
     /// </summary>
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(RunAsAdministratorStatus))]
+    [NotifyPropertyChangedFor(nameof(RunAsAdministratorStatus), nameof(ShowRunAsAdministrator))]
     private bool _runAsAdministrator;
 
     /// <summary>Why turning it on did not work (the UAC prompt was declined, say); null otherwise.</summary>
@@ -242,6 +249,103 @@ public sealed partial class SettingsViewModel : ObservableObject
             return;
         }
         QuitForElevatedCopy?.Invoke();
+    }
+
+    // ---- The NexaDesk service (Windows, docs/WINDOWS_SERVICE.md §6) ----
+
+    /// <summary>Windows, with the service beside the app.</summary>
+    public bool ShowSystemService => _service.IsSupported;
+
+    /// <summary>What is installed, as last looked at.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(SystemServiceStatus), nameof(SystemServiceNeedsUpdate))]
+    private SystemServiceState _systemServiceState = SystemServiceState.NotInstalled;
+
+    /// <summary>
+    /// The checkbox: installed or not. Ticking it installs the service and unticking removes it,
+    /// both asking Windows for administrator rights (the UAC prompt); a no, or a failure, puts the
+    /// box back. Not a saved setting: the installed service is the setting.
+    /// </summary>
+    [ObservableProperty] private bool _useSystemService;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(SystemServiceStatus), nameof(CanChangeSystemService))]
+    [NotifyCanExecuteChangedFor(nameof(UpdateSystemServiceCommand))]
+    private bool _isChangingSystemService;
+
+    /// <summary>Why installing, updating or removing did not work; null otherwise.</summary>
+    [ObservableProperty] private string? _systemServiceError;
+
+    public bool CanChangeSystemService => !IsChangingSystemService;
+
+    public bool SystemServiceNeedsUpdate => SystemServiceState == SystemServiceState.NeedsUpdate;
+
+    public string? SystemServiceStatus => IsChangingSystemService ? L.Get("Main.SystemServiceWorking")
+        : SystemServiceState switch
+        {
+            SystemServiceState.Running => L.Get("Main.SystemServiceRunning"),
+            SystemServiceState.Stopped => L.Get("Main.SystemServiceStopped"),
+            SystemServiceState.NeedsUpdate => L.Get("Main.SystemServiceNeedsUpdate"),
+            _ => null,
+        };
+
+    /// <summary>Raised once the service was installed, updated or removed: the host should be
+    /// started again, through the service or not.</summary>
+    public event Action? SystemServiceChanged;
+
+    bool _syncingService;
+
+    void ShowServiceState(SystemServiceState state)
+    {
+        SystemServiceState = state;
+        _syncingService = true;
+        UseSystemService = state != SystemServiceState.NotInstalled;
+        _syncingService = false;
+    }
+
+    /// <summary>
+    /// Looks at the service (off the UI thread: it reads both programs). A copy running as
+    /// administrator needs no prompt to install, so it updates an outdated service at once,
+    /// and moves "Run as administrator", if still on from before, over to the service: once
+    /// that runs, the option is switched off and NexaDesk stops asking for elevation.
+    /// </summary>
+    public async Task RefreshSystemService()
+    {
+        if (!_service.IsSupported) return;
+        ShowServiceState(await Task.Run(_service.Check));
+        if (!_elevation.IsElevated) return;
+        var moveOver = RunAsAdministrator && SystemServiceState != SystemServiceState.Running;
+        if (SystemServiceState == SystemServiceState.NeedsUpdate || moveOver)
+            await ChangeSystemService(true);
+        if (RunAsAdministrator && SystemServiceState == SystemServiceState.Running)
+            RunAsAdministrator = false;
+    }
+
+    partial void OnUseSystemServiceChanged(bool value)
+    {
+        if (_syncingService) return;
+        _ = ChangeSystemService(value);
+    }
+
+    bool CanUpdateSystemService() => !IsChangingSystemService;
+
+    [RelayCommand(CanExecute = nameof(CanUpdateSystemService))]
+    private Task UpdateSystemService() => ChangeSystemService(true);
+
+    async Task ChangeSystemService(bool install)
+    {
+        IsChangingSystemService = true;
+        SystemServiceError = null;
+        var why = install ? await _service.Install() : await _service.Uninstall();
+        var state = await Task.Run(_service.Check);
+        IsChangingSystemService = false;
+        ShowServiceState(state);
+        if (why != null)
+        {
+            SystemServiceError = why;
+            return;
+        }
+        SystemServiceChanged?.Invoke();
     }
 
     /// <summary>Raised after AllowAgents is saved.</summary>

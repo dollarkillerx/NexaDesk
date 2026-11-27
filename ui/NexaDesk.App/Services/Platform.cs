@@ -21,19 +21,24 @@ public sealed class AvaloniaDispatcher : IUiDispatcher
 /// in the install folder on Windows), with consent coming from this UI over the socket.
 /// Its stderr is kept for error messages, and written to agent.log (<see cref="AgentLog.DefaultPath"/>)
 /// so a session's end can be looked up later.
+/// On Windows with the NexaDesk service installed and running (<see cref="ISystemService"/>), the
+/// service starts it instead, as SYSTEM in this session, and relays its output; closing the
+/// connection ends it. Should the service not manage, it is started here as before.
 /// </summary>
-public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
+public sealed class AgentProcess(IUiDispatcher ui, ISystemService? service = null) : IAgentProcess
 {
     readonly object _gate = new();
     readonly Queue<string> _lines = new();
     readonly AgentLog _log = new(AgentLog.DefaultPath());
     Process? _process;
+    /// <summary>The connection to the service while it runs the agent.</summary>
+    Stream? _viaService;
 
     public bool IsRunning
     {
         get
         {
-            lock (_gate) return _process is { HasExited: false };
+            lock (_gate) return _process is { HasExited: false } || _viaService != null;
         }
     }
 
@@ -120,31 +125,33 @@ public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
     public string? Start(string listen, string deviceName, string signalServer, bool announceOnLan, string? web = null,
         string? signalSecret = null)
     {
+        var args = new List<string> { "--listen", listen, "--name", deviceName, "--consent", "ui" };
+        if (!string.IsNullOrEmpty(signalServer))
+        {
+            args.Add("--signal");
+            args.Add(signalServer);
+        }
+        if (!announceOnLan) args.Add("--no-lan-discovery");
+        if (!string.IsNullOrEmpty(web))
+        {
+            args.Add("--web");
+            args.Add(web);
+        }
+        var secret = !string.IsNullOrEmpty(signalServer) && !string.IsNullOrEmpty(signalSecret) ? signalSecret : null;
+        if (service is { IsSupported: true } && service.Check() == SystemServiceState.Running)
+        {
+            if (StartThroughService(args, secret) is not { } why) return null;
+            _log.Write($"the NexaDesk service could not start nexa-agent ({why}); starting it here");
+        }
+
         var path = Locate();
         if (path == null) return L.Get("Platform.AgentMissing");
         var info = StartInfo(path);
         // Not on the command line, where any process could read it; and never one left over
         // from the environment this app itself was started in.
         info.Environment.Remove(SignalSecretVariable);
-        if (!string.IsNullOrEmpty(signalServer) && !string.IsNullOrEmpty(signalSecret))
-            info.Environment[SignalSecretVariable] = signalSecret;
-        info.ArgumentList.Add("--listen");
-        info.ArgumentList.Add(listen);
-        info.ArgumentList.Add("--name");
-        info.ArgumentList.Add(deviceName);
-        info.ArgumentList.Add("--consent");
-        info.ArgumentList.Add("ui");
-        if (!string.IsNullOrEmpty(signalServer))
-        {
-            info.ArgumentList.Add("--signal");
-            info.ArgumentList.Add(signalServer);
-        }
-        if (!announceOnLan) info.ArgumentList.Add("--no-lan-discovery");
-        if (!string.IsNullOrEmpty(web))
-        {
-            info.ArgumentList.Add("--web");
-            info.ArgumentList.Add(web);
-        }
+        if (secret != null) info.Environment[SignalSecretVariable] = secret;
+        foreach (var a in args) info.ArgumentList.Add(a);
         Process process;
         try
         {
@@ -167,6 +174,79 @@ public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
         }
         _log.Write($"nexa-agent started (pid {process.Id})");
         return null;
+    }
+
+    /// <summary>Asks the service to run the agent; null once it runs, else why not.</summary>
+    string? StartThroughService(List<string> args, string? secret)
+    {
+        var pipe = service?.Connect(1000);
+        if (pipe == null) return "no answer";
+        try
+        {
+            var request = Encoding.UTF8.GetBytes(ServiceProtocol.Start(args, secret));
+            pipe.Write(request);
+            pipe.Flush();
+            var reader = new StreamReader(pipe, new UTF8Encoding(false));
+            var first = reader.ReadLineAsync();
+            if (!first.Wait(TimeSpan.FromSeconds(15)) || first.Result is not { } line)
+            {
+                pipe.Dispose();
+                return "no answer";
+            }
+            var answer = ServiceProtocol.Parse(line);
+            if (answer.Kind != "started")
+            {
+                pipe.Dispose();
+                return answer.Text ?? answer.Kind;
+            }
+            lock (_gate)
+            {
+                _lines.Clear();
+                _viaService = pipe;
+            }
+            _log.Write($"nexa-agent started as SYSTEM by the NexaDesk service (pid {answer.Number})");
+            _ = Task.Run(() => RelayFromService(pipe, reader));
+            return null;
+        }
+        catch (Exception e) when (e is IOException or AggregateException or ObjectDisposedException)
+        {
+            pipe.Dispose();
+            return e.Message;
+        }
+    }
+
+    /// <summary>The agent's output, as the service passes it on, until it exits or the
+    /// connection closes (<see cref="Kill"/> closes it, which ends the agent).</summary>
+    async Task RelayFromService(Stream pipe, StreamReader reader)
+    {
+        var code = -1;
+        try
+        {
+            while (await reader.ReadLineAsync().ConfigureAwait(false) is { } line)
+            {
+                var e = ServiceProtocol.Parse(line);
+                if (e.Kind == "line") Keep(e.Text);
+                else if (e.Kind == "error") Keep(e.Text);
+                else if (e.Kind == "exited")
+                {
+                    code = (int)e.Number;
+                    break;
+                }
+            }
+        }
+        catch (Exception e) when (e is IOException or ObjectDisposedException)
+        {
+        }
+        string output;
+        lock (_gate)
+        {
+            if (_viaService != pipe) return;
+            _viaService = null;
+            output = string.Join("\n", _lines);
+        }
+        pipe.Dispose();
+        _log.Write($"nexa-agent exited with code {code}");
+        ui.Post(() => Exited?.Invoke(new AgentExit(code, output)));
     }
 
     void Keep(string? line)
@@ -202,8 +282,11 @@ public sealed class AgentProcess(IUiDispatcher ui) : IAgentProcess
     public void Kill()
     {
         Process? p;
-        lock (_gate) p = _process;
+        Stream? viaService;
+        lock (_gate) (p, viaService) = (_process, _viaService);
         try { p?.Kill(); } catch (InvalidOperationException) { }
+        // The service ends the agent when the connection closes.
+        viaService?.Dispose();
     }
 }
 

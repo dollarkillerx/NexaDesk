@@ -12,9 +12,15 @@ static class Program
         // First: the Windows installer's hooks run here and may end the process. Nothing
         // happens when the app was not installed by Velopack (macOS, a development build).
         var velopack = Velopack.VelopackApp.Build();
-        // Uninstalling also removes "Open at login", so nothing is left starting a removed app.
+        // Uninstalling also removes "Open at login", so nothing is left starting a removed app, and
+        // the NexaDesk service if it was installed (which asks Windows for administrator rights).
 #pragma warning disable CA1416 // the hook only runs on Windows, inside the IsWindows check
-        if (OperatingSystem.IsWindows()) velopack.OnBeforeUninstallFastCallback(_ => RunKeyLoginItem.Remove());
+        if (OperatingSystem.IsWindows())
+            velopack.OnBeforeUninstallFastCallback(_ =>
+            {
+                RunKeyLoginItem.Remove();
+                WindowsSystemService.RemoveOnUninstall();
+            });
 #pragma warning restore CA1416
         velopack.Run();
         CrashLog.Install();
