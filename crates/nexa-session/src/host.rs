@@ -74,6 +74,8 @@ pub struct HostStats {
     pub encoder_errors: AtomicU64,
     pub malformed: AtomicU64,
     pub capture_lost: AtomicU64,
+    /// Frames the encoder finished after their own encode call (`Encoder::take_ready`).
+    pub late_frames: AtomicU64,
 }
 
 enum Cmd {
@@ -533,6 +535,44 @@ impl Encoder for Released {
     fn force_idr(&mut self) {}
 }
 
+/// Sends the frames the encoder finished late (`Encoder::take_ready`), each as a frame
+/// of its own and in order, stamped with `captured_at` (the newest capture they could
+/// show). False when the encoder failed, and the next frame must be a key frame.
+#[allow(clippy::too_many_arguments)]
+fn send_ready(
+    encoder: &mut dyn Encoder,
+    sink: &mut dyn FrameSink,
+    buf: &mut Vec<u8>,
+    next_id: &mut u32,
+    ref_epoch: u8,
+    captured_at: Instant,
+    base: Instant,
+    stats: &HostStats,
+) -> bool {
+    loop {
+        buf.clear();
+        match encoder.take_ready(*next_id, buf) {
+            Ok(Some(meta)) => {
+                sink.push(EncodedFrame {
+                    frame_id: *next_id,
+                    flags: if meta.key { flags::IDR } else { 0 },
+                    ref_epoch,
+                    capture_ts_us: captured_at.saturating_duration_since(base).as_micros() as u32,
+                    data: buf.clone(),
+                });
+                *next_id = next_id.wrapping_add(1);
+                stats.encoded.fetch_add(1, Relaxed);
+                stats.late_frames.fetch_add(1, Relaxed);
+            }
+            Ok(None) => return true,
+            Err(_) => {
+                stats.encoder_errors.fetch_add(1, Relaxed);
+                return false;
+            }
+        }
+    }
+}
+
 fn frame_interval(fps: u32) -> Duration {
     Duration::from_secs_f64(1.0 / f64::from(fps.max(1)))
 }
@@ -656,6 +696,22 @@ fn run_encoder(
                 f
             }
             Ok(CaptureEvent::Idle) => {
+                // A frame the encoder held goes now, not with the next change, which on a
+                // still screen can be seconds away.
+                if let Some((_, captured_at)) = &last
+                    && !send_ready(
+                        &mut *encoder,
+                        &mut *sink,
+                        &mut buf,
+                        &mut next_id,
+                        recovery.epoch(),
+                        *captured_at,
+                        base,
+                        &stats,
+                    )
+                {
+                    force_key = true;
+                }
                 let refresh_due = refresh_step < IDLE_REFRESH_AFTER.len()
                     && last_content.elapsed() >= IDLE_REFRESH_AFTER[refresh_step];
                 let Some((image, captured_at)) =
@@ -724,6 +780,19 @@ fn run_encoder(
                 force_key = false;
                 recovery_pending = false;
                 stats.encoded.fetch_add(1, Relaxed);
+                // And whatever else is ready: a late frame's output came first.
+                if !send_ready(
+                    &mut *encoder,
+                    &mut *sink,
+                    &mut buf,
+                    &mut next_id,
+                    recovery.epoch(),
+                    frame.captured_at,
+                    base,
+                    &stats,
+                ) {
+                    force_key = true;
+                }
             }
             // Nothing was produced and the reference chain is intact.
             Err(MediaError::FrameDropped) => {}
@@ -1047,6 +1116,141 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         false
+    }
+
+    /// Five frames, then a still screen.
+    struct FiveThenStill(u32);
+
+    impl Capturer for FiveThenStill {
+        fn next(&mut self, timeout: Duration) -> nexa_media::Result<CaptureEvent> {
+            if self.0 >= 5 {
+                thread::sleep(timeout.min(Duration::from_millis(10)));
+                return Ok(CaptureEvent::Idle);
+            }
+            self.0 += 1;
+            thread::sleep(Duration::from_millis(5));
+            Ok(CaptureEvent::Frame(CapturedFrame {
+                image: NativeImage::Cpu(Arc::new(CpuFrame {
+                    width: 2,
+                    height: 2,
+                    y: vec![0; 4],
+                    uv: vec![0; 2],
+                })),
+                captured_at: Instant::now(),
+                dirty: Vec::new(),
+            }))
+        }
+    }
+
+    /// As an asynchronous hardware encoder: each frame's output is ready some time after
+    /// it goes in, the second one late; an encode returns the oldest ready output, or
+    /// says the frame was held back.
+    struct Late {
+        n: u8,
+        queue: std::collections::VecDeque<(u8, Instant)>,
+    }
+
+    impl Late {
+        fn ready(&mut self, out: &mut Vec<u8>) -> bool {
+            match self.queue.front() {
+                Some(&(n, at)) if Instant::now() >= at => {
+                    self.queue.pop_front();
+                    out.push(n);
+                    true
+                }
+                _ => false,
+            }
+        }
+    }
+
+    impl Encoder for Late {
+        fn caps(&self) -> EncoderCaps {
+            EncoderCaps::default()
+        }
+        fn encode(
+            &mut self,
+            _: &CapturedFrame,
+            frame_id: FrameId,
+            _: EncodeOpts,
+            out: &mut Vec<u8>,
+        ) -> nexa_media::Result<EncodedMeta> {
+            self.n += 1;
+            let late = if self.n == 2 { 80 } else { 0 };
+            self.queue
+                .push_back((self.n, Instant::now() + Duration::from_millis(late)));
+            if !self.ready(out) {
+                return Err(MediaError::FrameDropped);
+            }
+            Ok(EncodedMeta {
+                frame_id,
+                key: false,
+                recovery_point: false,
+            })
+        }
+        fn set_bitrate(&mut self, _: u32) -> nexa_media::Result<()> {
+            Ok(())
+        }
+        fn invalidate_from(&mut self, _: FrameId) -> nexa_media::Result<Recovery> {
+            Ok(Recovery::Idr)
+        }
+        fn on_frame_acked(&mut self, _: FrameId) {}
+        fn force_idr(&mut self) {}
+        fn take_ready(
+            &mut self,
+            frame_id: FrameId,
+            out: &mut Vec<u8>,
+        ) -> nexa_media::Result<Option<EncodedMeta>> {
+            Ok(self.ready(out).then_some(EncodedMeta {
+                frame_id,
+                key: false,
+                recovery_point: false,
+            }))
+        }
+    }
+
+    #[test]
+    fn frames_an_encoder_finishes_late_all_go_and_none_waits_for_the_next_change() {
+        // One late frame used to leave every later one a frame behind for the rest of the
+        // session, and on a still screen the last change never went at all.
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let pipeline = Pipeline {
+            capturer: Box::new(FiveThenStill(0)),
+            encoder: Box::new(Late {
+                n: 0,
+                queue: Default::default(),
+            }),
+            rebuilder: None,
+            rate: Arc::new(Mutex::new(RateController::new(
+                RateConfig {
+                    initial_bps: 10_000_000,
+                    min_bps: 300_000,
+                    max_bps: 100_000_000,
+                },
+                Mode::Game,
+                Instant::now(),
+            ))),
+            fps: Arc::new(AtomicU32::new(60)),
+        };
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        std::mem::forget(cmd_tx);
+        let stats = Arc::new(HostStats::default());
+        let (sink, s, st) = (
+            Box::new(Collect(frames.clone())),
+            stop.clone(),
+            stats.clone(),
+        );
+        let thread =
+            thread::spawn(move || run_encoder(pipeline, sink, cmd_rx, Instant::now(), s, st));
+        let sent = || -> Vec<u8> { frames.lock().unwrap().iter().map(|f| f.data[0]).collect() };
+        assert!(wait_for(|| sent().len() >= 5), "sent only {:?}", sent());
+        // Every frame, in order, each once, with ids that follow on.
+        assert_eq!(sent(), [1, 2, 3, 4, 5]);
+        let ids: Vec<u32> = frames.lock().unwrap().iter().map(|f| f.frame_id).collect();
+        assert_eq!(ids, [0, 1, 2, 3, 4]);
+        assert!(stats.late_frames.load(Relaxed) >= 1);
+        stop.store(true, Relaxed);
+        thread.join().unwrap();
     }
 
     #[test]

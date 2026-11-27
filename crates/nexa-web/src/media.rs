@@ -289,6 +289,46 @@ type Stages = (Box<dyn Capturer>, Box<dyn Encoder>);
 /// closer than that would share a timestamp.
 const MIN_FRAME_STEP: Duration = Duration::from_millis(1);
 
+/// Sends the frames the encoder finished late (`Encoder::take_ready`), each as a frame of
+/// its own, in order. False when the browser's queue is closed.
+#[allow(clippy::too_many_arguments)]
+fn send_ready(
+    encoder: &mut dyn Encoder,
+    buf: &mut Vec<u8>,
+    frame_id: &mut u32,
+    sent_at: &mut Option<Duration>,
+    start: Instant,
+    out: &mpsc::Sender<Frame>,
+    ctl: &Control,
+    stats: &mut StreamStats,
+) -> bool {
+    loop {
+        buf.clear();
+        let Ok(Some(_)) = encoder.take_ready(*frame_id, buf) else {
+            return true;
+        };
+        stats.frames += 1;
+        stats.bytes += buf.len() as u64;
+        *frame_id = frame_id.wrapping_add(1);
+        let at = start
+            .elapsed()
+            .max(sent_at.map_or(Duration::ZERO, |t| t + MIN_FRAME_STEP));
+        *sent_at = Some(at);
+        if out
+            .try_send(Frame {
+                data: buf.clone(),
+                at,
+            })
+            .is_err()
+        {
+            if out.is_closed() {
+                return false;
+            }
+            ctl.force_key.store(true, Relaxed);
+        }
+    }
+}
+
 /// Encoder failures in a row before the session gives up. One is not enough: the
 /// Windows encoder answers a hardware failure by going on in software from the next
 /// frame.
@@ -463,6 +503,19 @@ fn run(
                 f
             }
             Ok(CaptureEvent::Idle) => {
+                // A frame the encoder held goes now, not with the next change.
+                if !send_ready(
+                    &mut *encoder,
+                    &mut buf,
+                    &mut frame_id,
+                    &mut sent_at,
+                    start,
+                    &out,
+                    ctl,
+                    &mut stats,
+                ) {
+                    return Ok(());
+                }
                 let due = refresh_step < IDLE_REFRESH_AFTER.len()
                     && last_content.elapsed() >= IDLE_REFRESH_AFTER[refresh_step];
                 // A picture that failed is tried again at once, still screen or not: the
@@ -539,6 +592,19 @@ fn run(
                         return Ok(());
                     }
                     ctl.force_key.store(true, Relaxed);
+                }
+                // And whatever else is ready: a late frame's output came first.
+                if !send_ready(
+                    &mut *encoder,
+                    &mut buf,
+                    &mut frame_id,
+                    &mut sent_at,
+                    start,
+                    &out,
+                    ctl,
+                    &mut stats,
+                ) {
+                    return Ok(());
                 }
             }
             // The encoder skipped this frame on purpose (it was behind, as on a large

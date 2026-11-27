@@ -440,6 +440,8 @@ async fn log_stream(media: Arc<HostMedia>, session: u64, (w, h, fps): (u32, u32,
             // Each is a round trip or more of standing picture at the viewer.
             s.recoveries.load(Relaxed),
             s.idrs.load(Relaxed),
+            // Frames a hardware encoder finished late, sent when they came out.
+            s.late_frames.load(Relaxed),
         )
     };
     let mut last = read();
@@ -462,7 +464,7 @@ async fn log_stream(media: Arc<HostMedia>, session: u64, (w, h, fps): (u32, u32,
             format!("{:.1} Mbit/s", l as f64 / 1e6)
         });
         eprintln!(
-            "nexa-agent: session {session} stream {w}x{h}@{fps}: {:.1} frames/s, {:.1} skipped/s, encode {encode_ms:.1} ms, sent {sent:.2} Mbit/s, target {:.2} Mbit/s, encoder {:.2} Mbit/s, link {link}, queue {:.0} ms, loss {:.1}%, {} radio stalls, {} repairs, {} key frames asked, round trip {} ms",
+            "nexa-agent: session {session} stream {w}x{h}@{fps}: {:.1} frames/s, {:.1} skipped/s, encode {encode_ms:.1} ms, sent {sent:.2} Mbit/s, target {:.2} Mbit/s, encoder {:.2} Mbit/s, link {link}, queue {:.0} ms, loss {:.1}%, {} radio stalls, {} repairs, {} key frames asked, round trip {} ms, {} late frames",
             frames as f64 / secs,
             skipped as f64 / secs,
             rate.target_bps as f64 / 1e6,
@@ -473,6 +475,7 @@ async fn log_stream(media: Arc<HostMedia>, session: u64, (w, h, fps): (u32, u32,
             now.4 - last.4,
             now.5 - last.5,
             media.round_trip().as_millis(),
+            now.6 - last.6,
         );
         last = now;
         last_stalls = rate.stalls;

@@ -526,6 +526,23 @@ impl HwEncoder {
         }
     }
 
+    /// An output that is ready now (see [`Encoder::take_ready`]), without waiting.
+    fn take_ready(&mut self, frame_id: FrameId, out: &mut Vec<u8>) -> Result<Option<EncodedMeta>> {
+        if self.events.is_none() {
+            return Ok(None);
+        }
+        while self.pump(Duration::ZERO)? {}
+        if self.have_output == 0 {
+            return Ok(None);
+        }
+        self.have_output -= 1;
+        Ok(self.output(out)?.map(|key| EncodedMeta {
+            frame_id,
+            key,
+            recovery_point: false,
+        }))
+    }
+
     fn set_bitrate(&mut self, bps: u32) -> Result<()> {
         if let Some(api) = &self.codec {
             // SAFETY: a documented codec property, changeable while encoding.
@@ -734,6 +751,13 @@ impl Encoder for WinEncoder {
         match &mut self.state {
             State::Software(s) => s.force_idr(),
             _ => self.force_key = true,
+        }
+    }
+
+    fn take_ready(&mut self, frame_id: FrameId, out: &mut Vec<u8>) -> Result<Option<EncodedMeta>> {
+        match &mut self.state {
+            State::Hardware(h) => h.take_ready(frame_id, out),
+            _ => Ok(None),
         }
     }
 }

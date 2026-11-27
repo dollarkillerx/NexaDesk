@@ -166,6 +166,21 @@ pub trait Encoder: Send {
     /// The viewer confirmed this frame arrived complete. LTR backends use it; others ignore it.
     fn on_frame_acked(&mut self, frame: FrameId);
     fn force_idr(&mut self);
+    /// A frame that came out after its own [`Encoder::encode`] returned: an asynchronous
+    /// hardware encoder that took longer than it was waited for (that call said
+    /// [`MediaError::FrameDropped`]). Each is a frame of its own, in order, and must be
+    /// sent, as later frames refer to it. Callers ask after every encode until there is
+    /// none, and while the screen is still, so none waits for the next change: taking
+    /// only one output per encode, every late frame left the picture one frame further
+    /// behind for the rest of the session (typing on a still screen showed up seconds
+    /// late on Windows).
+    fn take_ready(
+        &mut self,
+        _frame_id: FrameId,
+        _out: &mut Vec<u8>,
+    ) -> Result<Option<EncodedMeta>> {
+        Ok(None)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
