@@ -108,8 +108,8 @@ impl KeyStore for FileKeyStore {
 }
 
 #[cfg(windows)]
-impl KeyStore for FileKeyStore {
-    fn load(&self) -> Result<Option<Zeroizing<Vec<u8>>>, KeyStoreError> {
+impl FileKeyStore {
+    fn load_here(&self) -> Result<Option<Zeroizing<Vec<u8>>>, KeyStoreError> {
         let meta = match fs::symlink_metadata(&self.path) {
             Ok(m) => m,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -129,7 +129,7 @@ impl KeyStore for FileKeyStore {
         dpapi::unprotect(&sealed).map(Some)
     }
 
-    fn store(&self, secret: &[u8]) -> Result<(), KeyStoreError> {
+    fn store_here(&self, secret: &[u8]) -> Result<(), KeyStoreError> {
         if let Some(dir) = self.path.parent().filter(|p| !p.as_os_str().is_empty()) {
             fs::create_dir_all(dir)?;
         }
@@ -138,12 +138,39 @@ impl KeyStore for FileKeyStore {
         Ok(())
     }
 
-    fn delete(&self) -> Result<(), KeyStoreError> {
+    fn delete_here(&self) -> Result<(), KeyStoreError> {
         match fs::remove_file(&self.path) {
             Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e.into()),
             _ => Ok(()),
         }
     }
+}
+
+/// On a host running as SYSTEM, the file is read and written and DPAPI used as the
+/// session's user (`nexa_user`): the keys were sealed for that user, and stay theirs.
+#[cfg(windows)]
+impl KeyStore for FileKeyStore {
+    fn load(&self) -> Result<Option<Zeroizing<Vec<u8>>>, KeyStoreError> {
+        as_user(|| self.load_here())
+    }
+
+    fn store(&self, secret: &[u8]) -> Result<(), KeyStoreError> {
+        as_user(|| self.store_here(secret))
+    }
+
+    fn delete(&self) -> Result<(), KeyStoreError> {
+        as_user(|| self.delete_here())
+    }
+}
+
+#[cfg(windows)]
+fn as_user<T>(f: impl FnOnce() -> Result<T, KeyStoreError>) -> Result<T, KeyStoreError> {
+    let mut result = None;
+    nexa_user::as_user(|| {
+        result = Some(f());
+        Ok(())
+    })?;
+    result.unwrap_or_else(|| Err(std::io::Error::other("not run").into()))
 }
 
 /// Encryption to the signed-in Windows user: only that account on this machine can undo it.

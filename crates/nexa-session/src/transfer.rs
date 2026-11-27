@@ -416,26 +416,63 @@ struct TempFile {
 impl Drop for TempFile {
     fn drop(&mut self) {
         if !self.keep {
-            let _ = std::fs::remove_file(&self.path);
+            let _ = nexa_user::as_user(|| std::fs::remove_file(&self.path));
         }
     }
 }
 
+/// Creates the downloads folder if need be and a temporary file in it, as the session's
+/// user (`nexa_user`): on a host running as SYSTEM, the user's rights decide where it
+/// may write, and the file is the user's.
 async fn create_temp(dir: &Path) -> io::Result<(tokio::fs::File, TempFile)> {
-    tokio::fs::create_dir_all(dir).await?;
-    for _ in 0..8 {
-        let path = dir.join(format!(".{}{PART_SUFFIX}", random_hex()));
-        let mut options = tokio::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        match options.open(&path).await {
-            Ok(f) => return Ok((f, TempFile { path, keep: false })),
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e),
-        }
-    }
-    Err(io::Error::other("could not create a temporary file"))
+    let dir = dir.to_owned();
+    let (file, temp) = tokio::task::spawn_blocking(move || {
+        nexa_user::as_user(|| {
+            std::fs::create_dir_all(&dir)?;
+            for _ in 0..8 {
+                let path = dir.join(format!(".{}{PART_SUFFIX}", random_hex()));
+                let mut options = std::fs::OpenOptions::new();
+                options.write(true).create_new(true);
+                #[cfg(unix)]
+                std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+                match options.open(&path) {
+                    Ok(f) => return Ok((f, TempFile { path, keep: false })),
+                    Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                    Err(e) => return Err(e),
+                }
+            }
+            Err(io::Error::other("could not create a temporary file"))
+        })
+    })
+    .await
+    .map_err(io::Error::other)??;
+    Ok((tokio::fs::File::from_std(file), temp))
+}
+
+/// Opens a file to send, as the session's user (see [`create_temp`]): a host running as
+/// SYSTEM sends only what the user may read. `None` when it is not a file.
+async fn open_to_send(path: &Path) -> io::Result<Option<(tokio::fs::File, u64)>> {
+    let path = path.to_owned();
+    let opened = tokio::task::spawn_blocking(move || {
+        nexa_user::as_user(|| {
+            let meta = std::fs::metadata(&path)?;
+            if !meta.is_file() {
+                return Ok(None);
+            }
+            Ok(Some((std::fs::File::open(&path)?, meta.len())))
+        })
+    })
+    .await
+    .map_err(io::Error::other)??;
+    Ok(opened.map(|(f, size)| (tokio::fs::File::from_std(f), size)))
+}
+
+/// Whether `path` is a file the session's user can see (see [`open_to_send`]).
+async fn is_user_file(path: &Path) -> bool {
+    let path = path.to_owned();
+    tokio::task::spawn_blocking(move || nexa_user::as_user(|| std::fs::metadata(&path)))
+        .await
+        .is_ok_and(|m| m.is_ok_and(|m| m.is_file()))
 }
 
 /// Free bytes for an unprivileged writer at `dir` (or its nearest existing parent).
@@ -786,17 +823,13 @@ async fn send(
     mut cancel: watch::Receiver<bool>,
     streams: Option<(FramedSend, FramedRecv)>,
 ) -> Result<(), Stop> {
-    let meta = tokio::fs::metadata(path)
+    let opened = open_to_send(path)
         .await
         .map_err(|_| Stop::Failed(FailReason::Io))?;
-    if !meta.is_file() || tracker.event.name.is_empty() {
+    let Some((mut file, size)) = opened.filter(|_| !tracker.event.name.is_empty()) else {
         return Err(Stop::Failed(FailReason::NotAFile));
-    }
-    let size = meta.len();
+    };
     tracker.event.size = size;
-    let mut file = tokio::fs::File::open(path)
-        .await
-        .map_err(|_| Stop::Failed(FailReason::Io))?;
     if *cancel.borrow() {
         return Err(Stop::Cancelled { by_peer: false });
     }
@@ -1114,9 +1147,7 @@ async fn serve_request(
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let is_file = path.is_absolute()
-        && !name.is_empty()
-        && tokio::fs::metadata(&path).await.is_ok_and(|m| m.is_file());
+    let is_file = path.is_absolute() && !name.is_empty() && is_user_file(&path).await;
     if !is_file {
         turn_away(&mut tx, &mut rx, FileStatus::NotFound).await;
         return;
@@ -1238,7 +1269,7 @@ async fn receive_body(
                 std::fs::set_permissions(&temp_path, std::fs::Permissions::from_mode(0o644))?;
             }
             quarantine(&temp_path);
-            place(&temp_path, &dir, &name)
+            nexa_user::as_user(|| place(&temp_path, &dir, &name))
         })
         .await
         .map_err(io::Error::other)?

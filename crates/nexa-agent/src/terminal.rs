@@ -143,6 +143,29 @@ impl Terminal {
     }
 }
 
+/// Turns off QuickEdit on the console. With it, a click in the window starts a selection,
+/// and until it ends every write to the console blocks: the threads that log (capture,
+/// input) stop, and the session freezes.
+#[cfg(windows)]
+fn no_quick_edit(input: &std::fs::File) {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::Console::{
+        ENABLE_EXTENDED_FLAGS, ENABLE_QUICK_EDIT_MODE, GetConsoleMode, SetConsoleMode,
+    };
+    let handle = input.as_raw_handle();
+    let mut mode = 0;
+    // SAFETY: the console input handle just opened; `mode` is written on success.
+    if unsafe { GetConsoleMode(handle, &mut mode) } != 0 {
+        // SAFETY: the same handle; ENABLE_EXTENDED_FLAGS makes the change to QuickEdit apply.
+        unsafe {
+            SetConsoleMode(
+                handle,
+                (mode & !ENABLE_QUICK_EDIT_MODE) | ENABLE_EXTENDED_FLAGS,
+            )
+        };
+    }
+}
+
 impl TerminalUi {
     /// Opens the controlling terminal and starts reading it. Commands go to `commands`.
     pub fn open(commands: impl Fn(Command) + Send + 'static) -> Self {
@@ -157,6 +180,8 @@ impl TerminalUi {
         let Ok(out) = OpenOptions::new().write(true).open(tty_out) else {
             return Self { terminal: None };
         };
+        #[cfg(windows)]
+        no_quick_edit(&input);
         let terminal = Arc::new(Terminal {
             #[cfg(unix)]
             fd: std::os::fd::AsRawFd::as_raw_fd(&input),

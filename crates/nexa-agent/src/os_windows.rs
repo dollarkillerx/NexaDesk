@@ -28,14 +28,24 @@ pub fn device_key_store(data_dir: &Path) -> Box<dyn KeyStore> {
     Box::new(FileKeyStore::new(data_dir.join("device-key")))
 }
 
+/// The user's folder: from the environment, or, on a host running as SYSTEM (whose
+/// environment is SYSTEM's), the session user's (`nexa_user`).
+fn user_folder(folder: nexa_user::Folder, var: &str) -> Result<PathBuf, String> {
+    if nexa_user::is_system() {
+        return nexa_user::user_folder(folder).map_err(|e| format!("the user's {folder:?}: {e}"));
+    }
+    std::env::var_os(var)
+        .map(PathBuf::from)
+        .ok_or_else(|| format!("{var} is not set"))
+}
+
 pub fn default_data_dir() -> Result<PathBuf, String> {
-    let appdata = std::env::var_os("APPDATA").ok_or("APPDATA is not set")?;
-    Ok(Path::new(&appdata).join("NexaDesk"))
+    Ok(user_folder(nexa_user::Folder::RoamingAppData, "APPDATA")?.join("NexaDesk"))
 }
 
 pub fn default_downloads() -> Result<PathBuf, String> {
-    let profile = std::env::var_os("USERPROFILE").ok_or("USERPROFILE is not set")?;
-    Ok(Path::new(&profile).join("Downloads").join("NexaDesk"))
+    let profile = user_folder(nexa_user::Folder::Profile, "USERPROFILE")?;
+    Ok(profile.join("Downloads").join("NexaDesk"))
 }
 
 pub fn computer_name() -> String {

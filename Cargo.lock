@@ -1408,6 +1408,7 @@ dependencies = [
  "nexa-net",
  "nexa-session",
  "nexa-term",
+ "nexa-user",
  "nexa-web",
  "nexa-wire",
  "objc2",
@@ -1436,6 +1437,7 @@ dependencies = [
  "hkdf 0.12.4",
  "hmac 0.12.1",
  "nexa-net",
+ "nexa-user",
  "nexa-wire",
  "prost",
  "quinn",
@@ -1602,6 +1604,7 @@ dependencies = [
  "nexa-clip",
  "nexa-media",
  "nexa-net",
+ "nexa-user",
  "nexa-wire",
  "prost",
  "quinn",
@@ -1651,6 +1654,7 @@ name = "nexa-term"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "nexa-user",
  "windows-sys 0.61.2",
 ]
 
@@ -1679,6 +1683,13 @@ dependencies = [
  "rand_core 0.6.4",
  "sha1",
  "thiserror",
+]
+
+[[package]]
+name = "nexa-user"
+version = "0.1.0"
+dependencies = [
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

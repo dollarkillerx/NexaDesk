@@ -10,8 +10,13 @@ use rand_core::{OsRng, RngCore};
 
 /// Replaces `path` so that a reader sees either the old or the new contents.
 ///
-/// On Unix the file is created 0600 before any data is written to it.
+/// On Unix the file is created 0600 before any data is written to it. On a Windows host
+/// running as SYSTEM it is written as the session's user (`nexa_user`), whose folder it is.
 pub(crate) fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
+    nexa_user::as_user(|| atomic_write_here(path, data))
+}
+
+fn atomic_write_here(path: &Path, data: &[u8]) -> io::Result<()> {
     let dir = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),

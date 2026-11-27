@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 nexa-wire = { path = "../nexa-wire" }
 nexa-net = { path = "../nexa-net" }
+nexa-user = { path = "../nexa-user" }
 thiserror.workspace = true
 # Same pin as nexa-net (§0).
 quinn = "=0.11.12"

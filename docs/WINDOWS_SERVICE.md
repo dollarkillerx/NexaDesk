@@ -1,6 +1,6 @@
 # Windows 系统服务：在 UAC 弹窗和锁屏时也能控制
 
-> 状态（2026-11-27）：第 1 期（跟随输入桌面）已写好，并在真机（Windows 11，build 26300）上验证：用计划任务以 SYSTEM 身份经 `run-in-session` 启动被控端，从 Mac 连上后 UAC 弹窗能看到、能点。其余各期未实现。对应 [WINDOWS.md](WINDOWS.md) 第 6 阶段、[DETAILED_DESIGN.md](DETAILED_DESIGN.md) §5.1。
+> 状态（2026-11-27）：第 1 期（跟随输入桌面）已写好，并在真机（Windows 11，build 26300）上验证：用计划任务以 SYSTEM 身份经 `run-in-session` 启动被控端，从 Mac 连上后 UAC 弹窗能看到、能点。第 2 期（§5，以用户身份做事）已写好：新 crate `nexa-user`（`is_system`、`UserToken::of_session`、`as_user`、`user_folder`），命令行、收发文件、DPAPI 密钥、配对记录、数据和下载目录都改为以会话用户身份进行；同一台机器上以 SYSTEM 运行时，数据目录和 `device-key` 的所有者是用户、用户能解开，收到的文件所有者是用户。第 3–5 期未实现。对应 [WINDOWS.md](WINDOWS.md) 第 6 阶段、[DETAILED_DESIGN.md](DETAILED_DESIGN.md) §5.1。
 
 ## 1. 要解决的问题
 

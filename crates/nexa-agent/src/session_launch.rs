@@ -12,9 +12,8 @@ use std::{ffi::c_void, os::windows::ffi::OsStrExt, path::Path, ptr};
 use windows_sys::Win32::{
     Foundation::{CloseHandle, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE},
     Security::{
-        DuplicateTokenEx, GetTokenInformation, IsWellKnownSid, SECURITY_ATTRIBUTES,
-        SecurityImpersonation, TOKEN_ALL_ACCESS, TOKEN_QUERY, TOKEN_USER, TokenPrimary, TokenUser,
-        WinLocalSystemSid,
+        DuplicateTokenEx, SECURITY_ATTRIBUTES, SecurityImpersonation, TOKEN_ALL_ACCESS,
+        TokenPrimary,
     },
     Storage::FileSystem::{
         CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_END, FILE_SHARE_READ, OPEN_ALWAYS,
@@ -27,8 +26,8 @@ use windows_sys::Win32::{
         },
         Threading::{
             CREATE_NEW_CONSOLE, CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW,
-            GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_INFORMATION,
-            PROCESS_QUERY_LIMITED_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOW,
+            OpenProcess, OpenProcessToken, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
+            STARTF_USESTDHANDLES, STARTUPINFOW,
         },
     },
 };
@@ -51,35 +50,6 @@ impl Drop for Owned {
 
 fn last_error(what: &str) -> String {
     format!("{what}: {}", std::io::Error::last_os_error())
-}
-
-/// Whether this process runs as SYSTEM (LocalSystem).
-pub fn is_system() -> bool {
-    let mut token: HANDLE = ptr::null_mut();
-    // SAFETY: the pseudo handle of this process; `token` is written on success.
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
-        return false;
-    }
-    let token = Owned(token);
-    let mut buf = [0u8; 256];
-    let mut len = 0u32;
-    // SAFETY: a buffer of `buf.len()` bytes; TOKEN_USER fits in it.
-    let ok = unsafe {
-        GetTokenInformation(
-            token.0,
-            TokenUser,
-            buf.as_mut_ptr().cast(),
-            buf.len() as u32,
-            &mut len,
-        )
-    };
-    if ok == 0 {
-        return false;
-    }
-    // SAFETY: GetTokenInformation wrote a TOKEN_USER at the start of `buf`.
-    let user = unsafe { &*(buf.as_ptr().cast::<TOKEN_USER>()) };
-    // SAFETY: a SID pointer inside `buf`.
-    unsafe { IsWellKnownSid(user.User.Sid, WinLocalSystemSid) != 0 }
 }
 
 /// The session the console (the physical screen) is attached to.

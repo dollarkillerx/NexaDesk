@@ -10,6 +10,7 @@ nexa-wire = { path = "../nexa-wire" }
 nexa-net = { path = "../nexa-net" }
 nexa-media = { path = "../nexa-media" }
 nexa-auth = { path = "../nexa-auth" }
+nexa-user = { path = "../nexa-user" }
 nexa-clip = { path = "../nexa-clip" }
 bytes.workspace = true
 thiserror.workspace = true

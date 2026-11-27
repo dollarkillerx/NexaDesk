@@ -69,8 +69,8 @@ fn main() {
 /// Must itself run as SYSTEM, e.g. from a scheduled task with `/ru SYSTEM`.
 #[cfg(windows)]
 fn run_in_session() -> Result<(), String> {
-    use session_launch::{Output, active_console_session, is_system};
-    if !is_system() {
+    use session_launch::{Output, active_console_session};
+    if !nexa_user::is_system() {
         return Err("run-in-session must run as SYSTEM (a scheduled task with /ru SYSTEM)".into());
     }
     let mut args = std::env::args().skip(2);
@@ -383,7 +383,10 @@ fn run() -> Result<(), String> {
     let args = parse_args()?;
     os::check_permissions()?;
 
-    std::fs::create_dir_all(&args.data_dir).map_err(|e| format!("data directory: {e}"))?;
+    // On a Windows host running as SYSTEM the data folder is the session user's: made,
+    // read and written as that user (`nexa_user`).
+    nexa_user::as_user(|| std::fs::create_dir_all(&args.data_dir))
+        .map_err(|e| format!("data directory: {e}"))?;
     let identity = DeviceIdentity::load_or_create(&*os::device_key_store(&args.data_dir))
         .map_err(|e| format!("device key: {e}"))?;
     let store = PairingStore::open(
@@ -453,7 +456,7 @@ fn run() -> Result<(), String> {
     // Browser access is served over HTTPS only. Without a certificate it stays off,
     // rather than falling back to plain HTTP.
     let (web, web_tls) = match args.web {
-        Some(addr) => match web_certificate(&args.data_dir) {
+        Some(addr) => match nexa_user::as_user(|| web_certificate(&args.data_dir)) {
             Ok(tls) => {
                 eprintln!(
                     "nexa-agent: browsers: https://<this Mac>:{} — certificate SHA-256 {}{}",

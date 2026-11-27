@@ -273,12 +273,15 @@ impl PairingStore {
     }
 }
 
+/// Read as the session's user on a SYSTEM host (`nexa_user`), like every file it keeps.
 fn read_limited(path: &Path) -> io::Result<Vec<u8>> {
-    let mut data = Vec::new();
-    File::open(path)?
-        .take(MAX_FILE_LEN + 1)
-        .read_to_end(&mut data)?;
-    Ok(data)
+    nexa_user::as_user(|| {
+        let mut data = Vec::new();
+        File::open(path)?
+            .take(MAX_FILE_LEN + 1)
+            .read_to_end(&mut data)?;
+        Ok(data)
+    })
 }
 
 fn parse(bytes: &[u8], key: &[u8; 32]) -> Result<Vec<PairingRecord>, StoreError> {

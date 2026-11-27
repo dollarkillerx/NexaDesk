@@ -1,5 +1,9 @@
 //! PowerShell on a ConPTY. The shell and everything it starts run in a job object that
 //! kills them all when the [`Pty`] is dropped, so nothing outlives the session.
+//!
+//! A host running as SYSTEM starts the shell as the person signed in to its session
+//! (`nexa_user`), with their environment and in their folder: whoever connects gets the
+//! user's command line, never SYSTEM's. With nobody signed in there is no shell.
 
 use std::{
     ffi::{OsStr, c_void},
@@ -25,10 +29,11 @@ use windows_sys::Win32::{
         },
         Pipes::CreatePipe,
         Threading::{
-            CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
-            EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, InitializeProcThreadAttributeList,
-            LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION,
-            STARTF_USESTDHANDLES, STARTUPINFOEXW, UpdateProcThreadAttribute,
+            CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW, CreateProcessW,
+            DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess,
+            InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
+            PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION, STARTF_USESTDHANDLES,
+            STARTUPINFOEXW, UpdateProcThreadAttribute,
         },
     },
 };
@@ -93,10 +98,13 @@ impl Pty {
             .shell
             .clone()
             .unwrap_or_else(|| PathBuf::from("powershell.exe"));
-        let cwd = opts
-            .cwd
-            .clone()
-            .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from));
+        // The session's user when this is a SYSTEM host; none when it acts as itself.
+        let user = nexa_user::UserToken::of_session()?;
+        let environment = user.as_ref().map(|u| u.environment()).transpose()?;
+        let cwd = opts.cwd.clone().or_else(|| match &user {
+            Some(_) => nexa_user::user_folder(nexa_user::Folder::Profile).ok(),
+            None => std::env::var_os("USERPROFILE").map(PathBuf::from),
+        });
 
         let (in_read, in_write) = pipe()?;
         let (out_read, out_write) = pipe()?;
@@ -172,22 +180,46 @@ impl Pty {
             si.StartupInfo.hStdError = INVALID_HANDLE_VALUE;
             let mut command = wide(OsStr::new(&format!("\"{}\" -NoLogo", shell.display())));
             let dir = cwd.as_ref().map(|d| wide(d.as_os_str()));
+            let dir = dir.as_ref().map_or(null(), |d| d.as_ptr());
+            let flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT;
+            let mut desktop = wide(OsStr::new("winsta0\\default"));
             let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
-            // SAFETY: every pointer is valid for the call; the command line is mutable
-            // as CreateProcessW requires; no handles are inherited.
-            check(unsafe {
-                CreateProcessW(
-                    null(),
-                    command.as_mut_ptr(),
-                    null(),
-                    null(),
-                    0,
-                    EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
-                    null(),
-                    dir.as_ref().map_or(null(), |d| d.as_ptr()),
-                    &si.StartupInfo,
-                    &mut pi,
-                )
+            // SAFETY (both): every pointer is valid for the call; the command line is
+            // mutable as required; no handles are inherited.
+            check(match (&user, &environment) {
+                (Some(user), Some(environment)) => {
+                    // The user's own desktop, whatever this thread's is.
+                    si.StartupInfo.lpDesktop = desktop.as_mut_ptr();
+                    unsafe {
+                        CreateProcessAsUserW(
+                            user.raw(),
+                            null(),
+                            command.as_mut_ptr(),
+                            null(),
+                            null(),
+                            0,
+                            flags,
+                            environment.as_ptr(),
+                            dir,
+                            &si.StartupInfo,
+                            &mut pi,
+                        )
+                    }
+                }
+                _ => unsafe {
+                    CreateProcessW(
+                        null(),
+                        command.as_mut_ptr(),
+                        null(),
+                        null(),
+                        0,
+                        flags,
+                        null(),
+                        dir,
+                        &si.StartupInfo,
+                        &mut pi,
+                    )
+                },
             })?;
             Ok(pi)
         })();
