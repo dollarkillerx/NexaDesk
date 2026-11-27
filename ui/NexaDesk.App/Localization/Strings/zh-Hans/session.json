@@ -25,6 +25,8 @@
   "Toolbar.HudTip": "在画面上显示分段延迟、路径和帧率",
   "Toolbar.Diagnostics": "诊断",
   "Toolbar.FullScreen": "全屏",
+  "Toolbar.LockScreen": "锁屏",
+  "Toolbar.LockScreenTip": "锁定对方电脑的屏幕",
   "Toolbar.Disconnect": "断开",
   "Diagnostics.Title": "连接诊断",
   "Diagnostics.Path": "路径",

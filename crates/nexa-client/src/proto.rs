@@ -190,6 +190,16 @@ pub enum Command {
     Resolution(SetResolution),
     #[prost(message, tag = "27")]
     Key(KeyPress),
+    #[prost(message, tag = "28")]
+    System(SystemCommand),
+}
+
+/// Asks the host's system for something keys cannot (`nexa_session::proto::SystemAction`):
+/// 0 locks the screen.
+#[derive(Clone, PartialEq, Message)]
+pub struct SystemCommand {
+    #[prost(int32, tag = "1")]
+    pub action: i32,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -964,6 +974,10 @@ mod tests {
         assert_eq!(
             hex(&cmd(Command::Display(SelectDisplay { display: 1 }))),
             "aa01020801"
+        );
+        assert_eq!(
+            hex(&cmd(Command::System(SystemCommand { action: 0 }))),
+            "e20100"
         );
         let event = |b| {
             Event {

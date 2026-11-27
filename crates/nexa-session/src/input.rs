@@ -39,6 +39,9 @@ pub trait InputSink: Send {
     /// Changes input source as the viewer asks (`InputBody::InputSource`). Hosts that
     /// cannot do nothing.
     fn input_source(&mut self, _change: &crate::proto::InputSourceSelect) {}
+    /// Does what the viewer asks of the system (`InputBody::System`): lock the screen.
+    /// Hosts that cannot do nothing.
+    fn system(&mut self, _action: crate::proto::SystemAction, _now: Instant) {}
     fn poll_timeout(&mut self, now: Instant);
     fn release_all(&mut self, now: Instant);
 }
@@ -204,6 +207,11 @@ fn dispatch(
         InjectEvent::Input(InputBody::Button(b)) => state.button(&b, map, sink, now),
         InjectEvent::Input(InputBody::Text(TextInput { utf8 })) => sink.text(&utf8),
         InjectEvent::Input(InputBody::InputSource(s)) => sink.input_source(&s),
+        InjectEvent::Input(InputBody::System(r)) => {
+            if let Ok(action) = crate::proto::SystemAction::try_from(r.action) {
+                sink.system(action, now);
+            }
+        }
         InjectEvent::Input(InputBody::Sync(KeyStateSync { pressed, .. })) => {
             sink.apply_key_state(&pressed, now);
         }

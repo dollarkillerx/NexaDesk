@@ -77,6 +77,46 @@ impl<T: EventTarget + Send> InputSink for InjectorSink<T> {
     fn input_source(&mut self, change: &nexa_session::proto::InputSourceSelect) {
         change_input_source(change);
     }
+    fn system(&mut self, action: nexa_session::proto::SystemAction, now: Instant) {
+        match action {
+            nexa_session::proto::SystemAction::LockScreen => {
+                if !lock_screen() {
+                    // The lock screen's own shortcut, ⌃⌘Q, as typed here.
+                    for (usage, down) in [
+                        (0xE0, true),
+                        (0xE3, true),
+                        (0x14, true),
+                        (0x14, false),
+                        (0xE3, false),
+                        (0xE0, false),
+                    ] {
+                        self.0.key(Hid::key(usage), down, false, now);
+                    }
+                }
+                eprintln!("nexa-agent: locked the screen, as the viewer asked");
+            }
+        }
+    }
+}
+
+/// Locks the screen as the menu bar's "Lock Screen" does (login.framework's
+/// SACLockScreenImmediate). False when that is not there, and the caller types ⌃⌘Q.
+fn lock_screen() -> bool {
+    const LOGIN: &std::ffi::CStr =
+        c"/System/Library/PrivateFrameworks/login.framework/Versions/Current/login";
+    // SAFETY: dlopen of a system framework; the handle stays open for the process.
+    let handle = unsafe { libc::dlopen(LOGIN.as_ptr(), libc::RTLD_LAZY) };
+    if handle.is_null() {
+        return false;
+    }
+    // SAFETY: a symbol looked up in the handle just opened.
+    let symbol = unsafe { libc::dlsym(handle, c"SACLockScreenImmediate".as_ptr()) };
+    if symbol.is_null() {
+        return false;
+    }
+    // SAFETY: `int SACLockScreenImmediate(void)`.
+    let lock: extern "C" fn() -> i32 = unsafe { std::mem::transmute(symbol) };
+    lock() == 0
 }
 
 /// How long the keys typed after a switch wait for it. The helper takes about 60 ms;

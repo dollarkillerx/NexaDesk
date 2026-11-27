@@ -25,6 +25,8 @@
   "Toolbar.HudTip": "在畫面上顯示分段延遲、路徑和幀率",
   "Toolbar.Diagnostics": "診斷",
   "Toolbar.FullScreen": "全螢幕",
+  "Toolbar.LockScreen": "鎖定",
+  "Toolbar.LockScreenTip": "鎖定對方電腦的螢幕",
   "Toolbar.Disconnect": "中斷連線",
   "Diagnostics.Title": "連線診斷",
   "Diagnostics.Path": "路徑",

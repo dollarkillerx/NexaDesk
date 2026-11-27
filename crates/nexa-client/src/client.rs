@@ -681,6 +681,10 @@ impl Session {
             Command::Button(b) => InputCmd::Button(b.button, b.down),
             Command::Wheel(w) => InputCmd::Wheel(w.dx, w.dy),
             Command::Text(t) => InputCmd::Text(t.utf8),
+            Command::System(s) => InputCmd::System(
+                nexa_session::proto::SystemAction::try_from(s.action)
+                    .map_err(|_| "unknown system action")?,
+            ),
             Command::Key(k) => {
                 let usage = u16::try_from(k.usage).map_err(|_| "key usage out of range")?;
                 let key = PhysKey {
@@ -1792,6 +1796,7 @@ async fn stream_session(
     let mut close_rx = session.close.subscribe();
     let mut stats = tokio::time::interval(STATS_INTERVAL);
     let mut warned_path: Option<PathKind> = None;
+    let mut logged_stats: Option<(Instant, Stats)> = None;
     let (reason, message): (DisconnectReason, String) = loop {
         tokio::select! {
             changed = close_rx.wait_for(|c| *c) => {
@@ -1896,7 +1901,7 @@ async fn stream_session(
                     let g = *lock(&gate_stats);
                     let (path, path_detail, path_rtt_us) = path_stats(link, conn, core.deps.tailnet().as_deref());
                     let a = lock(&session.audio).as_ref().map(|a| a.stats()).unwrap_or_default();
-                    core.events.send(tag, EventBody::Stats(Stats {
+                    let now = Stats {
                         complete: s.complete.load(R),
                         lost: s.lost.load(R),
                         fec_recovered: s.fec_recovered.load(R),
@@ -1915,7 +1920,9 @@ async fn stream_session(
                         audio_concealed: a.concealed,
                         audio_buffer_us: a.mean_delay().as_micros().min(u128::from(u32::MAX)) as u32,
                         latency: latency_of(&media.latency),
-                    }));
+                    };
+                    log_stats(tag, &mut logged_stats, &now);
+                    core.events.send(tag, EventBody::Stats(now));
                 }
             }
         }
@@ -1981,6 +1988,61 @@ async fn stream_session(
 }
 
 /// §6.1 segments for the HUD, in the ABI's numbering.
+/// How often a session's picture is summed up in viewer.log.
+const STATS_LOG_EVERY: Duration = Duration::from_secs(10);
+
+/// A line in viewer.log every [`STATS_LOG_EVERY`] while a session runs, as agent.log has
+/// for the host: frames received, decoded and shown per second, what was lost, the
+/// bitrate, and where the time goes (median and 99th percentile). A picture that slows
+/// down after a while then shows whether the host, the network or this side did it.
+fn log_stats(tag: u64, last: &mut Option<(Instant, Stats)>, now: &Stats) {
+    let at = Instant::now();
+    let Some((then, before)) = last.as_ref() else {
+        *last = Some((at, now.clone()));
+        return;
+    };
+    let secs = at.duration_since(*then).as_secs_f64();
+    if secs < STATS_LOG_EVERY.as_secs_f64() {
+        return;
+    }
+    let rate = |a: u64, b: u64| a.saturating_sub(b) as f64 / secs;
+    let ms = |segment: crate::proto::Segment| {
+        now.latency
+            .iter()
+            .find(|l| l.segment == segment as i32)
+            .map_or_else(
+                || "-".to_owned(),
+                |l| {
+                    format!(
+                        "{:.0}/{:.0}",
+                        f64::from(l.p50_us) / 1000.0,
+                        f64::from(l.p99_us) / 1000.0
+                    )
+                },
+            )
+    };
+    use crate::proto::Segment as S;
+    nexa_media::diag!(
+        "session {tag} picture: received {:.1} frames/s, decoded {:.1}, shown {:.1}, lost {}, \
+         decode errors {}, {:.2} Mbit/s, round trip {} ms; ms (median/p99): host+network {}, \
+         decode queue {}, decode {}, present queue {}, present {}, total {}",
+        rate(now.complete, before.complete),
+        rate(now.decoded, before.decoded),
+        rate(now.presented, before.presented),
+        now.lost.saturating_sub(before.lost),
+        now.decode_errors.saturating_sub(before.decode_errors),
+        rate(now.rx_bytes, before.rx_bytes) * 8.0 / 1e6,
+        now.rtt_us / 1000,
+        ms(S::HostAndNetwork),
+        ms(S::DecodeQueue),
+        ms(S::Decode),
+        ms(S::PresentQueue),
+        ms(S::Present),
+        ms(S::Total),
+    );
+    *last = Some((at, now.clone()));
+}
+
 fn latency_of(l: &nexa_session::latency::LatencyStats) -> Vec<crate::proto::LatencySegment> {
     use crate::proto::Segment as P;
     use nexa_session::latency::Segment as S;

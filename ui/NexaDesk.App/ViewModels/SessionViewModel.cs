@@ -59,6 +59,13 @@ public sealed partial class SessionViewModel : ObservableObject
     public string PermsText => Texts.Permissions(Perms);
     public string HostKeyHint => L.Get("Session.HostKeyHint");
     public bool CanControl => Perms.Input;
+
+    /// <summary>The toolbar's lock button: the host locks its screen (keyboard permission).</summary>
+    [RelayCommand]
+    private void LockScreen()
+    {
+        if (CanControl) Session.Send(new SessionCommand.LockScreen());
+    }
     /// <summary>The host shared its sound: the toolbar offers mute.</summary>
     public bool CanHearAudio => Perms.Audio;
     /// <summary>The host's displays, for the toolbar's picker.</summary>

@@ -248,6 +248,24 @@ pub enum InputBody {
     /// there. A host that cannot ignores it.
     #[prost(message, tag = "6")]
     InputSource(InputSourceSelect),
+    /// Something the host's system does that keys cannot ask for (a viewer's toolbar
+    /// button). A host that cannot, or does not know it, ignores it.
+    #[prost(message, tag = "7")]
+    System(SystemRequest),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Message)]
+pub struct SystemRequest {
+    #[prost(enumeration = "SystemAction", tag = "1")]
+    pub action: i32,
+}
+
+/// What [`SystemRequest`] asks of the host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Enumeration)]
+#[repr(i32)]
+pub enum SystemAction {
+    /// Lock the screen: Windows' LockWorkStation, the Mac's ⌃⌘Q.
+    LockScreen = 0,
 }
 
 #[derive(Clone, PartialEq, Eq, Message)]
@@ -282,7 +300,7 @@ pub struct InputMark {
 
 #[derive(Clone, PartialEq, Message)]
 pub struct InputMsg {
-    #[prost(oneof = "InputBody", tags = "1, 2, 3, 4, 5, 6")]
+    #[prost(oneof = "InputBody", tags = "1, 2, 3, 4, 5, 6, 7")]
     pub body: Option<InputBody>,
 }
 

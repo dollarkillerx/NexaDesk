@@ -25,6 +25,8 @@
   "Toolbar.HudTip": "Show latency by stage, path and frame rate over the screen",
   "Toolbar.Diagnostics": "Diagnostics",
   "Toolbar.FullScreen": "Full screen",
+  "Toolbar.LockScreen": "Lock",
+  "Toolbar.LockScreenTip": "Lock the other computer’s screen",
   "Toolbar.Disconnect": "Disconnect",
   "Diagnostics.Title": "Connection diagnostics",
   "Diagnostics.Path": "Path",

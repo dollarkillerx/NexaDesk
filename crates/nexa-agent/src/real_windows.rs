@@ -132,6 +132,23 @@ impl InputSink for InjectorSink {
         self.1.set(&[]);
         self.0.release_all(now);
     }
+    fn system(&mut self, action: nexa_session::proto::SystemAction, _now: Instant) {
+        match action {
+            // Win+L cannot be typed with SendInput: Windows keeps it for itself.
+            nexa_session::proto::SystemAction::LockScreen => {
+                follow_input_desktop(true);
+                // SAFETY: no arguments; it only asks Windows to lock this session.
+                if unsafe { windows_sys::Win32::System::Shutdown::LockWorkStation() } == 0 {
+                    eprintln!(
+                        "nexa-agent: could not lock the screen: {}",
+                        std::io::Error::last_os_error()
+                    );
+                } else {
+                    eprintln!("nexa-agent: locked the screen, as the viewer asked");
+                }
+            }
+        }
+    }
 }
 
 struct Clipboard(WindowsClipboard);

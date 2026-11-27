@@ -6,37 +6,45 @@
         x:Class="NexaDesk.Views.ToolbarWindow"
         x:DataType="vm:SessionViewModel"
         Title="{l:T Toolbar.Title}"
-        Width="980" SizeToContent="Height" CanResize="False"
+        MinWidth="980" SizeToContent="WidthAndHeight" CanResize="False"
         ShowInTaskbar="False" ShowActivated="False"
         WindowDecorations="None" RequestedThemeVariant="Dark"
         Background="{DynamicResource ToolbarBrush}">
   <Border BorderBrush="{DynamicResource CardBorderBrush}" BorderThickness="1" Padding="16,8,8,8">
     <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto">
-      <Grid ColumnDefinitions="Auto,*,Auto">
-        <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-          <Ellipse Width="8" Height="8" VerticalAlignment="Center" Fill="{DynamicResource OkBrush}" IsVisible="{Binding !IsReconnecting}" />
-          <Ellipse Width="8" Height="8" VerticalAlignment="Center" Fill="{DynamicResource WarnBrush}" IsVisible="{Binding IsReconnecting}" />
-          <TextBlock Text="{Binding HostName}" FontWeight="SemiBold" VerticalAlignment="Center" MaxWidth="160"
-                     TextTrimming="CharacterEllipsis" />
-          <TextBlock Classes="label" Text="{l:T Toolbar.Mode}" VerticalAlignment="Center" Margin="6,0,0,0" />
-          <Border Classes="segments">
-            <StackPanel Orientation="Horizontal">
-              <RadioButton Name="ModeOffice" Classes="segment" GroupName="mode" Content="{l:T Texts.Mode.Office}" IsChecked="{Binding IsOffice}" />
-              <RadioButton Name="ModeBalanced" Classes="segment" GroupName="mode" Content="{l:T Texts.Mode.Balanced}" IsChecked="{Binding IsBalanced}" />
-              <RadioButton Name="ModeGame" Classes="segment" GroupName="mode" Content="{l:T Texts.Mode.Game}" IsChecked="{Binding IsGame}" />
-            </StackPanel>
-          </Border>
-          <TextBlock Classes="label" Text="{l:T Toolbar.Display}" VerticalAlignment="Center" IsVisible="{Binding HasManyDisplays}" />
-          <ComboBox Name="DisplayPicker" ItemsSource="{Binding Displays}" SelectedItem="{Binding SelectedDisplay}"
-                    IsVisible="{Binding HasManyDisplays}" MaxWidth="210" MinHeight="32" VerticalAlignment="Center">
-            <ComboBox.ItemTemplate>
-              <DataTemplate x:DataType="vm:DisplayChoice">
-                <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" />
-              </DataTemplate>
-            </ComboBox.ItemTemplate>
-          </ComboBox>
-        </StackPanel>
-        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
+      <Grid ColumnDefinitions="*,Auto">
+        <!-- One flow, left to right: which host and how, then the buttons. It wraps onto
+             another line when the window is narrower than all of it (a long host name, a
+             display picker, longer translations) instead of running off the edge, where
+             collapse and disconnect were out of reach; those two keep a column of their own. -->
+        <WrapPanel ItemSpacing="10" LineSpacing="6" VerticalAlignment="Center">
+          <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+            <Ellipse Width="8" Height="8" VerticalAlignment="Center" Fill="{DynamicResource OkBrush}" IsVisible="{Binding !IsReconnecting}" />
+            <Ellipse Width="8" Height="8" VerticalAlignment="Center" Fill="{DynamicResource WarnBrush}" IsVisible="{Binding IsReconnecting}" />
+            <TextBlock Text="{Binding HostName}" FontWeight="SemiBold" VerticalAlignment="Center" MaxWidth="160"
+                       TextTrimming="CharacterEllipsis" />
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+            <TextBlock Classes="label" Text="{l:T Toolbar.Mode}" VerticalAlignment="Center" />
+            <Border Classes="segments">
+              <StackPanel Orientation="Horizontal">
+                <RadioButton Name="ModeOffice" Classes="segment" GroupName="mode" Content="{l:T Texts.Mode.Office}" IsChecked="{Binding IsOffice}" />
+                <RadioButton Name="ModeBalanced" Classes="segment" GroupName="mode" Content="{l:T Texts.Mode.Balanced}" IsChecked="{Binding IsBalanced}" />
+                <RadioButton Name="ModeGame" Classes="segment" GroupName="mode" Content="{l:T Texts.Mode.Game}" IsChecked="{Binding IsGame}" />
+              </StackPanel>
+            </Border>
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center" IsVisible="{Binding HasManyDisplays}">
+            <TextBlock Classes="label" Text="{l:T Toolbar.Display}" VerticalAlignment="Center" />
+            <ComboBox Name="DisplayPicker" ItemsSource="{Binding Displays}" SelectedItem="{Binding SelectedDisplay}"
+                      IsVisible="{Binding HasManyDisplays}" MaxWidth="210" MinHeight="32" VerticalAlignment="Center">
+              <ComboBox.ItemTemplate>
+                <DataTemplate x:DataType="vm:DisplayChoice">
+                  <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" />
+                </DataTemplate>
+              </ComboBox.ItemTemplate>
+            </ComboBox>
+          </StackPanel>
           <Button Name="ResumeButton" Classes="small accent" Content="{l:T Toolbar.Resume}" Command="{Binding ResumeCommand}"
                   IsVisible="{Binding IsSuspended}" />
           <Button Name="MuteButton" Classes="small quiet" Content="{Binding MuteLabel}" Command="{Binding ToggleMuteCommand}"
@@ -48,7 +56,11 @@
           <ToggleButton Name="HudButton" Classes="small" Content="HUD" IsChecked="{Binding IsHudVisible}"
                         ToolTip.Tip="{l:T Toolbar.HudTip}" />
           <Button Name="DiagnosticsButton" Classes="small quiet" Content="{l:T Toolbar.Diagnostics}" Click="OnDiagnostics" />
+          <Button Name="LockScreenButton" Classes="small quiet" Content="{l:T Toolbar.LockScreen}"
+                  Command="{Binding LockScreenCommand}" IsVisible="{Binding CanControl}" ToolTip.Tip="{l:T Toolbar.LockScreenTip}" />
           <Button Name="FullScreenButton" Classes="small quiet" Content="{l:T Toolbar.FullScreen}" Click="OnFullScreen" />
+        </WrapPanel>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="2" VerticalAlignment="Top" Margin="10,0,0,0">
           <Button Name="CollapseToolbarButton" Classes="small quiet" Content="{l:T Toolbar.Collapse}" Command="{Binding CollapseToolbarCommand}"
                   ToolTip.Tip="{Binding CollapseToolbarTip}" />
           <Button Name="ToolbarDisconnectButton" Classes="small danger" Margin="6,0,0,0" Content="{l:T Toolbar.Disconnect}" Command="{Binding DisconnectCommand}" />

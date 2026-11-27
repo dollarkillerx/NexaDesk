@@ -39,6 +39,7 @@ public class SessionFeatureTests
         Assert.Equal("a201020801", Hex(new SessionCommand.SetAudio(true).Encode()));
         Assert.Equal("a20100", Hex(new SessionCommand.SetAudio(false).Encode()));
         Assert.Equal("aa01020801", Hex(new SessionCommand.SelectDisplay(1).Encode()));
+        Assert.Equal("e20100", Hex(new SessionCommand.LockScreen().Encode()));
     }
 
     [Fact]

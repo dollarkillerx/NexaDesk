@@ -25,6 +25,8 @@
   "Toolbar.HudTip": "画面上に段階別の遅延、経路、フレームレートを表示します",
   "Toolbar.Diagnostics": "診断",
   "Toolbar.FullScreen": "フルスクリーン",
+  "Toolbar.LockScreen": "ロック",
+  "Toolbar.LockScreenTip": "相手のコンピュータの画面をロック",
   "Toolbar.Disconnect": "切断",
   "Diagnostics.Title": "接続の診断",
   "Diagnostics.Path": "経路",

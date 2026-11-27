@@ -51,13 +51,26 @@ public partial class ToolbarWindow : Window
             if (e.Property == WindowStateProperty) Place();
         };
         Opened += (_, _) => Place();
+        // It sizes itself to what it shows: centred again whenever that changes.
+        SizeChanged += (_, _) => Place();
     }
 
+    /// <summary>Space left at the sides of the session window.</summary>
+    const double SideMargin = 24;
+
+    /// <summary>Centred near the top of the session window, and never wider than it: what
+    /// does not fit wraps (the buttons in the first row) rather than going off the edge.</summary>
     public void Place()
     {
         if (_session == null) return;
+        var room = Math.Max(360, _session.Bounds.Width - SideMargin);
+        if (Math.Abs(MaxWidth - room) > 0.5)
+        {
+            MaxWidth = room;
+            MinWidth = Math.Min(980, room);
+        }
         var s = _session.DesktopScaling;
-        var x = _session.Position.X + (int)((_session.Bounds.Width - Width) / 2 * s);
+        var x = _session.Position.X + (int)((_session.Bounds.Width - Bounds.Width) / 2 * s);
         Position = new PixelPoint(x, _session.Position.Y + (int)(8 * s));
     }
 

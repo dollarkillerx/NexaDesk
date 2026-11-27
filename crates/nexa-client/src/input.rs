@@ -84,6 +84,9 @@ pub enum InputCmd {
     InputSource(String),
     /// A key that switches input source (🌐, 英数, かな): the host does what it does there.
     SwitchInputSource(SwitchAction),
+    /// A toolbar button asking the host's system (`InputBody::System`): lock the screen.
+    /// Sent whether or not the window has the keyboard, in order with what was typed.
+    System(nexa_session::proto::SystemAction),
     Stop,
 }
 
@@ -632,6 +635,17 @@ impl InputState {
             InputCmd::Mark(id) => {
                 let mut released = Vec::new();
                 self.ordered(InputBody::Mark(InputMark { id }), now, &mut released);
+                self.flush(&mut released);
+            }
+            InputCmd::System(action) => {
+                let mut released = Vec::new();
+                self.ordered(
+                    InputBody::System(nexa_session::proto::SystemRequest {
+                        action: action as i32,
+                    }),
+                    now,
+                    &mut released,
+                );
                 self.flush(&mut released);
             }
             InputCmd::Text(utf8) if self.active && self.caps_until.is_some() => {

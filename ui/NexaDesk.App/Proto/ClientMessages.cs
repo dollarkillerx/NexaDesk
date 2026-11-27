@@ -204,6 +204,13 @@ public abstract record SessionCommand
     {
         public override byte[] Encode() => new ProtoWriter().Message(24, w => w.UInt64(1, Id).Bool(2, Accept)).ToArray();
     }
+
+    /// <summary>Lock the host's screen: Windows' LockWorkStation, the Mac's ⌃⌘Q. Needs the
+    /// keyboard permission; a host older than this ignores it.</summary>
+    public sealed record LockScreen : SessionCommand
+    {
+        public override byte[] Encode() => new ProtoWriter().Message(28, w => w.Int32(1, 0)).ToArray();
+    }
 }
 
 /// <summary>One of the host's displays, as listed in Connected.</summary>

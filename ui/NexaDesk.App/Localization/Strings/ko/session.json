@@ -25,6 +25,8 @@
   "Toolbar.HudTip": "단계별 지연 시간, 경로, 프레임률을 화면 위에 표시",
   "Toolbar.Diagnostics": "진단",
   "Toolbar.FullScreen": "전체 화면",
+  "Toolbar.LockScreen": "잠금",
+  "Toolbar.LockScreenTip": "상대 컴퓨터의 화면 잠금",
   "Toolbar.Disconnect": "연결 끊기",
   "Diagnostics.Title": "연결 진단",
   "Diagnostics.Path": "경로",
